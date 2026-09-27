@@ -60,6 +60,7 @@ def create(idea: str, language: str = "", stack: str = "") -> dict:
         data = _read()
         data[record["id"]] = record
         _write(data)
+    config.scaffold_workspace(record["id"])
     return record
 
 

@@ -120,3 +120,30 @@ def workspace_for(project: str) -> Path:
 
 def record_dir(project: str) -> Path:
     return workspace_for(project) / RECORD_DIR
+
+
+# The empty stage-folder skeleton every new project starts with, so a read
+# tool can list its way around before any stage has written into it. A
+# workspace layout fact, not a setting — kept here for the same reason
+# `workspace_for()` and `record_dir()` are.
+SCAFFOLD_DIRS = (
+    "srs/handoff", "srs/wireframes", "srs/diagrams", "srs/diagram-context",
+    "srs/reviews", "srs/wireframe-system",
+    "design",
+    "prototype/context", "prototype/kit", "prototype/assets/uploads", "prototype/skills",
+    "build/guides", "build/plan",
+    "qa/guides",
+    "deploy/skills", "deploy/runs",
+    "changes",
+)
+
+
+def scaffold_workspace(project: str) -> Path:
+    """The project's workspace, with its predictable empty stage-folder
+    skeleton, so a read tool can find its way around before any stage has run."""
+    workspace = workspace_for(project)
+    workspace.mkdir(parents=True, exist_ok=True)
+    record = workspace / RECORD_DIR
+    for relative in SCAFFOLD_DIRS:
+        (record / relative).mkdir(parents=True, exist_ok=True)
+    return workspace
