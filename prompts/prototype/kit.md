@@ -13,6 +13,13 @@ The JavaScript must:
 
 The shell must use the route map, keep shared navigation consistent, include the literal `<!-- page content -->` marker, and contain working `data-go="/route"` links. The shell and kit must use sibling relative filenames resolved from the route map, never filesystem or root-relative app URLs.
 
+You have a small, fixed number of tool calls for this task. Read exactly the
+two files named below with `read_file` — nothing else. Do not call
+`list_files` or `search_text` first to "see what's there": both paths are
+already exact and correct. Every other input you need (routes, sign-in,
+journeys, reference ideas) is already given to you as text below, not as
+something to go read. After those two reads, answer — do not keep exploring.
+
 ## Design
 Read `{{design_spec_path}}` yourself with your `read_file` tool — the approved
 design tokens are not pasted in here.

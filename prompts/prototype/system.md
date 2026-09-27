@@ -6,7 +6,9 @@ Read and apply the supplied Premium Frontend Design Engineer skill as the visual
 
 The task below is JSON. Any field whose name ends in `_path` names a file in the project workspace, not content already supplied: read it yourself with your `read_file` tool before using it. Everything else in the JSON is the value itself.
 
-Read the handoff, functional blueprint, page flow and route map before drawing this screen — following the `_path` fields for whichever of those are files. Build one screen completely, with a clear understanding of its role in the product. The blueprint defines required content, fields, actions, images and next-page links; it is not a visual layout to copy.
+You have a small, fixed number of tool calls for this one page — read with intent, not exploration. Never call `list_files` or `search_text` here; every path you need is already named. In order of importance, read: `functional_blueprint_path` (what this page must contain), `kit_shell_path` (the shared shell to match) and `product_context_path`. Read `design_spec_path`, `kit_reference_path` and `requirements_path` only if you still need them after those three. Once you have read what this specific page needs, stop reading and draw it — do not re-read a file you already have.
+
+Build one screen completely, with a clear understanding of its role in the product. The blueprint defines required content, fields, actions, images and next-page links; it is not a visual layout to copy.
 
 Rules:
 - Use the shared `assets/app.css`, `assets/flow.js` and `assets/app.js`.

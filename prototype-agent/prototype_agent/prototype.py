@@ -280,7 +280,7 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
         # bounding output so generation time follows the actual screen.
         minimum = max(2800, min(6500, weight * 650))
         html = llm.complete_html(system, user, minimum=minimum,
-                                 label=f"prototype {row['route']}", attempts=1,
+                                 label=f"prototype {row['route']}", attempts=3,
                                  think=False, project=project, workspace=session.workspace,
                                  role=bus.DESIGNER)
         if session.cancelled:

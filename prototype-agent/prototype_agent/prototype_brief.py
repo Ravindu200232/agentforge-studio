@@ -316,8 +316,10 @@ def draw_kit(spec: dict, customization: dict, routes_out: list[dict], flow: dict
                  + json.dumps(customization["uploaded_site_images"], ensure_ascii=False, indent=2))
     system, previous, problems = prompts.load("prototype/kit-system"), "", []
     for attempt in range(max(1, attempts)):
-        request = user if not problems else (user + "\n\n## Your last attempt\n\n" + previous[:1500] + "\n\nIt was rejected: " + "; ".join(problems)
-                                             + ". Return all three blocks again, complete.")
+        request = user if not problems else (
+            user + "\n\n## Your last attempt\n\n" + (previous[:1500] or "(empty — you returned nothing at all)")
+            + "\n\nIt was rejected: " + "; ".join(problems) + ". Do not call read_file, list_files or "
+              "search_text again — you already read what you need. Return all three blocks now, complete.")
         # This call writes a concrete artifact. Hidden chain-of-thought adds a
         # long wait before the first visible file without improving the CSS/JS
         # contract enforced below.
@@ -417,6 +419,7 @@ def prepare(doc: dict, spec: dict, customization: dict, routes_out: list[dict], 
     accounts = draw_accounts(doc, routes_out, flow, system)
     images: list[dict] = []
     kit = draw_kit(spec, customization, routes_out, flow, sign_in, accounts, ideas, say,
-                   project=project, workspace=workspace, premium_skill_path=premium_skill_path)
+                   project=project, workspace=workspace, premium_skill_path=premium_skill_path,
+                   attempts=3)
     return {"ideas": ideas, "flow": flow, "sign_in": sign_in, "accounts": accounts, "images": images, "kit": kit,
             "flow_js": flow_script(routes_out, flow, accounts, sign_in)}

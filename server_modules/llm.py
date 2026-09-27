@@ -241,7 +241,9 @@ def complete_html(system: str, user: str, model: str = "", minimum: int = 0,
                     f"least {minimum} — you left the page half drawn")
         messages += [{"role": "assistant", "content": html[:1500]},
                      {"role": "user", "content":
-                      f"That is not usable: {why}. Draw the whole page and return "
+                      f"That is not usable: {why}. You already have everything you read "
+                      f"earlier in this conversation — do not call read_file, list_files or "
+                      f"search_text again. Draw the whole page now and return "
                       f"the complete HTML document and nothing else."}]
     raise LLMRepairFailed(label, last, "no complete HTML document")
 
