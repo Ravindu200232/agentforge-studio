@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 from typing import Any, Callable
 
-from .tools import TOOL_SCHEMAS, WorkspaceTools
+from .tools import TOOL_SCHEMAS, WorkspaceTools, tools_unsupported
 
 
 SYSTEM = """You are a terminal coding assistant. Work inside the supplied workspace.
@@ -269,7 +269,15 @@ class Agent:
                     self.announce("[progress] Analysing the supplied requirements and deciding what to inspect.")
                 else:
                     self.announce("[progress] Applying the inspected project context and checking for gaps.")
-            response = self.client.chat(**kwargs)
+            try:
+                response = self.client.chat(**kwargs)
+            except Exception as exc:  # noqa: BLE001 - re-raised unless it's the one case handled
+                if tools_unsupported(exc):
+                    raise RuntimeError(
+                        f"The model '{self.model}' does not support tool calling, which this "
+                        f"agent needs to read, write and run commands. Pick a different model "
+                        f"in the studio's settings.") from exc
+                raise
             count = getattr(response, "prompt_eval_count", None)
             self.last_prompt_tokens = count if isinstance(count, int) and count > 0 else 0
             message = response.message

@@ -39,7 +39,42 @@ class FakeClient:
         return SimpleNamespace(message=FakeMessage("Found the file."))
 
 
+class ResponseError(Exception):
+    """Shaped like `ollama.ResponseError` (matched by name, not import) without
+    depending on the real package."""
+    def __init__(self, error, status_code):
+        super().__init__(error)
+        self.error = error
+        self.status_code = status_code
+
+
 class AgentTests(unittest.TestCase):
+    def test_a_model_that_cannot_take_tools_fails_with_a_clear_actionable_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeClient()
+
+            def refuses_tools(**kwargs):
+                client.calls.append(copy.deepcopy(kwargs))
+                raise ResponseError("model \"test\" does not support tools", 400)
+
+            client.chat = refuses_tools
+            agent = Agent(client, "test", Path(directory), lambda _: False, announce=lambda _: None)
+            with self.assertRaisesRegex(RuntimeError, "does not support tool calling"):
+                agent.ask("Read hello.txt")
+            self.assertEqual(len(client.calls), 1)   # never retried, never reached a tool round trip
+
+    def test_an_unrelated_chat_error_is_not_mistaken_for_missing_tool_support(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeClient()
+
+            def other_error(**kwargs):
+                raise ResponseError("internal server error", 500)
+
+            client.chat = other_error
+            agent = Agent(client, "test", Path(directory), lambda _: False, announce=lambda _: None)
+            with self.assertRaises(ResponseError):
+                agent.ask("Read hello.txt")
+
     def test_sdk_tool_round_trip_and_model_context(self):
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, "hello.txt").write_text("hello", encoding="utf-8")

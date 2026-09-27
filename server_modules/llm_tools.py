@@ -21,7 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from ollama_terminal.tools import MAX_OUTPUT, TOOL_SCHEMAS, WorkspaceTools
+from ollama_terminal.tools import MAX_OUTPUT, TOOL_SCHEMAS, WorkspaceTools, tools_unsupported
 
 from . import bus
 
@@ -31,6 +31,12 @@ READ_ONLY_SCHEMAS = [schema for schema in TOOL_SCHEMAS
 MAX_TOOL_ROUNDS = 6
 
 _SENSITIVE_NAMES = {".env", ".env.local", ".env.production"}
+
+# Models that rejected a tools= call this process, so later calls for the same
+# model skip straight to the tools-less path instead of failing again first.
+# These calls worked with zero tools before this existed, so the model just
+# gets that behavior back rather than losing the whole generation stage.
+_UNSUPPORTED_MODELS: set[str] = set()
 
 
 def _sensitive(relative: str) -> bool:
@@ -117,15 +123,27 @@ def run_chat(chat: Callable[..., Any], kwargs: dict[str, Any],
     """Drive one `chat(**kwargs)` call through read-only tool round trips.
 
     Returns the final message. `chat` is the caller's own bound `client().chat`,
-    injected so this module never has to import `llm.py`. With `tools=None`
+    injected so this module never has to import `llm.py`. With `tools=None`,
+    or a model already known this process not to support tool calling at all,
     this is exactly `chat(**kwargs).message` — today's behavior, unchanged.
     """
-    if tools is None:
+    model = kwargs.get("model")
+    if tools is None or model in _UNSUPPORTED_MODELS:
         return chat(**kwargs).message
-    kwargs = {**kwargs, "tools": READ_ONLY_SCHEMAS}
-    messages = kwargs["messages"]
+    tool_kwargs = {**kwargs, "tools": READ_ONLY_SCHEMAS}
+    messages = tool_kwargs["messages"]
     for _ in range(max(1, max_rounds)):
-        message = chat(**kwargs).message
+        try:
+            message = chat(**tool_kwargs).message
+        except Exception as exc:  # noqa: BLE001 - re-raised unless it's the one case handled
+            if not tools_unsupported(exc):
+                raise
+            _UNSUPPORTED_MODELS.add(model)
+            if tools.project:
+                bus.log(tools.project, "WARN",
+                        f"{model} does not support tool calling; continuing without "
+                        f"a read tool for this and later calls to it.", agent=tools.role)
+            return chat(**kwargs).message   # the original, tools-less kwargs
         calls = message.tool_calls or []
         messages.append(message.model_dump(exclude_none=True))
         if not calls:
@@ -134,5 +152,5 @@ def run_chat(chat: Callable[..., Any], kwargs: dict[str, Any],
             name, args = call.function.name, (call.function.arguments or {})
             messages.append({"role": "tool", "tool_name": name, "content": tools.call(name, args)})
     # Rounds exhausted: force a final answer, with no more reads offered.
-    kwargs.pop("tools", None)
-    return chat(**kwargs).message
+    tool_kwargs.pop("tools", None)
+    return chat(**tool_kwargs).message

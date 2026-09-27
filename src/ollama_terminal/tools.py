@@ -22,6 +22,19 @@ MAX_COMMAND_SECONDS = 600
 SERVER_COMMAND_SECONDS = 75
 
 
+def tools_unsupported(exc: Exception) -> bool:
+    """True for an Ollama error whose message says the model can't take tools.
+
+    Duck-typed on the exception's shape rather than `isinstance(exc,
+    ollama.ResponseError)`, so this file does not need to import `ollama`
+    just for this one check, and callers in either package (this one, or
+    `server_modules`, which already depends on it) can use it the same way.
+    """
+    return (type(exc).__name__ == "ResponseError"
+            and getattr(exc, "status_code", None) == 400
+            and "tool" in str(getattr(exc, "error", "") or exc).lower())
+
+
 def _schema(name: str, description: str, properties: dict, required: list[str]) -> dict:
     return {"type": "function", "function": {"name": name, "description": description,
             "parameters": {"type": "object", "properties": properties, "required": required}}}
