@@ -27,4 +27,6 @@ explanation.
 
 ## The specification
 
-{{document}}
+Read `{{document}}` yourself with your `read_file` tool before drawing — it
+is the curated slice of the specification this diagram needs, not pasted in
+here.

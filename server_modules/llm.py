@@ -18,6 +18,7 @@ import json
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence, TypeVar
 
 import httpx
@@ -115,8 +116,24 @@ def _model(override: str = "") -> str:
     return chosen
 
 
-def complete(system: str, user: str, model: str = "", think: bool | None = None) -> str:
-    """One call, one answer, no history and no tools."""
+def _tools_for(project: str, workspace: Path | None, role: str) -> Any:
+    """A `ReadOnlyTools` for this call, or `None` when no project/workspace was given.
+
+    Opt-in only: a caller that doesn't pass `project`/`workspace` gets exactly
+    today's tool-less behavior.
+    """
+    if not project or workspace is None:
+        return None
+    from . import llm_tools
+    return llm_tools.ReadOnlyTools(workspace, project=project, role=role)
+
+
+def complete(system: str, user: str, model: str = "", think: bool | None = None,
+            project: str = "", workspace: Path | None = None, role: str = "") -> str:
+    """One call, one answer, no history — and, when `project`/`workspace` are
+    given, a read-only tool the model can call instead of being handed
+    pre-embedded file content."""
+    from . import llm_tools
     kwargs: dict[str, Any] = {
         "model": _model(model),
         "messages": [{"role": "system", "content": system},
@@ -127,7 +144,9 @@ def complete(system: str, user: str, model: str = "", think: bool | None = None)
     context = int(config.setting("context") or 0)
     if context and not config.setting("cloud"):
         kwargs["options"] = {"num_ctx": context}
-    message = client().chat(**kwargs).message
+    tools = _tools_for(project, workspace, role)
+    message = llm_tools.run_chat(client().chat, kwargs, tools)
+    llm_tools.tag_effort(tools, kwargs["think"], "completion")
     text = (getattr(message, "content", "") or "").strip()
     if not text:
         # A reasoning model can answer in `thinking` and leave `content` empty.
@@ -136,12 +155,17 @@ def complete(system: str, user: str, model: str = "", think: bool | None = None)
 
 
 def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None = None,
-                  label: str = "json", model: str = "", attempts: int = 3) -> Any:
+                  label: str = "json", model: str = "", attempts: int = 3,
+                  project: str = "", workspace: Path | None = None, role: str = "") -> Any:
     """One call answered as JSON, repaired in place when it is not.
 
     The repair carries the model's own broken answer and what was wrong with it,
-    which is what makes the second attempt different from the first.
+    which is what makes the second attempt different from the first. When
+    `project`/`workspace` are given, the model gets a read-only tool instead
+    of pre-embedded file content.
     """
+    from . import llm_tools
+    tools = _tools_for(project, workspace, role)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     last = ""
     for _ in range(max(1, attempts)):
@@ -149,14 +173,17 @@ def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None
         # Local Ollama supports JSON mode and returns syntactically valid JSON.
         # Ollama Cloud currently does not support constrained output, so keep
         # the existing prompt-and-validator repair path for hosted models.
+        # Stacking constrained-JSON mode with tool-calling in one call is
+        # unverified, so a tool-enabled call relies on the repair loop alone.
         selected = kwargs["model"].lower()
-        if not config.setting("cloud") and not selected.endswith(":cloud"):
+        if tools is None and not config.setting("cloud") and not selected.endswith(":cloud"):
             kwargs["format"] = "json"
         kwargs["think"] = bool(config.setting("agent_think"))
         context = int(config.setting("context") or 0)
         if context and not config.setting("cloud"):
             kwargs["options"] = {"num_ctx": context}
-        message = client().chat(**kwargs).message
+        message = llm_tools.run_chat(client().chat, kwargs, tools)
+        llm_tools.tag_effort(tools, kwargs["think"], label)
         last = ((getattr(message, "content", "") or "")
                 or (getattr(message, "thinking", "") or "")).strip()
 
@@ -185,8 +212,12 @@ def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None
 
 def complete_html(system: str, user: str, model: str = "", minimum: int = 0,
                   label: str = "html", attempts: int = 2,
-                  think: bool | None = None) -> str:
-    """One call answered as a complete HTML document."""
+                  think: bool | None = None,
+                  project: str = "", workspace: Path | None = None, role: str = "") -> str:
+    """One call answered as a complete HTML document. When `project`/`workspace`
+    are given, the model gets a read-only tool instead of pre-embedded file content."""
+    from . import llm_tools
+    tools = _tools_for(project, workspace, role)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     last = ""
     for _ in range(max(1, attempts)):
@@ -195,7 +226,8 @@ def complete_html(system: str, user: str, model: str = "", minimum: int = 0,
         context = int(config.setting("context") or 0)
         if context and not config.setting("cloud"):
             kwargs["options"] = {"num_ctx": context}
-        message = client().chat(**kwargs).message
+        message = llm_tools.run_chat(client().chat, kwargs, tools)
+        llm_tools.tag_effort(tools, kwargs["think"], label)
         last = ((getattr(message, "content", "") or "")
                 or (getattr(message, "thinking", "") or "")).strip()
         html = extract_html(last)

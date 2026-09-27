@@ -1,6 +1,6 @@
 # One sequential plan — build, focused unit tests, then final checks
 
-Read the selected scaffold, its README and folder structure, the SRS handoff, the approved prototype and design, and any `media/IMAGES.md` or `.agentforge/PLUGIN.md` that exists.
+Read the selected scaffold, its README and folder structure; `.agentforge/srs/handoff.json` (the routes, collections, roles, workflows and acceptance criteria this build must match); the approved prototype and design (`.agentforge/design/design-spec.json`, and `.agentforge/design/theme.md` when a theme was selected); the stack's build guides staged at `.agentforge/build/guides/`; and any `media/IMAGES.md` or `.agentforge/PLUGIN.md` that exists.
 
 ## Mandatory prototype-to-app parity workflow
 

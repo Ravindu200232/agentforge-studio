@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any, Callable
 
 import httpx
 
-from server_modules import journeys as journey_module
+from server_modules import config, journeys as journey_module
 from server_modules import llm, prompts, research
 
 Say = Callable[[str], None]
@@ -296,18 +297,18 @@ def kit_problems(blocks: dict[str, str], tokens: dict) -> list[str]:
 
 
 def draw_kit(spec: dict, customization: dict, routes_out: list[dict], flow: dict, sign_in: str, accounts: list[dict], ideas: str,
-             say: Say, attempts: int = 1) -> dict[str, str]:
+             say: Say, project: str, workspace: Path, premium_skill_path: str, attempts: int = 1) -> dict[str, str]:
     """The stylesheet, the script and the shell every page shares, drawn once."""
-    md = str(customization.get("design_md") or "")
+    design_md_workspace_path = str(customization.get("design_md_workspace_path") or "")
     sign_in_text = (f"The sign-in page is `{sign_in}`. Demo accounts (role, name, email, password, lands on): "
                     + "; ".join(f"{a['role']}, {a['display_name']}, {a['email']}, {a['password']}, {a['lands_on']}" for a in accounts)) if sign_in else "The product has no sign-in."
-    premium_skill = prompts.skill("prototype", "premium-frontend")
-    user = prompts.load("prototype/kit", design=json.dumps(spec, ensure_ascii=False, indent=2),
-                        design_md=(f"### Selected design file {customization.get('design_md_path')}\n\n{md}" if md else ""),
+    user = prompts.load("prototype/kit", design_spec_path=f"{config.RECORD_DIR}/design/design-spec.json",
+                        design_md=(f"Read `{design_md_workspace_path}` yourself — the selected theme's own guidance "
+                                   f"({customization.get('design_md_path')})." if design_md_workspace_path else ""),
                         customizer=(f"### Customer's design direction\n\n{customization['customizer_prompt']}" if customization.get("customizer_prompt") else ""),
                         routes=_routes_text(routes_out), sign_in=sign_in_text, journeys=_journey_text(flow),
                         ideas=ideas or "(none gathered — rely on the design contract and your own judgement)",
-                        premium_frontend_skill=premium_skill)
+                        premium_frontend_skill_path=premium_skill_path)
     if customization.get("uploaded_site_images"):
         user += ("\n\n## User-uploaded site images\n"
                  "Prefer these for their named uses, including the shared logo or favicon. "
@@ -320,7 +321,8 @@ def draw_kit(spec: dict, customization: dict, routes_out: list[dict], flow: dict
         # This call writes a concrete artifact. Hidden chain-of-thought adds a
         # long wait before the first visible file without improving the CSS/JS
         # contract enforced below.
-        previous = llm.complete(system=system, user=request, think=False)
+        previous = llm.complete(system=system, user=request, think=False,
+                                project=project, workspace=workspace)
         blocks = parse_kit(previous)
         problems = kit_problems(blocks, spec.get("tokens") or {})
         if not problems:
@@ -400,7 +402,8 @@ def ensure_assets(html: str) -> str:
 
 # --- everything, once, before any page ------------------------------------------------------------------------------------
 
-def prepare(doc: dict, spec: dict, customization: dict, routes_out: list[dict], structures: dict[str, str], say: Say) -> dict[str, Any]:
+def prepare(doc: dict, spec: dict, customization: dict, routes_out: list[dict], structures: dict[str, str], say: Say,
+           project: str, workspace: Path, premium_skill_path: str) -> dict[str, Any]:
     """Build the shared flow and kit directly from the approved artifacts.
 
     The wireframes already contain the chosen structure and image references.
@@ -413,6 +416,7 @@ def prepare(doc: dict, spec: dict, customization: dict, routes_out: list[dict], 
     sign_in = sign_in_route(doc)
     accounts = draw_accounts(doc, routes_out, flow, system)
     images: list[dict] = []
-    kit = draw_kit(spec, customization, routes_out, flow, sign_in, accounts, ideas, say)
+    kit = draw_kit(spec, customization, routes_out, flow, sign_in, accounts, ideas, say,
+                   project=project, workspace=workspace, premium_skill_path=premium_skill_path)
     return {"ideas": ideas, "flow": flow, "sign_in": sign_in, "accounts": accounts, "images": images, "kit": kit,
             "flow_js": flow_script(routes_out, flow, accounts, sign_in)}

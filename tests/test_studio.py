@@ -722,7 +722,8 @@ class OneContextTests(unittest.TestCase):
 
 
 class WireframeGenerationTests(unittest.TestCase):
-    def test_page_prompt_contains_the_full_handoff_and_approved_plan(self):
+    def test_page_prompt_points_at_the_handoff_files_and_carries_the_approved_plan(self):
+        """The handoff is read by the model itself, not pasted into the prompt."""
         from srs_agent import document as srs_document
 
         class Session:
@@ -753,8 +754,9 @@ class WireframeGenerationTests(unittest.TestCase):
                                     a_document()["public_pages"][0],
                                     {"app.md": handoff, "sitemap.md": "All routes"})
 
-        self.assertIn("FINAL_HANDOFF_DETAIL", captured[0])
+        self.assertNotIn("FINAL_HANDOFF_DETAIL", captured[0])
         self.assertIn(".agentforge/srs/handoff/app.md", captured[0])
+        self.assertIn(".agentforge/srs/handoff/sitemap.md", captured[0])
         self.assertIn("# Approved /plan", captured[0])
 
     def test_every_plan_route_gets_a_grid_card_even_when_one_drawing_fails(self):
@@ -914,9 +916,10 @@ class PrototypeFromWireframesTests(unittest.TestCase):
         prompts_seen = []
 
         class Session:
-            def __init__(self):
+            def __init__(self, workspace):
                 self.saved = {}
                 self.role = ""
+                self.workspace = workspace
 
             def read_record(self, *parts, fallback=None):
                 return copy.deepcopy(self.saved.get(parts, fallback))
@@ -928,22 +931,24 @@ class PrototypeFromWireframesTests(unittest.TestCase):
                 prompts_seen.append(prompt)
                 return {"theme": "terracotta", "tokens": {"light": {"accent": "#c56a3c"}}}
 
-        session = Session()
         selection = {"mode": "theme", "theme": {"slug": "terracotta"}}
-        with patch.object(design_stage, "session_for", return_value=session), \
-             patch.object(design_stage.store, "require", return_value={"idea": "Hotel"}), \
-             patch.object(design_stage.store, "advance"), \
-             patch.object(plan_stage, "approved_plan", return_value=a_plan()), \
-             patch.object(design_stage.bus, "agent_state"), \
-             patch.object(design_stage.bus, "agent_msg"), \
-             patch.object(design_stage.bus, "log"):
-            drafted = design_stage.draft("test", direction="Use calm motion", spec=selection)
-            design_stage.approve("test", drafted["version"])
-            material = design_stage.approved_customization("test")
+        with tempfile.TemporaryDirectory() as folder:
+            session = Session(Path(folder))
+            with patch.object(design_stage, "session_for", return_value=session), \
+                 patch.object(design_stage.store, "require", return_value={"idea": "Hotel"}), \
+                 patch.object(design_stage.store, "advance"), \
+                 patch.object(plan_stage, "approved_plan", return_value=a_plan()), \
+                 patch.object(design_stage.bus, "agent_state"), \
+                 patch.object(design_stage.bus, "agent_msg"), \
+                 patch.object(design_stage.bus, "log"):
+                drafted = design_stage.draft("test", direction="Use calm motion", spec=selection)
+                design_stage.approve("test", drafted["version"])
+                material = design_stage.approved_customization("test")
 
         self.assertIn("prompts/design/themes/terracotta/DESIGN.md", prompts_seen[0])
         self.assertIn("Use calm motion", prompts_seen[0])
         self.assertIn("Terracotta", material["design_md"])
+        self.assertTrue(material["design_md_workspace_path"])
         self.assertEqual(material["customizer_prompt"], "Use calm motion")
         self.assertEqual(material["customizer_spec"], selection)
 

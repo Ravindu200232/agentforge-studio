@@ -3,13 +3,15 @@
 Produce the complete software requirements specification for this product as one
 JSON object. Return only the JSON — no prose, no markdown fence.
 
-## The approved plan — this is the boundary
+## Before you write anything
 
-{{plan}}
+Read these two files yourself with your `read_file` tool — they are not
+pasted in here:
 
-## The interview, in full
-
-{{transcript}}
+   - `.agentforge/plan.json` — the approved plan; this is the SRS's boundary,
+     and it is the record you write the document from.
+   - `.agentforge/interview.json` — the interview, in full. If this file does
+     not exist, there was no interview; proceed from the approved plan alone.
 
 ## Project setup
 

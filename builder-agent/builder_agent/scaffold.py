@@ -82,11 +82,12 @@ def install(workspace: Path, stack: str) -> dict:
     return result
 
 
+def _guide_bodies(names: tuple[str, ...]) -> dict[str, str]:
+    return {name: (ROOT / "_guides" / name).read_text(encoding="utf-8") for name in names}
+
+
 def _guides(names: tuple[str, ...]) -> str:
-    return "\n\n".join(
-        f"### {_name}\n{(ROOT / '_guides' / _name).read_text(encoding='utf-8')}"
-        for _name in names
-    )
+    return "\n\n".join(f"### {name}\n{body}" for name, body in _guide_bodies(names).items())
 
 
 def guide_context(stack: str) -> str:
@@ -96,11 +97,25 @@ def guide_context(stack: str) -> str:
     return _guides((*COMMON_GUIDES, STACK_GUIDES[stack], *TEST_GUIDES))
 
 
+def guide_files(stack: str) -> dict[str, str]:
+    """The same guidance `guide_context` describes, as name->body for staging into a workspace."""
+    if stack not in STACK_GUIDES:
+        raise ValueError(f"unsupported build stack: {stack}")
+    return _guide_bodies((*COMMON_GUIDES, STACK_GUIDES[stack], *TEST_GUIDES))
+
+
 def build_context(stack: str) -> str:
     """Guidance needed while implementing the app, without test-suite material."""
     if stack not in STACK_GUIDES:
         raise ValueError(f"unsupported build stack: {stack}")
     return _guides(("pitfalls.md", STACK_GUIDES[stack]))
+
+
+def build_guide_files(stack: str) -> dict[str, str]:
+    """The same guidance `build_context` describes, as name->body for staging into a workspace."""
+    if stack not in STACK_GUIDES:
+        raise ValueError(f"unsupported build stack: {stack}")
+    return _guide_bodies(("pitfalls.md", STACK_GUIDES[stack]))
 
 
 def unit_context() -> str:

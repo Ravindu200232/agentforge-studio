@@ -550,8 +550,10 @@ def project_versions(ctx: dict) -> Any:
 def change_decide(ctx: dict) -> Any:
     """Approve, revise or cancel the plan shown in the chat."""
     project = _project(ctx)
+    excluded = ctx.get("excluded_stages")
     return changes.decide(project, unquote(ctx["_match"].group("change")), str(ctx.get("decision") or ""),
-                          str(ctx.get("feedback") or ""), str(ctx.get("model") or ""))
+                          str(ctx.get("feedback") or ""), str(ctx.get("model") or ""),
+                          excluded_stages=excluded if isinstance(excluded, list) else None)
 
 
 @route("POST", r"/build/cancel")

@@ -148,6 +148,10 @@ function classify(row) {
     const path = readMatched[1].replace(/^[`'"]|[`'"]$/g, '').replace(/\\/g, '/')
     return { kind: 'read', title: `Read ${path}`, detail: '', file: path, action: 'read' }
   }
+  const effortMatched = /^\[effort:(low|medium|high|ultra)\]\s*(.*)$/i.exec(line)
+  if (effortMatched) {
+    return { kind: 'effort', title: effortMatched[2] || 'Model call', detail: '', level: effortMatched[1].toLowerCase() }
+  }
   for (const [pattern, kind, title] of KINDS) {
     const match = pattern.exec(line)
     if (match) return { kind, title: title(match), detail: '' }
