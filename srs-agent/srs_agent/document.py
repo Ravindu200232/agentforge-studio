@@ -43,6 +43,26 @@ DIAGRAM_KINDS = ("system_context", "use_case", "erd", "sequence", "activity",
                  "class_object", "state_machine", "dfd", "bpmn", "component",
                  "deployment")
 
+# A notation reference is about the standard, not the project, so one search per
+# kind is shared by every project this process draws for rather than repeated.
+_reference_cache: dict[str, str] = {}
+_reference_lock = threading.Lock()
+
+
+def _diagram_reference(kind: str) -> str:
+    """A short, real-world grounding note on standard notation for this diagram
+    kind — never a source of actors, entities or flows, only of correct,
+    recognizable notation for a {kind} diagram."""
+    with _reference_lock:
+        if kind in _reference_cache:
+            return _reference_cache[kind]
+    found = llm.web_search(f"UML {kind.replace('_', ' ')} diagram example correct notation", max_results=3)
+    note = "\n".join(f"- {row['title']}: {row['content'][:300]}"
+                     for row in found if row.get("content"))[:1200]
+    with _reference_lock:
+        _reference_cache[kind] = note
+    return note
+
 NOT_APPLICABLE = "NOT_APPLICABLE"
 
 WIREFRAME_APPROVAL_PROMPT = (
@@ -157,11 +177,18 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
     except prompts.MissingPrompt:
         return None
 
-    digest = json.dumps({k: doc.get(k) for k in
-                         ("app_summary", "roles", "public_pages", "protected_pages",
-                          "database_design", "business_workflows", "api_design",
-                          "authentication_requirement", "main_modules")
-                         if doc.get(k)}, ensure_ascii=False)[:18000]
+    # Trimmed a whole field at a time from the low-priority end, never by
+    # slicing the serialized string — a character cut lands mid-value on a
+    # document this size and hands the model broken JSON it can only report
+    # as truncated, not draw from. `read_file` itself caps at MAX_OUTPUT
+    # (24000 chars), so this stays safely under that.
+    fields = ["app_summary", "roles", "authentication_requirement", "main_modules",
+             "database_design", "business_workflows", "api_design",
+             "public_pages", "protected_pages"]
+    digest = json.dumps({k: doc.get(k) for k in fields if doc.get(k)}, ensure_ascii=False)
+    while len(digest) > 20000 and len(fields) > 1:
+        fields.pop()
+        digest = json.dumps({k: doc.get(k) for k in fields if doc.get(k)}, ensure_ascii=False)
     # Staged rather than pasted in: the model reads its own curated slice of
     # the specification with its read tool, and the read shows in the chat.
     # fresh=False: every kind's digest lands in this same shared folder, in
@@ -171,50 +198,51 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
         session.workspace, f"{config.RECORD_DIR}/{SRS_DIR}/diagram-context",
         {f"{kind}.json": digest}, fresh=False)
 
+    reference = _diagram_reference(kind)
+
+    def _ask(extra: str = "") -> str:
+        return mermaid.clean(llm.complete(
+            system=prompts.load("srs/system"),
+            user=prompts.load("srs/diagram", kind=kind, standard=kind, guidance=guidance,
+                              document=context_path, reference=reference or "(no external reference found — follow the standard above)")
+            + extra,
+            project=project, workspace=session.workspace))
+
     bus.agent_msg(project, f"Generating the {kind.replace('_', ' ')} diagram from the specification.",
                   title="SRS diagram", kind="narration")
-    source = llm.complete(
-        system=prompts.load("srs/system"),
-        user=prompts.load("srs/diagram", kind=kind, standard=kind,
-                          guidance=guidance, document=context_path),
-        project=project, workspace=session.workspace)
-    source = mermaid.clean(source)
+    source = _ask()
 
     if source.upper().startswith(NOT_APPLICABLE):
         return {"id": f"DIA-{kind}", "kind": kind, "title": kind.replace("_", " ").title(),
                 "format": "mermaid", "source": "", "applicable": False,
                 "applicability_note": source.split(":", 1)[-1].strip()[:240]}
 
-    # The renderer is the only parser that counts. A hand-written check passes
-    # `Member --> (Login)`, which Mermaid rejects, so the repair loop is driven
-    # by Mermaid's own complaint rather than by a guess at the syntax.
+    # Two separate checks drive this loop: `mermaid.problems()` (empty source, wrong
+    # opener, unbalanced brackets — a static check that costs nothing and needs no
+    # renderer) and, only when a renderer is installed, an actual render. A source
+    # can fail the first without ever reaching the second, and it must still be
+    # retried — an empty response is exactly the case a renderer-gated retry never
+    # sees, which is how a diagram went missing with no repair attempt at all.
     mmd = session.record_path(SRS_DIR, "diagrams", f"{kind}.mmd")
     svg = session.record_path(SRS_DIR, "diagrams", f"{kind}.svg")
     rendered, why = False, "no renderer"
 
     for attempt in range(3):
         wrong = mermaid.problems(kind, source)
-        if not wrong:
-            if mermaid.available():
-                bus.agent_msg(project, f"Render {kind.replace('_', ' ')} diagram with Mermaid CLI.",
-                              title="Rendering diagram", kind="command")
+        if not wrong and mermaid.available():
+            bus.agent_msg(project, f"Render {kind.replace('_', ' ')} diagram with Mermaid CLI.",
+                          title="Rendering diagram", kind="command")
             rendered, why = mermaid.render(source, svg)
-            if mermaid.available():
-                bus.agent_msg(project, "SVG rendered successfully." if rendered else why,
-                              title="Mermaid output", kind="command_output")
+            bus.agent_msg(project, "SVG rendered successfully." if rendered else why,
+                          title="Mermaid output", kind="command_output")
             if rendered:
                 break
             wrong = [why]
-        if attempt == 2 or not mermaid.available():
+        if not wrong or attempt == 2:
             break
-        source = mermaid.clean(llm.complete(
-            system=prompts.load("srs/system"),
-            user=prompts.load("srs/diagram", kind=kind, standard=kind,
-                              guidance=guidance, document=context_path)
-            + f"\n\n## Your last attempt\n\n```\n{source[:4000]}\n```\n\n"
-              f"It did not render: {'; '.join(wrong)}\n\n"
-              f"Return corrected Mermaid source only.",
-            project=project, workspace=session.workspace))
+        source = _ask(f"\n\n## Your last attempt\n\n```\n{source[:4000]}\n```\n\n"
+                      f"It was rejected: {'; '.join(wrong)}\n\n"
+                      f"Return corrected Mermaid source only.")
 
     mmd.write_text(source, encoding="utf-8")
     bus.file_written(project, mmd.relative_to(session.workspace).as_posix(), source,

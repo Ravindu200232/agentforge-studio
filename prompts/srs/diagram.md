@@ -10,6 +10,16 @@ explanation.
 
 {{guidance}}
 
+## Notation reference (style only — never a source of content)
+
+{{reference}}
+
+Use this only to confirm you are using real, recognizable notation for this
+diagram kind — correct arrow types, correct shapes, correct keywords. Every
+actor, entity, message, state and flow you draw must still trace only to the
+specification below. Never copy an actor, entity or step from this reference;
+it may describe a different product entirely.
+
 ## Rules
 
 - Draw only what the specification supports. Every actor, entity, message, state
