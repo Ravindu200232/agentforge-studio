@@ -1,0 +1,170 @@
+{
+  "purpose": "Picture uploads",
+  "question": "Where should uploaded pictures be kept and served from?",
+  "choices": [
+    {
+      "id": "none",
+      "label": "No picture or file uploads — text-only app",
+      "hint": "The app does not handle or store file uploads."
+    },
+    {
+      "id": "local",
+      "label": "This machine — no account needed",
+      "hint": "Files are written under the project and served from it. Fine while building; they do not survive a redeploy."
+    },
+    {
+      "id": "cloudinary",
+      "label": "Cloudinary — stores and resizes",
+      "hint": "One service: the app uploads to it and asks it for whatever size a page needs.",
+      "fields": [
+        {
+          "key": "CLOUDINARY_CLOUD_NAME",
+          "label": "Cloud name",
+          "example": "dz9k2mq4x",
+          "hint": "Dashboard → Product Environment Credentials.",
+          "secret": false
+        },
+        {
+          "key": "CLOUDINARY_API_KEY",
+          "label": "API key",
+          "example": "918273645512345",
+          "secret": false
+        },
+        {
+          "key": "CLOUDINARY_API_SECRET",
+          "label": "API secret",
+          "example": "<paste-your-api-secret>",
+          "hint": "The same panel, behind 'reveal'.",
+          "secret": true
+        }
+      ]
+    },
+    {
+      "id": "supabase",
+      "label": "Supabase Storage",
+      "hint": "A bucket with public URLs, and the same project can hold your database. Good if you already use Supabase.",
+      "fields": [
+        {
+          "key": "SUPABASE_URL",
+          "label": "Project URL",
+          "example": "https://abcdefghijklmnop.supabase.co",
+          "hint": "Project Settings → API → Project URL.",
+          "secret": false
+        },
+        {
+          "key": "SUPABASE_SERVICE_ROLE_KEY",
+          "label": "Service role key",
+          "example": "eyJ<paste-your-service-role-key>",
+          "hint": "The same page, under 'service_role'. Server only — it bypasses row-level security, so it must never reach the browser.",
+          "secret": true
+        },
+        {
+          "key": "SUPABASE_BUCKET",
+          "label": "Bucket name",
+          "example": "uploads",
+          "hint": "Storage → Buckets. Create it first; the app will not.",
+          "secret": false
+        }
+      ]
+    },
+    {
+      "id": "imageboss",
+      "label": "ImageBoss — resizes from your own bucket",
+      "hint": "ImageBoss holds no files. The app uploads to your S3-compatible bucket and ImageBoss reads from it and resizes on the way out, so both halves are needed.",
+      "fields": [
+        {
+          "key": "IMAGEBOSS_SOURCE",
+          "label": "Source name",
+          "example": "my-company",
+          "hint": "The source you made at imageboss.me — it is the first part of the URL: img.imageboss.me/<source>/…",
+          "secret": false
+        },
+        {
+          "key": "IMAGEBOSS_BASE_PATH",
+          "label": "Base path",
+          "example": "/product",
+          "hint": "The path inside the bucket the source points at. Leave as / for the whole bucket.",
+          "secret": false,
+          "required": false
+        },
+        {
+          "key": "STORAGE_BUCKET",
+          "label": "Bucket name",
+          "example": "my-company-uploads",
+          "hint": "The bucket the app uploads into — the same one you gave ImageBoss.",
+          "secret": false
+        },
+        {
+          "key": "STORAGE_ACCESS_KEY",
+          "label": "Bucket access key",
+          "example": "AKIA<paste-your-access-key-id>",
+          "hint": "From your S3, R2, Spaces or Wasabi console — not from ImageBoss.",
+          "secret": true
+        },
+        {
+          "key": "STORAGE_SECRET_KEY",
+          "label": "Bucket secret key",
+          "example": "<paste-your-secret-access-key>",
+          "secret": true
+        },
+        {
+          "key": "STORAGE_ENDPOINT",
+          "label": "Bucket endpoint",
+          "example": "https://s3.ap-south-1.amazonaws.com",
+          "hint": "The S3-compatible endpoint for your provider and region.",
+          "secret": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "s3",
+      "label": "Amazon S3 — or any S3-compatible bucket",
+      "hint": "The one every other tool understands. Also covers Cloudflare R2, DigitalOcean Spaces, Wasabi and Backblaze B2 — give their endpoint.",
+      "fields": [
+        {
+          "key": "STORAGE_BUCKET",
+          "label": "Bucket name",
+          "example": "riverside-uploads",
+          "secret": false
+        },
+        {
+          "key": "STORAGE_REGION",
+          "label": "Region",
+          "example": "ap-south-1",
+          "hint": "For R2 and some others this is 'auto'.",
+          "secret": false
+        },
+        {
+          "key": "STORAGE_ACCESS_KEY",
+          "label": "Access key ID",
+          "example": "AKIA<paste-your-access-key-id>",
+          "hint": "From IAM, or your provider's own access-key panel. Give it access to this one bucket and nothing else.",
+          "secret": true
+        },
+        {
+          "key": "STORAGE_SECRET_KEY",
+          "label": "Secret access key",
+          "example": "<paste-your-secret-access-key>",
+          "secret": true
+        },
+        {
+          "key": "STORAGE_ENDPOINT",
+          "label": "Endpoint",
+          "example": "https://s3.ap-south-1.amazonaws.com",
+          "hint": "Leave blank for Amazon S3 itself. Required for R2, Spaces, Wasabi and B2.",
+          "secret": false,
+          "required": false
+        },
+        {
+          "key": "STORAGE_PUBLIC_URL",
+          "label": "Public URL",
+          "example": "https://cdn.riverside-dental.lk",
+          "hint": "The address files are served from, if it is not the bucket's own. Optional.",
+          "secret": false,
+          "required": false
+        }
+      ]
+    }
+  ]
+}

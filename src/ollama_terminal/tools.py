@@ -1,0 +1,276 @@
+"""Workspace tools exposed through Ollama's native tool calling."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import queue
+import subprocess
+import threading
+import time
+from typing import Any, Callable
+
+import httpx
+
+from .guard import SourceGuard
+
+
+MAX_OUTPUT = 24_000
+MAX_READ = 32_000
+MAX_COMMAND_SECONDS = 600
+SERVER_COMMAND_SECONDS = 75
+
+
+def _schema(name: str, description: str, properties: dict, required: list[str]) -> dict:
+    return {"type": "function", "function": {"name": name, "description": description,
+            "parameters": {"type": "object", "properties": properties, "required": required}}}
+
+
+TOOL_SCHEMAS = [
+    _schema("list_files", "List files in a workspace directory (up to 200 entries).",
+            {"path": {"type": "string", "description": "Directory relative to workspace; use . for root"}}, ["path"]),
+    _schema("read_file", "Read a UTF-8 text file in the workspace, optionally by line range.",
+            {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}, ["path"]),
+    _schema("search_text", "Search workspace text files for a literal string.",
+            {"query": {"type": "string"}, "path": {"type": "string"}}, ["query"]),
+    _schema("write_file", "Create or replace a UTF-8 file in the workspace after plan approval.",
+            {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
+    _schema("replace_text", "Replace one exact occurrence of text in a workspace file after plan approval.",
+            {"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}}, ["path", "old", "new"]),
+    _schema("run_command", "Run any terminal command from the project workspace after plan approval.",
+            {"command": {"type": "string"}, "timeout_seconds": {"type": "integer"}}, ["command"]),
+    _schema("web_search", "Search the live web through Ollama. Local Ollama needs no API key.",
+            {"query": {"type": "string"}, "max_results": {"type": "integer"}}, ["query"]),
+    _schema("web_fetch", "Fetch a web page through Ollama. Local Ollama needs no API key.",
+            {"url": {"type": "string"}}, ["url"]),
+]
+
+
+class WorkspaceTools:
+    def __init__(self, root: Path, client: Any, approve: Callable[[str], bool], shell: str | None = None,
+                 web_host: str = "http://localhost:11434", use_local_web: bool = True,
+                 protected_app_root: Path | None = None):
+        self.root = root.resolve()
+        self.client = client
+        self.approve = approve
+        self.shell = shell or ("powershell" if os.name == "nt" else "/bin/sh")
+        self.web_host = web_host.rstrip("/")
+        self.use_local_web = use_local_web
+        self.source_guard = SourceGuard(protected_app_root) if protected_app_root else None
+
+    def _local_web_request(self, endpoint: str, payload: dict[str, Any]) -> str:
+        response = httpx.post(f"{self.web_host}/api/experimental/{endpoint}",
+                              json=payload, timeout=30)
+        response.raise_for_status()
+        return json.dumps(response.json(), ensure_ascii=False)[:MAX_OUTPUT]
+
+    def _path(self, path: str) -> Path:
+        candidate = (self.root / path).resolve()
+        if not candidate.is_relative_to(self.root):
+            raise ValueError("Path escapes the workspace")
+        return candidate
+
+    def execute(self, name: str, args: dict[str, Any]) -> str:
+        try:
+            method = getattr(self, f"tool_{name}", None)
+            if method is None or name not in {s["function"]["name"] for s in TOOL_SCHEMAS}:
+                raise ValueError(f"Unknown tool: {name}")
+            return str(method(**args))[:MAX_OUTPUT]
+        except Exception as exc:
+            return f"Tool error: {exc}"
+
+    # The base tool is useful outside the studio too. These hooks let the
+    # studio stream command activity without coupling the terminal package to
+    # its event bus.
+    def command_started(self, _command: str, _timeout: int) -> None:
+        pass
+
+    def command_output(self, _text: str) -> None:
+        pass
+
+    def command_heartbeat(self, _command: str, _elapsed: int) -> None:
+        pass
+
+    def command_finished(self, _command: str, _exit_code: int, _timed_out: bool) -> None:
+        pass
+
+    def tool_list_files(self, path: str = ".") -> str:
+        directory = self._path(path)
+        if not directory.is_dir():
+            raise ValueError("Not a directory")
+        entries = sorted(directory.iterdir(), key=lambda p: p.name.lower())[:200]
+        return "\n".join(("dir  " if p.is_dir() else "file ") + str(p.relative_to(self.root)) for p in entries)
+
+    def tool_read_file(self, path: str, start_line: int = 1, end_line: int = 0) -> str:
+        if start_line < 1 or end_line < 0 or (end_line and end_line < start_line):
+            raise ValueError("Invalid line range")
+        file = self._path(path)
+        if not file.is_file():
+            raise ValueError("Not a file")
+        if file.stat().st_size > 2_000_000:
+            raise ValueError("File is too large (2 MB limit)")
+        raw = file.read_bytes()
+        encoding = ("utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else
+                    "utf-8-sig" if raw.startswith(b"\xef\xbb\xbf") else "utf-8")
+        lines = raw.decode(encoding).splitlines()
+        selected = lines[start_line - 1:end_line or None]
+        return "\n".join(f"{i}: {line}" for i, line in enumerate(selected, start_line))[:MAX_READ]
+
+    def tool_search_text(self, query: str, path: str = ".") -> str:
+        if not query:
+            raise ValueError("Empty query")
+        base = self._path(path)
+        files = [base] if base.is_file() else base.rglob("*")
+        hits = []
+        for file in files:
+            if not file.is_file() or any(part in {".git", ".venv", ".deps", "__pycache__", "node_modules"} for part in file.parts):
+                continue
+            if not file.resolve().is_relative_to(self.root):
+                continue
+            if file.stat().st_size > 1_000_000:
+                continue
+            try:
+                for number, line in enumerate(file.read_text(encoding="utf-8").splitlines(), 1):
+                    if query.lower() in line.lower():
+                        hits.append(f"{file.relative_to(self.root)}:{number}: {line[:300]}")
+                        if len(hits) >= 100:
+                            return "\n".join(hits)
+            except (UnicodeError, OSError):
+                continue
+        return "\n".join(hits) or "No matches"
+
+    def tool_write_file(self, path: str, content: str) -> str:
+        file = self._path(path)
+        if not self.approve(f"Write {file} ({len(content)} characters)?"):
+            return "Denied by user"
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(content, encoding="utf-8")
+        return f"Wrote {file.relative_to(self.root)}"
+
+    def tool_replace_text(self, path: str, old: str, new: str) -> str:
+        if not old:
+            raise ValueError("old text must not be empty")
+        file = self._path(path)
+        content = file.read_text(encoding="utf-8")
+        if content.count(old) != 1:
+            raise ValueError(f"Expected exactly one match; found {content.count(old)}")
+        if not self.approve(f"Edit {file} (replace {len(old)} characters)?"):
+            return "Denied by user"
+        file.write_text(content.replace(old, new, 1), encoding="utf-8")
+        return f"Edited {file.relative_to(self.root)}"
+
+    def tool_run_command(self, command: str, timeout_seconds: int = 600) -> str:
+        if not command.strip():
+            raise ValueError("Empty command")
+        # A generated app may own one or more Node processes. Killing every
+        # `node.exe` also kills the Studio, unrelated previews and the build
+        # itself. Commands must target a known PID when cleanup is needed.
+        if ("taskkill" in command.lower() and "/im" in command.lower()
+                and "node.exe" in command.lower()) or "stop-process -name node" in command.lower():
+            raise ValueError("Do not terminate every node.exe process. Target a known child PID instead.")
+        server_command = any(token in command.lower() for token in
+                             ("next dev", "next start", "npm run dev", "npm run start", "start /b"))
+        # The Studio has one managed preview process and takes care of its
+        # port, environment and lifecycle.  Letting an agent run a server in a
+        # foreground terminal always looks successful ("Ready in 439ms") but
+        # never exits, consuming the build turn until it times out.
+        if server_command and getattr(self, "managed_preview", False):
+            raise ValueError("Do not run a development or production server from the agent. "
+                             "The Studio starts the managed preview automatically after the build.")
+        if not self.approve(f"Run in {self.root}: {command} ?"):
+            return "Denied by user"
+        timeout = min(max(int(timeout_seconds), 1), MAX_COMMAND_SECONDS)
+        if server_command:
+            timeout = min(timeout, SERVER_COMMAND_SECONDS)
+        shell_args = [self.shell, "-NoProfile", "-Command", command] if os.name == "nt" else [self.shell, "-c", command]
+        before = self.source_guard.snapshot() if self.source_guard else None
+        output = ""
+        output_parts: list[str] = []
+        process: subprocess.Popen | None = None
+        timed_out = False
+        exit_code = 1
+
+        def append(text: str) -> None:
+            if not text:
+                return
+            used = sum(len(part) for part in output_parts)
+            if used < MAX_OUTPUT:
+                output_parts.append(text[:MAX_OUTPUT - used])
+
+        def stop_tree(child: subprocess.Popen) -> None:
+            if child.poll() is not None:
+                return
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"],
+                               capture_output=True, check=False,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            else:
+                child.terminate()
+                try:
+                    child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+
+        try:
+            process = subprocess.Popen(shell_args, cwd=self.root, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                       text=True, errors="replace",
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                                       env=getattr(self, "command_env", None))
+            self.command_started(command, timeout)
+            lines: queue.Queue[str | None] = queue.Queue()
+
+            def read_output() -> None:
+                assert process is not None and process.stdout is not None
+                for line in iter(process.stdout.readline, ""):
+                    lines.put(line)
+                lines.put(None)
+
+            threading.Thread(target=read_output, daemon=True).start()
+            started = time.monotonic()
+            heartbeat = 0
+            reader_done = False
+            while process.poll() is None or not reader_done:
+                try:
+                    line = lines.get(timeout=0.25)
+                    if line is None:
+                        reader_done = True
+                    else:
+                        append(line)
+                        self.command_output(line)
+                except queue.Empty:
+                    pass
+                elapsed = int(time.monotonic() - started)
+                if elapsed >= timeout and process.poll() is None:
+                    timed_out = True
+                    stop_tree(process)
+                    append(f"Command timed out after {timeout} seconds; its child process tree was stopped.\n")
+                if elapsed >= heartbeat + 8 and process.poll() is None:
+                    heartbeat = elapsed
+                    self.command_heartbeat(command, elapsed)
+            exit_code = process.wait()
+            self.command_finished(command, exit_code, timed_out)
+            output = f"exit_code={exit_code}\n" + "".join(output_parts)
+        finally:
+            if self.source_guard and before is not None:
+                changed = self.source_guard.restore(before)
+                if changed:
+                    output = (output + "\nProtected CLI source changes were reverted: " +
+                              ", ".join(changed))[:MAX_OUTPUT]
+        return output[:MAX_OUTPUT]
+
+    def tool_web_search(self, query: str, max_results: int = 3) -> str:
+        max_results = min(max(int(max_results), 1), 10)
+        if self.use_local_web:
+            return self._local_web_request("web_search", {"query": query, "max_results": max_results})
+        response = self.client.web_search(query=query, max_results=max_results)
+        return json.dumps(response.model_dump(), ensure_ascii=False)[:MAX_OUTPUT]
+
+    def tool_web_fetch(self, url: str) -> str:
+        if not url.startswith(("https://", "http://")):
+            raise ValueError("Only HTTP(S) URLs are supported")
+        if self.use_local_web:
+            return self._local_web_request("web_fetch", {"url": url})
+        response = self.client.web_fetch(url=url)
+        return json.dumps(response.model_dump(), ensure_ascii=False)[:MAX_OUTPUT]

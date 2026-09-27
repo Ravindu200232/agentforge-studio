@@ -1,0 +1,38 @@
+# Shared prototype kit
+
+Create one responsive design system and shell used by every prototype page.
+
+Use the approved design tokens, selected design direction and Premium Frontend Design Engineer skill below. Include practical high-fidelity styles for layout, navigation, cards, forms, tables, buttons, status, dialogs, menus, alerts, loading and responsive behavior. Keep it polished, intentional and production-like; never create wireframe placeholders or a generic corporate UI.
+
+The JavaScript must:
+- resolve every `data-go` route from `window.PROTOTYPE.routes`;
+- normalise app links to route-map sibling filenames (`rooms.html`), including when a page contains an accidental `fileC:/`, `file:///`, Windows absolute path or root-relative route;
+- show role-specific elements and user details;
+- support sign-in/sign-out when accounts exist;
+- wire menus, dialogs, tabs, filters, form validation, toasts and theme switching.
+
+The shell must use the route map, keep shared navigation consistent, include the literal `<!-- page content -->` marker, and contain working `data-go="/route"` links. The shell and kit must use sibling relative filenames resolved from the route map, never filesystem or root-relative app URLs.
+
+## Design
+{{design}}
+
+## Premium frontend skill
+{{premium_frontend_skill}}
+
+{{design_md}}
+
+{{customizer}}
+
+## Routes
+{{routes}}
+
+## Sign-in
+{{sign_in}}
+
+## Main journeys
+{{journeys}}
+
+## Reference ideas
+{{ideas}}
+
+Return only the three marked blocks requested by the system prompt.

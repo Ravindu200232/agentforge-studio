@@ -1,0 +1,76 @@
+{
+  "_comment": "The first interview question. Ported from RP-SE-009's app type catalogue. Choosing one of these up front anchors everything after it: the model stops guessing what kind of product this is, and the questions it asks land inside the right frame. Edit this file to change the choices; nothing in code names them.",
+  "default": "saas",
+  "types": {
+    "pos": {
+      "label": "POS / Retail",
+      "icon": "🧾",
+      "desc": "Point of sale, stock, invoices — no landing page",
+      "archetype": "fullstack-crud",
+      "asks_about": ["selling", "stock", "cashier", "receipt", "shift", "refund"]
+    },
+    "saas": {
+      "label": "SaaS Platform",
+      "icon": "☁️",
+      "desc": "Subscription product with accounts and a dashboard",
+      "archetype": "fullstack-crud",
+      "asks_about": ["plans", "workspaces", "onboarding", "billing", "limits"]
+    },
+    "ecommerce": {
+      "label": "Online Store",
+      "icon": "🛒",
+      "desc": "Storefront, cart, checkout, orders",
+      "archetype": "fullstack-crud",
+      "asks_about": ["catalogue", "cart", "checkout", "delivery", "returns"]
+    },
+    "booking": {
+      "label": "Booking / Scheduling",
+      "icon": "📅",
+      "desc": "Rooms, classes, appointments — availability and reservations",
+      "archetype": "fullstack-crud",
+      "asks_about": ["availability", "reservation", "cancellation", "capacity", "reminders"]
+    },
+    "dashboard": {
+      "label": "Dashboard / Admin",
+      "icon": "📊",
+      "desc": "Internal tool built around data tables",
+      "archetype": "fullstack-crud",
+      "asks_about": ["records", "filters", "permissions", "exports", "audit"]
+    },
+    "blog": {
+      "label": "Blog / Content",
+      "icon": "📝",
+      "desc": "Posts, categories, an author admin",
+      "archetype": "fullstack-crud",
+      "asks_about": ["authoring", "publishing", "categories", "comments"]
+    },
+    "landing": {
+      "label": "Landing Page",
+      "icon": "🚀",
+      "desc": "One-page marketing site",
+      "archetype": "landing-single-page",
+      "asks_about": ["sections", "offer", "call to action", "enquiries"]
+    },
+    "portfolio": {
+      "label": "Portfolio",
+      "icon": "🎨",
+      "desc": "Personal or studio showcase",
+      "archetype": "landing-single-page",
+      "asks_about": ["work", "case studies", "contact"]
+    },
+    "utility": {
+      "label": "Utility / Tool",
+      "icon": "🔧",
+      "desc": "Single-purpose tool — calculator, converter, planner",
+      "archetype": "single-tool",
+      "asks_about": ["inputs", "result", "saving history"]
+    },
+    "other": {
+      "label": "Other",
+      "icon": "✨",
+      "desc": "Something else — tell us what it does",
+      "archetype": "fullstack-crud",
+      "asks_about": []
+    }
+  }
+}

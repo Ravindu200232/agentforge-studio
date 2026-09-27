@@ -1,0 +1,3 @@
+# Lighthouse performance evidence
+
+The scaffold's `lighthouserc.cjs` reads `e2e/routes.json`. Run `npm run qa:perf` (it starts the built app on a free port and keeps the report even where `lhci` fails on Windows) and retain `.lighthouseci/reports` and `.lighthouseci/summary.json`; `npm run test:perf` is the CI form against an already running app. Include every concrete public route; authenticated routes may need a separately configured browser state and must otherwise be marked untested. Report per-route score, key metrics and exact failing assertions; do not substitute a single home-page score for the whole site. Repair major performance problems before the final report.

@@ -1,0 +1,366 @@
+{
+  "version": 1,
+  "_comment": "A plugin is a provider the user has an account with, not a category. Its settings live here once and reach every app that ticks it. The fields are never repeated here: they belong to the skill's setup.json, which is also what the build's own question uses, so the two can never drift apart. Several choices with the same id are modes of one plugin - Stripe test and Stripe live ask for the same three keys, so they are one card with a switch and not two cards that overwrite each other.",
+  "groups": [
+    "Payments",
+    "Email and SMS",
+    "Pictures and files",
+    "Sign-in",
+    "Maps",
+    "Analytics"
+  ],
+  "plugins": [
+    {
+      "id": "stripe",
+      "name": "Stripe",
+      "group": "Payments",
+      "icon": "stripe.svg",
+      "site": "https://dashboard.stripe.com/apikeys",
+      "what": "Card payments, subscriptions and refunds, most places in the world.",
+      "skill": "payments",
+      "modes": [
+        {
+          "choice": "stripe-test",
+          "label": "Test mode",
+          "hint": "No real money moves. Start here."
+        },
+        {
+          "choice": "stripe-live",
+          "label": "Real payments",
+          "hint": "Live keys. Real cards are charged."
+        }
+      ]
+    },
+    {
+      "id": "payhere",
+      "name": "PayHere",
+      "group": "Payments",
+      "icon": "payhere.svg",
+      "site": "https://www.payhere.lk/account/api",
+      "what": "Cards, bank transfers and wallets in Sri Lanka, in rupees.",
+      "skill": "payments",
+      "modes": [
+        {
+          "choice": "payhere-sandbox",
+          "label": "Sandbox",
+          "hint": "No real money moves."
+        },
+        {
+          "choice": "payhere-live",
+          "label": "Real payments",
+          "hint": "Live merchant account."
+        }
+      ]
+    },
+    {
+      "id": "resend",
+      "name": "Resend",
+      "group": "Email and SMS",
+      "icon": "resend.svg",
+      "site": "https://resend.com/api-keys",
+      "what": "Transactional email — confirmations, receipts, password resets.",
+      "skill": "notifications",
+      "modes": [
+        {
+          "choice": "resend-sandbox",
+          "label": "Their sender",
+          "hint": "Sends from onboarding@resend.dev. Nothing to verify, but it only reaches you."
+        },
+        {
+          "choice": "resend-domain",
+          "label": "Your own domain",
+          "hint": "Sends as you. The domain has to be verified in Resend first."
+        }
+      ]
+    },
+    {
+      "id": "twilio",
+      "name": "Twilio",
+      "group": "Email and SMS",
+      "icon": "twilio.svg",
+      "site": "https://console.twilio.com",
+      "what": "SMS — one-time codes, reminders, delivery alerts.",
+      "skill": "notifications",
+      "modes": [
+        {
+          "choice": "twilio-sms",
+          "label": "SMS",
+          "hint": "A Twilio number that can send to your country."
+        }
+      ]
+    },
+    {
+      "id": "supabase",
+      "name": "Supabase",
+      "group": "Pictures and files",
+      "icon": "supabase.svg",
+      "site": "https://supabase.com/dashboard/project/_/settings/api",
+      "what": "A storage bucket with public URLs. The same project can hold a database.",
+      "skill": "image-uploads",
+      "_no_signin": "Deliberate. `supabase login` hands back an account access token, which is not what this plugin needs: the fields are the project URL, its service_role key and a bucket name, and getting those from the CLI is login, then projects list, then api-keys for whichever ref the person picks. A four-step flow with a choice in the middle is not the one-command-one-credential shape vercel and netlify have, so it is its own piece of work rather than a line in this file.",
+      "modes": [
+        {
+          "choice": "supabase",
+          "label": "Storage bucket",
+          "hint": "Create the bucket first — the app will not."
+        }
+      ]
+    },
+    {
+      "id": "cloudinary",
+      "name": "Cloudinary",
+      "group": "Pictures and files",
+      "icon": "cloudinary.svg",
+      "site": "https://console.cloudinary.com/settings/api-keys",
+      "what": "Stores the file and resizes it on the way out, in one service.",
+      "skill": "image-uploads",
+      "modes": [
+        {
+          "choice": "cloudinary",
+          "label": "Store and resize",
+          "hint": "Nothing else to set up."
+        }
+      ]
+    },
+    {
+      "id": "imageboss",
+      "name": "ImageBoss",
+      "group": "Pictures and files",
+      "icon": "imageboss.svg",
+      "site": "https://imageboss.me/dashboard",
+      "what": "Resizes from a bucket you already own. Needs the bucket's keys too.",
+      "skill": "image-uploads",
+      "modes": [
+        {
+          "choice": "imageboss",
+          "label": "Resize from your bucket",
+          "hint": "ImageBoss holds no files; your S3-compatible bucket does."
+        }
+      ]
+    },
+    {
+      "id": "google",
+      "name": "Google",
+      "group": "Sign-in",
+      "icon": "google.svg",
+      "site": "https://console.cloud.google.com/apis/credentials",
+      "what": "Sign in with a Google account instead of a password you store.",
+      "skill": "social-signin",
+      "modes": [
+        {
+          "choice": "google",
+          "label": "Sign in with Google",
+          "hint": "Register the redirect URI in the Google console or sign-in is refused."
+        }
+      ]
+    },
+    {
+      "id": "paypal",
+      "name": "PayPal",
+      "group": "Payments",
+      "icon": "paypal.svg",
+      "site": "https://developer.paypal.com/dashboard/applications",
+      "what": "Recognised almost everywhere, and buyers can pay without a card.",
+      "skill": "payments",
+      "modes": [
+        {
+          "choice": "paypal",
+          "label": "PayPal",
+          "hint": "Set the environment to sandbox until real money should move."
+        }
+      ]
+    },
+    {
+      "id": "razorpay",
+      "name": "Razorpay",
+      "group": "Payments",
+      "icon": "razorpay.svg",
+      "site": "https://dashboard.razorpay.com/app/website-app-settings/api-keys",
+      "what": "Cards, UPI, netbanking and wallets in India, in rupees.",
+      "skill": "payments",
+      "modes": [
+        {
+          "choice": "razorpay",
+          "label": "Razorpay",
+          "hint": "Test keys start rzp_test_, live ones rzp_live_."
+        }
+      ]
+    },
+    {
+      "id": "sendgrid",
+      "name": "SendGrid",
+      "group": "Email and SMS",
+      "icon": "sendgrid.svg",
+      "site": "https://app.sendgrid.com/settings/api_keys",
+      "what": "High-volume transactional email, with a free tier.",
+      "skill": "notifications",
+      "modes": [
+        {
+          "choice": "sendgrid",
+          "label": "Email",
+          "hint": "The from address has to be a verified sender, or nothing arrives."
+        }
+      ]
+    },
+    {
+      "id": "mailgun",
+      "name": "Mailgun",
+      "group": "Email and SMS",
+      "icon": "mailgun.svg",
+      "site": "https://app.mailgun.com/settings/api_security",
+      "what": "Transactional email from your own domain, with EU hosting.",
+      "skill": "notifications",
+      "modes": [
+        {
+          "choice": "mailgun",
+          "label": "Email",
+          "hint": "The sending domain is the one you verified, not your website's."
+        }
+      ]
+    },
+    {
+      "id": "s3",
+      "name": "Amazon S3",
+      "group": "Pictures and files",
+      "icon": "s3.svg",
+      "site": "https://console.aws.amazon.com/s3",
+      "what": "The bucket every other tool understands. Also R2, Spaces, Wasabi and B2.",
+      "skill": "image-uploads",
+      "modes": [
+        {
+          "choice": "s3",
+          "label": "Bucket",
+          "hint": "Give the endpoint for anything that is not Amazon's own S3."
+        }
+      ]
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "group": "Sign-in",
+      "icon": "github.svg",
+      "site": "https://github.com/settings/developers",
+      "what": "For anything developers use. An account may have no public email.",
+      "skill": "social-signin",
+      "modes": [
+        {
+          "choice": "github",
+          "label": "Sign in with GitHub",
+          "hint": "The callback URL must match the one registered, exactly."
+        }
+      ]
+    },
+    {
+      "id": "facebook",
+      "name": "Facebook",
+      "group": "Sign-in",
+      "icon": "facebook.svg",
+      "site": "https://developers.facebook.com/apps",
+      "what": "Reach outside the developer world, especially on mobile.",
+      "skill": "social-signin",
+      "modes": [
+        {
+          "choice": "facebook",
+          "label": "Sign in with Facebook",
+          "hint": "The app needs review before it leaves test mode."
+        }
+      ]
+    },
+    {
+      "id": "microsoft",
+      "name": "Microsoft",
+      "group": "Sign-in",
+      "icon": "microsoft.svg",
+      "site": "https://entra.microsoft.com",
+      "what": "Work and school accounts, plus personal ones. What an intranet expects.",
+      "skill": "social-signin",
+      "modes": [
+        {
+          "choice": "microsoft",
+          "label": "Sign in with Microsoft",
+          "hint": "Tenant 'common' accepts any account; your tenant id accepts one organisation."
+        }
+      ]
+    },
+    {
+      "id": "google-maps",
+      "name": "Google Maps",
+      "group": "Maps",
+      "icon": "google-maps.svg",
+      "site": "https://console.cloud.google.com/google/maps-apis/credentials",
+      "what": "Maps, place search and turning an address into coordinates.",
+      "skill": "maps",
+      "modes": [
+        {
+          "choice": "google-maps",
+          "label": "Maps and places",
+          "hint": "Two keys: one for the browser, restricted by domain, one for the server."
+        }
+      ]
+    },
+    {
+      "id": "mapbox",
+      "name": "Mapbox",
+      "group": "Maps",
+      "icon": "mapbox.svg",
+      "site": "https://account.mapbox.com/access-tokens",
+      "what": "Vector maps you can style yourself, with a generous free tier.",
+      "skill": "maps",
+      "modes": [
+        {
+          "choice": "mapbox",
+          "label": "Maps and places",
+          "hint": "pk. goes in the page; sk. is for server-side geocoding only."
+        }
+      ]
+    },
+    {
+      "id": "google-analytics",
+      "name": "Google Analytics",
+      "group": "Analytics",
+      "icon": "google-analytics.svg",
+      "site": "https://analytics.google.com",
+      "what": "Free, and what most reporting expects. Needs a consent banner in the EU.",
+      "skill": "analytics",
+      "modes": [
+        {
+          "choice": "google-analytics",
+          "label": "Measure",
+          "hint": "The measurement id starts with G-."
+        }
+      ]
+    },
+    {
+      "id": "posthog",
+      "name": "PostHog",
+      "group": "Analytics",
+      "icon": "posthog.svg",
+      "site": "https://app.posthog.com/settings/project",
+      "what": "Product analytics with funnels and session replay. Self-hostable.",
+      "skill": "analytics",
+      "modes": [
+        {
+          "choice": "posthog",
+          "label": "Measure",
+          "hint": "Pick the EU host if your data must stay in Europe."
+        }
+      ]
+    },
+    {
+      "id": "plausible",
+      "name": "Plausible",
+      "group": "Analytics",
+      "icon": "plausible.svg",
+      "site": "https://plausible.io/sites",
+      "what": "No cookies and no personal data, so no consent banner. Paid.",
+      "skill": "analytics",
+      "modes": [
+        {
+          "choice": "plausible",
+          "label": "Measure",
+          "hint": "The domain is exactly as you added it, with no https://."
+        }
+      ]
+    }
+  ]
+}

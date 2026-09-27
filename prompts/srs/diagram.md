@@ -1,0 +1,30 @@
+# Draw one diagram
+
+Produce the Mermaid source for one **{{kind}}** diagram of the system described
+below. Return only the Mermaid source — no commentary, no markdown fence, no
+explanation.
+
+## The standard
+
+{{standard}}
+
+{{guidance}}
+
+## Rules
+
+- Draw only what the specification supports. Every actor, entity, message, state
+  and flow must trace to something in the document below. Do not invent a
+  participant to make the picture look complete.
+- If the document genuinely lacks the evidence for this diagram — a state machine
+  with no lifecycle field, a sequence with no workflow — return exactly
+  `NOT_APPLICABLE: <one sentence naming the missing evidence>` instead of a
+  guess.
+- Use the notation the standard prescribes, and nothing outside it.
+- Label every edge with what actually moves along it, not with a control word.
+- Keep identifiers valid Mermaid: no unescaped quotes, parentheses or newlines
+  inside node labels.
+- The source must parse on its own. Nothing downstream repairs it.
+
+## The specification
+
+{{document}}

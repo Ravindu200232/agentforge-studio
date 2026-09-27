@@ -1,0 +1,259 @@
+"""Focused model calls.
+
+A stage that writes fourteen pages in one agentic conversation spends its output
+budget on the first few and truncates the rest, and every later call drags the
+whole history behind it. So the artifacts are not written by the agent: each one
+is its own call, with only the context it needs, and independent ones run at the
+same time.
+
+This is the difference between a wireframe of four hundred characters and a
+wireframe of twenty thousand. `ProjectSession` still owns the conversation, and
+still owns anything that needs tools — the build, the tests, the deployment, and
+a change typed into the chat stream. Everything that is simply *written* comes
+through here.
+"""
+from __future__ import annotations
+
+import json
+import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Iterable, Sequence, TypeVar
+
+import httpx
+import ollama
+
+from . import config
+
+T = TypeVar("T")
+
+# How many calls run at once. Quality is the point, so this is about not holding
+# the model's whole queue rather than about finishing quickly.
+LANES = 3
+
+_JSON_BLOCK = re.compile(r"```(?:json)?\s*(.+?)```", re.DOTALL)
+
+
+class LLMUnavailable(RuntimeError):
+    """Ollama could not be reached, or no model is selected."""
+
+
+class LLMRepairFailed(ValueError):
+    """The model could not produce something that passes, after retries."""
+
+    def __init__(self, label: str, raw: str, reason: str):
+        super().__init__(f"{label}: {reason}")
+        self.label = label
+        self.raw = raw
+
+
+def extract_json(text: str) -> Any:
+    """The JSON value in a model reply, however it was wrapped."""
+    raw = (text or "").strip()
+    if not raw:
+        raise ValueError("the model returned nothing")
+    fenced = _JSON_BLOCK.search(raw)
+    if fenced:
+        raw = fenced.group(1).strip()
+    try:
+        return json.loads(raw)
+    except ValueError:
+        pass
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start, end = raw.find(opener), raw.rfind(closer)
+        if start >= 0 and end > start:
+            try:
+                return json.loads(raw[start:end + 1])
+            except ValueError:
+                continue
+    raise ValueError("the model did not return JSON")
+
+
+def extract_html(text: str) -> str:
+    """The HTML document in a model reply, without its commentary or fence."""
+    raw = (text or "").strip()
+    fenced = re.search(r"```(?:html)?\s*(.+?)```", raw, re.DOTALL)
+    if fenced:
+        raw = fenced.group(1).strip()
+    start = raw.lower().find("<!doctype")
+    if start < 0:
+        start = raw.lower().find("<html")
+    if start > 0:
+        raw = raw[start:]
+    end = raw.lower().rfind("</html>")
+    if end > 0:
+        raw = raw[:end + len("</html>")]
+    return raw.strip()
+
+
+_local = threading.local()
+
+
+def client() -> Any:
+    """One Ollama client per thread, so parallel lanes do not share a socket."""
+    saved = config.settings()
+    key = (saved.get("cloud"), saved.get("ollama_host"), saved.get("ollama_api_key"))
+    if getattr(_local, "key", None) != key or getattr(_local, "client", None) is None:
+        if saved.get("cloud"):
+            token = saved.get("ollama_api_key") or ""
+            if not token:
+                raise LLMUnavailable("Cloud mode needs an Ollama API key.")
+            inner = ollama.Client(host="https://ollama.com",
+                                  headers={"Authorization": f"Bearer {token}"})
+        else:
+            inner = ollama.Client(host=saved.get("ollama_host") or "http://localhost:11434")
+        from .session import RetryingClient
+        _local.client = RetryingClient(inner)
+        _local.key = key
+    return _local.client
+
+
+def _model(override: str = "") -> str:
+    chosen = (override or config.setting("model") or "").strip()
+    if not chosen:
+        raise LLMUnavailable("No model is selected. Pick one in the studio.")
+    return chosen
+
+
+def complete(system: str, user: str, model: str = "", think: bool | None = None) -> str:
+    """One call, one answer, no history and no tools."""
+    kwargs: dict[str, Any] = {
+        "model": _model(model),
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": user}],
+        "stream": False,
+    }
+    kwargs["think"] = bool(config.setting("agent_think")) if think is None else think
+    context = int(config.setting("context") or 0)
+    if context and not config.setting("cloud"):
+        kwargs["options"] = {"num_ctx": context}
+    message = client().chat(**kwargs).message
+    text = (getattr(message, "content", "") or "").strip()
+    if not text:
+        # A reasoning model can answer in `thinking` and leave `content` empty.
+        text = (getattr(message, "thinking", "") or "").strip()
+    return text
+
+
+def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None = None,
+                  label: str = "json", model: str = "", attempts: int = 3) -> Any:
+    """One call answered as JSON, repaired in place when it is not.
+
+    The repair carries the model's own broken answer and what was wrong with it,
+    which is what makes the second attempt different from the first.
+    """
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    last = ""
+    for _ in range(max(1, attempts)):
+        kwargs: dict[str, Any] = {"model": _model(model), "messages": messages, "stream": False}
+        # Local Ollama supports JSON mode and returns syntactically valid JSON.
+        # Ollama Cloud currently does not support constrained output, so keep
+        # the existing prompt-and-validator repair path for hosted models.
+        selected = kwargs["model"].lower()
+        if not config.setting("cloud") and not selected.endswith(":cloud"):
+            kwargs["format"] = "json"
+        kwargs["think"] = bool(config.setting("agent_think"))
+        context = int(config.setting("context") or 0)
+        if context and not config.setting("cloud"):
+            kwargs["options"] = {"num_ctx": context}
+        message = client().chat(**kwargs).message
+        last = ((getattr(message, "content", "") or "")
+                or (getattr(message, "thinking", "") or "")).strip()
+
+        try:
+            data = extract_json(last)
+        except ValueError as exc:
+            messages += [{"role": "assistant", "content": last[:2000]},
+                         {"role": "user", "content":
+                          f"That was not valid JSON ({exc}). Return ONLY the JSON this "
+                          f"task asked for — no prose, no markdown fence."}]
+            continue
+
+        if validator is None:
+            return data
+        try:
+            checked = validator(data)
+        except Exception as exc:  # noqa: BLE001 - the message is the repair
+            messages += [{"role": "assistant", "content": last[:2000]},
+                         {"role": "user", "content":
+                          f"That JSON did not pass validation: {exc}\n\nFix exactly "
+                          f"that and return the corrected JSON in full."}]
+            continue
+        return data if checked is None else checked
+    raise LLMRepairFailed(label, last, f"no valid JSON after {attempts} attempts")
+
+
+def complete_html(system: str, user: str, model: str = "", minimum: int = 0,
+                  label: str = "html", attempts: int = 2,
+                  think: bool | None = None) -> str:
+    """One call answered as a complete HTML document."""
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    last = ""
+    for _ in range(max(1, attempts)):
+        kwargs: dict[str, Any] = {"model": _model(model), "messages": messages, "stream": False}
+        kwargs["think"] = bool(config.setting("agent_think")) if think is None else think
+        context = int(config.setting("context") or 0)
+        if context and not config.setting("cloud"):
+            kwargs["options"] = {"num_ctx": context}
+        message = client().chat(**kwargs).message
+        last = ((getattr(message, "content", "") or "")
+                or (getattr(message, "thinking", "") or "")).strip()
+        html = extract_html(last)
+
+        if html.lower().startswith(("<!doctype", "<html")) and len(html) >= minimum:
+            return html
+
+        why = ("it was not a complete HTML document starting with <!DOCTYPE html>"
+               if not html.lower().startswith(("<!doctype", "<html"))
+               else f"it was only {len(html)} characters, and this page needs at "
+                    f"least {minimum} — you left the page half drawn")
+        messages += [{"role": "assistant", "content": html[:1500]},
+                     {"role": "user", "content":
+                      f"That is not usable: {why}. Draw the whole page and return "
+                      f"the complete HTML document and nothing else."}]
+    raise LLMRepairFailed(label, last, "no complete HTML document")
+
+
+def web_search(query: str, max_results: int = 4) -> list[dict[str, str]]:
+    """Ollama's web search: `[{title, url, content}]`, empty when there is nothing or the search is not available.
+
+    The same route the agents' `web_search` tool takes: the local Ollama server needs no key, Ollama Cloud needs the saved one.
+    """
+    saved = config.settings()
+    query = " ".join(str(query or "").split())[:300]
+    if not query:
+        return []
+    try:
+        if saved.get("cloud"):
+            found = client().web_search(query=query, max_results=max_results).model_dump()
+        else:
+            host = (saved.get("ollama_host") or "http://localhost:11434").rstrip("/")
+            reply = httpx.post(f"{host}/api/experimental/web_search", json={"query": query, "max_results": max_results}, timeout=30)
+            reply.raise_for_status()
+            found = reply.json()
+    except Exception:  # noqa: BLE001 - a search that cannot run is not a reason to stop drawing
+        return []
+    return [{"title": str(row.get("title") or "")[:200], "url": str(row.get("url") or ""), "content": str(row.get("content") or "")[:1500]}
+            for row in (found.get("results") or []) if isinstance(row, dict)]
+
+
+def in_lanes(items: Sequence[T], work: Callable[[T], Any], lanes: int = LANES,
+             on_error: Callable[[T, Exception], Any] | None = None) -> list[Any]:
+    """Run `work` over `items`, a few at a time, keeping their order.
+
+    One item failing costs that item rather than the set — a page that does not
+    draw should not take the other thirteen with it.
+    """
+    if not items:
+        return []
+    results: list[Any] = [None] * len(items)
+
+    def run(index: int, item: T) -> None:
+        try:
+            results[index] = work(item)
+        except Exception as exc:  # noqa: BLE001 - reported per item
+            results[index] = on_error(item, exc) if on_error else None
+
+    with ThreadPoolExecutor(max_workers=max(1, lanes)) as pool:
+        list(pool.map(lambda pair: run(*pair), list(enumerate(items))))
+    return results

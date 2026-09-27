@@ -1,0 +1,69 @@
+{
+  "purpose": "Maps and places",
+  "question": "Which maps provider should this app use?",
+  "choices": [
+    {
+      "id": "none",
+      "label": "No map — addresses as text only",
+      "hint": "The product stores and shows addresses without drawing them anywhere."
+    },
+    {
+      "id": "google-maps",
+      "label": "Google Maps",
+      "hint": "Maps, Places autocomplete and geocoding. The most complete place data in most countries.",
+      "fields": [
+        {
+          "key": "GOOGLE_MAPS_BROWSER_KEY",
+          "label": "Browser key",
+          "example": "AIza<paste-your-browser-key>",
+          "hint": "Google Cloud console → Credentials → an API key restricted to your domains. It is visible in the page by design; the restriction is what protects it.",
+          "secret": false
+        },
+        {
+          "key": "GOOGLE_MAPS_SERVER_KEY",
+          "label": "Server key",
+          "example": "AIza<paste-your-server-key>",
+          "hint": "A second key, restricted by IP, used for geocoding on the server. Never send this one to the browser.",
+          "secret": true
+        },
+        {
+          "key": "GOOGLE_MAPS_MAP_ID",
+          "label": "Map ID",
+          "example": "8e0a97af9386fef",
+          "hint": "Map Management → your styled map. Optional; without it the map uses the default style.",
+          "secret": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "mapbox",
+      "label": "Mapbox",
+      "hint": "Vector maps you can style yourself, with a generous free tier.",
+      "fields": [
+        {
+          "key": "MAPBOX_PUBLIC_TOKEN",
+          "label": "Public token",
+          "example": "pk.<paste-your-public-token>",
+          "hint": "Account → Tokens. It starts with pk. and belongs in the page, restricted by URL.",
+          "secret": false
+        },
+        {
+          "key": "MAPBOX_SECRET_TOKEN",
+          "label": "Secret token",
+          "example": "sk.<paste-your-secret-token>",
+          "hint": "A token with the geocoding scope, for server-side lookups. It starts with sk. and must never reach the browser.",
+          "secret": true
+        },
+        {
+          "key": "MAPBOX_STYLE_URL",
+          "label": "Style URL",
+          "example": "mapbox://styles/mapbox/light-v11",
+          "hint": "Which style to draw. Optional.",
+          "secret": false,
+          "required": false
+        }
+      ]
+    }
+  ]
+}

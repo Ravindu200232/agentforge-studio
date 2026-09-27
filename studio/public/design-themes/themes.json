@@ -1,0 +1,1470 @@
+{
+  "agentic": {
+    "slug": "agentic",
+    "name": "Agentic",
+    "description": "Conversational AI-first interface with minimal controls, clear outcomes, and delegated task flows for agentic workflows.",
+    "colors": {
+      "primary": "#FF5701",
+      "secondary": "#F6F6F1",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Playfair Display",
+      "JetBrains Mono"
+    ],
+    "bytes": 3962,
+    "hasPreview": true
+  },
+  "ant": {
+    "slug": "ant",
+    "name": "Ant",
+    "description": "Structured, enterprise-focused design system emphasizing clarity, consistency, and efficiency for data-dense web applications.",
+    "colors": {
+      "primary": "#1677ff",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Plus Jakarta Sans",
+      "JetBrains Mono"
+    ],
+    "bytes": 3821,
+    "hasPreview": true
+  },
+  "artistic": {
+    "slug": "artistic",
+    "name": "Artistic",
+    "description": "High-contrast, expressive style with creative typography and bold color choices for visually striking interfaces.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Limelight",
+      "JetBrains Mono"
+    ],
+    "bytes": 3750,
+    "hasPreview": true
+  },
+  "basic": {
+    "slug": "basic",
+    "name": "Basic",
+    "description": "Print-inspired visual language for books, magazines, and reports with editorial grids and expressive typography.",
+    "colors": {
+      "primary": "#A855F7",
+      "secondary": "#0A1829",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#0A1829",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Oswald",
+      "Nunito",
+      "JetBrains Mono"
+    ],
+    "bytes": 3874,
+    "hasPreview": true
+  },
+  "bauhaus": {
+    "slug": "bauhaus",
+    "name": "Bauhaus",
+    "description": "Constructivist, Geometric, Modernist, Artistic-yet-Functional, Bold, Architectural",
+    "colors": {
+      "primary": "#D02020",
+      "secondary": "#1040C0",
+      "surface": "#F0F0F0",
+      "text": "#121212"
+    },
+    "fonts": [
+      "Outfit"
+    ],
+    "bytes": 10131,
+    "hasPreview": true
+  },
+  "bento": {
+    "slug": "bento",
+    "name": "Bento",
+    "description": "Modular grid layout with card-like blocks, clear hierarchy, soft spacing, and subtle visual contrast for organized, scannable interfaces.",
+    "colors": {
+      "primary": "#FAD4C0",
+      "secondary": "#80A1C1",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFF5E6",
+      "text": "#111827",
+      "neutral": "#FFF5E6"
+    },
+    "fonts": [
+      "Inter",
+      "JetBrains Mono"
+    ],
+    "bytes": 3511,
+    "hasPreview": true
+  },
+  "bold": {
+    "slug": "bold",
+    "name": "Bold",
+    "description": "Strong visual presence with heavyweight typography, high-contrast colors, and commanding layouts.",
+    "colors": {
+      "primary": "#0077BC",
+      "secondary": "#009866",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#111111",
+      "text": "#111827",
+      "neutral": "#111111"
+    },
+    "fonts": [
+      "Archivo Black",
+      "JetBrains Mono"
+    ],
+    "bytes": 3414,
+    "hasPreview": true
+  },
+  "brutalism": {
+    "slug": "brutalism",
+    "name": "Brutalism",
+    "description": "Raw, anti-design aesthetic inspired by concrete architecture with unadorned elements, jarring layouts, and functional minimalism.",
+    "colors": {
+      "primary": "#DD614C",
+      "secondary": "#DAA144",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Darker Grotesque",
+      "JetBrains Mono"
+    ],
+    "bytes": 3597,
+    "hasPreview": true
+  },
+  "cafe": {
+    "slug": "cafe",
+    "name": "Cafe",
+    "description": "Cozy cafe-inspired interface with warm tones, soft typography, and clean layouts for a relaxed browsing experience.",
+    "colors": {
+      "primary": "#5D4432",
+      "secondary": "#E9E3DD",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#F9F7F5",
+      "text": "#3E2B1E",
+      "neutral": "#F9F7F5"
+    },
+    "fonts": [
+      "Poppins",
+      "JetBrains Mono"
+    ],
+    "bytes": 3496,
+    "hasPreview": true
+  },
+  "claude": {
+    "slug": "claude",
+    "name": "\"Claude\"",
+    "description": "\"A research-journal aesthetic printed on warm stone — authoritative, editorial, almost achromatic. Pages live on warm ivory parchment (never pure white), with near-black slate as the dominant ink.\"",
+    "colors": {
+      "primary": "#141413",
+      "secondary": "#FAF9F6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Anthropic Sans",
+      "JetBrains Mono"
+    ],
+    "bytes": 4212,
+    "hasPreview": true
+  },
+  "claymorphism": {
+    "slug": "claymorphism",
+    "name": "Claymorphism",
+    "description": "Soft, rounded 3D-like shapes mimicking malleable clay with playful, puffy elements and colorful surfaces.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#FFFFFF",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#1C398E",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Poppins",
+      "Montserrat",
+      "JetBrains Mono"
+    ],
+    "bytes": 3546,
+    "hasPreview": true
+  },
+  "clean": {
+    "slug": "clean",
+    "name": "Clean",
+    "description": "Simplicity-focused design with ample whitespace, legible typography, and a limited color palette to reduce visual clutter.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Poppins",
+      "Roboto",
+      "Inconsolata"
+    ],
+    "bytes": 3669,
+    "hasPreview": true
+  },
+  "codex": {
+    "slug": "codex",
+    "name": "\"Codex\"",
+    "description": "\"A radically minimal, blank-canvas interface built as a pure edge-to-edge surface, with almost no color and typography carrying the visual weight. Black serves as the only filled color, the only divider, and the sole surface tone cards.\"",
+    "colors": {
+      "primary": "#000000",
+      "secondary": "#FFFFFF",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Open Sans",
+      "JetBrains Mono"
+    ],
+    "bytes": 4050,
+    "hasPreview": true
+  },
+  "colorful": {
+    "slug": "colorful",
+    "name": "Colorful",
+    "description": "Vibrant, high-contrast palettes and gradients for engaging, memorable, and modern user experiences.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Inter",
+      "JetBrains Mono"
+    ],
+    "bytes": 3556,
+    "hasPreview": true
+  },
+  "contemporary": {
+    "slug": "contemporary",
+    "name": "Contemporary",
+    "description": "Current-era minimalist design with bento grids, dark mode support, and high-performance accessible layouts.",
+    "colors": {
+      "primary": "#C800DF",
+      "secondary": "#E60076",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Jost",
+      "Overpass Mono"
+    ],
+    "bytes": 3678,
+    "hasPreview": true
+  },
+  "corporate": {
+    "slug": "corporate",
+    "name": "Corporate",
+    "description": "Professional, brand-aligned design with structured grids, minimalist layouts, and consistent enterprise patterns.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Poppins",
+      "Open Sans",
+      "IBM Plex Mono"
+    ],
+    "bytes": 3968,
+    "hasPreview": true
+  },
+  "cosmic": {
+    "slug": "cosmic",
+    "name": "Cosmic",
+    "description": "Futuristic sci-fi aesthetic with dark themes, vibrant neon accents, and immersive spatial elements.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Audiowide",
+      "JetBrains Mono"
+    ],
+    "bytes": 3447,
+    "hasPreview": true
+  },
+  "creative": {
+    "slug": "creative",
+    "name": "Creative",
+    "description": "Playful, character-driven design with expressive typography and bold graphics for landing pages and creative projects.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Bangers",
+      "IBM Plex Mono"
+    ],
+    "bytes": 3400,
+    "hasPreview": true
+  },
+  "dithered": {
+    "slug": "dithered",
+    "name": "Dithered",
+    "description": "Dot-pattern rendering technique that simulates shades with a limited palette for nostalgic, retro, high-contrast visuals.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Space Grotesk",
+      "Open Sans",
+      "IBM Plex Mono"
+    ],
+    "bytes": 3733,
+    "hasPreview": true
+  },
+  "doodle": {
+    "slug": "doodle",
+    "name": "Doodle",
+    "description": "Hand-drawn, sketch-like style with doodles, handwritten fonts, and imperfect lines for a playful, informal feel.",
+    "colors": {
+      "primary": "#49B6E5",
+      "secondary": "#263D5B",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Delius Swash Caps",
+      "JetBrains Mono"
+    ],
+    "bytes": 3557,
+    "hasPreview": true
+  },
+  "dramatic": {
+    "slug": "dramatic",
+    "name": "Dramatic",
+    "description": "High-contrast, theatrical design with bold layouts, immersive visuals, and unconventional compositions that command attention.",
+    "colors": {
+      "primary": "#8B5CF6",
+      "secondary": "#F43F5E",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#09090B",
+      "text": "#FAFAFA",
+      "neutral": "#09090B"
+    },
+    "fonts": [
+      "Outfit",
+      "JetBrains Mono"
+    ],
+    "bytes": 3522,
+    "hasPreview": true
+  },
+  "editorial": {
+    "slug": "editorial",
+    "name": "Editorial",
+    "description": "Magazine-inspired editorial layout with refined serif typography, structured grids, and elegant reading experiences.",
+    "colors": {
+      "primary": "#111111",
+      "secondary": "#f1f1f1",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Gelasio",
+      "Ubuntu Mono"
+    ],
+    "bytes": 3660,
+    "hasPreview": true
+  },
+  "enterprise": {
+    "slug": "enterprise",
+    "name": "Enterprise",
+    "description": "Dark-themed cloud-platform aesthetic with modular grids, glass-like panels, and strong data hierarchy for productivity dashboards.",
+    "colors": {
+      "primary": "#0C5CAB",
+      "secondary": "#0a4a8a",
+      "success": "#10b981",
+      "warning": "#f59e0b",
+      "danger": "#ef4444",
+      "surface": "#09090b",
+      "text": "#fafafa",
+      "neutral": "#09090b"
+    },
+    "fonts": [
+      "IBM Plex Sans"
+    ],
+    "bytes": 4206,
+    "hasPreview": true
+  },
+  "expressive": {
+    "slug": "expressive",
+    "name": "Expressive",
+    "description": "Vibrant, personality-driven design with bold colors, playful graphics, and dynamic layouts that balance creativity with structure.",
+    "colors": {
+      "primary": "#db2777",
+      "secondary": "#2563eb",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "IBM Plex Mono"
+    ],
+    "bytes": 3636,
+    "hasPreview": true
+  },
+  "fantasy": {
+    "slug": "fantasy",
+    "name": "Fantasy",
+    "description": "Game-inspired fantasy aesthetic with bold, premium visuals, rich color palettes, and immersive thematic elements.",
+    "colors": {
+      "primary": "#0250CC",
+      "secondary": "#FDC800",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "New Rocker",
+      "IBM Plex Mono"
+    ],
+    "bytes": 3396,
+    "hasPreview": true
+  },
+  "fiction": {
+    "slug": "fiction",
+    "name": "\"Fiction\"",
+    "description": "\"A playful, energetic, cartoonesque interface inspired by friendly children's-book illustrations — warm cream backgrounds, big bold custom display typography, saturated brand color blocks, thick black outlines, generously rounded shapes\"",
+    "colors": {
+      "primary": "#222222",
+      "secondary": "#FFE9CE",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Cossette Texte",
+      "JetBrains Mono"
+    ],
+    "bytes": 3815,
+    "hasPreview": true
+  },
+  "flat": {
+    "slug": "flat",
+    "name": "Flat",
+    "description": "Two-dimensional minimalist style with vibrant colors, clean typography, and no 3D effects for fast, user-friendly interfaces.",
+    "colors": {
+      "primary": "#F2673C",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Inter",
+      "JetBrains Mono"
+    ],
+    "bytes": 3912,
+    "hasPreview": true
+  },
+  "friendly": {
+    "slug": "friendly",
+    "name": "Friendly",
+    "description": "Approachable, intuitive design with rounded elements, ample whitespace, and soft pastel color palettes.",
+    "colors": {
+      "primary": "#F2D9DC",
+      "secondary": "#D9F2D8",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Noto Serif Display",
+      "Space Mono"
+    ],
+    "bytes": 3536,
+    "hasPreview": true
+  },
+  "futuristic": {
+    "slug": "futuristic",
+    "name": "Futuristic",
+    "description": "Forward-looking design with tech-inspired typography, modern layouts, and a sleek, innovation-driven aesthetic.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Audiowide",
+      "Roboto",
+      "Anonymous Pro"
+    ],
+    "bytes": 3368,
+    "hasPreview": true
+  },
+  "geometric": {
+    "slug": "geometric",
+    "name": "Geometric",
+    "description": "Geometric, structured design with clean typography, neutral colors, precise shapes, and intuitive layouts that stay out of the way.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Inter",
+      "JetBrains Mono"
+    ],
+    "bytes": 3397,
+    "hasPreview": true
+  },
+  "glassmorphism": {
+    "slug": "glassmorphism",
+    "name": "Glassmorphism",
+    "description": "Frosted glass effect with translucent layers, subtle blur, and luminous borders for depth and modern elegance.",
+    "colors": {
+      "primary": "#1856FF",
+      "secondary": "#3A344E",
+      "success": "#07CA6B",
+      "warning": "#E89558",
+      "danger": "#EA2143",
+      "surface": "#FFFFFF",
+      "text": "#141414",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Plus Jakarta Sans",
+      "JetBrains Mono"
+    ],
+    "bytes": 3787,
+    "hasPreview": true
+  },
+  "gradient": {
+    "slug": "gradient",
+    "name": "Gradient",
+    "description": "Smooth color transitions and gradient-rich surfaces for modern, playful interfaces with visual depth.",
+    "colors": {
+      "primary": "#990FFA",
+      "secondary": "#E60076",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Space Grotesk",
+      "Montserrat",
+      "JetBrains Mono"
+    ],
+    "bytes": 3471,
+    "hasPreview": true
+  },
+  "immersive": {
+    "slug": "immersive",
+    "name": "\"Immersive\"",
+    "description": "\"An immersive, interactive, exhibit-style interface that blends storytelling, animation, and gamified elements to create a playful, experience-driven journey. The entire app sits on a single continuous brand-colored canvas (deep green)\"",
+    "colors": {
+      "primary": "#00592B",
+      "secondary": "#0023D1",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Oswald",
+      "JetBrains Mono"
+    ],
+    "bytes": 4328,
+    "hasPreview": true
+  },
+  "impeccable": {
+    "slug": "impeccable",
+    "name": "\"Impeccable\"",
+    "description": "\"A modern, graphic, editorial-poster aesthetic — warm and confident — built on alternating cream and burnt orange sections, an amber brand color.\"",
+    "colors": {
+      "primary": "#CC8800",
+      "secondary": "#C55221",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Chakra Petch",
+      "JetBrains Mono"
+    ],
+    "bytes": 3554,
+    "hasPreview": true
+  },
+  "kinetic": {
+    "slug": "kinetic",
+    "name": "Kinetic Typography",
+    "description": "High-energy brutalism meets kinetic poster design. Confidence through scale. Urgency through motion. Clarity through contrast. The design screams rather than whispers—everything is uppercase, oversized, and in-your-face. It's a poster come to life, with the raw energy of street art and the precision",
+    "colors": {
+      "secondary": "#DFE104",
+      "surface": "#09090B",
+      "text": "#FAFAFA"
+    },
+    "fonts": [
+      "Space Grotesk",
+      "Inter"
+    ],
+    "bytes": 23068,
+    "hasPreview": true
+  },
+  "levels": {
+    "slug": "levels",
+    "name": "Levels",
+    "description": "Conversion-focused design that removes friction and guides users toward action through clarity, trust, and speed.",
+    "colors": {
+      "primary": "#27272A",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Inter",
+      "JetBrains Mono"
+    ],
+    "bytes": 3489,
+    "hasPreview": true
+  },
+  "lingo": {
+    "slug": "lingo",
+    "name": "Lingo",
+    "description": "Playful, minimal design with bright colors, rounded shapes, tactile 3D borders, and friendly illustrations for approachable interfaces.",
+    "colors": {
+      "primary": "#58cc02",
+      "secondary": "#ce82ff",
+      "success": "#58cc02",
+      "warning": "#ffc800",
+      "danger": "#ff4b4b",
+      "surface": "#FFFFFF",
+      "text": "#3c3c3c",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Nunito",
+      "JetBrains Mono"
+    ],
+    "bytes": 3876,
+    "hasPreview": true
+  },
+  "material": {
+    "slug": "material",
+    "name": "Material",
+    "description": "Google's Material Design with layered surfaces, dynamic theming, built-in motion, and responsive cross-platform patterns.",
+    "colors": {
+      "primary": "#6442D6",
+      "secondary": "#C8B3FD",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Roboto",
+      "Inter",
+      "Fira Code"
+    ],
+    "bytes": 3675,
+    "hasPreview": true
+  },
+  "matrix": {
+    "slug": "matrix",
+    "name": "\"Matrix\"",
+    "description": "\"A cyber-slick, dark-only Matrix-inspired interface defined by minimalist fashion, high-tech digital elements\"",
+    "colors": {
+      "primary": "#2DB58A",
+      "secondary": "#0B0C14",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Space Mono"
+    ],
+    "bytes": 3826,
+    "hasPreview": true
+  },
+  "minimal": {
+    "slug": "minimal",
+    "name": "Minimal",
+    "description": "Stripped-back design emphasizing whitespace, clean typography, and restrained color for maximum clarity and focus.",
+    "colors": {
+      "primary": "#0C0C09",
+      "secondary": "#312C85",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#F4F4F1",
+      "text": "#0C0C09",
+      "neutral": "#F4F4F1"
+    },
+    "fonts": [
+      "Inter",
+      "Open Sans",
+      "Inconsolata"
+    ],
+    "bytes": 3387,
+    "hasPreview": true
+  },
+  "modern": {
+    "slug": "modern",
+    "name": "Modern",
+    "description": "Contemporary editorial style with serif typography, minimal palettes, and clean layouts for polished digital products.",
+    "colors": {
+      "primary": "#553F83",
+      "secondary": "#111111",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#553F83",
+      "text": "#ffffff",
+      "neutral": "#553F83"
+    },
+    "fonts": [
+      "IBM Plex Serif",
+      "JetBrains Mono"
+    ],
+    "bytes": 3393,
+    "hasPreview": true
+  },
+  "mono": {
+    "slug": "mono",
+    "name": "Mono",
+    "description": "Monospace-driven, matrix-inspired design with high-contrast elements, compact density, and a hacker-chic aesthetic.",
+    "colors": {
+      "primary": "#37F712",
+      "secondary": "#00A6F4",
+      "success": "#00A63D",
+      "warning": "#FE9900",
+      "danger": "#FF2157",
+      "surface": "#E7E5E4",
+      "text": "#78716B",
+      "neutral": "#E7E5E4"
+    },
+    "fonts": [
+      "Space Mono",
+      "JetBrains Mono"
+    ],
+    "bytes": 3786,
+    "hasPreview": true
+  },
+  "monochrome": {
+    "slug": "monochrome",
+    "name": "Minimalist Monochrome",
+    "description": "Austere, Authoritative, Timeless, Editorial, Intellectual, Dramatic, Refined, Stark, Confident, Uncompromising",
+    "colors": {
+      "primary": "#000000",
+      "secondary": "#000000",
+      "surface": "#FFFFFF",
+      "text": "#000000"
+    },
+    "fonts": [
+      "Playfair Display",
+      "Source Serif 4"
+    ],
+    "bytes": 14747,
+    "hasPreview": true
+  },
+  "neobrutalism": {
+    "slug": "neobrutalism",
+    "name": "Neobrutalism",
+    "description": "Modern take on brutalism with bold borders, vivid accent colors, and raw, high-contrast layouts on warm surfaces.",
+    "colors": {
+      "primary": "#FDC800",
+      "secondary": "#432DD7",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FBFBF9",
+      "text": "#1C293C",
+      "neutral": "#FBFBF9"
+    },
+    "fonts": [
+      "Inter",
+      "JetBrains Mono"
+    ],
+    "bytes": 3388,
+    "hasPreview": true
+  },
+  "neon": {
+    "slug": "neon",
+    "name": "Neon",
+    "description": "Electric neon glow effects with high-contrast color pairings for bold, attention-grabbing interfaces.",
+    "colors": {
+      "primary": "#BBF351",
+      "secondary": "#00BCFF",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "STIX Two Text",
+      "Roboto",
+      "Source Code Pro"
+    ],
+    "bytes": 3342,
+    "hasPreview": true
+  },
+  "neumorphism": {
+    "slug": "neumorphism",
+    "name": "Neumorphism",
+    "description": "Soft, extruded UI elements with inner and outer shadows on monochromatic surfaces for a tactile, embedded look.",
+    "colors": {
+      "primary": "#006666",
+      "secondary": "#F1F2F5",
+      "success": "#00A63D",
+      "warning": "#FE9900",
+      "danger": "#FF2157",
+      "surface": "#E7E5E4",
+      "text": "#1E2938",
+      "neutral": "#E7E5E4"
+    },
+    "fonts": [
+      "Space Mono",
+      "JetBrains Mono"
+    ],
+    "bytes": 3794,
+    "hasPreview": true
+  },
+  "pacman": {
+    "slug": "pacman",
+    "name": "Pacman",
+    "description": "Retro arcade-inspired design with pixel fonts, dotted borders, playful high-contrast colors, and 8-bit game aesthetics.",
+    "colors": {
+      "primary": "#2A3FE5",
+      "secondary": "#F4B9B0",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#000000",
+      "text": "#111827",
+      "neutral": "#000000"
+    },
+    "fonts": [
+      "Press Start 2P",
+      "Space Mono"
+    ],
+    "bytes": 3673,
+    "hasPreview": true
+  },
+  "paper": {
+    "slug": "paper",
+    "name": "Paper",
+    "description": "Paper-textured, print-inspired design with minimal colors, clean serif/sans typography, and tactile surface qualities.",
+    "colors": {
+      "primary": "#111111",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Montserrat",
+      "Roboto",
+      "PT Mono"
+    ],
+    "bytes": 3382,
+    "hasPreview": true
+  },
+  "perspective": {
+    "slug": "perspective",
+    "name": "Perspective",
+    "description": "Spatial depth design with isometric views, vanishing points, and layered elements that guide attention through 3D-like realism.",
+    "colors": {
+      "primary": "#00BD7D",
+      "secondary": "#00BD7D",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Oswald",
+      "Poppins",
+      "JetBrains Mono"
+    ],
+    "bytes": 3614,
+    "hasPreview": true
+  },
+  "power": {
+    "slug": "power",
+    "name": "Power",
+    "description": "High-end dark aesthetic with bold headings, monochromatic palette, and premium feel for premium brand experiences.",
+    "colors": {
+      "primary": "#FAFAFA",
+      "secondary": "#FAFAFA",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#000000",
+      "text": "#ffffff",
+      "neutral": "#000000"
+    },
+    "fonts": [
+      "Oswald",
+      "JetBrains Mono"
+    ],
+    "bytes": 3399,
+    "hasPreview": true
+  },
+  "premium": {
+    "slug": "premium",
+    "name": "Premium",
+    "description": "Apple-inspired premium aesthetic with precise spacing, modern typography, and a refined, polished visual language.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Inter",
+      "JetBrains Mono"
+    ],
+    "bytes": 3366,
+    "hasPreview": true
+  },
+  "professional": {
+    "slug": "professional",
+    "name": "Professional",
+    "description": "Polished, business-ready design with modern typography, structured layouts, and a trustworthy visual identity.",
+    "colors": {
+      "primary": "#FECE14",
+      "secondary": "#000000",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Poppins",
+      "IBM Plex Mono"
+    ],
+    "bytes": 3396,
+    "hasPreview": true
+  },
+  "pulse": {
+    "slug": "pulse",
+    "name": "Pulse",
+    "description": "Dynamic, vibrant style with thick borders, geometric shapes, high-contrast colors, and expressive typography conveying motion and vitality.",
+    "colors": {
+      "primary": "#EA580B",
+      "secondary": "#F59E0B",
+      "background": "#FFEDD5",
+      "surface": "#FDBA74",
+      "text": "#EA580C",
+      "neutral": "#FDBA74"
+    },
+    "fonts": [
+      "Limelight",
+      "JetBrains Mono"
+    ],
+    "bytes": 3898,
+    "hasPreview": true
+  },
+  "refined": {
+    "slug": "refined",
+    "name": "Refined",
+    "description": "Carefully curated, modern minimal style with elegant serif typography and understated, sophisticated palettes.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Playfair Display",
+      "JetBrains Mono"
+    ],
+    "bytes": 3392,
+    "hasPreview": true
+  },
+  "retro": {
+    "slug": "retro",
+    "name": "Retro",
+    "description": "Throwback design with vintage-inspired typography, high-contrast retro palettes, and nostalgic visual elements.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Macondo",
+      "JetBrains Mono"
+    ],
+    "bytes": 3367,
+    "hasPreview": true
+  },
+  "riso": {
+    "slug": "riso",
+    "name": "\"Riso\"",
+    "description": "\"A playful, joyful, two-color risograph print aesthetic built on a single warm off-white paper surface running through every section\"",
+    "colors": {
+      "primary": "#F237A1",
+      "secondary": "#2C40A7",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Space Grotesk",
+      "Overpass Mono"
+    ],
+    "bytes": 3639,
+    "hasPreview": true
+  },
+  "roku": {
+    "slug": "roku",
+    "name": "Roku",
+    "description": "App dashboard with purple-themed aesthetic, top-bar navigation, card-based layouts, and developer-first workflows.",
+    "colors": {
+      "primary": "#9333ea",
+      "secondary": "#a855f7",
+      "success": "#10b981",
+      "warning": "#f59e0b",
+      "danger": "#ef4444",
+      "surface": "#FFFFFF",
+      "text": "#09090b",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Inter",
+      "JetBrains Mono"
+    ],
+    "bytes": 3857,
+    "hasPreview": true
+  },
+  "sega": {
+    "slug": "sega",
+    "name": "\"Sega\"",
+    "description": "\"A playful, arcade-inspired interface for games — built on the VT323 pixel typeface, hard-edged 0px corners, chunky pill buttons that physically press into solid offset blocks\"",
+    "colors": {
+      "primary": "#4502FF",
+      "secondary": "#FFDA14",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "VT323",
+      "JetBrains Mono"
+    ],
+    "bytes": 3660,
+    "hasPreview": true
+  },
+  "shadcn": {
+    "slug": "shadcn",
+    "name": "Shadcn",
+    "description": "Shadcn/ui-inspired design with minimal, clean components, monochrome palette, and utility-first patterns.",
+    "colors": {
+      "primary": "#000000",
+      "secondary": "#111111",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Geist",
+      "Fira Code"
+    ],
+    "bytes": 3331,
+    "hasPreview": true
+  },
+  "sketch": {
+    "slug": "sketch",
+    "name": "\"Sketch\"",
+    "description": "\"A friendly, hand-drawn sketch interface inspired by pencil illustrations on warm cream paper. Soft teal brand accents, hand-written display headings, rounded pill controls.\"",
+    "colors": {
+      "primary": "#1DAD97",
+      "secondary": "#F4EDE0",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Delicious Handrawn",
+      "JetBrains Mono"
+    ],
+    "bytes": 3732,
+    "hasPreview": true
+  },
+  "skeumorphism": {
+    "slug": "skeumorphism",
+    "name": "Skeumorphism",
+    "description": "Real-world mimicry with textured surfaces, 3D effects, and familiar physical metaphors for intuitive digital interfaces.",
+    "colors": {
+      "primary": "#FA3C00",
+      "secondary": "#F08321",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Germania One",
+      "Roboto",
+      "JetBrains Mono"
+    ],
+    "bytes": 3552,
+    "hasPreview": true
+  },
+  "sleek": {
+    "slug": "sleek",
+    "name": "Sleek",
+    "description": "Modern minimalist aesthetic with clean lines, intentional color palette, subtle interactions, and consistent spacing.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Inter",
+      "JetBrains Mono"
+    ],
+    "bytes": 3669,
+    "hasPreview": true
+  },
+  "spacious": {
+    "slug": "spacious",
+    "name": "Spacious",
+    "description": "Generous whitespace, consistent padding, and grid-based layouts for clean, readable, and breathing interfaces.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Montserrat",
+      "Open Sans",
+      "IBM Plex Mono"
+    ],
+    "bytes": 3930,
+    "hasPreview": true
+  },
+  "square": {
+    "slug": "square",
+    "name": "Square",
+    "description": "Graceful, refined aesthetic with delicate typography, minimal palettes, and polished layouts that exude sophistication.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Google Sans",
+      "Anonymous Pro"
+    ],
+    "bytes": 3362,
+    "hasPreview": true
+  },
+  "stitch": {
+    "slug": "stitch",
+    "name": "Stitch",
+    "description": "Clean, high-contrast enterprise design for data-driven workflows with intuitive drag-and-drop patterns and structured layouts.",
+    "colors": {
+      "primary": "#072C2C",
+      "secondary": "#FF5F03",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#EDEADE",
+      "text": "#111827",
+      "neutral": "#EDEADE"
+    },
+    "fonts": [
+      "Oswald",
+      "Ubuntu",
+      "Ubuntu Mono"
+    ],
+    "bytes": 3649,
+    "hasPreview": true
+  },
+  "storytelling": {
+    "slug": "storytelling",
+    "name": "Storytelling",
+    "description": "Narrative-driven design using visuals, copy, and interaction to guide users through engaging, emotionally resonant journeys.",
+    "colors": {
+      "primary": "#3B82F6",
+      "secondary": "#8B5CF6",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Abril Fatface",
+      "Inter",
+      "JetBrains Mono"
+    ],
+    "bytes": 3635,
+    "hasPreview": true
+  },
+  "terracotta": {
+    "slug": "terracotta",
+    "name": "\"Terracotta\"",
+    "description": "\"A sun-baked, clay-toned editorial interface built on warm cream surfaces, ink-brown headlines set in a display serif, and a single terracotta accent.\"",
+    "colors": {
+      "primary": "#C56A3C",
+      "secondary": "#F3E9D8",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#111827",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "DM Serif Display",
+      "JetBrains Mono"
+    ],
+    "bytes": 3776,
+    "hasPreview": true
+  },
+  "tetris": {
+    "slug": "tetris",
+    "name": "Tetris",
+    "description": "Classic block-game inspired design with playful colors, bold display fonts, and compact, high-energy layouts.",
+    "colors": {
+      "primary": "#1C202B",
+      "secondary": "#7107E7",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#DFE7FF",
+      "text": "#1C398E",
+      "neutral": "#DFE7FF"
+    },
+    "fonts": [
+      "Bangers",
+      "JetBrains Mono"
+    ],
+    "bytes": 3423,
+    "hasPreview": true
+  },
+  "vibrant": {
+    "slug": "vibrant",
+    "name": "Vibrant",
+    "description": "Lively, colorful design with bold playful typography, warm accents, and dynamic visual energy.",
+    "colors": {
+      "primary": "#7C61D4",
+      "secondary": "#EAAE87",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#FFFFFF",
+      "text": "#2F281D",
+      "neutral": "#FFFFFF"
+    },
+    "fonts": [
+      "Fascinate",
+      "Noto Sans",
+      "Fira Code"
+    ],
+    "bytes": 3460,
+    "hasPreview": true
+  },
+  "vintage": {
+    "slug": "vintage",
+    "name": "Vintage",
+    "description": "1950s-1990s nostalgia with skeuomorphic touches, grainy textures, retro color palettes, and pixel-style typography.",
+    "colors": {
+      "primary": "#008080",
+      "secondary": "#C0C0C0",
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "surface": "#C0C0C0",
+      "text": "#000000",
+      "neutral": "#C0C0C0"
+    },
+    "fonts": [
+      "Silkscreen",
+      "JetBrains Mono"
+    ],
+    "bytes": 3515,
+    "hasPreview": true
+  }
+}

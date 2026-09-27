@@ -1,0 +1,34 @@
+# Python build and runtime files
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Node and Studio build output
+node_modules/
+studio/node_modules/
+studio/.next/
+studio/.next*/
+studio/test-results/
+studio/playwright-report/
+.pnpm-store/
+.deps/
+
+# Local AgentForge state and generated customer projects
+.agentforge-server/
+workspaces/
+
+# Local environment and runtime logs
+.env
+.env.*
+!.env.example
+*.log
+*.out
+*.err
+*.pid
+*.sqlite
+*.sqlite-*
+
+# Local archives and generated artifacts
+*.rar
+*.zip

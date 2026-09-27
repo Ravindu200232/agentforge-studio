@@ -1,0 +1,8 @@
+# OWASP ZAP security evidence
+
+Run `npm run qa:security`. It starts the built app on a free local port (`scripts/with-server.mjs`), runs `scripts/zap-scan.mjs` against **only** that isolated server, and stops it. It sends GET requests only: a passive baseline, never an attack scan, never a production or third-party host.
+
+- **`engine: "zap"`** — a real OWASP ZAP baseline (spider + passive scan through its Automation Framework), judged by `.zap/rules.tsv` (`FAIL` fails, `WARN` warns, `IGNORE` is dropped; unlisted: High fails, the rest warn). ZAP is found in `ZAP_PATH`, on `PATH`, in its default install folder, or in `~/.agentforge/zap`.
+- **No ZAP on this machine** (no Java or Docker is not a reason to skip): run `npm run qa:security -- --install-zap` **once** — it fetches a Java 17 runtime (only if `java` is missing) and ZAP into `~/.agentforge/zap` (about 200 MB, no admin rights, shared by every project). Until then the scan still runs with the built-in passive baseline (`engine: "agentforge-baseline"`, headers, cookies, information leaks, exposed files). That result is real evidence and its status is **`partial`**: report it as *ZAP unavailable, baseline only*, never as a ZAP pass.
+- Save `.agentforge/qa/zap/summary.json` (engine, status, target, date, command, exit code, counts, failing rules, reason) and cite it. Fix every `failing` finding (missing security headers are set in `next.config`/middleware, `remix-serve` server or the gateway) and re-run once.
+- Run the dependency audit separately (`npm run audit`). Source-pattern checks are additional evidence, not a substitute for ZAP.

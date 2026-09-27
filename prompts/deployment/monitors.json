@@ -1,0 +1,1345 @@
+{
+  "targets": {
+    "vercel": [
+      "vercel",
+      "github"
+    ],
+    "netlify": [
+      "netlify",
+      "github"
+    ],
+    "aws_ec2": [
+      "aws-account",
+      "aws-ec2",
+      "github"
+    ],
+    "aws_ecs": [
+      "aws-account",
+      "aws-ecs",
+      "github"
+    ],
+    "azure": [
+      "azure",
+      "github"
+    ],
+    "github": [
+      "github"
+    ]
+  },
+  "sets": {
+    "vercel": {
+      "tool": "vercel",
+      "title": "Vercel CLI",
+      "commands": [
+        {
+          "id": "account",
+          "group": "Account",
+          "label": "Account",
+          "argv": [
+            "whoami",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "teams",
+          "group": "Account",
+          "label": "Teams",
+          "argv": [
+            "teams",
+            "list",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "team-members",
+          "group": "Account",
+          "label": "Team members",
+          "argv": [
+            "teams",
+            "members",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "tokens",
+          "group": "Account",
+          "label": "Tokens",
+          "argv": [
+            "tokens",
+            "list",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "contract",
+          "group": "Account",
+          "label": "Contract",
+          "argv": [
+            "contract",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "activity",
+          "group": "Account",
+          "label": "Activity",
+          "argv": [
+            "activity",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "event-types",
+          "group": "Account",
+          "label": "Event types",
+          "argv": [
+            "activity",
+            "types",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "telemetry",
+          "group": "Account",
+          "label": "Telemetry",
+          "argv": [
+            "telemetry",
+            "status"
+          ]
+        },
+        {
+          "id": "project",
+          "group": "Project",
+          "label": "Project",
+          "argv": [
+            "projects",
+            "inspect",
+            "{{host.project}}",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "projects",
+          "group": "Project",
+          "label": "All projects",
+          "argv": [
+            "projects",
+            "list",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "project-members",
+          "group": "Project",
+          "label": "Project members",
+          "argv": [
+            "projects",
+            "members",
+            "{{host.project}}",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "checks",
+          "group": "Project",
+          "label": "Checks",
+          "argv": [
+            "projects",
+            "checks",
+            "{{host.project}}",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "protection",
+          "group": "Project",
+          "label": "Protection",
+          "argv": [
+            "projects",
+            "protection",
+            "{{host.project}}",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "targets",
+          "group": "Project",
+          "label": "Targets",
+          "argv": [
+            "target",
+            "list",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "deployments",
+          "group": "Deployments",
+          "label": "Deployments",
+          "argv": [
+            "ls",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "deployment",
+          "group": "Deployments",
+          "label": "Deployment",
+          "argv": [
+            "inspect",
+            "{{host.deployment_url|url}}",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "aliases",
+          "group": "Deployments",
+          "label": "Aliases",
+          "argv": [
+            "alias",
+            "list",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "routes",
+          "group": "Deployments",
+          "label": "Routes",
+          "argv": [
+            "routes",
+            "list"
+          ]
+        },
+        {
+          "id": "build-logs",
+          "group": "Logs",
+          "label": "Build logs",
+          "argv": [
+            "inspect",
+            "{{host.deployment_url|url}}",
+            "--logs"
+          ]
+        },
+        {
+          "id": "runtime-logs",
+          "group": "Logs",
+          "label": "Runtime logs",
+          "follow": true,
+          "timeout": 300,
+          "argv": [
+            "logs",
+            "{{host.deployment_url|url}}"
+          ]
+        },
+        {
+          "id": "variables",
+          "group": "Configuration",
+          "label": "Variables",
+          "argv": [
+            "env",
+            "list",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "domains",
+          "group": "Configuration",
+          "label": "Domains",
+          "argv": [
+            "domains",
+            "list",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "dns",
+          "group": "Configuration",
+          "label": "DNS",
+          "argv": [
+            "dns",
+            "list",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "certs",
+          "group": "Configuration",
+          "label": "Certificates",
+          "argv": [
+            "certs",
+            "list"
+          ]
+        },
+        {
+          "id": "cron",
+          "group": "Configuration",
+          "label": "Cron jobs",
+          "argv": [
+            "cron",
+            "list",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "hooks",
+          "group": "Configuration",
+          "label": "Deploy hooks",
+          "argv": [
+            "deploy-hooks",
+            "list",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "webhooks",
+          "group": "Configuration",
+          "label": "Webhooks",
+          "argv": [
+            "webhooks",
+            "list",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "flags",
+          "group": "Configuration",
+          "label": "Feature flags",
+          "argv": [
+            "flags",
+            "list"
+          ]
+        },
+        {
+          "id": "integrations",
+          "group": "Configuration",
+          "label": "Integrations",
+          "argv": [
+            "integration",
+            "list",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "storage",
+          "group": "Configuration",
+          "label": "Storage",
+          "argv": [
+            "storage",
+            "list",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "budgets",
+          "group": "Configuration",
+          "label": "Budgets",
+          "argv": [
+            "budgets",
+            "list",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "firewall",
+          "group": "Configuration",
+          "label": "Firewall",
+          "argv": [
+            "firewall",
+            "overview"
+          ]
+        },
+        {
+          "id": "global-config",
+          "group": "Configuration",
+          "label": "Global config",
+          "argv": [
+            "global-config",
+            "list",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "metrics",
+          "group": "Insights",
+          "label": "Metrics",
+          "argv": [
+            "metrics",
+            "schema",
+            "--format",
+            "json"
+          ]
+        },
+        {
+          "id": "alerts",
+          "group": "Insights",
+          "label": "Alerts",
+          "argv": [
+            "alerts",
+            "--format",
+            "json"
+          ]
+        }
+      ]
+    },
+    "netlify": {
+      "tool": "netlify",
+      "title": "Netlify CLI",
+      "commands": [
+        {
+          "id": "netlify-account",
+          "group": "Account",
+          "label": "Account",
+          "argv": [
+            "status",
+            "--json"
+          ]
+        },
+        {
+          "id": "sites",
+          "group": "Account",
+          "label": "All sites",
+          "argv": [
+            "sites:list",
+            "--json"
+          ]
+        },
+        {
+          "id": "site",
+          "group": "Site",
+          "label": "Site",
+          "argv": [
+            "api",
+            "getSite",
+            "--data",
+            "{\"site_id\":\"{{host.site_id}}\"}"
+          ]
+        },
+        {
+          "id": "deploys",
+          "group": "Deployments",
+          "label": "Deploys",
+          "argv": [
+            "api",
+            "listSiteDeploys",
+            "--data",
+            "{\"site_id\":\"{{host.site_id}}\"}"
+          ]
+        },
+        {
+          "id": "site-deploy",
+          "group": "Deployments",
+          "label": "Deploy",
+          "argv": [
+            "api",
+            "getSiteDeploy",
+            "--data",
+            "{\"site_id\":\"{{host.site_id}}\",\"deploy_id\":\"{{host.deploy_id}}\"}"
+          ]
+        },
+        {
+          "id": "builds",
+          "group": "Deployments",
+          "label": "Builds",
+          "argv": [
+            "api",
+            "listSiteBuilds",
+            "--data",
+            "{\"site_id\":\"{{host.site_id}}\"}"
+          ]
+        },
+        {
+          "id": "functions",
+          "group": "Configuration",
+          "label": "Functions",
+          "argv": [
+            "functions:list",
+            "--json"
+          ]
+        },
+        {
+          "id": "forms",
+          "group": "Configuration",
+          "label": "Forms",
+          "argv": [
+            "api",
+            "listSiteForms",
+            "--data",
+            "{\"site_id\":\"{{host.site_id}}\"}"
+          ]
+        }
+      ]
+    },
+    "aws-account": {
+      "tool": "aws",
+      "title": "AWS CLI",
+      "common": [
+        "--profile",
+        "{{setting.aws_profile}}",
+        "--region",
+        "{{host.region|setting.aws_region}}"
+      ],
+      "commands": [
+        {
+          "id": "aws-account",
+          "group": "Account",
+          "label": "Account",
+          "argv": [
+            "sts",
+            "get-caller-identity",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "stack",
+          "group": "Stack",
+          "label": "Stack",
+          "argv": [
+            "cloudformation",
+            "describe-stacks",
+            "--stack-name",
+            "{{host.stack_name}}",
+            "--query",
+            "Stacks[0].{Name:StackName,Status:StackStatus,Created:CreationTime,Updated:LastUpdatedTime,Outputs:Outputs}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "stack-resources",
+          "group": "Stack",
+          "label": "Resources",
+          "argv": [
+            "cloudformation",
+            "describe-stack-resources",
+            "--stack-name",
+            "{{host.stack_name}}",
+            "--query",
+            "StackResources[].{Logical:LogicalResourceId,Type:ResourceType,Status:ResourceStatus,Id:PhysicalResourceId}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "stack-events",
+          "group": "Stack",
+          "label": "Stack events",
+          "argv": [
+            "cloudformation",
+            "describe-stack-events",
+            "--stack-name",
+            "{{host.stack_name}}",
+            "--max-items",
+            "40",
+            "--query",
+            "StackEvents[].{Time:Timestamp,Resource:LogicalResourceId,Status:ResourceStatus,Reason:ResourceStatusReason}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "cdn",
+          "group": "Network",
+          "label": "CloudFront",
+          "argv": [
+            "cloudfront",
+            "get-distribution",
+            "--id",
+            "{{host.distribution_id}}",
+            "--query",
+            "Distribution.{Id:Id,Status:Status,Domain:DomainName,Enabled:DistributionConfig.Enabled,Aliases:DistributionConfig.Aliases.Items}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "alarms",
+          "group": "Monitoring",
+          "label": "Alarms",
+          "argv": [
+            "cloudwatch",
+            "describe-alarms",
+            "--alarm-name-prefix",
+            "{{host.stack_name}}",
+            "--query",
+            "MetricAlarms[].{Name:AlarmName,State:StateValue,Metric:MetricName,Reason:StateReason,Updated:StateUpdatedTimestamp}",
+            "--output",
+            "json"
+          ]
+        }
+      ]
+    },
+    "aws-ec2": {
+      "tool": "aws",
+      "title": "AWS CLI",
+      "common": [
+        "--profile",
+        "{{setting.aws_profile}}",
+        "--region",
+        "{{host.region|setting.aws_region}}"
+      ],
+      "commands": [
+        {
+          "id": "instance",
+          "group": "Instance",
+          "label": "Instance",
+          "argv": [
+            "ec2",
+            "describe-instances",
+            "--instance-ids",
+            "{{host.instance_id}}",
+            "--query",
+            "Reservations[].Instances[].{Id:InstanceId,Type:InstanceType,State:State.Name,PublicIp:PublicIpAddress,Launched:LaunchTime,Az:Placement.AvailabilityZone}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "health",
+          "group": "Instance",
+          "label": "Health checks",
+          "argv": [
+            "ec2",
+            "describe-instance-status",
+            "--instance-ids",
+            "{{host.instance_id}}",
+            "--include-all-instances",
+            "--query",
+            "InstanceStatuses[].{Id:InstanceId,State:InstanceState.Name,System:SystemStatus.Status,Instance:InstanceStatus.Status}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "volumes",
+          "group": "Instance",
+          "label": "Volumes",
+          "argv": [
+            "ec2",
+            "describe-volumes",
+            "--filters",
+            "Name=attachment.instance-id,Values={{host.instance_id}}",
+            "--query",
+            "Volumes[].{Id:VolumeId,Size:Size,Type:VolumeType,State:State,Encrypted:Encrypted,Iops:Iops}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "addresses",
+          "group": "Instance",
+          "label": "Elastic IPs",
+          "argv": [
+            "ec2",
+            "describe-addresses",
+            "--filters",
+            "Name=instance-id,Values={{host.instance_id}}",
+            "--query",
+            "Addresses[].{Ip:PublicIp,Allocation:AllocationId,Association:AssociationId,Instance:InstanceId}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "ssm",
+          "group": "Releases",
+          "label": "SSM agent",
+          "argv": [
+            "ssm",
+            "describe-instance-information",
+            "--filters",
+            "Key=InstanceIds,Values={{host.instance_id}}",
+            "--query",
+            "InstanceInformationList[].{Id:InstanceId,Ping:PingStatus,Agent:AgentVersion,Platform:PlatformName,LastPing:LastPingDateTime}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "ssm-history",
+          "group": "Releases",
+          "label": "Release commands",
+          "argv": [
+            "ssm",
+            "list-command-invocations",
+            "--instance-id",
+            "{{host.instance_id}}",
+            "--max-items",
+            "15",
+            "--query",
+            "CommandInvocations[].{Command:CommandId,Document:DocumentName,Status:Status,Requested:RequestedDateTime,Comment:Comment}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "releases",
+          "group": "Releases",
+          "label": "Release artifacts",
+          "argv": [
+            "s3",
+            "ls",
+            "s3://{{host.bucket}}/releases/",
+            "--recursive",
+            "--human-readable"
+          ]
+        },
+        {
+          "id": "secrets",
+          "group": "Configuration",
+          "label": "Secrets (names)",
+          "argv": [
+            "secretsmanager",
+            "list-secrets",
+            "--filters",
+            "Key=name,Values={{host.secret_name|host.log_group|host.stack_name}}",
+            "--query",
+            "SecretList[].{Name:Name,Changed:LastChangedDate,Accessed:LastAccessedDate,Rotation:RotationEnabled}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "ec2-logs",
+          "group": "Logs",
+          "label": "Live logs",
+          "follow": true,
+          "timeout": 600,
+          "argv": [
+            "logs",
+            "tail",
+            "{{host.log_group}}",
+            "--follow",
+            "--since",
+            "30m",
+            "--format",
+            "short"
+          ]
+        }
+      ]
+    },
+    "aws-ecs": {
+      "tool": "aws",
+      "title": "AWS CLI",
+      "common": [
+        "--profile",
+        "{{setting.aws_profile}}",
+        "--region",
+        "{{host.region|setting.aws_region}}"
+      ],
+      "commands": [
+        {
+          "id": "cluster",
+          "group": "Cluster",
+          "label": "Cluster",
+          "argv": [
+            "ecs",
+            "describe-clusters",
+            "--clusters",
+            "{{host.cluster}}",
+            "--query",
+            "clusters[].{Name:clusterName,Status:status,Services:activeServicesCount,Running:runningTasksCount,Pending:pendingTasksCount}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "service",
+          "group": "Cluster",
+          "label": "Service",
+          "argv": [
+            "ecs",
+            "describe-services",
+            "--cluster",
+            "{{host.cluster}}",
+            "--services",
+            "{{host.service}}",
+            "--query",
+            "services[].{Name:serviceName,Status:status,Desired:desiredCount,Running:runningCount,Pending:pendingCount,TaskDefinition:taskDefinition,Deployments:deployments[].{State:rolloutState,Desired:desiredCount,Running:runningCount}}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "service-events",
+          "group": "Cluster",
+          "label": "Service events",
+          "argv": [
+            "ecs",
+            "describe-services",
+            "--cluster",
+            "{{host.cluster}}",
+            "--services",
+            "{{host.service}}",
+            "--query",
+            "services[0].events[:20].{Time:createdAt,Message:message}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "tasks",
+          "group": "Cluster",
+          "label": "Tasks",
+          "argv": [
+            "ecs",
+            "list-tasks",
+            "--cluster",
+            "{{host.cluster}}",
+            "--service-name",
+            "{{host.service}}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "task-definition",
+          "group": "Cluster",
+          "label": "Task definition",
+          "argv": [
+            "ecs",
+            "describe-task-definition",
+            "--task-definition",
+            "{{host.task_definition}}",
+            "--query",
+            "taskDefinition.{Family:family,Revision:revision,Cpu:cpu,Memory:memory,Containers:containerDefinitions[].{Name:name,Image:image,Port:portMappings[0].containerPort,Variables:environment[].name,Secrets:secrets[].name}}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "scaling",
+          "group": "Cluster",
+          "label": "Auto scaling",
+          "argv": [
+            "application-autoscaling",
+            "describe-scalable-targets",
+            "--service-namespace",
+            "ecs",
+            "--resource-ids",
+            "service/{{host.cluster}}/{{host.service}}",
+            "--query",
+            "ScalableTargets[].{Resource:ResourceId,Min:MinCapacity,Max:MaxCapacity,Dimension:ScalableDimension}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "target-health",
+          "group": "Network",
+          "label": "Target health",
+          "argv": [
+            "elbv2",
+            "describe-target-health",
+            "--target-group-arn",
+            "{{host.target_group_arn}}",
+            "--query",
+            "TargetHealthDescriptions[].{Target:Target.Id,Port:Target.Port,State:TargetHealth.State,Reason:TargetHealth.Reason}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "images",
+          "group": "Releases",
+          "label": "Images",
+          "argv": [
+            "ecr",
+            "describe-images",
+            "--repository-name",
+            "{{host.repository_name}}",
+            "--query",
+            "sort_by(imageDetails,&imagePushedAt)[-10:].{Tags:imageTags,Pushed:imagePushedAt,SizeBytes:imageSizeInBytes}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "image-builds",
+          "group": "Releases",
+          "label": "Image builds",
+          "argv": [
+            "codebuild",
+            "list-builds-for-project",
+            "--project-name",
+            "{{host.build_project}}",
+            "--max-items",
+            "10",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "secrets",
+          "group": "Configuration",
+          "label": "Secrets (names)",
+          "argv": [
+            "secretsmanager",
+            "list-secrets",
+            "--filters",
+            "Key=name,Values={{host.secret_name|host.log_group|host.stack_name}}",
+            "--query",
+            "SecretList[].{Name:Name,Changed:LastChangedDate,Accessed:LastAccessedDate,Rotation:RotationEnabled}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "ecs-logs",
+          "group": "Logs",
+          "label": "Live logs",
+          "follow": true,
+          "timeout": 600,
+          "argv": [
+            "logs",
+            "tail",
+            "{{host.log_group}}",
+            "--follow",
+            "--since",
+            "30m",
+            "--format",
+            "short"
+          ]
+        }
+      ]
+    },
+    "azure": {
+      "tool": "az",
+      "title": "Azure CLI",
+      "commands": [
+        {
+          "id": "azure-account",
+          "group": "Account",
+          "label": "Account",
+          "argv": [
+            "account",
+            "show",
+            "--query",
+            "{User:user.name,Subscription:name,Id:id,Tenant:tenantId}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "resources",
+          "group": "Resources",
+          "label": "Resources",
+          "argv": [
+            "resource",
+            "list",
+            "--resource-group",
+            "{{host.resource_group}}",
+            "--query",
+            "[].{Name:name,Type:type,Location:location}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "app",
+          "group": "Web app",
+          "label": "Web app",
+          "argv": [
+            "webapp",
+            "show",
+            "--resource-group",
+            "{{host.resource_group}}",
+            "--name",
+            "{{host.app}}",
+            "--query",
+            "{Name:name,State:state,Host:defaultHostName,HttpsOnly:httpsOnly,Kind:kind,Location:location,OutboundIps:outboundIpAddresses}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "plan",
+          "group": "Web app",
+          "label": "Plan & size",
+          "argv": [
+            "appservice",
+            "plan",
+            "show",
+            "--resource-group",
+            "{{host.resource_group}}",
+            "--name",
+            "{{host.plan}}",
+            "--query",
+            "{Name:name,Sku:sku.name,Tier:sku.tier,Workers:numberOfWorkers,Status:status}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "slots",
+          "group": "Web app",
+          "label": "Slots",
+          "argv": [
+            "webapp",
+            "deployment",
+            "slot",
+            "list",
+            "--resource-group",
+            "{{host.resource_group}}",
+            "--name",
+            "{{host.app}}",
+            "--query",
+            "[].{Name:name,State:state,Host:defaultHostName}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "autoscale",
+          "group": "Web app",
+          "label": "Auto scale",
+          "argv": [
+            "monitor",
+            "autoscale",
+            "list",
+            "--resource-group",
+            "{{host.resource_group}}",
+            "--query",
+            "[].{Name:name,Enabled:enabled,Profiles:profiles[].{Min:capacity.minimum,Max:capacity.maximum,Default:capacity.default}}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "config",
+          "group": "Configuration",
+          "label": "Runtime config",
+          "argv": [
+            "webapp",
+            "config",
+            "show",
+            "--resource-group",
+            "{{host.resource_group}}",
+            "--name",
+            "{{host.app}}",
+            "--query",
+            "{Runtime:linuxFxVersion,StartCommand:appCommandLine,AlwaysOn:alwaysOn,MinTls:minTlsVersion,Ftps:ftpsState,Http2:http20Enabled}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "settings",
+          "group": "Configuration",
+          "label": "App settings (names)",
+          "argv": [
+            "webapp",
+            "config",
+            "appsettings",
+            "list",
+            "--resource-group",
+            "{{host.resource_group}}",
+            "--name",
+            "{{host.app}}",
+            "--query",
+            "[].name",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "hostnames",
+          "group": "Configuration",
+          "label": "Domains",
+          "argv": [
+            "webapp",
+            "config",
+            "hostname",
+            "list",
+            "--resource-group",
+            "{{host.resource_group}}",
+            "--webapp-name",
+            "{{host.app}}",
+            "--query",
+            "[].name",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "ssl",
+          "group": "Configuration",
+          "label": "Certificates",
+          "argv": [
+            "webapp",
+            "config",
+            "ssl",
+            "list",
+            "--resource-group",
+            "{{host.resource_group}}",
+            "--query",
+            "[].{Name:name,Subject:subjectName,Expires:expirationDate,Thumbprint:thumbprint,Hosts:hostNames}",
+            "--output",
+            "json"
+          ]
+        },
+        {
+          "id": "deployment-log",
+          "group": "Logs",
+          "label": "Deployment log",
+          "argv": [
+            "webapp",
+            "log",
+            "deployment",
+            "show",
+            "--resource-group",
+            "{{host.resource_group}}",
+            "--name",
+            "{{host.app}}"
+          ]
+        },
+        {
+          "id": "live-logs",
+          "group": "Logs",
+          "label": "Live logs",
+          "follow": true,
+          "timeout": 600,
+          "argv": [
+            "webapp",
+            "log",
+            "tail",
+            "--resource-group",
+            "{{host.resource_group}}",
+            "--name",
+            "{{host.app}}"
+          ]
+        }
+      ]
+    },
+    "github": {
+      "tool": "gh",
+      "title": "GitHub CLI",
+      "commands": [
+        {
+          "id": "gh-account",
+          "group": "GitHub",
+          "label": "GitHub account",
+          "argv": [
+            "auth",
+            "status"
+          ]
+        },
+        {
+          "id": "gh-repo",
+          "group": "GitHub",
+          "label": "Repository",
+          "argv": [
+            "repo",
+            "view",
+            "{{repository.url}}",
+            "--json",
+            "name,nameWithOwner,description,visibility,url,defaultBranchRef,pushedAt,createdAt,updatedAt,stargazerCount,forkCount,isPrivate,primaryLanguage,languages,licenseInfo,homepageUrl,repositoryTopics,diskUsage,owner"
+          ]
+        },
+        {
+          "id": "gh-people",
+          "group": "GitHub",
+          "label": "People",
+          "argv": [
+            "api",
+            "repos/{{repository.url:slug}}/collaborators"
+          ]
+        },
+        {
+          "id": "gh-commits",
+          "group": "History",
+          "label": "Commits",
+          "tool": "git",
+          "argv": [
+            "log",
+            "-40",
+            "--date=iso-strict",
+            "--pretty=format:%H%x09%h%x09%an%x09%ae%x09%aI%x09%D%x09%s"
+          ]
+        },
+        {
+          "id": "gh-branches",
+          "group": "History",
+          "label": "Branches",
+          "tool": "git",
+          "argv": [
+            "for-each-ref",
+            "refs/heads",
+            "refs/remotes",
+            "--format=%(refname:short)%09%(objectname:short)%09%(committerdate:iso-strict)%09%(upstream:short)%09%(HEAD)%09%(subject)"
+          ]
+        },
+        {
+          "id": "gh-tags",
+          "group": "History",
+          "label": "Tags",
+          "tool": "git",
+          "argv": [
+            "for-each-ref",
+            "refs/tags",
+            "--format=%(refname:short)%09%(objectname:short)%09%(creatordate:iso-strict)%09%(subject)"
+          ]
+        },
+        {
+          "id": "gh-status",
+          "group": "History",
+          "label": "Working tree",
+          "tool": "git",
+          "argv": [
+            "status",
+            "--porcelain=v1",
+            "-b"
+          ]
+        },
+        {
+          "id": "gh-authors",
+          "group": "History",
+          "label": "Authors",
+          "tool": "git",
+          "argv": [
+            "shortlog",
+            "-sne",
+            "HEAD"
+          ]
+        },
+        {
+          "id": "gh-releases",
+          "group": "Releases",
+          "label": "Releases",
+          "argv": [
+            "release",
+            "list",
+            "-R",
+            "{{repository.url:slug}}",
+            "--json",
+            "tagName,name,isLatest,isPrerelease,publishedAt,createdAt"
+          ]
+        },
+        {
+          "id": "gh-pulls",
+          "group": "Releases",
+          "label": "Pull requests",
+          "argv": [
+            "pr",
+            "list",
+            "-R",
+            "{{repository.url:slug}}",
+            "--state",
+            "all",
+            "--json",
+            "number,title,state,author,createdAt,headRefName,url"
+          ]
+        },
+        {
+          "id": "gh-issues",
+          "group": "Releases",
+          "label": "Issues",
+          "argv": [
+            "issue",
+            "list",
+            "-R",
+            "{{repository.url:slug}}",
+            "--state",
+            "all",
+            "--json",
+            "number,title,state,author,createdAt,url"
+          ]
+        },
+        {
+          "id": "gh-runs",
+          "group": "Actions",
+          "label": "CI runs",
+          "argv": [
+            "run",
+            "list",
+            "-R",
+            "{{repository.url:slug}}",
+            "--limit",
+            "20",
+            "--json",
+            "databaseId,displayTitle,status,conclusion,workflowName,headBranch,event,createdAt,updatedAt,url,headSha,attempt"
+          ]
+        },
+        {
+          "id": "gh-workflows",
+          "group": "Actions",
+          "label": "Workflows",
+          "argv": [
+            "workflow",
+            "list",
+            "-R",
+            "{{repository.url:slug}}",
+            "--all",
+            "--json",
+            "id,name,state,path"
+          ]
+        },
+        {
+          "id": "gh-secrets",
+          "group": "Actions",
+          "label": "Secrets (names)",
+          "argv": [
+            "secret",
+            "list",
+            "-R",
+            "{{repository.url:slug}}",
+            "--json",
+            "name,updatedAt"
+          ]
+        },
+        {
+          "id": "gh-caches",
+          "group": "Actions",
+          "label": "Caches",
+          "argv": [
+            "cache",
+            "list",
+            "-R",
+            "{{repository.url:slug}}",
+            "--json",
+            "id,key,sizeInBytes,createdAt,lastAccessedAt"
+          ]
+        },
+        {
+          "id": "gh-keys",
+          "group": "Actions",
+          "label": "Deploy keys",
+          "argv": [
+            "repo",
+            "deploy-key",
+            "list",
+            "-R",
+            "{{repository.url:slug}}",
+            "--json",
+            "id,title,createdAt,readOnly"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "skills": [
+    {
+      "name": "functional-requirements",
+      "category": "core",
+      "description": "Exhaustive functional decomposition, user roles, domain workflows, business logic rules, input validation constraints, and traceability keys [REQ-XX].",
+      "match": [
+        "feature", "requirement", "role", "workflow", "module", "function",
+        "action", "flow", "permission", "capability", "user story"
+      ],
+      "requires": []
+    },
+    {
+      "name": "non-functional-quality",
+      "category": "architecture",
+      "description": "Measurable quality attributes, latency thresholds (<200ms API, <1s page load), responsive layout across mobile and desktop, accessibility (WCAG 2.1 AA), and fault recovery.",
+      "match": [
+        "performance", "latency", "speed", "scale", "load", "responsive",
+        "mobile", "accessibility", "wcag", "slo", "sla", "reliability"
+      ],
+      "requires": [
+        "functional-requirements"
+      ]
+    },
+    {
+      "name": "security-architecture",
+      "category": "security",
+      "description": "OWASP Top 10 defenses, session and cookie hardening (HttpOnly, SameSite), RBAC/ABAC authorization at data and API boundaries, input sanitization, rate limiting, and data encryption.",
+      "match": [
+        "auth", "login", "security", "protect", "role", "permission",
+        "cookie", "session", "token", "owasp", "sanitization", "encryption"
+      ],
+      "requires": [
+        "functional-requirements"
+      ]
+    },
+    {
+      "name": "diagram-crafting",
+      "category": "visualization",
+      "description": "Semantic visual Mermaid diagrams (System Context, Component, Sequence, ERD, User Flow) paired with plain-language step-by-step narrative explanations for non-technical clients.",
+      "match": [
+        "diagram", "chart", "architecture", "flowchart", "erd", "sequence",
+        "system context", "component", "visual", "mermaid"
+      ],
+      "requires": [
+        "functional-requirements"
+      ]
+    },
+    {
+      "name": "living-srs-sync",
+      "category": "synchronization",
+      "description": "Treats the SRS as the living parent document of the software; synchronizes planner routes, design tokens, prototype screens, built code, and QA evidence for 100% equivalence.",
+      "match": [
+        "sync", "update", "living document", "plan", "build", "code",
+        "traceability", "parity", "status", "test", "verification"
+      ],
+      "requires": [
+        "functional-requirements",
+        "diagram-crafting"
+      ]
+    },
+    {
+      "name": "prototype-flow-capture",
+      "category": "prototype",
+      "description": "Validates the HTML prototype navigation flow, executes parallel headless screenshot capture, and enriches the living SRS with visual screen evidence and tested user pathways.",
+      "match": [
+        "prototype", "mockup", "screenshot", "screen", "preview",
+        "demo", "visual evidence", "walkthrough"
+      ],
+      "requires": [
+        "living-srs-sync",
+        "diagram-crafting"
+      ]
+    },
+    {
+      "name": "wireframe-generation",
+      "category": "wireframe",
+      "description": "Draws one application screen as a Low-Fidelity / Mid-Fidelity wireframe in classic Balsamiq / Figma blueprint style - strictly monochrome, crossed-box image placeholders, realistic sample data - as sections that drop into the studio's own wireframe shell.",
+      "match": [
+        "wireframe", "wireframes", "blueprint", "low-fidelity", "mid-fidelity", "balsamiq", "prototype layout"
+      ],
+      "requires": [
+        "functional-requirements"
+      ]
+    }
+  ]
+}

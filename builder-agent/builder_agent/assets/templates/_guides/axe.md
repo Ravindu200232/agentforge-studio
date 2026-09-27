@@ -1,0 +1,3 @@
+# Accessibility with axe and Playwright
+
+The scaffold's `e2e/a11y.spec.js` uses `@axe-core/playwright`. Run `npm run qa:a11y` (it starts the built app itself) for every public route; check role-specific pages and representative modal/form states from their signed-in journeys with `new AxeBuilder({ page })`, because a signed-out browser only sees the sign-in page at those routes. Inspect WCAG findings, repair the UI where possible, and save route, impact, rule and affected element in the QA report. Also check keyboard navigation and focus behavior for critical workflows. A route that could not load is untested, not accessible.

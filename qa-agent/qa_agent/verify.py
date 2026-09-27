@@ -1,0 +1,164 @@
+"""Testing the built application.
+
+The report on disk is the record, and it is written after every layer rather than
+once at the end — a run that is interrupted still leaves what it proved. The
+studio's Testing screen reads that file directly, so a partial report is a
+partial screen, not an empty one.
+"""
+from __future__ import annotations
+
+import time
+import threading
+from typing import Any
+
+from server_modules import bus, prompts, store
+from server_modules.session import ProjectSession, session_for
+
+QA_DIR = "qa"
+REPORT = (QA_DIR, "report.json")
+
+LAYERS = ("build", "runtime", "unit", "contracts", "journeys", "accessibility", "load")
+
+
+def report(project: str) -> dict[str, Any]:
+    session = session_for(project)
+    saved = session.read_record(*REPORT, fallback=None)
+    if not isinstance(saved, dict):
+        # No Testing run yet — the build's own artifacts are still evidence.
+        saved = {}
+    saved.setdefault("project", project)
+    from .evidence import collect
+    result = collect(session.workspace, saved)
+    result.setdefault("complete", False)
+    result.setdefault("provenance", "no verification has run for this project yet")
+    return result
+
+
+def _publish(session: ProjectSession, project: str, previous_rows: int) -> int:
+    """Turn whatever the agent has written so far into studio test events."""
+    current = report(project)
+    # Rows derived from the build's own record are not live test results.
+    rows = [r for r in (current.get("timeline") or []) if not r.get("derived")]
+    for row in rows[previous_rows:]:
+        bus.test_result(project,
+                        status=str(row.get("status") or "run"),
+                        msg=str(row.get("msg") or row.get("stage") or "check"),
+                        detail=str(row.get("detail") or ""))
+    return len(rows)
+
+
+def run(project: str, direction: str = "") -> dict[str, Any]:
+    """Verify the application, layer by layer, and publish as it goes."""
+    from builder_agent import build as builder
+
+    if not builder.built(project):
+        raise ValueError("build the application before testing it")
+
+    session = session_for(project)
+    session.begin("test", role=bus.DEVELOPER)
+    bus.test_start(project)
+    started = time.time()
+    seen = 0
+    published = [0]
+    stop_feed = threading.Event()
+
+    def feed() -> None:
+        while not stop_feed.wait(1):
+            published[0] = _publish(session, project, published[0])
+
+    watcher = threading.Thread(target=feed, name=f"qa-feed:{project}", daemon=True)
+    watcher.start()
+
+    try:
+        bus.phase(project, "qa:verify", "Verifying the application",
+                  detail="Build, runtime, units, routes, journeys, accessibility and load.")
+        from builder_agent.scaffold import guide_context
+        stack = str(store.require(project).get("stack") or "nextjs-mongo")
+        request = prompts.load("testing/run", project=project)
+        request += "\n\n## Selected scaffold and test guides\n\n" + guide_context(stack)
+        if direction.strip():
+            request += f"\n\n## What the customer asked you to check\n\n{direction.strip()}"
+
+        # The plan already runs and records every requested layer. A second
+        # agent audit repeats expensive builds/browser runs without adding UI
+        # evidence, so finish from the runner-owned JSON instead.
+        result = session.run_task(request, audit=False)
+        stop_feed.set()
+        watcher.join(timeout=2)
+        seen = _publish(session, project, published[0])
+
+        final = report(project)
+        if not final.get("complete"):
+            raise ValueError("testing ended without a complete QA report")
+        summary = final.get("summary") or {}
+        failed = int(summary.get("fail") or 0)
+        store.update(project, status="tested" if not failed else "tested-with-failures")
+        store.advance(project, "test")
+        bus.phase(project, "qa:verify", "Verifying the application",
+                  status="complete" if not failed else "failed")
+
+        bus.test_done(project)
+        elapsed = int(time.time() - started)
+        bus.agent_msg(
+            project,
+            f"Verification finished in {elapsed}s — {summary.get('pass', 0)} passed, "
+            f"{failed} failed, {summary.get('warn', 0)} warned.",
+            title="Testing complete")
+        session.note(
+            f"Verification finished: {summary.get('pass', 0)} passed, {failed} "
+            f"failed, {summary.get('warn', 0)} warned. The evidence is at "
+            f".agentforge/qa/report.json."
+            + ("" if not failed else " The failures are recorded there and are "
+               "the first thing to repair."))
+        session.finish(result.get("text", "") or "Verification complete.")
+        return final
+    except Exception as exc:  # noqa: BLE001
+        stop_feed.set()
+        watcher.join(timeout=2)
+        _publish(session, project, published[0])
+        bus.test_done(project)
+        session.fail(str(exc))
+        raise
+
+
+def repair(project: str, request: str = "") -> dict[str, Any]:
+    """Fix what the last run found, and prove the fix."""
+    current = report(project)
+    open_bugs = [b for b in (current.get("bugs") or []) if b.get("status") != "fixed"]
+    if not open_bugs and not request.strip():
+        return current
+
+    session = session_for(project)
+    session.begin("test-repair", role=bus.DEVELOPER)
+    try:
+        listed = "\n".join(
+            f"- [{b.get('severity', 'medium')}] {b.get('where', '')}: {b.get('what', '')}"
+            for b in open_bugs) or "(none recorded)"
+        task = (f"Repair what verification found, then prove each repair by "
+                f"re-running the check that caught it.\n\n## Open findings\n\n{listed}")
+        if request.strip():
+            task += f"\n\n## What the customer asked for\n\n{request.strip()}"
+        task += ("\n\nUpdate `.agentforge/qa/report.json` as you go: move each repaired "
+                 "finding into `resolvedBugs` and record the round in `repairs`.")
+
+        session.run_task(task, audit=False)
+        session.finish("Repairs applied.")
+        return report(project)
+    except Exception as exc:  # noqa: BLE001
+        session.fail(str(exc))
+        raise
+
+
+def screenshot(project: str, path: str) -> tuple[bytes, str]:
+    session = session_for(project)
+    target = (session.workspace / path).resolve()
+    if not target.is_relative_to(session.workspace.resolve()) or not target.is_file():
+        raise FileNotFoundError(path)
+    kind = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
+    return target.read_bytes(), kind.get(target.suffix.lower(), "application/octet-stream")
+
+
+def status() -> dict[str, Any]:
+    """Whether this machine can verify at all — what the studio asks on load."""
+    return {"available": True, "engine": "ollama-terminal",
+            "layers": list(LAYERS)}

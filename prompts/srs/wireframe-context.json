@@ -1,0 +1,9 @@
+{
+  "_about": "What a wireframe is shown of the handoff files. The files on disk are never changed; this only says what is left out of the copy the wireframe prompt carries. A wireframe draws screens, so who may open a screen, how sign-in is seeded and how the server is built are not part of it.",
+  "files": ["sitemap.md", "app.md"],
+  "omit_sections": ["Authentication", "Roles", "Who uses it", "Access", "Security", "API", "Non-functional requirements", "Assumptions", "Constraints"],
+  "omit_columns": ["Allowed Roles", "Roles", "Auth"],
+  "omit_patterns": ["\\bseed(ed|ing|s)?\\b", "\\bdemo\\b", "credentials?", "access control", "role[- ]based", "each role", "\\b403\\b", "forbidden", "\\brefused\\b", "signed-out", "permissions?", "\\bonly (their|his|her|its) own\\b", "sign-?up", "accounts? (are|is) (created|seeded|managed)"],
+  "strip_patterns": ["\\s*_\\[[^\\]]*\\]_"],
+  "omit_page_fields": ["allowed_roles", "login_required", "sign_in_route", "roles"]
+}

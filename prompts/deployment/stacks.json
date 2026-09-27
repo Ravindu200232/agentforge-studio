@@ -1,0 +1,18 @@
+{
+  "nextjs-mongo": {
+    "name": "Next.js + MongoDB",
+    "skill": "stack-nextjs",
+    "targets": "all"
+  },
+  "remix-mongo": {
+    "name": "Remix + MongoDB",
+    "skill": "stack-remix",
+    "targets": "all"
+  },
+  "mern-microservices": {
+    "name": "MERN microservices",
+    "skill": "stack-mern-microservices",
+    "targets": ["aws_ec2", "aws_ecs", "azure"],
+    "reason": "runs as several cooperating services, which only AWS and Azure host"
+  }
+}

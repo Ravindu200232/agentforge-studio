@@ -1,0 +1,134 @@
+{
+  "purpose": "Signing in with an existing account",
+  "question": "Which account should people be able to sign in with?",
+  "choices": [
+    {
+      "id": "none",
+      "label": "None — email and password only",
+      "hint": "The product keeps its own accounts and asks nothing of anyone else."
+    },
+    {
+      "id": "google",
+      "label": "Google",
+      "hint": "The widest reach almost everywhere. A Google Cloud project with an OAuth client; free.",
+      "fields": [
+        {
+          "key": "GOOGLE_CLIENT_ID",
+          "label": "Client ID",
+          "example": "812734650912-a1b2c3d4e5f6g7h8i9j0.apps.googleusercontent.com",
+          "hint": "Google Cloud console → APIs & Services → Credentials → your OAuth 2.0 Client ID. It ends in .apps.googleusercontent.com.",
+          "secret": false
+        },
+        {
+          "key": "GOOGLE_CLIENT_SECRET",
+          "label": "Client secret",
+          "example": "GOCSPX-<paste-your-client-secret>",
+          "hint": "The same panel, beside the client id. It starts with GOCSPX-.",
+          "secret": true
+        },
+        {
+          "key": "GOOGLE_REDIRECT_URI",
+          "label": "Redirect URI",
+          "example": "http://localhost:3000/api/auth/callback/google",
+          "hint": "Where Google sends people back. This exact string must also be listed under 'Authorised redirect URIs', or sign-in is refused.",
+          "secret": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "github",
+      "label": "GitHub",
+      "hint": "For anything developers use. Note that a GitHub account may have no public email, so plan for that.",
+      "fields": [
+        {
+          "key": "GITHUB_CLIENT_ID",
+          "label": "Client ID",
+          "example": "Iv23liQ8pM2xKdRw7YbT",
+          "hint": "GitHub → Settings → Developer settings → OAuth Apps → your app.",
+          "secret": false
+        },
+        {
+          "key": "GITHUB_CLIENT_SECRET",
+          "label": "Client secret",
+          "example": "<paste-your-client-secret>",
+          "hint": "The same page. It is shown once, when you generate it.",
+          "secret": true
+        },
+        {
+          "key": "GITHUB_REDIRECT_URI",
+          "label": "Callback URL",
+          "example": "http://localhost:3000/api/auth/callback/github",
+          "hint": "The 'Authorization callback URL' on the same page. It must match exactly.",
+          "secret": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "facebook",
+      "label": "Facebook",
+      "hint": "Reach outside the developer world, especially on mobile. The app needs review before it leaves test mode.",
+      "fields": [
+        {
+          "key": "FACEBOOK_APP_ID",
+          "label": "App ID",
+          "example": "1042871593627480",
+          "hint": "developers.facebook.com → your app → Settings → Basic.",
+          "secret": false
+        },
+        {
+          "key": "FACEBOOK_APP_SECRET",
+          "label": "App secret",
+          "example": "<paste-your-app-secret>",
+          "hint": "The same page, behind 'Show'.",
+          "secret": true
+        },
+        {
+          "key": "FACEBOOK_REDIRECT_URI",
+          "label": "Redirect URI",
+          "example": "http://localhost:3000/api/auth/callback/facebook",
+          "hint": "Listed under Facebook Login → Settings → Valid OAuth Redirect URIs.",
+          "secret": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "microsoft",
+      "label": "Microsoft",
+      "hint": "Work and school accounts through Entra ID, plus personal Microsoft accounts. What a company intranet expects.",
+      "fields": [
+        {
+          "key": "MICROSOFT_CLIENT_ID",
+          "label": "Application (client) ID",
+          "example": "7c4b1e92-3a5d-4f18-9b26-0e8d7a5c1f34",
+          "hint": "Entra admin centre → App registrations → your app → Overview.",
+          "secret": false
+        },
+        {
+          "key": "MICROSOFT_CLIENT_SECRET",
+          "label": "Client secret",
+          "example": "<paste-your-client-secret>",
+          "hint": "Certificates & secrets → Client secrets. The value is shown once.",
+          "secret": true
+        },
+        {
+          "key": "MICROSOFT_TENANT_ID",
+          "label": "Directory (tenant) ID",
+          "example": "common",
+          "hint": "Your tenant id for one organisation, or 'common' to accept any account.",
+          "secret": false
+        },
+        {
+          "key": "MICROSOFT_REDIRECT_URI",
+          "label": "Redirect URI",
+          "example": "http://localhost:3000/api/auth/callback/microsoft",
+          "hint": "Authentication → Redirect URIs, registered as a Web platform.",
+          "secret": false,
+          "required": false
+        }
+      ]
+    }
+  ]
+}

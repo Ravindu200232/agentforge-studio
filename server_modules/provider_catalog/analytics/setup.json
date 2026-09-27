@@ -1,0 +1,69 @@
+{
+  "purpose": "Analytics",
+  "question": "How should this app count what people do?",
+  "choices": [
+    {
+      "id": "none",
+      "label": "No analytics — nothing is measured",
+      "hint": "Nothing is sent anywhere and no consent banner is needed."
+    },
+    {
+      "id": "google-analytics",
+      "label": "Google Analytics",
+      "hint": "Free, and what most reporting expects. Needs a consent banner in the EU and UK.",
+      "fields": [
+        {
+          "key": "GA_MEASUREMENT_ID",
+          "label": "Measurement ID",
+          "example": "G-4XK2QP7L9M",
+          "hint": "Admin → Data streams → your web stream. It starts with G-.",
+          "secret": false
+        }
+      ]
+    },
+    {
+      "id": "posthog",
+      "label": "PostHog",
+      "hint": "Product analytics with funnels and session replay. Self-hostable.",
+      "fields": [
+        {
+          "key": "POSTHOG_PUBLIC_KEY",
+          "label": "Project API key",
+          "example": "phc_<paste-your-project-key>",
+          "hint": "Project settings → Project API key. It starts with phc_ and belongs in the page.",
+          "secret": false
+        },
+        {
+          "key": "POSTHOG_HOST",
+          "label": "Host",
+          "example": "https://eu.i.posthog.com",
+          "hint": "Which region, or your own instance. Optional; defaults to their US host.",
+          "secret": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "plausible",
+      "label": "Plausible",
+      "hint": "No cookies and no personal data, so no consent banner. Paid, and lighter than the others.",
+      "fields": [
+        {
+          "key": "PLAUSIBLE_DOMAIN",
+          "label": "Site domain",
+          "example": "riverside-dental.lk",
+          "hint": "Exactly as you added it in Plausible, with no https:// and no trailing slash.",
+          "secret": false
+        },
+        {
+          "key": "PLAUSIBLE_HOST",
+          "label": "Host",
+          "example": "https://plausible.io",
+          "hint": "Their host, or your own instance. Optional.",
+          "secret": false,
+          "required": false
+        }
+      ]
+    }
+  ]
+}

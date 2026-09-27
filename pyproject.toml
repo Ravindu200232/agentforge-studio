@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ollama-terminal-agent"
+version = "0.2.0"
+description = "A terminal coding agent powered by the Ollama Python SDK, and the AgentForge studio backend built on it"
+readme = "README.md"
+requires-python = ">=3.10"
+# pydantic validates the SRS document against the ported schema; without it the
+# studio backend cannot check a specification before the builder reads it.
+dependencies = ["ollama>=0.6.2,<1", "httpx>=0.27,<1", "pydantic>=2.6,<3", "cryptography>=42,<48"]
+
+[project.scripts]
+oterm = "ollama_terminal.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

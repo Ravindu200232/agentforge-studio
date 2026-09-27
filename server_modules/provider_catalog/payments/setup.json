@@ -1,0 +1,176 @@
+{
+  "purpose": "Payments",
+  "question": "How should this app take money?",
+  "choices": [
+    {
+      "id": "none",
+      "label": "No payments — free app or internal tool",
+      "hint": "The app does not process online payments or take cards."
+    },
+    {
+      "id": "stripe-test",
+      "label": "Stripe — test mode",
+      "hint": "No real money. Card 4242 4242 4242 4242 always succeeds.",
+      "fields": [
+        {
+          "key": "STRIPE_SECRET_KEY",
+          "label": "Stripe secret key",
+          "example": "sk_test_<paste-your-key-here>",
+          "hint": "Dashboard → Developers → API keys. The one that starts sk_test_.",
+          "secret": true
+        },
+        {
+          "key": "STRIPE_PUBLISHABLE_KEY",
+          "label": "Stripe publishable key",
+          "example": "pk_test_51H8xkLm9QpR2sT4uV6wX8yZ",
+          "hint": "The same page. This one is safe in the browser.",
+          "secret": false
+        },
+        {
+          "key": "STRIPE_WEBHOOK_SECRET",
+          "label": "Webhook signing secret",
+          "example": "whsec_<paste-your-webhook-secret>",
+          "hint": "Developers → Webhooks → your endpoint. Without it a payment cannot be confirmed.",
+          "secret": true,
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "stripe-live",
+      "label": "Stripe — real payments",
+      "hint": "Real cards, real money. Use your live keys.",
+      "fields": [
+        {
+          "key": "STRIPE_SECRET_KEY",
+          "label": "Stripe secret key",
+          "example": "sk_live_<paste-your-key-here>",
+          "hint": "Dashboard → Developers → API keys, with the test toggle off.",
+          "secret": true
+        },
+        {
+          "key": "STRIPE_PUBLISHABLE_KEY",
+          "label": "Stripe publishable key",
+          "example": "pk_live_51H8xkLm9QpR2sT4uV6wX8yZ",
+          "secret": false
+        },
+        {
+          "key": "STRIPE_WEBHOOK_SECRET",
+          "label": "Webhook signing secret",
+          "example": "whsec_<paste-your-webhook-secret>",
+          "secret": true
+        }
+      ]
+    },
+    {
+      "id": "payhere-sandbox",
+      "label": "PayHere — sandbox",
+      "hint": "Sri Lanka: LKR, local cards, eZ Cash and mCash. No real money.",
+      "fields": [
+        {
+          "key": "PAYHERE_MERCHANT_ID",
+          "label": "Merchant ID",
+          "example": "1221149",
+          "hint": "sandbox.payhere.lk → Settings → Domains & Credentials.",
+          "secret": false
+        },
+        {
+          "key": "PAYHERE_MERCHANT_SECRET",
+          "label": "Merchant secret",
+          "example": "MzIxNDU2Nzg5MDEyMzQ1Njc4OTA=",
+          "hint": "The same page. Used to sign and to verify the notification.",
+          "secret": true
+        },
+        {
+          "key": "PAYHERE_SANDBOX",
+          "label": "Sandbox mode",
+          "example": "true",
+          "secret": false
+        }
+      ]
+    },
+    {
+      "id": "payhere-live",
+      "label": "PayHere — real payments",
+      "hint": "Real LKR payments from your live PayHere account.",
+      "fields": [
+        {
+          "key": "PAYHERE_MERCHANT_ID",
+          "label": "Merchant ID",
+          "example": "1221149",
+          "hint": "payhere.lk → Settings → Domains & Credentials.",
+          "secret": false
+        },
+        {
+          "key": "PAYHERE_MERCHANT_SECRET",
+          "label": "Merchant secret",
+          "example": "MzIxNDU2Nzg5MDEyMzQ1Njc4OTA=",
+          "secret": true
+        },
+        {
+          "key": "PAYHERE_SANDBOX",
+          "label": "Sandbox mode",
+          "example": "false",
+          "secret": false
+        }
+      ]
+    },
+    {
+      "id": "paypal",
+      "label": "PayPal",
+      "hint": "Accepted almost everywhere, and the one people recognise. Buyers can pay without a card.",
+      "fields": [
+        {
+          "key": "PAYPAL_CLIENT_ID",
+          "label": "Client ID",
+          "example": "<paste-your-paypal-client-id>",
+          "hint": "developer.paypal.com → Apps & Credentials → your app. Switch between Sandbox and Live at the top of that page.",
+          "secret": false
+        },
+        {
+          "key": "PAYPAL_CLIENT_SECRET",
+          "label": "Secret",
+          "example": "<paste-your-paypal-secret>",
+          "hint": "The same panel, behind 'Show'.",
+          "secret": true
+        },
+        {
+          "key": "PAYPAL_ENVIRONMENT",
+          "label": "Environment",
+          "example": "sandbox",
+          "hint": "'sandbox' while you build, 'live' when real money should move.",
+          "secret": false
+        }
+      ]
+    },
+    {
+      "id": "razorpay",
+      "label": "Razorpay",
+      "hint": "Cards, UPI, netbanking and wallets in India, in rupees.",
+      "fields": [
+        {
+          "key": "RAZORPAY_KEY_ID",
+          "label": "Key ID",
+          "example": "rzp_test_R9tKmQ4xWbN2Lp",
+          "hint": "Dashboard → Settings → API Keys. It starts with rzp_test_ or rzp_live_ and belongs in the page.",
+          "secret": false
+        },
+        {
+          "key": "RAZORPAY_KEY_SECRET",
+          "label": "Key secret",
+          "example": "<paste-your-key-secret>",
+          "hint": "Shown once, when the key is generated.",
+          "secret": true
+        },
+        {
+          "key": "RAZORPAY_WEBHOOK_SECRET",
+          "label": "Webhook secret",
+          "example": "whsec_<paste-your-webhook-secret>",
+          "hint": "Settings → Webhooks. Without it a payment cannot be confirmed safely.",
+          "secret": true,
+          "required": false
+        }
+      ]
+    }
+  ]
+}

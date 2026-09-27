@@ -1,0 +1,147 @@
+'use client'
+
+import { useEffect, useState } from 'react'
+import { FileDown, Hammer, Loader2, RefreshCw } from 'lucide-react'
+import { api } from '@/lib/api'
+import { diagramRows } from '@/lib/srs-view'
+import { useStore } from '@/lib/store'
+import { Badge, Button, Empty, SubTab, SubTabs } from '../ui'
+import { cn } from '@/lib/utils'
+import { VIEWS, badgeFor } from './views'
+import SrsActivity from './SrsActivity'
+
+
+export default function SrsResult({ specOnly = false, onBuild, onApprove }) {
+  const project = useStore(s => s.project)
+  const busy = useStore(s => s.busy)
+  const srsStamp = useStore(s => s.srsStamp[s.project])
+  const sync = useStore(s => s.projectSync[s.project])
+  const updatingSrs = sync?.status === 'running' && sync?.source === 'srs' && sync?.srs_status !== 'completed'
+  const [srs, setSrs] = useState(null)
+  const [sub, setSub] = useState('overview')
+  const [state, setState] = useState('idle')
+  const [error, setError] = useState('')
+  const [downloadingPdf, setDownloadingPdf] = useState(false)
+
+  async function downloadPdf() {
+    setDownloadingPdf(true)
+    try {
+      await api.downloadProjectSrsPdf(project)
+      useStore.getState().addLog('INFO', 'SRS PDF downloaded')
+    } catch (e) {
+      useStore.getState().addLog('WARN', `The SRS PDF could not be downloaded — ${e.message}`)
+    } finally {
+      setDownloadingPdf(false)
+    }
+  }
+
+  async function load() {
+    if (!project) return
+    setState('loading')
+    let last
+    for (let i = 0; i < 4; i++) {
+      try {
+        const loaded = await api.srsResults(project)
+        // Same normaliser the review screen uses, so both render identical rows.
+        setSrs({ ...loaded, diagrams: diagramRows(loaded?.diagrams) })
+        setState('ready')
+        return
+      } catch (e) {
+        last = e
+        await new Promise(r => setTimeout(r, 700))
+      }
+    }
+    setError(last?.message || 'unknown error')
+    setState('error')
+  }
+
+  useEffect(() => {
+    // Keep the last readable document on screen (blurred) while the SRS branch
+    // is actually rewriting it. As soon as that branch reports completed,
+    // reload even if Prototype/Builder are still busy in parallel.
+    if (updatingSrs) return
+    if (!busy || sync?.source === 'srs' || !srs) load()
+  }, [project, busy, srsStamp, sync?.status, sync?.source, sync?.srs_status, Boolean(srs)])
+
+  if (!project) return <Empty>Open a project to see the SRS it was built from.</Empty>
+
+  const have = srs?.have || {}
+  const anything = Object.values(have).some(Boolean)
+  const pages = srs?.wireframes || []
+  const readyPages = pages.filter(page => page.has_html).length
+  const drawingWireframes = sync?.source === 'wireframe' && sync?.status === 'running'
+  const View = (VIEWS.find(v => v.id === sub) || VIEWS[0]).C
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col bg-[radial-gradient(circle_at_top_right,rgba(191, 185, 255,.07),transparent_30%)]">
+      <div className={cn('transition-[filter,opacity] duration-200',
+        updatingSrs && 'pointer-events-none select-none blur-[3px] opacity-55')}>
+      <SubTabs>
+        {VIEWS.filter(v => v.id !== 'wireframe').map(v => (
+          <SubTab key={v.id} on={sub === v.id} onClick={() => setSub(v.id)}>
+            {v.label}
+            {badgeFor(v.id, srs) != null && (
+              <Badge tone={badgeFor(v.id, srs).bad ? 'bad' : 'mute'}>
+                {badgeFor(v.id, srs).n}
+              </Badge>
+            )}
+          </SubTab>
+        ))}
+        <span className="flex-1" />
+        <span className="flex shrink-0 items-center gap-2 px-3">
+          {anything && !updatingSrs && (srs?.status !== 'approved' || readyPages < pages.length) && (
+            <Button variant="solid" disabled={drawingWireframes || busy} onClick={onApprove}
+                    title="Approve the SRS and draw HTML wireframes from its plan and handoff files">
+              {drawingWireframes ? <><Loader2 className="size-3 animate-spin" /> Drawing wireframes…</>
+                : srs?.status === 'approved' ? 'Draw wireframes again' : 'Approve SRS · Draw wireframes'}
+            </Button>
+          )}
+          {srs?.status === 'approved' && pages.length > 0 && readyPages === pages.length && (
+            <span className="text-[11px] font-semibold text-ok">Approved · {readyPages} wireframes ready</span>
+          )}
+          {have.pdf && (
+            <button type="button" onClick={downloadPdf} disabled={downloadingPdf}
+                    className="inline-flex h-[30px] items-center gap-1.5 border border-line2 px-3 font-display
+                               text-[12px] font-extrabold text-ink transition-colors hover:bg-ink/[.07] disabled:opacity-50">
+              {downloadingPdf ? <RefreshCw className="size-3 animate-spin" /> : <FileDown className="size-3" />} PDF
+            </button>
+          )}
+          <Button variant="outline" onClick={load}>
+            <RefreshCw className="size-3" /> Refresh
+          </Button>
+          {/* Said no to building it at the time. This is where "whenever you
+              like" has to actually be somewhere. */}
+          {specOnly && (
+            <Button variant="solid" disabled={busy} onClick={onBuild}
+                    title="Build the application this specification describes">
+              <Hammer className="size-3" /> Build this app
+            </Button>
+          )}
+        </span>
+      </SubTabs>
+      </div>
+
+      <div className="relative mx-auto min-h-0 w-full max-w-[1180px] flex-1 overflow-hidden">
+        <div className={cn('h-full overflow-y-auto p-5 transition-[filter,opacity] duration-200',
+          updatingSrs && 'pointer-events-none select-none blur-[3px] opacity-55')}>
+          {state === 'loading' && !anything && <Empty>Reading the SRS…</Empty>}
+          {state === 'error' && <Empty bad>Could not read it — {error}</Empty>}
+          {state !== 'error' && !anything && state !== 'loading' && (
+            <Empty>
+              This project has no SRS. It was built straight from a prompt —
+              start one with “Plan it first” on the home screen.
+            </Empty>
+          )}
+          {anything && <View srs={srs} onSelectView={setSub} />}
+        </div>
+        {updatingSrs && (
+          <div className="absolute inset-0 z-20 overflow-y-auto bg-panel/30 px-5 pb-5">
+            <div className="mx-auto max-w-[980px]">
+              <SrsActivity phase="generating" message="Writing the specification — every file streams in the chat" />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

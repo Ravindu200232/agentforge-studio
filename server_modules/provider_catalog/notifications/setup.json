@@ -1,0 +1,142 @@
+{
+  "purpose": "Email and SMS",
+  "question": "How should the app send messages?",
+  "choices": [
+    {
+      "id": "none",
+      "label": "No notifications — app does not send messages",
+      "hint": "No email or SMS messages are sent."
+    },
+    {
+      "id": "log-only",
+      "label": "Test — write them down, send nothing",
+      "hint": "The whole flow runs and every message is recorded, so nothing reaches a real person while you build."
+    },
+    {
+      "id": "resend-sandbox",
+      "label": "Resend — sandbox sender",
+      "hint": "Real sending with no domain set up. Uses onboarding@resend.dev, which only delivers to the address that owns the Resend account.",
+      "fields": [
+        {
+          "key": "RESEND_API_KEY",
+          "label": "Resend API key",
+          "example": "re_<paste-your-api-key>",
+          "hint": "resend.com → API Keys → Create. A send-only key is enough.",
+          "secret": true
+        },
+        {
+          "key": "EMAIL_FROM",
+          "label": "Sender address",
+          "example": "onboarding@resend.dev",
+          "hint": "Resend's own sandbox sender. Leave it as it is until you have verified a domain.",
+          "secret": false
+        }
+      ]
+    },
+    {
+      "id": "resend-domain",
+      "label": "Resend — your own domain",
+      "hint": "Sends to anyone. Needs a domain verified at resend.com/domains first, or every send is refused.",
+      "fields": [
+        {
+          "key": "RESEND_API_KEY",
+          "label": "Resend API key",
+          "example": "re_<paste-your-api-key>",
+          "secret": true
+        },
+        {
+          "key": "EMAIL_FROM",
+          "label": "Sender address",
+          "example": "orders@yourdomain.com",
+          "hint": "Must be at a domain that is verified in Resend.",
+          "secret": false
+        }
+      ]
+    },
+    {
+      "id": "twilio-sms",
+      "label": "Twilio — SMS",
+      "hint": "Text messages. Numbers are stored in E.164: +94771234567.",
+      "fields": [
+        {
+          "key": "TWILIO_ACCOUNT_SID",
+          "label": "Account SID",
+          "example": "AC<paste-your-account-sid>",
+          "hint": "console.twilio.com, at the top of the page.",
+          "secret": false
+        },
+        {
+          "key": "TWILIO_AUTH_TOKEN",
+          "label": "Auth token",
+          "example": "<paste-your-auth-token>",
+          "hint": "The same panel, behind 'show'.",
+          "secret": true
+        },
+        {
+          "key": "TWILIO_FROM_NUMBER",
+          "label": "Sending number",
+          "example": "+15005550006",
+          "hint": "Phone Numbers → Manage. +15005550006 is Twilio's magic test number.",
+          "secret": false
+        }
+      ]
+    },
+    {
+      "id": "sendgrid",
+      "label": "SendGrid — email",
+      "hint": "High-volume transactional email. A free tier, and what most companies already have.",
+      "fields": [
+        {
+          "key": "SENDGRID_API_KEY",
+          "label": "API key",
+          "example": "SG.<paste-your-api-key>",
+          "hint": "Settings → API Keys, with Mail Send permission. It starts with SG. and is shown once.",
+          "secret": true
+        },
+        {
+          "key": "EMAIL_FROM",
+          "label": "From address",
+          "example": "bookings@riverside-dental.lk",
+          "hint": "A verified sender, or an address on a domain you authenticated in SendGrid. An unverified one is silently dropped.",
+          "secret": false
+        }
+      ]
+    },
+    {
+      "id": "mailgun",
+      "label": "Mailgun — email",
+      "hint": "Transactional email with strong EU hosting. Sends from your own domain.",
+      "fields": [
+        {
+          "key": "MAILGUN_API_KEY",
+          "label": "API key",
+          "example": "key-<paste-your-sending-key>",
+          "hint": "Dashboard → API Keys → your sending key.",
+          "secret": true
+        },
+        {
+          "key": "MAILGUN_DOMAIN",
+          "label": "Sending domain",
+          "example": "mg.riverside-dental.lk",
+          "hint": "The domain you verified in Mailgun, not your website's domain.",
+          "secret": false
+        },
+        {
+          "key": "MAILGUN_REGION",
+          "label": "Region",
+          "example": "eu",
+          "hint": "'eu' or 'us'. The wrong one authenticates and then sends nothing.",
+          "secret": false,
+          "required": false
+        },
+        {
+          "key": "EMAIL_FROM",
+          "label": "From address",
+          "example": "bookings@mg.riverside-dental.lk",
+          "hint": "An address on the sending domain above.",
+          "secret": false
+        }
+      ]
+    }
+  ]
+}

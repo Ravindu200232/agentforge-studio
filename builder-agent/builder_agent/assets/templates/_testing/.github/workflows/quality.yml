@@ -1,0 +1,56 @@
+# The QA layers in CI: unit, Playwright (end-to-end, visual, accessibility),
+# Lighthouse CI, npm audit and an OWASP ZAP baseline scan. This runs on the
+# CI runner; nothing here needs Docker on a developer's machine.
+name: quality
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        ports: ['27017:27017']
+    env:
+      # Every stack's `npm start` listens on 3001 (Remix and the MERN gateway read PORT).
+      PORT: '3001'
+      BASE_URL: http://localhost:3001
+      MONGODB_URI: mongodb://localhost:27017/ci
+      # Tests never touch the application's database; a test database ends in _test.
+      TEST_MONGODB_URI: mongodb://localhost:27017/ci_test
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npm run seed --if-present
+      - name: Start the app
+        run: npm start > app.log 2>&1 &
+      - run: npx wait-on --timeout 120000 $BASE_URL
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test --project=desktop --update-snapshots=missing
+      - run: npx lhci collect && npx lhci assert
+      - run: npm audit --audit-level=high
+      - name: OWASP ZAP baseline
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: ${{ env.BASE_URL }}
+          rules_file_name: .zap/rules.tsv
+          fail_action: true
+          allow_issue_writing: false
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-reports
+          path: |
+            playwright-report
+            test-results
+            .lighthouseci
