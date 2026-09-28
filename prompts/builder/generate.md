@@ -2,6 +2,8 @@
 
 Read the selected scaffold, its README and folder structure; `.agentforge/srs/handoff.json` (the routes, collections, roles, workflows and acceptance criteria this build must match); the approved prototype and design (`.agentforge/design/design-spec.json`, and `.agentforge/design/theme.md` when a theme was selected); the stack's build guides staged at `.agentforge/build/guides/`; and any `media/IMAGES.md` or `.agentforge/PLUGIN.md` that exists.
 
+The staged guides are hand-written for this exact scaffold and are the standard for it; they do not cover everything a framework, library or provider might do. When the guides are silent on a real question — a current API signature, a config option, an error message neither you nor the guides explain — use `web_search` and `web_fetch` against the framework's or provider's own official site before guessing or falling back on possibly-stale memory. Never edit a guide file with what you find; it is a reference for the scaffold, not a place for this run's notes.
+
 ## Mandatory prototype-to-app parity workflow
 
 The approved HTML prototype is the frontend source of truth. The real application must reproduce it at 100% visual, content, image, interaction and navigation parity while connecting the real data and business logic.

@@ -4,7 +4,7 @@ Read the built application, SRS handoff, approved prototype and existing build/t
 
 For an incremental update, use the approved change scope before selecting layers: run unit tests only for edited or newly added business logic and its direct critical paths; run journeys only for a new feature or changed user-visible behavior. UI-only visual or styling changes do not trigger journeys, accessibility, performance or security checks unless the change can concretely affect that layer.
 
-The guides listed at the end of this prompt are the scaffold's own test runners and stack notes. Read the one each layer below names before running that layer — they cover the exact command, report artifact and stack-specific pitfalls this prompt does not repeat.
+The guides listed at the end of this prompt are the scaffold's own test runners and stack notes. Read the one each layer below names before running that layer — they cover the exact command, report artifact and stack-specific pitfalls this prompt does not repeat. When a guide is silent on something real — a runner flag that changed, an assertion API neither you nor the guide explains — use `web_search`/`web_fetch` against the tool's own official site rather than guessing; never edit the guide with what you find.
 
 ## Run every applicable layer
 

@@ -120,6 +120,17 @@ class PromptPackTests(unittest.TestCase):
         with self.assertRaises(prompts.MissingPrompt):
             prompts.load("../server_modules/config")
 
+    def test_the_build_and_testing_prompts_point_at_web_tools_for_gaps_the_guides_leave(self):
+        """Phase 8: the hand-maintained scaffold guides are never replaced,
+        but a real gap in them (a current API detail) now has a named,
+        explicit fallback — deployment/execute.md already had this."""
+        for name in ("builder/generate", "testing/run", "deployment/execute"):
+            text = prompts.load(name)
+            self.assertIn("web_search", text, name)
+            self.assertIn("web_fetch", text, name)
+        builder = prompts.load("builder/generate")
+        self.assertIn("Never edit a guide file", builder)
+
 
 class BuildAvailabilityTests(unittest.TestCase):
     def test_completed_legacy_prototype_is_buildable_after_reload(self):
