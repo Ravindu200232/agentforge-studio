@@ -95,6 +95,7 @@ export const api = {
   mongo: () => req('/mongo'),
   settings: () => req('/settings'),
   saveSettings: (s) => post('/settings', s),
+  mcpProbe: (server) => post('/mcp/probe', server),
   imageCheck: () => req('/image-check'),
   // Draws one design theme's own page. Kept afterwards, so the second
   // person to open that theme waits for a file read, not for a model.

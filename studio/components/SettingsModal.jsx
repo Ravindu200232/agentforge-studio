@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import {
   Check, Cpu, Database, Keyboard,
-  LayoutGrid, Loader2, Palette, Plug, SlidersHorizontal, X, Link2,
+  LayoutGrid, Loader2, Network, Palette, Plug, SlidersHorizontal, X, Link2,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Modal } from './ui'
@@ -13,6 +13,7 @@ import { useAuthStore } from '@/lib/auth'
 import { modelLabel } from '@/lib/models'
 import DeployAccounts from './deploy/DeployAccounts'
 import PluginAccounts from './PluginAccounts'
+import McpServers from './McpServers'
 
 /** Model picker interface for selecting and configuring LLM models across all agent roles. */
 function ModelPicker({ meta, onSaved }) {
@@ -208,6 +209,7 @@ export default function SettingsModal({ onClose, onSaved }) {
     { id: 'appearance',   label: 'Appearance',   Icon: Palette },
     { id: 'integrations', label: 'Integrations', Icon: Link2 },
     { id: 'plugins',      label: 'Plugins',      Icon: Plug },
+    { id: 'mcp',          label: 'MCP Servers',  Icon: Network },
     { id: 'shortcuts',    label: 'Shortcuts',    Icon: Keyboard },
   ]
 
@@ -272,6 +274,7 @@ export default function SettingsModal({ onClose, onSaved }) {
                : activeTab === 'appearance'   ? 'Appearance'
                : activeTab === 'integrations' ? 'Integrations'
                : activeTab === 'plugins'      ? 'Plugins'
+               : activeTab === 'mcp'          ? 'MCP Servers'
                : 'Keyboard Shortcuts'}
               </h2>
               <p className="text-[10.5px] sm:text-[11px] text-muted mt-0.5 truncate">
@@ -289,6 +292,8 @@ export default function SettingsModal({ onClose, onSaved }) {
                   ? 'Connect GitHub, AWS, Vercel, Netlify, Azure and your production database.'
                   : activeTab === 'plugins'
                   ? 'Stripe, Resend, Supabase, Google and the rest — set up once, used by any app you tick.'
+                  : activeTab === 'mcp'
+                  ? 'External MCP servers whose tools the agent can also call.'
                   : 'Key bindings active in AgentForge Studio.'}
               </p>
             </div>
@@ -484,6 +489,16 @@ export default function SettingsModal({ onClose, onSaved }) {
               <div className="max-w-[700px]">
                 <PluginAccounts project={project} />
               </div>
+            )}
+
+            {/* ── MCP SERVERS ── */}
+            {activeTab === 'mcp' && (
+              isAdmin
+                ? <McpServers meta={meta} onSaved={d => { setMeta(d); onSaved?.() }} />
+                : <p className="max-w-[700px] rounded-2xl border border-line bg-panel px-4 py-3 text-[12px] text-muted">
+                    MCP servers run as local commands on this machine, so only
+                    its admin registers them.
+                  </p>
             )}
 
             {/* ── SHORTCUTS ── */}

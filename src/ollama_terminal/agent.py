@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 from typing import Any, Callable
 
+from .mcp_client import MCPManager
 from .tools import TOOL_SCHEMAS, WorkspaceTools, tools_unsupported
 
 
@@ -113,7 +114,8 @@ class Agent:
                  cloud: bool = False, max_steps: int = 20,
                  announce: Callable[[str], None] = print,
                  web_host: str = "http://localhost:11434",
-                 protected_app_root: Path | None = None):
+                 protected_app_root: Path | None = None,
+                 mcp_servers: list[dict[str, Any]] | None = None):
         self.client = client
         self.model = model
         self.cloud = cloud
@@ -129,8 +131,10 @@ class Agent:
         self.context_override = context
         self.context = context or model_context_length(client, model)
         self.options = {"num_ctx": self.context} if self.context and not cloud else None
+        self.mcp = MCPManager(mcp_servers, on_log=lambda line: announce(f"[mcp] {line}")) if mcp_servers else None
         self.tools = WorkspaceTools(workspace, client, approve, web_host=web_host,
-                                    use_local_web=not cloud, protected_app_root=protected_app_root)
+                                    use_local_web=not cloud, protected_app_root=protected_app_root,
+                                    mcp=self.mcp)
         self.messages: list[dict] = [
             {"role": "system", "content": SYSTEM + f"\nWorkspace: {workspace.resolve()}"}
         ]
@@ -258,6 +262,12 @@ class Agent:
             schemas = (TOOL_SCHEMAS if self.mode == "act" else
                        [schema for schema in TOOL_SCHEMAS if schema["function"]["name"]
                         not in {"write_file", "replace_text", "run_command"}])
+            # An MCP server can carry tools of unknown, possibly side-effecting
+            # nature (the protocol offers no reliable read/write signal) — held
+            # to the same act-mode-only gate as write_file/run_command rather
+            # than trusted by default during plan-mode exploration.
+            if self.mcp is not None and self.mode == "act":
+                schemas = schemas + self.mcp.tool_schemas()
             kwargs: dict[str, Any] = {"model": self.model, "messages": self.messages,
                                       "tools": schemas, "stream": False}
             if getattr(self, "think", None) is not None:

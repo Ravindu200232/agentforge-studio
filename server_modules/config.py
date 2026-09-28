@@ -68,6 +68,10 @@ DEFAULTS: dict[str, Any] = {
     # interview follows one thread — payment, then refunds, then the refund
     # email, then who receives it — until nobody remembers what was being built.
     "interview_max_questions": 25,
+    # External MCP (Model Context Protocol) servers the agent can also draw
+    # tools from, each {"id", "command", "args", "env", "enabled"} — additive
+    # to the built-in tool set, never a replacement for it.
+    "mcp_servers": [],
 }
 
 

@@ -24,6 +24,7 @@ from typing import Any, Callable
 import ollama
 
 from ollama_terminal.agent import Agent
+from ollama_terminal.mcp_client import NAME_PREFIX as MCP_NAME_PREFIX
 from ollama_terminal.tools import WorkspaceTools
 
 from . import bus, config, deploy_vars, live, plugins, prompts
@@ -210,6 +211,9 @@ class StudioTools(WorkspaceTools):
         elif name == "web_fetch":
             bus.log(self.project, "INFO",
                     f'Read web page {str(args.get("url") or "")}', agent=role)
+        elif name.startswith(MCP_NAME_PREFIX) and not result.startswith("Tool error"):
+            bus.agent_msg(self.project, result[:2000], title=f"MCP · {name[len(MCP_NAME_PREFIX):]}",
+                          kind="mcp_result", agent=role)
         elif name == "run_command":
             command = str(args.get("command") or "")
             exit_code = result.split("\n", 1)[0] if result.startswith("exit_code=") else ""
@@ -313,6 +317,7 @@ class ProjectSession:
                     announce=self._announce,
                     web_host=saved.get("ollama_host") or "http://localhost:11434",
                     protected_app_root=config.ROOT,
+                    mcp_servers=saved.get("mcp_servers") or None,
                 )
                 self._agent.tools = StudioTools(
                     self.workspace, client,
@@ -322,6 +327,7 @@ class ProjectSession:
                     protected_app_root=config.ROOT,
                     project=self.project,
                     role_of=lambda: self.role,
+                    mcp=self._agent.mcp,
                 )
                 self._agent.base_system = self._system()
                 self._agent.think = bool(saved.get("agent_think"))

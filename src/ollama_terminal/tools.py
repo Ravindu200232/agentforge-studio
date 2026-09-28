@@ -16,6 +16,7 @@ from typing import Any, Callable
 import httpx
 
 from .guard import SourceGuard
+from .mcp_client import MCPManager
 
 
 MAX_OUTPUT = 24_000
@@ -147,7 +148,7 @@ TOOL_SCHEMAS = [
 class WorkspaceTools:
     def __init__(self, root: Path, client: Any, approve: Callable[[str], bool], shell: str | None = None,
                  web_host: str = "http://localhost:11434", use_local_web: bool = True,
-                 protected_app_root: Path | None = None):
+                 protected_app_root: Path | None = None, mcp: MCPManager | None = None):
         self.root = root.resolve()
         self.client = client
         self.approve = approve
@@ -155,6 +156,7 @@ class WorkspaceTools:
         self.web_host = web_host.rstrip("/")
         self.use_local_web = use_local_web
         self.source_guard = SourceGuard(protected_app_root) if protected_app_root else None
+        self.mcp = mcp
 
     def _local_web_request(self, endpoint: str, payload: dict[str, Any]) -> str:
         response = httpx.post(f"{self.web_host}/api/experimental/{endpoint}",
@@ -170,6 +172,8 @@ class WorkspaceTools:
 
     def execute(self, name: str, args: dict[str, Any]) -> str:
         try:
+            if self.mcp is not None and self.mcp.is_mcp_tool(name):
+                return self.mcp.call(name, args)[:MAX_OUTPUT]
             method = getattr(self, f"tool_{name}", None)
             if method is None or name not in {s["function"]["name"] for s in TOOL_SCHEMAS}:
                 raise ValueError(f"Unknown tool: {name}")

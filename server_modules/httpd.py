@@ -130,6 +130,24 @@ def models(_ctx: dict) -> Any:
     }
 
 
+def _safe_mcp_servers(saved: Any) -> list[dict[str, Any]]:
+    """Registered MCP servers, with each server's env values hidden.
+
+    An MCP server config can hold an API key the way `deploy_env` already
+    does; the browser gets back which env names are set, never their values,
+    the same "_set"/hint discipline this file already applies to other
+    secrets.
+    """
+    safe = []
+    for server in saved or []:
+        if not isinstance(server, dict):
+            continue
+        env = server.get("env") or {}
+        safe.append({k: v for k, v in server.items() if k != "env"}
+                    | {"env_keys": sorted(str(k) for k in env)})
+    return safe
+
+
 @route("GET", r"/settings")
 def read_settings(_ctx: dict) -> Any:
     saved = config.settings()
@@ -144,6 +162,7 @@ def read_settings(_ctx: dict) -> Any:
     deploy["mongodb_uri_hint"] = production[-4:] if production else ""
     return {**{k: v for k, v in saved.items() if not any(word in k for word in ("token", "api_key", "credentials", "mongodb_uri", "deploy_env"))},
             "admin": True, "local_num_ctx": saved.get("context") or saved.get("local_num_ctx") or 0,
+            "mcp_servers": _safe_mcp_servers(saved.get("mcp_servers")),
             "cloud_enabled": bool(catalog["cloud_enabled"]),
             "cloud_reachable": bool(catalog["cloud"] and catalog["ollama_ready"]),
             "api_key_hint": str(saved.get("ollama_api_key") or "")[-4:],
@@ -157,6 +176,25 @@ def read_settings(_ctx: dict) -> Any:
             "design_model": saved.get("model", "")}
 
 
+def _merge_mcp_servers(incoming: Any, previous: Any) -> list[dict[str, Any]]:
+    """Restore `env` values the browser never saw (see `_safe_mcp_servers`) for
+    a server sent back unchanged; a server that supplies its own `env` (new,
+    or deliberately edited) keeps exactly that instead, so a settings save
+    triggered by adding or removing one server can never silently wipe
+    another server's secrets."""
+    by_id = {s.get("id"): s for s in (previous or []) if isinstance(s, dict)}
+    merged = []
+    for server in incoming or []:
+        if not isinstance(server, dict) or not server.get("id"):
+            continue
+        server = dict(server)
+        if "env" not in server:
+            server["env"] = dict((by_id.get(server.get("id")) or {}).get("env") or {})
+        server.pop("env_keys", None)
+        merged.append(server)
+    return merged
+
+
 @route("POST", r"/settings")
 def write_settings(ctx: dict) -> Any:
     patch = {k: v for k, v in ctx.items() if not k.startswith("_") and k != "deploy_env"}
@@ -164,6 +202,8 @@ def write_settings(ctx: dict) -> Any:
         patch["deploy_mongodb_uri"] = deploy_vars.check_database_uri(patch["deploy_mongodb_uri"])
     if patch.get("ollama_api_key") == "****":
         patch.pop("ollama_api_key")
+    if "mcp_servers" in patch:
+        patch["mcp_servers"] = _merge_mcp_servers(patch["mcp_servers"], config.setting("mcp_servers"))
     for alias in ("agent_model", "planner_model", "builder_model", "design_model"):
         if patch.get(alias):
             patch["model"] = patch[alias]
@@ -189,6 +229,25 @@ def github_device_poll(ctx: dict) -> Any:
         config.save_settings({"github_token": token})
         result["deploy"] = read_settings({})["deploy"]
     return result
+
+
+@route("POST", r"/mcp/probe")
+def mcp_probe(ctx: dict) -> Any:
+    """Start one MCP server just long enough to list its tools, for the
+    settings UI's "test connection" action — never saved, never touches a
+    running agent's own tool list."""
+    from ollama_terminal import mcp_client
+    server_id = str(ctx.get("id") or "").strip()
+    command = str(ctx.get("command") or "").strip()
+    if not server_id or not command:
+        raise HttpError(400, "An id and a command are both required.")
+    try:
+        tools = mcp_client.probe({"id": server_id, "command": command,
+                                  "args": ctx.get("args") or [], "env": ctx.get("env") or {}})
+    except mcp_client.MCPError as exc:
+        raise HttpError(400, str(exc)) from exc
+    return {"ok": True, "tools": [{"name": t.get("name"), "description": t.get("description", "")}
+                                   for t in tools]}
 
 
 @route("POST", r"/cli-signin/available")
