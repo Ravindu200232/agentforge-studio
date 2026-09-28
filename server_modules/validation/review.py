@@ -118,7 +118,7 @@ def findings_text(verdict: dict) -> str:
 
 
 def stamp(doc: dict, status: str, rounds: int, detail: str,
-          verdict: dict | None = None) -> None:
+          verdict: dict | None = None, structural: dict | None = None) -> None:
     """Record the outcome on the document itself, where the studio reads it."""
     review = doc.setdefault("requirements_quality_review", {})
     if isinstance(review, dict):
@@ -129,3 +129,5 @@ def stamp(doc: dict, status: str, rounds: int, detail: str,
             "final_scores": (verdict or {}).get("scores") or {},
             "unresolved_findings": (verdict or {}).get("findings") or [],
         }
+        if structural is not None:
+            review["reviewer"]["structural_readout"] = structural

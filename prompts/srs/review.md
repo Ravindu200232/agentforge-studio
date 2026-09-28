@@ -34,6 +34,22 @@ Return JSON only, in exactly this shape:
 
 {{standards}}
 
+## Real-world grounding for what "well-written" means
+
+Weigh this alongside the standards above — it is independent evidence of what a
+well-written specification looks like in practice, not a source of this
+project's own requirements.
+
+{{reference}}
+
+## Mechanical readout (already computed, not for you to recompute)
+
+{{structure}}
+
+An empty section listed above can be entirely legitimate for this product —
+judge whether it should exist here, the way you judge everything else; do not
+treat this readout as a checklist to fill for its own sake.
+
 ## The specification
 
 {{document}}

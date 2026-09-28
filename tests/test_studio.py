@@ -401,6 +401,20 @@ class ReviewRuleTests(unittest.TestCase):
         self.assertIn("within 200ms", text)
         self.assertIn("rate limiting", text)
 
+    def test_stamp_records_the_structural_readout_alongside_the_verdict(self):
+        doc = a_document()
+        review.stamp(doc, "accepted", 1, "the draft met the standards",
+                     {"scores": dict.fromkeys(review.SCORES, 5)},
+                     structural={"sections": {"ratio": 0.25}, "ambiguity": {"rate": 1.0}})
+        readout = doc["requirements_quality_review"]["reviewer"]["structural_readout"]
+        self.assertEqual(readout["sections"]["ratio"], 0.25)
+        self.assertEqual(readout["ambiguity"]["rate"], 1.0)
+
+    def test_stamp_without_a_structural_readout_omits_the_key(self):
+        doc = a_document()
+        review.stamp(doc, "skipped", 0, "there was nothing to review")
+        self.assertNotIn("structural_readout", doc["requirements_quality_review"]["reviewer"])
+
 
 def a_wireframe(body: str = "", pad: int = 8000) -> str:
     """A complete HTML document of roughly the size a real page has."""
@@ -518,6 +532,41 @@ class CompletenessTests(unittest.TestCase):
         gaps = completeness.prototype_coverage(
             a_document(), routes, pages, {"light": {"accent": "#c2410c", "bg": "#fffaf5"}})
         self.assertTrue(any("design tokens" in gap for gap in gaps))
+
+
+class StructuralRubricTests(unittest.TestCase):
+    """The Phase 3 readouts a real review call is grounded against: which
+    optional sections carry content, and how many self-flagged ambiguities
+    the document actually resolved."""
+
+    def test_every_structural_section_starts_empty_on_the_bare_fixture(self):
+        readout = completeness.section_completeness(a_document())
+        self.assertEqual(readout["populated"], [])
+        self.assertEqual(len(readout["empty"]), len(completeness.STRUCTURAL_SECTIONS))
+        self.assertEqual(readout["ratio"], 0.0)
+
+    def test_a_populated_section_moves_from_empty_to_populated(self):
+        doc = a_document(security_requirements=["passwords are hashed"],
+                         acceptance_criteria=[{"criterion": "an order can be placed"}])
+        readout = completeness.section_completeness(doc)
+        self.assertIn("security requirements", readout["populated"])
+        self.assertIn("acceptance criteria", readout["populated"])
+        self.assertNotIn("security requirements", readout["empty"])
+        self.assertGreater(readout["ratio"], 0)
+
+    def test_no_ambiguities_is_a_fully_resolved_rate(self):
+        readout = completeness.ambiguity_resolution(a_document(ambiguities=[]))
+        self.assertEqual(readout, {"total": 0, "resolved": 0, "rate": 1.0})
+
+    def test_an_open_ambiguity_lowers_the_resolution_rate(self):
+        doc = a_document(ambiguities=[
+            {"id": "A1", "area": "payment", "description": "deposit amount",
+             "assumption_made": "20% of the order", "needs_clarification": False},
+            {"id": "A2", "area": "refunds", "description": "refund window",
+             "assumption_made": "no refunds after collection", "needs_clarification": True},
+        ])
+        readout = completeness.ambiguity_resolution(doc)
+        self.assertEqual(readout, {"total": 2, "resolved": 1, "rate": 0.5})
 
 
 class EventStreamTests(unittest.TestCase):

@@ -63,6 +63,33 @@ def _diagram_reference(kind: str) -> str:
         _reference_cache[kind] = note
     return note
 
+
+# The same grounding pattern as `_diagram_reference()`, applied to the document
+# itself rather than to one diagram kind — one query is enough since "what
+# makes a requirements document well-written" doesn't vary per project.
+_srs_reference: str | None = None
+_srs_reference_lock = threading.Lock()
+
+
+def _srs_quality_reference() -> str:
+    """A short, real-world grounding note on what makes a requirements
+    specification well-written — never a source of this project's own
+    requirements, only of what "well-written" looks like, so the review
+    that follows judges against a real external reference instead of only
+    the model's own untethered sense of quality."""
+    global _srs_reference
+    with _srs_reference_lock:
+        if _srs_reference is not None:
+            return _srs_reference
+    found = llm.web_search(
+        "IEEE 830 software requirements specification quality checklist "
+        "ambiguity traceability well-written requirement examples", max_results=3)
+    note = "\n".join(f"- {row['title']}: {row['content'][:300]}"
+                     for row in found if row.get("content"))[:1200]
+    with _srs_reference_lock:
+        _srs_reference = note
+    return note
+
 NOT_APPLICABLE = "NOT_APPLICABLE"
 
 WIREFRAME_APPROVAL_PROMPT = (
@@ -856,12 +883,25 @@ def _review_loop(session: ProjectSession, project: str, envelope: dict,
 
         bus.phase(project, "srs:review", "Reviewing the specification",
                   detail=f"Against the requirements standards (round {round_no + 1}).")
+        structure = completeness.section_completeness(doc)
+        ambiguity = completeness.ambiguity_resolution(doc)
+        structure_readout = (
+            f"- populated: {', '.join(structure['populated']) or '(none)'}\n"
+            f"- empty: {', '.join(structure['empty']) or '(none)'}\n"
+            f"- ambiguities flagged: {ambiguity['total']}, resolved: {ambiguity['resolved']} "
+            f"({ambiguity['rate']:.0%})")
+        try:
+            reference = _srs_quality_reference()
+        except Exception:  # noqa: BLE001 - grounding is a bonus, never a blocker
+            reference = ""
         try:
             verdict = llm.complete_json(
                 system=prompts.load("srs/review",
                                     standards=prompts.skills("srs", only=review_rules.AUDIT_SKILLS,
                                                              budget=5000),
-                                    document=review_rules.digest(doc)),
+                                    document=review_rules.digest(doc),
+                                    reference=reference or "(unavailable this run)",
+                                    structure=structure_readout),
                 user="Report against the standards above. Judge how the requirements "
                      "are written, not what the product does.",
                 validator=review_rules.review_validator(doc), label="srs_review")
@@ -876,12 +916,14 @@ def _review_loop(session: ProjectSession, project: str, envelope: dict,
         if review_rules.satisfied(verdict):
             bus.log(project, "SUCCESS", f"Specification accepted after {round_no + 1} round(s).")
             review_rules.stamp(doc, "accepted", round_no + 1,
-                               "the draft met the standards", verdict)
+                               "the draft met the standards", verdict,
+                               structural={"sections": structure, "ambiguity": ambiguity})
             return envelope
 
         if round_no >= cap:
             review_rules.stamp(doc, "capped", round_no + 1,
-                               f"the {cap}-round review limit was reached", verdict)
+                               f"the {cap}-round review limit was reached", verdict,
+                               structural={"sections": structure, "ambiguity": ambiguity})
             return envelope
 
         if previous is not None and len(blocking) >= previous:

@@ -169,6 +169,46 @@ def diagram_coverage(doc: dict) -> list[str]:
     return gaps
 
 
+# Optional-in-the-schema sections a well-formed SRS is still expected to
+# carry — every one of them can be legitimately empty for a given product (an
+# app with one role has no interesting access matrix), so this is a readout
+# the reviewer weighs alongside its own judgement, never a gate on its own.
+STRUCTURAL_SECTIONS = (
+    ("security_requirements", "security requirements"),
+    ("acceptance_criteria", "acceptance criteria"),
+    ("validation_rules", "field validation rules"),
+    ("risk_priority", "risk and priority ranking"),
+    ("assumptions", "assumptions"),
+    ("constraints", "constraints"),
+    ("role_access_matrix", "role access matrix"),
+    ("api_design", "API design"),
+)
+
+
+def section_completeness(doc: dict) -> dict:
+    """Which structurally-expected sections carry real content."""
+    populated = [label for key, label in STRUCTURAL_SECTIONS if _dig(doc, key)]
+    empty = [label for key, label in STRUCTURAL_SECTIONS if not _dig(doc, key)]
+    return {"populated": populated, "empty": empty,
+            "ratio": round(len(populated) / len(STRUCTURAL_SECTIONS), 2)}
+
+
+def ambiguity_resolution(doc: dict) -> dict:
+    """How many identified ambiguities are still open.
+
+    Nobody is in the room to answer a lingering question once generation is
+    done, so a specification that flagged its own ambiguities should resolve
+    nearly all of them (each already carries `assumption_made`, so resolving
+    one means standing behind that assumption, not deleting the entry).
+    """
+    ambiguities = _dig(doc, "ambiguities")
+    if not ambiguities:
+        return {"total": 0, "resolved": 0, "rate": 1.0}
+    resolved = sum(1 for a in ambiguities if not a.get("needs_clarification"))
+    return {"total": len(ambiguities), "resolved": resolved,
+            "rate": round(resolved / len(ambiguities), 2)}
+
+
 def traceability_coverage(doc: dict) -> list[str]:
     """Requirements that trace to nothing."""
     traced = {str(row.get("requirement_id")) for row in
