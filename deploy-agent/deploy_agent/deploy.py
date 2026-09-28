@@ -474,6 +474,17 @@ def plan_markdown(plan: dict) -> str:
 
 # --- starting ------------------------------------------------------------------
 
+def _require_cli(target: str) -> None:
+    """Fail now, with a clear install command, rather than deep inside a
+    `run_command` call the customer only sees as a cryptic mid-run error."""
+    key = SKILLS_FOR[target][0]
+    row = cli_signin.SIGNINS.available(only=key, fresh=True).get(key) or {}
+    if not row.get("installed"):
+        provider = cli_signin.PROVIDERS[key]
+        raise ValueError(f"{provider.title} is not installed on this machine. "
+                         f"Install it with `{row.get('install') or provider.install}` and try again.")
+
+
 def start(project: str, target: str, model: str = "") -> dict[str, Any]:
     """Deploy pressed: plan it. Nothing is deployed until the customer approves what comes back."""
     known = {row["id"] for row in targets()}
@@ -486,6 +497,7 @@ def start(project: str, target: str, model: str = "") -> dict[str, Any]:
         raise ValueError(f"{info.get('name', stack)} cannot be deployed to {label_of(target)}: "
                          f"it {info.get('reason', 'is not supported there')}. "
                          f"Choose one of: {', '.join(label_of(t) for t in allowed_targets(stack))}.")
+    _require_cli(target)
     session_for(project)
     _archive(project)
     run_id = f"dep_{uuid.uuid4().hex[:12]}"

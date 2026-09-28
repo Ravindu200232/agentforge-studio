@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
 from pathlib import Path
 import queue
 import subprocess
@@ -20,6 +22,88 @@ MAX_OUTPUT = 24_000
 MAX_READ = 32_000
 MAX_COMMAND_SECONDS = 600
 SERVER_COMMAND_SECONDS = 75
+
+
+# What a web-app build/test/deploy stage legitimately runs. Not a security
+# sandbox on its own (a shell string can still be obfuscated past a prefix
+# check) — this is a defense-in-depth floor against a command that is simply
+# not one of these things: an accidental `rm -rf`, a project's own compromised
+# script, or a prompt-injected instruction from a file the model read.
+_ALLOWED_PROGRAMS = {
+    "npm", "npx", "node", "yarn", "pnpm", "corepack",
+    "git", "gh",
+    "python", "python3", "pip", "pip3",
+    "tsc", "vitest", "playwright", "prisma", "mongosh",
+    "vercel", "netlify", "aws", "az",
+    "mkdir", "rmdir", "rm", "del", "mv", "move", "cp", "copy", "touch",
+    "cat", "type", "echo", "printf", "cd", "pwd", "dir", "ls", "chmod",
+    "curl", "wget", "grep", "findstr", "find", "sleep",
+    "which", "where", "test", "true", "false", "exit", "set", "export",
+    "sh", "bash", "cmd", "powershell", "pwsh",
+}
+# PowerShell's own Verb-Noun cmdlets (Set-Content, Copy-Item, Get-ChildItem,
+# ...) are allowed generically by that naming shape rather than enumerated —
+# except this explicit set, which can run arbitrary code or another process.
+_DANGEROUS_CMDLETS = {"invoke-expression", "invoke-command", "invoke-item",
+                      "start-process", "new-object", "add-type"}
+_CMDLET_SHAPE = re.compile(r"^[a-z]+-[a-z]+$")
+_SEGMENT_SPLIT = re.compile(r"&&|\|\||[;\n]|(?<!\|)\|(?!\|)")
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_DENY_PATTERNS = (
+    (re.compile(r"\bsudo\b|\bsu\s+-"), "sudo/su is not allowed"),
+    (re.compile(r"\b(curl|wget|invoke-webrequest|iwr)\b[^|;&\n]*\|\s*"
+               r"(sh|bash|zsh|powershell|pwsh|cmd)\b"),
+     "piping a download straight into a shell is not allowed"),
+    (re.compile(r"\biex\b|invoke-expression"), "Invoke-Expression is not allowed"),
+    (re.compile(r"\brm\s+-rf\s+(/(?:\s|$)|~(?:\s|$)|\*\s*$)"),
+     "recursive delete of the filesystem root/home is not allowed"),
+    (re.compile(r"\bformat\s+[a-z]:"), "formatting a drive is not allowed"),
+    (re.compile(r"(id_rsa|\.ssh/|\.aws[/\\]credentials|\.netrc)\b"
+               r"[^\n]*\b(curl|wget|nc\s|ftp\s)"),
+     "reading a credential file into a network command is not allowed"),
+)
+
+
+def _segment_program(segment: str) -> str:
+    """The leading executable of one `&&`/`||`/`;`/`|`-separated shell segment."""
+    segment = segment.strip().lstrip("(")
+    if not segment:
+        return ""
+    try:
+        tokens = shlex.split(segment, posix=(os.name != "nt"))
+    except ValueError:
+        tokens = segment.split()
+    idx = 0
+    while idx < len(tokens) and _ENV_ASSIGNMENT.match(tokens[idx]):
+        idx += 1
+    if idx >= len(tokens):
+        return ""
+    name = Path(tokens[idx]).name.lower()
+    for suffix in (".exe", ".cmd", ".ps1", ".sh", ".bat"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return name
+
+
+def _command_problem(command: str) -> str | None:
+    """Why `command` is blocked, or `None` when it is fine to run."""
+    lowered = command.lower()
+    for pattern, message in _DENY_PATTERNS:
+        if pattern.search(lowered):
+            return message
+    for segment in _SEGMENT_SPLIT.split(command):
+        program = _segment_program(segment)
+        if not program or program in _ALLOWED_PROGRAMS:
+            continue
+        if program in _DANGEROUS_CMDLETS:
+            return f"'{program}' is not allowed"
+        if _CMDLET_SHAPE.match(program):
+            continue  # an unlisted PowerShell Verb-Noun cmdlet — allowed by shape
+        return (f"'{program}' is not one of the commands a build/test/deploy "
+                f"stage runs (npm/git/node/python/vercel/... and their usual "
+                f"companions) — use one of those instead")
+    return None
 
 
 def tools_unsupported(exc: Exception) -> bool:
@@ -176,6 +260,9 @@ class WorkspaceTools:
     def tool_run_command(self, command: str, timeout_seconds: int = 600) -> str:
         if not command.strip():
             raise ValueError("Empty command")
+        problem = _command_problem(command)
+        if problem:
+            raise ValueError(f"Command blocked: {problem}")
         # A generated app may own one or more Node processes. Killing every
         # `node.exe` also kills the Studio, unrelated previews and the build
         # itself. Commands must target a known PID when cleanup is needed.

@@ -113,6 +113,7 @@ class DeployFlowCase(unittest.TestCase):
                       mock.patch.object(deploy, "session_for", lambda project: self.session),
                       mock.patch.object(config, "record_dir", lambda project: self.workspace / ".agentforge"),
                       mock.patch.object(deploy, "machine_facts", lambda *args: "FACTS"),
+                      mock.patch.object(deploy, "_require_cli", lambda target: None),
                       mock.patch.object(deploy.store, "get", lambda project: {"language": "English"}),
                       mock.patch.object(deploy.store, "update", lambda *a, **k: None),
                       mock.patch.object(deploy.store, "advance", lambda *a, **k: None)):
@@ -176,6 +177,23 @@ class StackTests(DeployFlowCase):
         for slug in ("core", "vercel", "netlify", "aws", "aws-ec2", "aws-ecs", "azure", "github",
                      "stack-nextjs", "stack-remix", "stack-mern-microservices"):
             self.assertRegex(prompts.skill("deployment", slug), r"(?i)questions? to ask|how to ask", slug)
+
+
+class CliAvailabilityTests(unittest.TestCase):
+    """The target's CLI is checked before anything is planned, not discovered
+    later as a raw 'command not found' deep inside a run."""
+
+    def test_a_missing_target_cli_is_refused_before_any_planning_starts(self):
+        with mock.patch.object(deploy.cli_signin.SIGNINS, "available",
+                               lambda only="", fresh=False:
+                               {"vercel": {"installed": False, "title": "Vercel", "install": "npm i -g vercel"}}):
+            with self.assertRaisesRegex(ValueError, r"Vercel is not installed.*npm i -g vercel"):
+                deploy._require_cli("vercel")
+
+    def test_an_installed_target_cli_is_not_blocked(self):
+        with mock.patch.object(deploy.cli_signin.SIGNINS, "available",
+                               lambda only="", fresh=False: {"vercel": {"installed": True}}):
+            deploy._require_cli("vercel")  # does not raise
 
 
 class PlanFirstTests(DeployFlowCase):

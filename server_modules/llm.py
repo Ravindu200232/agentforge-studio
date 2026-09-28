@@ -116,6 +116,26 @@ def _model(override: str = "") -> str:
     return chosen
 
 
+_context_cache: dict[str, int] = {}
+_context_lock = threading.Lock()
+
+
+def _context_for(model: str) -> int:
+    """`local_num_ctx` when the customer set one; otherwise the model's own
+    advertised maximum, read once per model and cached for this process."""
+    override = int(config.setting("context") or 0)
+    if override:
+        return override
+    with _context_lock:
+        if model in _context_cache:
+            return _context_cache[model]
+    from ollama_terminal.agent import model_context_length
+    found = model_context_length(client(), model) or 0
+    with _context_lock:
+        _context_cache[model] = found
+    return found
+
+
 def _tools_for(project: str, workspace: Path | None, role: str) -> Any:
     """A `ReadOnlyTools` for this call, or `None` when no project/workspace was given.
 
@@ -141,7 +161,7 @@ def complete(system: str, user: str, model: str = "", think: bool | None = None,
         "stream": False,
     }
     kwargs["think"] = bool(config.setting("agent_think")) if think is None else think
-    context = int(config.setting("context") or 0)
+    context = _context_for(kwargs["model"])
     if context and not config.setting("cloud"):
         kwargs["options"] = {"num_ctx": context}
     tools = _tools_for(project, workspace, role)
@@ -179,7 +199,7 @@ def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None
         if tools is None and not config.setting("cloud") and not selected.endswith(":cloud"):
             kwargs["format"] = "json"
         kwargs["think"] = bool(config.setting("agent_think"))
-        context = int(config.setting("context") or 0)
+        context = _context_for(kwargs["model"])
         if context and not config.setting("cloud"):
             kwargs["options"] = {"num_ctx": context}
         message = llm_tools.run_chat(client().chat, kwargs, tools)
@@ -223,7 +243,7 @@ def complete_html(system: str, user: str, model: str = "", minimum: int = 0,
     for _ in range(max(1, attempts)):
         kwargs: dict[str, Any] = {"model": _model(model), "messages": messages, "stream": False}
         kwargs["think"] = bool(config.setting("agent_think")) if think is None else think
-        context = int(config.setting("context") or 0)
+        context = _context_for(kwargs["model"])
         if context and not config.setting("cloud"):
             kwargs["options"] = {"num_ctx": context}
         message = llm_tools.run_chat(client().chat, kwargs, tools)
