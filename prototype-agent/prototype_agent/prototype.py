@@ -8,7 +8,7 @@ import shutil
 import threading
 from typing import Any
 
-from server_modules import bus, llm, prompts, store
+from server_modules import bus, config, llm, prompts, reference_staging, store
 from server_modules.session import ProjectSession, RunCancelled, session_for
 
 from . import design as design_stage
@@ -177,6 +177,10 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
         (root / "routes.json").unlink(missing_ok=True)
         checkpoint_path.unlink(missing_ok=True)
 
+    premium_skill_path, = reference_staging.stage(
+        session.workspace, f"{config.RECORD_DIR}/{PROTOTYPE_DIR}/skills/premium-frontend",
+        {"SKILL.md": prompts.skill("prototype", "premium-frontend")})
+
     bus.phase(project, "prototype:kit", "Designing the shared look",
               detail="Reading the approved wireframes, images and flow, then drawing the shared design system.")
     if can_resume:
@@ -193,7 +197,9 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
         say("Resuming the prototype from its saved design kit and completed pages.")
     else:
         bus.progress(project, "Preparing the shared prototype design", 2, agent=bus.DESIGNER)
-        made = prototype_brief.prepare(doc, spec, customization, routes_out, structures, say)
+        made = prototype_brief.prepare(doc, spec, customization, routes_out, structures, say,
+                                       project=project, workspace=session.workspace,
+                                       premium_skill_path=premium_skill_path)
         _write_kit(session, project, root, made, routes_out)
         checkpoint = {
             "fingerprint": fingerprint,
@@ -205,10 +211,19 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
             "images": made["images"],
         }
         checkpoint_path.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8")
-    premium_skill = prompts.skill("prototype", "premium-frontend")
     system = (prompts.load("prototype/system")
               + "\n\n## Premium frontend design skill\n\n"
-              + premium_skill)
+              + f"Read `{premium_skill_path}` yourself with your `read_file` tool.")
+
+    # What every screen needs and does not change per page: staged once, read
+    # by each page's own call, rather than pasted into every one of them.
+    context_dir = f"{config.RECORD_DIR}/{PROTOTYPE_DIR}/context"
+    srs_subset_path, uploaded_images_path, kit_reference_path = reference_staging.stage(
+        session.workspace, context_dir, {
+            "srs-subset.json": json.dumps(context, ensure_ascii=False),
+            "uploaded-images.json": json.dumps(uploaded_images, ensure_ascii=False),
+            "kit-reference.json": json.dumps(prototype_brief.kit_reference(made["kit"]), ensure_ascii=False),
+        })
 
     def draw(item: tuple[dict, dict]) -> dict:
         nonlocal completed
@@ -226,26 +241,36 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
             return row
         bus.agent_msg(project, f"Drawing prototype screen {row['name']} ({row['route']}) from the approved wireframe and design.",
                       title="Prototype screen", kind="narration", agent=bus.DESIGNER)
-        brief = {"page": page, "route_map": nav, "design": spec,
-                 "product": context, "customer_direction": direction,
+        slug = row["file"].rsplit(".", 1)[0]
+        requirements = [fr for fr in doc.get("functional_requirements", [])
+                        if set(fr.get("allowed_roles") or []) &
+                        set(page.get("allowed_roles") or [])][:12]
+        requirements_path, = reference_staging.stage(
+            session.workspace, context_dir, {f"requirements-{slug}.json":
+                json.dumps(requirements, ensure_ascii=False)}, fresh=False)
+        brief = {"page": page, "route_map": nav,
+                 "design_spec_path": f"{config.RECORD_DIR}/design/design-spec.json",
+                 "product_context_path": srs_subset_path, "customer_direction": direction,
                  "flow": prototype_brief.page_flow(made["flow"], str(page["route"])),
-                 "kit_shell": made["kit"]["shell.html"],
-                 "kit": prototype_brief.kit_reference(made["kit"]),
+                 "kit_shell_path": f"{config.RECORD_DIR}/{PROTOTYPE_DIR}/kit/shell.html",
+                 "kit_reference_path": kit_reference_path,
                  "demo_accounts": made["accounts"],
                  "sample_photographs": made["images"],
-                 "uploaded_site_images": uploaded_images,
+                 "uploaded_site_images_path": uploaded_images_path,
                  "ideas_from_the_web": made["ideas"],
-                 "requirements": [fr for fr in doc.get("functional_requirements", [])
-                                  if set(fr.get("allowed_roles") or []) &
-                                  set(page.get("allowed_roles") or [])][:12]}
+                 "requirements_path": requirements_path}
         if wireframe_source is not None:
+            # The source HTML often carries grey boxes and other low-fidelity
+            # styling. Stage only the stripped functional blueprint, so the
+            # approved design decides the finished visual UI.
+            blueprint_path, = reference_staging.stage(
+                session.workspace, context_dir, {f"blueprint-{slug}.html":
+                    structures.get(str(page["route"]), "")}, fresh=False)
             brief.update({"approved_prototype_plan": approved_execution_plan,
-                          # The source HTML often carries grey boxes and other
-                          # low-fidelity styling. Give the page model only its
-                          # stripped functional blueprint, so the approved
-                          # design decides the finished visual UI.
-                          "functional_blueprint": structures.get(str(page["route"]), ""),
+                          "functional_blueprint_path": blueprint_path,
                           "selected_design_md_path": customization.get("design_md_path", ""),
+                          "selected_design_md_workspace_path":
+                              customization.get("design_md_workspace_path", ""),
                           "customizer_prompt": customization.get("customizer_prompt", ""),
                           "customizer_selection": customization.get("customizer_spec", {})})
         user = json.dumps(brief, ensure_ascii=False)
@@ -256,7 +281,8 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
         minimum = max(2800, min(6500, weight * 650))
         html = llm.complete_html(system, user, minimum=minimum,
                                  label=f"prototype {row['route']}", attempts=1,
-                                 think=False)
+                                 think=False, project=project, workspace=session.workspace,
+                                 role=bus.DESIGNER)
         if session.cancelled:
             raise RunCancelled(project)
         html = prototype_brief.ensure_assets(html)

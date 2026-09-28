@@ -280,6 +280,26 @@ class ReviseApproveCancelTests(ChangesTestCase):
         self.assertTrue(self.of_type("prototype"))
         self.assertTrue([e for e in self.of_type("sync_state") if e.get("source") == "change"])
 
+    def test_excluding_a_stage_drops_its_steps_before_execution(self):
+        change_id = self.proposed()
+        changes.decide(PROJECT, change_id, "approve", excluded_stages=["Build"])
+        self.settle(change_id)
+        request, plan = self.session.executed[0]
+        self.assertIn("Add the field", plan)
+        self.assertNotIn("Add it to the form", plan)
+        self.assertIn("Build: not affected", plan)
+        self.assertEqual(changes._load(PROJECT, change_id)["excluded_stages"], ["Build"])
+        self.assertEqual(changes._load(PROJECT, change_id)["status"], "done")
+
+    def test_excluding_every_affected_stage_finishes_without_executing(self):
+        change_id = self.proposed()
+        changes.decide(PROJECT, change_id, "approve", excluded_stages=["SRS", "Build"])
+        self.settle(change_id)
+        self.assertEqual(self.session.executed, [])
+        state = changes._load(PROJECT, change_id)
+        self.assertEqual(state["status"], "done")
+        self.assertIn("Nothing left to build", state["summary"])
+
     def test_a_blocked_run_is_a_failed_change_not_a_done_one(self):
         change_id = self.proposed()
         self.session.execution = {"status": "blocked", "text": "no database", "rounds": 2}

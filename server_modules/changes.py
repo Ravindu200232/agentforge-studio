@@ -240,6 +240,20 @@ def _turns(change: dict) -> str:
     return prompts.load("changes/history", turns=body)
 
 
+def _excluding(plan: dict, excluded: set[str]) -> dict:
+    """The plan with excluded stages' steps dropped and their impact rows marked not affected.
+
+    Excluded work is simply never described to the executing agent — there is
+    no instruction, and so no reason, for it to touch that stage's files.
+    """
+    if not excluded:
+        return plan
+    return {**plan,
+            "steps": [step for step in plan.get("steps", []) if step.get("stage") not in excluded],
+            "impact": [{**row, "affected": bool(row.get("affected")) and row.get("stage") not in excluded}
+                      for row in plan.get("impact", [])]}
+
+
 def plan_markdown(plan: dict) -> str:
     """The plan as the text the executing agent is handed."""
     lines = [f"# {plan.get('title', '')}", "", str(plan.get("summary", "")), "", "## What it touches"]
@@ -385,7 +399,8 @@ def submit(project: str, request: str, model: str = "", echo: bool = True, flow:
     return {"ok": True, "project": project, "change": change["id"]}
 
 
-def decide(project: str, change_id: str, decision: str, feedback: str = "", model: str = "") -> dict:
+def decide(project: str, change_id: str, decision: str, feedback: str = "", model: str = "",
+          excluded_stages: list[str] | None = None) -> dict:
     """The buttons on the plan card."""
     change = _load(project, change_id)
     if not change:
@@ -394,7 +409,12 @@ def decide(project: str, change_id: str, decision: str, feedback: str = "", mode
         with _lock:
             if change["status"] != "proposed":
                 return {"ok": False, "detail": "that plan is no longer waiting for approval"}
+            excluded = [str(stage) for stage in (excluded_stages or []) if str(stage).strip()]
             change["status"] = "approved"
+            change["excluded_stages"] = excluded
+            if excluded:
+                change["history"].append({"role": "user", "kind": "excluded_stages",
+                                          "text": "Excluded from this run: " + ", ".join(excluded)})
             _save(change)
         bus.change(project, change)
         _spawn(project, change_id, _execute, project, change_id, model)
@@ -620,6 +640,15 @@ def _execute(project: str, change_id: str, model: str) -> None:
         return _execute_flow(project, change, flow, model)
     session = session_for(project)
     session.begin("change")
+    excluded = set(change.get("excluded_stages") or [])
+    plan_data = _excluding(change["plan"], excluded)
+    if excluded and not plan_data.get("steps"):
+        change.update(status="done", summary="Nothing left to build — every affected stage was excluded.")
+        _save(change)
+        _set_active(project, None)
+        bus.change(project, change)
+        session.finish(change["summary"])
+        return
     change.update(status="running")
     _save(change)
     bus.change(project, change)
@@ -627,7 +656,7 @@ def _execute(project: str, change_id: str, model: str) -> None:
         number = versions.next_number(project)
         versions.preserve_results(project, number, session.workspace)          # what the tests said before this update
         before, counts_before = _snapshot(session.workspace), versions.test_counts(session.workspace)
-        plan = plan_markdown(change["plan"])
+        plan = plan_markdown(plan_data)
         records = "\n".join(f"- {name}" for name in versions.result_records(session.workspace)) or "(none yet)"
         request = prompts.load("changes/execute", request=change["request"], plan=plan,
                                artifacts=project_map(session.workspace), language=_language(project),

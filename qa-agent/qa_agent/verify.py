@@ -11,7 +11,7 @@ import time
 import threading
 from typing import Any
 
-from server_modules import bus, prompts, store
+from server_modules import bus, prompts, reference_staging, store
 from server_modules.session import ProjectSession, session_for
 
 QA_DIR = "qa"
@@ -72,10 +72,12 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
     try:
         bus.phase(project, "qa:verify", "Verifying the application",
                   detail="Build, runtime, units, routes, journeys, accessibility and load.")
-        from builder_agent.scaffold import guide_context
+        from builder_agent.scaffold import guide_files
         stack = str(store.require(project).get("stack") or "nextjs-mongo")
         request = prompts.load("testing/run", project=project)
-        request += "\n\n## Selected scaffold and test guides\n\n" + guide_context(stack)
+        guide_paths = reference_staging.stage(session.workspace, f"{QA_DIR}/guides", guide_files(stack))
+        request += ("\n\n## Selected scaffold and test guides\n\nRead these yourself before planning:\n"
+                   + reference_staging.as_bullets(guide_paths))
         if direction.strip():
             request += f"\n\n## What the customer asked you to check\n\n{direction.strip()}"
 

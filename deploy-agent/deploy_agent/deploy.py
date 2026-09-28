@@ -37,7 +37,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from server_modules import bus, changes, cli_signin, config, deploy_vars, prompts, store
+from server_modules import bus, changes, cli_signin, config, deploy_vars, prompts, reference_staging, store
 from server_modules.session import RunCancelled, session_for
 
 DEPLOY_DIR = "deploy"
@@ -251,20 +251,12 @@ def stage_skills(project: str, target: str) -> list[str]:
     """
     session = session_for(project)
     wanted = _skill_slugs(project, target)
-    folder = session.workspace / SKILLS_DIR
-    shutil.rmtree(folder, ignore_errors=True)
-    paths = []
-    for slug in wanted:
-        page = prompts.skill("deployment", slug)
-        destination = folder / slug / "SKILL.md"
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(page, encoding="utf-8")
-        paths.append(f"{SKILLS_DIR}/{slug}/SKILL.md")
-    return paths
+    files = {f"{slug}/SKILL.md": prompts.skill("deployment", slug) for slug in wanted}
+    return reference_staging.stage(session.workspace, SKILLS_DIR, files)
 
 
 def _skill_lines(paths: list[str]) -> str:
-    return "\n".join(f"   - `{path}`" for path in paths)
+    return reference_staging.as_bullets(paths)
 
 
 def _run(command: list[str], cwd: Path | None = None, timeout: int = 20) -> str:
@@ -400,8 +392,7 @@ def _slug(text: str) -> str:
 
 def _reads(project: str, since: int) -> set[str]:
     """The files the agent has opened since the request began, from the durable event log."""
-    return {str(row.get("name")) for row in bus.history(project)
-            if row.get("type") == "file_read" and int(row.get("at") or 0) >= since}
+    return reference_staging.reads_since(project, since)
 
 
 def validator(project: str, change: dict):
@@ -419,7 +410,7 @@ def validator(project: str, change: dict):
             return changes.check_question(data, may_ask)
         if kind != "plan":
             raise ValueError('"kind" must be "question" or "plan"')
-        unread = [path for path in required if path not in _reads(project, since)]
+        unread = reference_staging.unread(required, project, since)
         if unread:
             raise ValueError("read the skill pages before you plan, with read_file: "
                              + ", ".join(unread) + ". Then return the plan again.")

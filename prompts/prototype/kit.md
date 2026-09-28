@@ -14,10 +14,11 @@ The JavaScript must:
 The shell must use the route map, keep shared navigation consistent, include the literal `<!-- page content -->` marker, and contain working `data-go="/route"` links. The shell and kit must use sibling relative filenames resolved from the route map, never filesystem or root-relative app URLs.
 
 ## Design
-{{design}}
+Read `{{design_spec_path}}` yourself with your `read_file` tool — the approved
+design tokens are not pasted in here.
 
 ## Premium frontend skill
-{{premium_frontend_skill}}
+Read `{{premium_frontend_skill_path}}` yourself with your `read_file` tool.
 
 {{design_md}}
 

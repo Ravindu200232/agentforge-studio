@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from server_modules import bus, plugins, prompts, store
+from server_modules import bus, plugins, prompts, reference_staging, store
 from server_modules.session import session_for
 
 BUILD_DIR = "build"
@@ -36,61 +36,26 @@ def show_preview(project: str) -> None:
         bus.log(project, "WARN", f"The preview could not be started: {exc}")
 
 
-def _context_block(project: str) -> str:
-    """What the build must match, restated only where the model may have lost it.
-
-    The conversation already carries the specification and the design. This is
-    the handoff's own contract — the routes, collections and acceptance proofs —
-    which is short, exact, and the thing a long build drifts away from first.
-    """
-    from srs_agent import document as srs_document
-
-    handoff = srs_document.handoff(project)
-    if not handoff:
-        return ""
-    keep = {key: handoff[key] for key in
-            ("routes", "collections", "roles", "workflows", "acceptance")
-            if handoff.get(key)}
-    if not keep:
-        return ""
-    return ("\n\n## The handoff contract, exactly\n\n```json\n"
-            + json.dumps(keep, ensure_ascii=False, indent=2) + "\n```")
-
-
 def _prototype_context_block(workspace: Path) -> str:
-    """Give the builder an exact inventory it must read, map and reproduce."""
-    prototype = workspace / ".agentforge" / "prototype"
-    routes_file = prototype / "routes.json"
-    if not routes_file.is_file():
+    """Point the builder at the prototype it must read, map and reproduce.
+
+    `builder/generate.md` already tells the model to open `routes.json` and
+    read every prototype HTML file and shared asset in full; this only says
+    whether there is a prototype to read at all, rather than pasting its
+    routes or file lists in (the model lists the folder itself).
+    """
+    if not (workspace / ".agentforge" / "prototype" / "routes.json").is_file():
         return ""
-
-    try:
-        routes = json.loads(routes_file.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        routes = {"routes": []}
-
-    html_files = sorted(path.name for path in prototype.glob("*.html") if path.is_file())
-    shared_assets = sorted(
-        path.relative_to(prototype).as_posix()
-        for path in (prototype / "assets").rglob("*")
-        if path.is_file()
-    ) if (prototype / "assets").is_dir() else []
-    inventory = {
-        "routes_file": ".agentforge/prototype/routes.json",
-        "route_to_html": routes.get("routes", []),
-        "html_files_that_must_be_read_in_full": html_files,
-        "shared_assets_that_must_be_read": shared_assets,
-    }
     return (
         "\n\n## Mandatory prototype parity inventory\n\n"
-        "Before planning, read every listed HTML file and shared asset. In the plan, "
-        "map each route to its exact prototype HTML, destination app files and reused "
-        "image sources. Before implementing each route, reopen that HTML file. The real "
-        "app must preserve 100% of its approved frontend design, exact images, controls, "
-        "destinations and navigation flow while connecting real data. Never guess from "
-        "memory or replace prototype imagery.\n\n```json\n"
-        + json.dumps(inventory, ensure_ascii=False, indent=2)
-        + "\n```"
+        "There is an approved prototype at `.agentforge/prototype/`. Before planning, "
+        "list it (`list_files`) and read every HTML file and shared asset it contains "
+        "in full. In the plan, map each route to its exact prototype HTML, destination "
+        "application files and reused image sources. Before implementing each route, "
+        "reopen that HTML file. The real app must preserve 100% of its approved "
+        "frontend design, exact images, controls, destinations and navigation flow "
+        "while connecting real data. Never guess from memory or replace prototype "
+        "imagery."
     )
 
 
@@ -116,10 +81,12 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         bus.phase(project, "build:write", "Building and checking the application",
                   detail="One sequential plan: complete the app, focused business units, then final product checks.")
         request = prompts.load("builder/generate", stack=stack)
-        request += _context_block(project)
         request += _prototype_context_block(session.workspace)
         request += "\n\n## Scaffold installation\n" + json.dumps(installed, indent=2)
-        request += "\n\n## Stack build guides\n\n" + scaffold.build_context(stack)
+        guide_paths = reference_staging.stage(session.workspace, "build/guides",
+                                              scaffold.build_guide_files(stack))
+        request += ("\n\n## Stack build guides\n\nRead these yourself before planning:\n"
+                   + reference_staging.as_bullets(guide_paths))
         from prototype_agent import design as design_stage
         customization = design_stage.approved_customization(project)
         if customization:
@@ -127,9 +94,10 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
                         + json.dumps({"selected_design_path": customization.get("design_md_path"),
                                       "customizer_prompt": customization.get("customizer_prompt"),
                                       "customizer_spec": customization.get("customizer_spec")},
-                                     ensure_ascii=False, indent=2)
-                        + "\n\n## Selected design Markdown\n"
-                        + str(customization.get("design_md") or ""))
+                                     ensure_ascii=False, indent=2))
+            if customization.get("design_md_workspace_path"):
+                request += (f"\n\nRead `{customization['design_md_workspace_path']}` yourself for "
+                           f"the selected theme's own guidance.")
         if direction.strip():
             request += f"\n\n## What the customer asked for on top of that\n\n{direction.strip()}"
 

@@ -28,12 +28,21 @@ const ICONS = {
   read: Search, plan: Search, write: FileCode2, build: FileCode2,
   test: FlaskConical, run: Terminal, fix: Wrench, design: Palette,
   verify: CircleCheck, done: CircleCheck, warn: CircleAlert,
-  setup: Sparkles, note: Sparkles,
+  setup: Sparkles, note: Sparkles, effort: Sparkles,
 }
 
 const KIND_TONE = {
   warn: 'bg-warn-tint text-warn',
   done: 'bg-ok-tint text-ok',
+}
+
+// How much reasoning and tool lookup one model call used — Ollama has no
+// native "effort" concept, so this is a rough four-level read, low to ultra.
+const EFFORT_TONE = {
+  low: 'bg-black/[.06] text-muted dark:bg-black/[.08]',
+  medium: 'bg-accent/60 text-ink',
+  high: 'bg-accent text-ink',
+  ultra: 'bg-[#BFB9FF] text-ink',
 }
 
 export default function AgentChat({ projectTitle = '' }) {
@@ -1073,7 +1082,15 @@ const Turn = memo(function Turn({ turn, live }) {
       </span>
       <div className="min-w-0 flex-1">
         <p className={cn('break-words text-[12px] font-medium',
-          turn.kind === 'warn' ? 'text-bad' : 'text-ink')}>{turn.title}</p>
+          turn.kind === 'warn' ? 'text-bad' : 'text-ink')}>
+          {turn.kind === 'effort' && turn.level && (
+            <span className={cn('mr-1.5 rounded-full px-1.5 py-px align-middle font-mono text-[9.5px] font-bold uppercase tracking-wide',
+              EFFORT_TONE[turn.level] || EFFORT_TONE.low)}>
+              {turn.level}
+            </span>
+          )}
+          {turn.title}
+        </p>
         {turn.detail && (
           <p className="mt-0.5 text-[11px] leading-relaxed text-muted">{turn.detail}</p>
         )}

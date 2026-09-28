@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from server_modules import bus, config, journeys, llm, mermaid, prompts, store
+from server_modules import bus, config, journeys, llm, mermaid, prompts, reference_staging, store
 from server_modules.session import ProjectSession, session_for
 from server_modules.validation import completeness
 from server_modules.validation import review as review_rules
@@ -109,8 +109,13 @@ def _wireframe_pages(doc: dict, approved: dict) -> list[dict]:
 # --- writing ----------------------------------------------------------------
 
 def _write_document(session: ProjectSession, project: str, record: dict,
-                    approved: dict, transcript: str) -> dict:
-    """One call for the whole specification, validated against the schema."""
+                    approved: dict) -> dict:
+    """One call for the whole specification, validated against the schema.
+
+    The approved plan and the interview are on disk at `.agentforge/plan.json`
+    and `.agentforge/interview.json`; the model reads them itself rather than
+    having them pasted in here.
+    """
     bus.phase(project, "srs:document", "Writing the requirements",
               detail="Decomposing the approved plan into testable requirements.")
     # The focused call has no conversation of its own, so the project's memory
@@ -121,14 +126,13 @@ def _write_document(session: ProjectSession, project: str, record: dict,
         system=prompts.load("srs/system")
         + (f"\n\n## What this project already knows\n\n{memory}" if memory else ""),
         user=prompts.load("srs/document",
-                          plan=json.dumps(approved, ensure_ascii=False, indent=2),
-                          transcript=transcript,
                           project_name=(str(approved.get("app_name") or "").strip()
                                         or record.get("name") or project),
                           stack=record.get("stack", ""),
                           language=record.get("language", "English")),
         validator=srs_schema.srs_validator,
-        label="srs_document")
+        label="srs_document",
+        project=project, workspace=session.workspace)
     doc = envelope["srs_document"]
     named = str((doc.get("app_summary") or {}).get("app_name") or "").strip()
     if named and str(doc.get("project_name") or "").strip() in ("", project):
@@ -158,13 +162,22 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
                           "database_design", "business_workflows", "api_design",
                           "authentication_requirement", "main_modules")
                          if doc.get(k)}, ensure_ascii=False)[:18000]
+    # Staged rather than pasted in: the model reads its own curated slice of
+    # the specification with its read tool, and the read shows in the chat.
+    # fresh=False: every kind's digest lands in this same shared folder, in
+    # parallel (`llm.in_lanes`) — clearing it per kind would race the other
+    # kinds' files still waiting to be read.
+    context_path, = reference_staging.stage(
+        session.workspace, f"{config.RECORD_DIR}/{SRS_DIR}/diagram-context",
+        {f"{kind}.json": digest}, fresh=False)
 
     bus.agent_msg(project, f"Generating the {kind.replace('_', ' ')} diagram from the specification.",
                   title="SRS diagram", kind="narration")
     source = llm.complete(
         system=prompts.load("srs/system"),
         user=prompts.load("srs/diagram", kind=kind, standard=kind,
-                          guidance=guidance, document=digest))
+                          guidance=guidance, document=context_path),
+        project=project, workspace=session.workspace)
     source = mermaid.clean(source)
 
     if source.upper().startswith(NOT_APPLICABLE):
@@ -197,10 +210,11 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
         source = mermaid.clean(llm.complete(
             system=prompts.load("srs/system"),
             user=prompts.load("srs/diagram", kind=kind, standard=kind,
-                              guidance=guidance, document=digest)
+                              guidance=guidance, document=context_path)
             + f"\n\n## Your last attempt\n\n```\n{source[:4000]}\n```\n\n"
               f"It did not render: {'; '.join(wrong)}\n\n"
-              f"Return corrected Mermaid source only."))
+              f"Return corrected Mermaid source only.",
+            project=project, workspace=session.workspace))
 
     mmd.write_text(source, encoding="utf-8")
     bus.file_written(project, mmd.relative_to(session.workspace).as_posix(), source,
@@ -228,12 +242,13 @@ def _page_instruction(project: str, doc: dict, page: dict, docs: dict[str, str],
                       ideas: str = "", layout: str = "") -> str:
     """The prompt one wireframe is drawn from.
 
-    The handoff is passed as it was written, less what a drawing does not need (`prompts/srs/wireframe-context.json`), so this
-    holds no rules about what a page contains: the specification says it, in its own words, for whatever product it describes.
+    The site map and application spec are no longer pasted in: the model reads
+    them itself with its read tool from `.agentforge/srs/handoff/`, so this
+    holds no rules about what a page contains: the specification says it, in
+    its own words, for whatever product it describes.
     """
     route = str(page.get("route") or "/")
-    context = wireframe_brief.context(docs)
-    if not context:
+    if not docs:
         raise ValueError("the SRS handoff files are missing; wireframes need the approved contract")
     instruction = prompts.load("srs/wireframe-page",
                                route=route,
@@ -244,8 +259,7 @@ def _page_instruction(project: str, doc: dict, page: dict, docs: dict[str, str],
                                page_contract=json.dumps(wireframe_brief.page_facts(page), ensure_ascii=False, indent=2),
                                ideas=ideas or "(none gathered — draw from the specification and your own judgement)",
                                layout=layout or "(none drawn — keep the shell and the components consistent from the site map)",
-                               plan=wireframe_brief.clean(plan_stage.markdown(project)),
-                               context=context)
+                               plan=wireframe_brief.clean(plan_stage.markdown(project)))
     if request:
         instruction += "\n\n## Approved wireframe request\n\n" + request
     return instruction
@@ -270,7 +284,8 @@ def _draw_page(session: ProjectSession, project: str, doc: dict, page: dict,
     minimum = max(completeness.WIREFRAME_FLOOR,
                   weight * completeness.WIREFRAME_CHARS_PER_SECTION)
     html = llm.complete_html(system=prompts.load("srs/system"), user=instruction,
-                             minimum=minimum, label=f"wireframe:{route}")
+                             minimum=minimum, label=f"wireframe:{route}",
+                             project=project, workspace=session.workspace, role=bus.DEVELOPER)
     gaps = completeness.wireframe_depth([(route, html)], doc)
     if gaps:
         html = llm.complete_html(
@@ -278,7 +293,8 @@ def _draw_page(session: ProjectSession, project: str, doc: dict, page: dict,
             user=instruction + "\n\nYour last draft failed these wireframe checks:\n"
                  + completeness.as_instructions(gaps)
                  + "\n\nReturn a complete corrected HTML page, with its inline CSS.",
-            label=f"wireframe_repair:{route}")
+            label=f"wireframe_repair:{route}",
+            project=project, workspace=session.workspace, role=bus.DEVELOPER)
         gaps = completeness.wireframe_depth([(route, html)], doc)
         if gaps:
             raise ValueError("; ".join(gaps)[:400])
@@ -466,8 +482,6 @@ def generate(project: str) -> dict[str, Any]:
     if not approved:
         raise ValueError("approve the plan before generating the specification")
 
-    from . import interview
-
     session = session_for(project)
     session.begin("srs", role=bus.DEVELOPER)
     # The studio blurs the SRS tab and shows the generating animation for as
@@ -475,12 +489,11 @@ def generate(project: str) -> dict[str, Any]:
     bus.sync_state(project, "running", "Writing the specification",
                    source="srs", srs_status="running")
     started = time.time()
-    transcript = interview.full_transcript(project)
 
     try:
         bus.agent_msg(project, "Writing the specification from the approved plan and interview answers.",
                       title="SRS generation", kind="narration")
-        envelope = _write_document(session, project, record, approved, transcript)
+        envelope = _write_document(session, project, record, approved)
         doc = envelope["srs_document"]
         _write_record_visible(session, project, DOCUMENT, envelope)
         bus.log(project, "SUCCESS",

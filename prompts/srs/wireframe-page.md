@@ -4,10 +4,10 @@ Create one complete, creative, low-fidelity HTML wireframe for the single page
 named below. Return HTML only — no commentary, no markdown fence.
 
 This is the wireframe stage after plan approval. The approved `/plan` is the
-scope boundary. The site map and application spec are supplied below, as read
-from `.agentforge/srs/handoff/`. This call draws exactly one route; every other
-route is drawn in its own call, so nothing that belongs to another route is
-drawn here. There is no page-count limit.
+scope boundary. The site map and application spec live at
+`.agentforge/srs/handoff/` — read them yourself before drawing. This call draws
+exactly one route; every other route is drawn in its own call, so nothing that
+belongs to another route is drawn here. There is no page-count limit.
 
 ## What a wireframe is here
 
@@ -115,6 +115,10 @@ from it:
 
 {{plan}}
 
-## Site map and application spec, read from .agentforge/srs/handoff/
+## Site map and application spec
 
-{{context}}
+Before drawing, read these two files yourself with your `read_file` tool —
+they are not pasted in here:
+
+   - `.agentforge/srs/handoff/sitemap.md`
+   - `.agentforge/srs/handoff/app.md`

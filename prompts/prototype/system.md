@@ -4,7 +4,9 @@ Return one complete HTML document only.
 
 Read and apply the supplied Premium Frontend Design Engineer skill as the visual quality bar. Internalize its design direction; do not print its summary headings in the HTML response.
 
-Read the supplied handoff, functional blueprint, page flow and route map before drawing this screen. Build one screen completely, with a clear understanding of its role in the product. The blueprint defines required content, fields, actions, images and next-page links; it is not a visual layout to copy.
+The task below is JSON. Any field whose name ends in `_path` names a file in the project workspace, not content already supplied: read it yourself with your `read_file` tool before using it. Everything else in the JSON is the value itself.
+
+Read the handoff, functional blueprint, page flow and route map before drawing this screen — following the `_path` fields for whichever of those are files. Build one screen completely, with a clear understanding of its role in the product. The blueprint defines required content, fields, actions, images and next-page links; it is not a visual layout to copy.
 
 Rules:
 - Use the shared `assets/app.css`, `assets/flow.js` and `assets/app.js`.

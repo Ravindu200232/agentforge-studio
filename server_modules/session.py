@@ -41,9 +41,10 @@ _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.+?)```", re.DOTALL)
 
 # A build stage is a long conversation with a remote service, and remote
 # services have bad minutes. Losing an hour of work to one 502 is not a model
-# problem to reason about, it is a call to make again.
-RETRY_ATTEMPTS = 4
-RETRY_BACKOFF = (2, 8, 20)
+# problem to reason about, it is a call to make again — up to about ten times
+# before giving up, with the wait growing so a real outage does not spin hot.
+RETRY_ATTEMPTS = 10
+RETRY_BACKOFF = (2, 5, 10, 15, 20, 25, 30)
 
 
 def _transient(exc: Exception) -> bool:
