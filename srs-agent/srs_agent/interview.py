@@ -1,13 +1,17 @@
 """The requirements interview.
 
-One question at a time, each one chosen by the model from what is still unknown.
-There is no topic catalogue and no fixed question list: a single-screen tool
+One question at a time, each one chosen by the model from what is still
+unknown. There is no fixed question list and no fixed order: every turn, the
+model sees the full accumulated picture — what's KNOWN, PARTIAL or UNKNOWN
+across a hardcoded taxonomy of requirement categories (`server_modules
+.coverage`) — and decides for itself what single gap is most valuable to ask
+about next, in this particular project's own words. A single-screen tool
 finishes in a handful of questions and a multi-role system does not, and only
 something that has read the answers so far can tell which this is.
 
-The whole interview lives in the project's shared conversation, so by the time
-the plan is drafted the model has not been told what the customer said — it was
-there.
+The one question the catalogue still owns is the very first: which kind of
+product this is. Asking it before any model call anchors everything that
+follows, and costs nothing — the customer sees it the moment they press Start.
 """
 from __future__ import annotations
 
@@ -17,12 +21,14 @@ import threading
 import time
 from typing import Any
 
-from server_modules import bus, config, llm, prompts, store, topics
+from server_modules import bus, config, coverage, llm, prompts, store
 from server_modules.session import ProjectSession, session_for
 
 RECORD = ("interview.json",)
 
 ANSWER_TYPES = {"single_choice", "multi_choice", "yes_no", "number", "free_text"}
+KINDS = {"single_choice": "single", "multi_choice": "multi", "yes_no": "yes_no",
+         "number": "number", "free_text": "text"}
 
 # The catalogue's own key for this topic. Storing the answer under anything else
 # — `app_type:1`, say — leaves `app_type` looking unanswered, so the queue asks
@@ -120,12 +126,20 @@ def _app_type_question(idea: str, index: int, total: int) -> dict[str, Any]:
 
 def _blank() -> dict[str, Any]:
     return {"transcript": [], "answers": {}, "order": [], "done": False,
-            "started_at": time.time()}
+            "started_at": time.time(), "stage": "gathering",
+            "coverage": coverage.blank_coverage(), "contradictions": [], "assumptions": []}
 
 
 def state(session: ProjectSession) -> dict[str, Any]:
     saved = session.read_record(*RECORD, fallback=None)
-    return saved if isinstance(saved, dict) else _blank()
+    data = saved if isinstance(saved, dict) else _blank()
+    # Defensive backfill for a record saved before these fields existed —
+    # never a reason to lose an interview already in progress.
+    data.setdefault("stage", "gathering")
+    data.setdefault("coverage", coverage.blank_coverage())
+    data.setdefault("contradictions", [])
+    data.setdefault("assumptions", [])
+    return data
 
 
 def save(session: ProjectSession, data: dict[str, Any]) -> None:
@@ -171,83 +185,16 @@ def transcript_text(data: dict[str, Any]) -> str:
     return "\n\n".join(lines) or "(nothing yet)"
 
 
-KINDS = {"single": "single_choice", "multi": "multi_choice", "yes_no": "yes_no",
-         "number": "number", "text": "free_text", "upload": "single_choice"}
-
-
-def _options_for(topic: dict, payload: dict) -> list[dict]:
-    """The choices this question offers.
-
-    A topic with `options_locked` owns its machine values — the model may
-    translate a label but must not invent a value, because downstream code reads
-    those values. Otherwise the model's own options win, since they can name the
-    customer's actual trade and goods; the catalogue's are the floor.
-    """
-    fallback = [o for o in (topic.get("fallback_options") or []) if isinstance(o, dict)]
-    proposed = []
-    for option in (payload.get("options") or []):
-        if isinstance(option, dict) and str(option.get("label") or "").strip():
-            proposed.append({"label": str(option["label"]).strip(),
-                             "value": option.get("value", option["label"]),
-                             **({"hint": str(option["hint"])} if option.get("hint") else {})})
-        elif isinstance(option, str) and option.strip():
-            proposed.append({"label": option.strip(), "value": option.strip()})
-
-    if topic.get("options_locked") and fallback:
-        translated = {str(o.get("value")): o for o in proposed}
-        return [{**original,
-                 "label": str(translated.get(str(original.get("value")), {}).get("label")
-                              or original.get("label") or "")}
-                for original in fallback]
-    return proposed or fallback
-
-
-def _from_topic(topic: dict, item: dict, index: int, total: int, question: str,
-                payload: dict | None = None) -> dict[str, Any]:
-    """One question, carrying the catalogue's contract and the model's wording."""
-    payload = payload or {}
-    kind = str(topic.get("kind") or "single")
-    options = _options_for(topic, payload)
-    subject = item.get("subject")
-
-    known = [v for v in (payload.get("known") or []) if str(v).strip()]
-    if options:
-        allowed = {str(o["value"]) for o in options}
-        known = [v for v in known if str(v) in allowed]
-        if kind != "multi":
-            known = known[:1]
-
-    return {
-        "id": item["key"], "key": item["key"], "topic": item["topic"],
-        "subject": subject,
-        "question": question or topic.get("intent", ""),
-        "why_needed": str(payload.get("why_needed") or topic.get("intent") or "")[:240],
-        "answer_type": KINDS.get(kind, "single_choice"), "kind": kind,
-        "options": options,
-        "suggested_options": [o["label"] for o in options],
-        "recommended": payload.get("recommended"),
-        "prefill": known,
-        "prefill_note": str(payload.get("known_quote") or "").strip()[:240],
-        "placeholder": str(payload.get("placeholder") or topic.get("placeholder") or "").strip(),
-        "coverage_areas": list(topic.get("coverage") or []),
-        "maps_to_srs_fields": list(topic.get("srs_fields") or []),
-        "required": not topic.get("optional"),
-        "optional": bool(topic.get("optional")),
-        "multiline": bool(topic.get("multiline")),
-        "index": index, "total": max(total, index),
-    }
-
-
-def _normalise(payload: dict[str, Any], index: int) -> dict[str, Any]:
-    """The model's answer, in the shape the studio's Interview screen reads."""
-    topic = str(payload.get("topic") or f"q{index}").strip() or f"q{index}"
+def _question_from_turn(next_payload: dict[str, Any], index: int, total: int) -> dict[str, Any]:
+    """One turn's `next` question, in the shape the studio's Interview screen reads."""
+    topic = str(next_payload.get("topic") or f"q{index}").strip() or f"q{index}"
     key = f"{topic}:{index}"
-    answer_type = str(payload.get("answer_type") or "single_choice")
+    answer_type = str(next_payload.get("answer_type") or "single_choice")
     if answer_type not in ANSWER_TYPES:
         answer_type = "free_text"
 
     options = []
-    for option in (payload.get("options") or []):
+    for option in (next_payload.get("options") or []):
         if isinstance(option, dict) and str(option.get("label") or "").strip():
             options.append({
                 "label": str(option["label"]).strip(),
@@ -257,7 +204,7 @@ def _normalise(payload: dict[str, Any], index: int) -> dict[str, Any]:
         elif isinstance(option, str) and option.strip():
             options.append({"label": option.strip(), "value": option.strip()})
 
-    known = [v for v in (payload.get("known") or []) if str(v).strip()]
+    known = [v for v in (next_payload.get("known") or []) if str(v).strip()]
     if options:
         allowed = {str(o["value"]) for o in options}
         known = [v for v in known if str(v) in allowed]
@@ -268,25 +215,122 @@ def _normalise(payload: dict[str, Any], index: int) -> dict[str, Any]:
         "id": key,
         "key": key,
         "topic": topic,
-        "question": str(payload.get("question") or "").strip(),
-        "why_needed": str(payload.get("why_needed") or "").strip()[:240],
+        "subject": None,
+        "question": str(next_payload.get("question") or "").strip(),
+        "why_needed": str(next_payload.get("why_needed") or "").strip()[:240],
         "answer_type": answer_type,
-        "kind": {"single_choice": "single", "multi_choice": "multi", "yes_no": "yes_no",
-                 "number": "number", "free_text": "text"}[answer_type],
+        "kind": KINDS[answer_type],
         "options": options,
         "suggested_options": [o["label"] for o in options],
-        "recommended": payload.get("recommended"),
+        "recommended": next_payload.get("recommended"),
         "prefill": known,
-        "prefill_note": str(payload.get("known_quote") or "").strip()[:240],
-        "placeholder": str(payload.get("placeholder") or "").strip(),
-        "coverage_areas": [str(c) for c in (payload.get("coverage") or [])],
-        "maps_to_srs_fields": [str(c) for c in (payload.get("coverage") or [])],
+        "prefill_note": str(next_payload.get("known_quote") or "").strip()[:240],
+        "placeholder": str(next_payload.get("placeholder") or "").strip(),
+        "coverage_areas": [str(c) for c in (next_payload.get("coverage") or [])],
+        "maps_to_srs_fields": [str(c) for c in (next_payload.get("coverage") or [])],
         "required": answer_type != "free_text",
         "optional": answer_type == "free_text",
         "multiline": answer_type == "free_text",
         "index": index,
-        "total": max(index, int(payload.get("remaining_estimate") or 0) + index),
+        "total": max(index, int(next_payload.get("remaining_estimate") or 0) + index),
     }
+
+
+def _confirmation_question(summary: str, index: int, total: int) -> dict[str, Any]:
+    """The end-of-interview recap, delivered as an ordinary pending question so
+    the frontend needs no special case for it."""
+    return {
+        "id": f"confirm:{index}", "key": f"confirm:{index}", "topic": "confirmation",
+        "subject": None,
+        "question": summary or "Here is what I understood — is this correct?",
+        "why_needed": "Confirming before writing the specification.",
+        "answer_type": "single_choice", "kind": "single",
+        "options": [{"label": "Yes, that's right", "value": "confirmed"},
+                    {"label": "I need to change something", "value": "correct"}],
+        "suggested_options": ["Yes, that's right", "I need to change something"],
+        "recommended": "confirmed",
+        "prefill": [], "prefill_note": "",
+        "placeholder": "Or describe what to change",
+        "coverage_areas": [], "maps_to_srs_fields": [],
+        "required": True, "optional": False, "multiline": False,
+        "index": index, "total": max(total, index),
+    }
+
+
+def _turn_validator(valid_categories: set[str]):
+    """The turn's JSON, checked against the coverage contract before it is
+    trusted — feeds `complete_json`'s own repair loop on failure."""
+
+    def check(payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("the turn result must be a JSON object")
+        updates = payload.get("coverage_updates")
+        if updates is None:
+            payload["coverage_updates"] = {}
+        elif not isinstance(updates, dict):
+            raise ValueError("coverage_updates must be an object keyed by category")
+        else:
+            bad = [k for k in updates if k not in valid_categories]
+            if bad:
+                raise ValueError(f"coverage_updates named unknown categories: {', '.join(bad)}. "
+                                 f"Only use: {', '.join(sorted(valid_categories))}")
+        stage = str(payload.get("stage") or "gathering")
+        if stage not in ("gathering", "confirming"):
+            raise ValueError("stage must be exactly 'gathering' or 'confirming'")
+        payload["stage"] = stage
+        if stage == "gathering":
+            next_q = payload.get("next")
+            if not isinstance(next_q, dict) or not str(next_q.get("question") or "").strip():
+                raise ValueError("stage is 'gathering' but next.question is empty")
+        elif not str(payload.get("confirmation_summary") or "").strip():
+            raise ValueError("stage is 'confirming' but confirmation_summary is empty")
+        return payload
+
+    return check
+
+
+def _apply_turn(data: dict[str, Any], turn: dict[str, Any], source: str) -> None:
+    """Fold one turn's deltas into the persisted state, in place.
+
+    Deltas only — a category the model did not mention this turn keeps
+    whatever it already had, so one bad turn can never wipe an earlier fact.
+    """
+    now = time.time()
+    cov = data["coverage"]
+    for key, delta in (turn.get("coverage_updates") or {}).items():
+        if key not in cov or not isinstance(delta, dict):
+            continue
+        entry = cov[key]
+        status = str(delta.get("status") or entry.get("status") or "UNKNOWN")
+        if status in coverage.STATUSES:
+            entry["status"] = status
+        entry["confidence"] = str(delta.get("confidence") or entry.get("confidence") or "low")
+        facts = [str(f) for f in (delta.get("facts") or []) if str(f).strip()]
+        if facts:
+            entry["facts"] = facts
+        entry["source"] = source
+        entry["updated_at"] = now
+
+    contradiction = turn.get("contradiction") or {}
+    if contradiction.get("found"):
+        data["contradictions"].append({
+            "id": f"c{len(data['contradictions']) + 1}",
+            "category": contradiction.get("category"),
+            "resolved": False,
+            "statement_a": contradiction.get("statement_a") or {},
+            "statement_b": contradiction.get("statement_b") or {},
+            "raised_at": now, "resolution": None,
+        })
+
+    for item in turn.get("assumptions") or []:
+        if isinstance(item, dict) and str(item.get("fact") or "").strip():
+            data["assumptions"].append({
+                "category": item.get("category"), "fact": str(item["fact"]),
+                "confidence": str(item.get("confidence") or "medium"),
+                "basis": str(item.get("basis") or ""),
+            })
+
+    data["stage"] = turn["stage"]
 
 
 _asking: dict[str, threading.Lock] = {}
@@ -321,14 +365,12 @@ def _next_question(project: str) -> dict[str, Any]:
 
     # A question already on screen is asked again rather than replaced, so a
     # browser reload does not cost the customer an answer.
-    pending = data.get("pending")
-    if pending:
+    if data.get("pending"):
         return view(session, data)
 
     session.role = bus.DEVELOPER
     index = len(data["order"]) + 1
-    budget = max(3, int(config.setting("interview_max_questions",
-                                       topics.max_questions())))
+    budget = max(3, int(config.setting("interview_max_questions", 25)))
 
     # The first question is the product's shape, and it comes from the catalogue
     # rather than the model — instant, and it anchors everything after it.
@@ -339,65 +381,44 @@ def _next_question(project: str) -> dict[str, Any]:
         save(session, data)
         return view(session, data)
 
-    chosen = _chosen_app_type(data)
-    types = catalogue().get("types") or {}
-    queue = topics.build_queue(data["answers"], chosen, types)
-
-    # The catalogue decides what is asked and in what order; the model only
-    # phrases it. That is what makes this a requirements session rather than a
-    # conversation that follows whatever the last answer made interesting.
-    if not queue or index > budget:
-        data["done"] = True
-        data["pending"] = None
-        save(session, data)
-        bus.log(project, "INFO",
-                f"Interview complete — {index - 1} question(s) asked"
-                + ("" if queue else ", every topic covered") + ".")
-        bus.agent_state(project, "", agent=bus.DEVELOPER)
-        store.advance(project, "plan")
-        return view(session, data)
+    # A safety ceiling, not a target: past it, stop gathering and ask for
+    # confirmation instead of cutting the customer off with nothing to show.
+    if index > budget:
+        data["stage"] = "confirming"
 
     bus.agent_state(project, "asking", agent=bus.DEVELOPER)
-    item = queue[0]
-    topic = topics.by_key().get(item["topic"], {})
-    total = min(budget, topics.total_estimate(data["answers"], chosen, types))
 
-    # A topic with fixed wording is asked as written — those exist precisely
-    # because their phrasing was settled and should not be re-invented.
-    if topic.get("fixed"):
-        question = _from_topic(topic, item, index, total, topic["fixed"])
-        data["pending"] = question
-        data["transcript"] = [q for q in data["transcript"] if q.get("id") != question["id"]]
-        data["transcript"].append(question)
-        save(session, data)
-        bus.agent_state(project, "", agent=bus.DEVELOPER)
-        return view(session, data)
+    cats = coverage.categories()
+    chosen = _chosen_app_type(data)
+    app_label = (catalogue().get("types", {}).get(chosen) or {}).get("label") or chosen
+    open_contradictions = [c for c in data["contradictions"] if not c.get("resolved")]
+    language = record.get("language", "English")
 
-    answer = llm.complete_json(
-        system=prompts.load("interview/system"),
-        user=prompts.load("interview/next-question",
+    turn = llm.complete_json(
+        system=prompts.load("interview/system", language=language),
+        user=prompts.load("interview/turn",
                           idea=record.get("idea", ""),
                           stack=record.get("stack", ""),
-                          language=record.get("language", "English"),
+                          language=language,
                           attachments=_attachment_digest(session),
                           transcript=transcript_text(data),
-                          app_type=(types.get(chosen) or {}).get("label") or chosen,
-                          topic_key=item["topic"],
-                          topic_label=topic.get("label", item["topic"]),
-                          topic_intent=topic.get("intent", ""),
-                          topic_kind=topic.get("kind", "single"),
-                          subject=item.get("subject") or "(not about one particular thing)",
-                          options=json.dumps(topic.get("fallback_options") or [],
-                                             ensure_ascii=False),
-                          options_locked=str(bool(topic.get("options_locked"))).lower(),
+                          app_type=app_label,
+                          coverage_json=json.dumps(data["coverage"], ensure_ascii=False),
+                          categories_json=json.dumps(cats, ensure_ascii=False),
+                          open_contradictions_json=json.dumps(open_contradictions, ensure_ascii=False),
+                          stage=data["stage"],
                           asked=index - 1,
-                          budget=budget,
-                          remaining=max(0, total - index + 1)),
-        label=f"interview:{item['topic']}")
+                          budget=budget),
+        validator=_turn_validator(set(cats)),
+        label="interview:turn")
 
-    question = _from_topic(topic, item, index, total,
-                           str((answer or {}).get("question") or "").strip(),
-                           answer if isinstance(answer, dict) else {})
+    _apply_turn(data, turn, source=f"turn:{index}")
+
+    if data["stage"] == "confirming":
+        question = _confirmation_question(turn.get("confirmation_summary", ""), index, budget)
+    else:
+        question = _question_from_turn(turn.get("next") or {}, index, budget)
+
     data["pending"] = question
     data["transcript"] = [q for q in data["transcript"] if q.get("id") != question["id"]]
     data["transcript"].append(question)
@@ -439,6 +460,17 @@ def record_answer(project: str, payload: dict[str, Any]) -> dict[str, Any]:
     said = entry["text"] or str(entry["value"] or "")
     bus.user_msg(project, said, agent=bus.DEVELOPER)
 
+    # A plain "yes, that's right" to the confirmation question ends the
+    # interview outright — no model call needed just to agree with itself.
+    if data["stage"] == "confirming" and "confirmed" in selected and not custom and not text:
+        data["done"] = True
+        save(session, data)
+        bus.log(project, "SUCCESS", "The customer confirmed the summary — writing the plan next.")
+        bus.agent_state(project, "", agent=bus.DEVELOPER)
+        store.advance(project, "plan")
+        session.note("Interview confirmed. The customer signed off on the requirements summary.")
+        return view(session, data)
+
     # Into the project's one memory, so the prototype, the build and the
     # deployment all know what the customer actually said — without a model call
     # and without re-reading the transcript at every stage.
@@ -446,7 +478,9 @@ def record_answer(project: str, payload: dict[str, Any]) -> dict[str, Any]:
     session.note(f"Interview — {asked_text}\nThe customer answered: {said}")
     # No acknowledgement call. It cost a whole model round per answer and said
     # nothing the customer needed; the transcript on disk is what every later
-    # stage reads, and it already has this answer.
+    # stage reads, and it already has this answer. A correction to the
+    # confirmation summary re-enters the same turn loop on the next call,
+    # through the ordinary path above — no special case needed here.
     return view(session, data)
 
 

@@ -1,0 +1,26 @@
+{
+  "categories": {
+    "purpose": {"label": "What it does", "ask_about": "The core purpose of the application — what problem it solves, in one sentence.", "importance": "critical"},
+    "business_goal": {"label": "Business goal", "ask_about": "Why this is being built — the outcome that matters to the business, not just the feature list.", "importance": "high"},
+    "target_users": {"label": "Who uses it", "ask_about": "Who the actual users are, in their real-world role — not just an app account type.", "importance": "critical"},
+    "roles": {"label": "User roles", "ask_about": "The distinct roles or permission levels inside the app and what separates them.", "importance": "critical"},
+    "core_features": {"label": "Core features", "ask_about": "The small number of features the app cannot ship without.", "importance": "critical"},
+    "workflows": {"label": "Key workflows", "ask_about": "The step-by-step journeys a user takes through the app for its main tasks.", "importance": "critical"},
+    "permissions": {"label": "Permissions", "ask_about": "Who is allowed to do what — the access-control boundary between roles.", "importance": "high"},
+    "data_requirements": {"label": "Data to store", "ask_about": "The records or entities the app must remember, and their key fields.", "importance": "critical"},
+    "business_rules": {"label": "Business rules", "ask_about": "Constraints and policies the app must enforce — pricing, limits, approval rules, and similar.", "importance": "high"},
+    "integrations": {"label": "Integrations", "ask_about": "External services the app must connect to — payment, email, calendar, and similar.", "importance": "high"},
+    "auth": {"label": "Sign-in", "ask_about": "How users prove who they are — email/password, social login, invite-only, or no accounts at all.", "importance": "critical"},
+    "security": {"label": "Security", "ask_about": "Sensitive-data handling and access restrictions beyond ordinary role permissions.", "importance": "high"},
+    "performance": {"label": "Performance", "ask_about": "Expected load, response-time expectations, or scale the app must handle.", "importance": "normal"},
+    "availability": {"label": "Availability", "ask_about": "Uptime expectations and what should happen if the app or a dependency goes down.", "importance": "normal"},
+    "accessibility": {"label": "Accessibility", "ask_about": "Whether the app must meet a specific accessibility standard or support assistive technology.", "importance": "normal"},
+    "notifications": {"label": "Notifications", "ask_about": "Whether and how the app tells users about events — email, SMS, push, or in-app.", "importance": "normal"},
+    "reporting": {"label": "Reporting", "ask_about": "Whether the app needs dashboards, exports, or analytics over its data.", "importance": "normal"},
+    "admin_requirements": {"label": "Admin needs", "ask_about": "What an administrator needs to manage, moderate, or configure.", "importance": "normal"},
+    "edge_cases": {"label": "Edge cases", "ask_about": "Unusual or failure situations the app must handle gracefully.", "importance": "normal"},
+    "external_services": {"label": "External services", "ask_about": "Third-party APIs or platforms the app depends on, beyond its core integrations.", "importance": "normal"},
+    "constraints": {"label": "Constraints", "ask_about": "Any fixed limitation — budget, timeline, a technology that must be used, a legal requirement.", "importance": "normal"},
+    "deployment": {"label": "Deployment", "ask_about": "Where and how the app will be hosted.", "importance": "normal", "auto": "not_applicable"}
+  }
+}

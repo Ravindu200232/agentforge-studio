@@ -93,7 +93,7 @@ def a_document(**patch):
 
 class PromptPackTests(unittest.TestCase):
     def test_every_stage_has_its_pack(self):
-        for name in ("shared/engine", "interview/system", "interview/next-question",
+        for name in ("shared/engine", "interview/system", "interview/turn",
                      "plan/system", "plan/draft", "plan/revise",
                      "srs/system", "srs/generate", "srs/review", "srs/repair",
                      "design/system", "design/draft",
@@ -144,20 +144,13 @@ class BuildAvailabilityTests(unittest.TestCase):
 class InterviewShapeTests(unittest.TestCase):
     """The interview is a bounded requirements session, not an open conversation."""
 
-    def test_the_first_answer_satisfies_the_catalogue_topic_it_answers(self):
-        """Stored under any other key, `app_type` looks unasked and is asked twice."""
-        from server_modules import topics
+    def test_the_first_answer_is_not_a_coverage_category(self):
+        """`app_type` is the one catalogue-driven question; it must never
+        collide with the coverage taxonomy the model reasons over afterward."""
+        from server_modules import coverage
         from srs_agent import interview
 
-        self.assertIn(interview.APP_TYPE_KEY, topics.by_key())
-        answers = {interview.APP_TYPE_KEY: {"selected_values": ["booking"],
-                                            "value": "booking"}}
-        queue = topics.build_queue(answers, "booking",
-                                   interview.catalogue().get("types") or {})
-        self.assertTrue(queue, "the queue emptied immediately")
-        self.assertNotEqual(queue[0]["topic"], "app_type",
-                            "app_type was queued again after being answered")
-        self.assertEqual(queue[0]["topic"], "app_name")
+        self.assertNotIn(interview.APP_TYPE_KEY, coverage.category_keys())
 
     def test_the_first_question_is_the_product_shape_and_costs_no_model_call(self):
         from srs_agent import interview
@@ -200,86 +193,121 @@ class InterviewShapeTests(unittest.TestCase):
             self.assertTrue(entry.get("desc"), f"{key} has no description")
 
 
-class TopicQueueTests(unittest.TestCase):
-    """The catalogue decides what is asked, in what order, and when to stop."""
+class InterviewTurnTests(unittest.TestCase):
+    """The per-turn contract: validated, merged as deltas, never a fixed queue."""
 
-    @staticmethod
-    def _answer(answers, key, value):
-        answers[key] = {"selected_values": value if isinstance(value, list) else [value],
-                        "value": value}
-
-    def _types(self):
+    def _validator(self):
+        from server_modules import coverage
         from srs_agent import interview
-        return interview.catalogue().get("types") or {}
+        return interview._turn_validator(coverage.category_keys())
 
-    def _walk(self, profile, picks=None):
-        from server_modules import topics
+    def test_an_unknown_category_in_coverage_updates_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "unknown categories"):
+            self._validator()({"stage": "gathering",
+                               "coverage_updates": {"not_a_real_category": {"status": "KNOWN"}},
+                               "next": {"question": "Who uses it?"}})
 
-        picks = picks or {}
-        answers, asked = {}, []
-        self._answer(answers, "app_type", profile)
-        for _ in range(60):
-            queue = topics.build_queue(answers, profile, self._types())
-            if not queue:
-                break
-            item = queue[0]
-            asked.append(item["key"])
-            self._answer(answers, item["key"], picks.get(item["topic"], "something"))
-        return asked
+    def test_gathering_with_no_next_question_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "next.question is empty"):
+            self._validator()({"stage": "gathering", "next": {"question": ""}})
 
-    def test_the_catalogue_carries_every_topic_with_its_intent(self):
-        from server_modules import topics
+    def test_confirming_with_no_summary_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "confirmation_summary is empty"):
+            self._validator()({"stage": "confirming", "confirmation_summary": ""})
 
-        rows = topics.catalogue().get("topics") or []
-        self.assertGreaterEqual(len(rows), 40)
-        for row in rows:
-            self.assertTrue(row.get("key"))
-            self.assertTrue(row.get("intent"), f"{row.get('key')} has no intent")
-        self.assertEqual(topics.max_questions(), 25)
+    def test_a_well_formed_turn_of_either_stage_passes(self):
+        check = self._validator()
+        gathering = check({"stage": "gathering", "coverage_updates": {"auth": {"status": "KNOWN"}},
+                           "next": {"question": "Who uses it?"}})
+        self.assertEqual(gathering["stage"], "gathering")
+        confirming = check({"stage": "confirming", "confirmation_summary": "Here is what I understood..."})
+        self.assertEqual(confirming["stage"], "confirming")
 
-    def test_every_app_type_finishes_inside_the_budget(self):
-        from server_modules import topics
+    def test_apply_turn_only_changes_the_categories_the_turn_named(self):
+        from server_modules import coverage
+        from srs_agent import interview
 
-        for profile in self._types():
-            asked = self._walk(profile, {"auth_roles": ["admin", "customer"],
-                                         "data_tables": ["bookings", "rooms"],
-                                         "account_creation": "open",
-                                         "images": "true", "lead_capture": "true"})
-            self.assertLessEqual(len(asked), topics.max_questions(),
-                                 f"{profile} asks {len(asked)} questions")
-            self.assertGreater(len(asked), 5, f"{profile} asks almost nothing")
+        data = {"coverage": coverage.blank_coverage(), "contradictions": [], "assumptions": []}
+        interview._apply_turn(data, {
+            "stage": "gathering",
+            "coverage_updates": {"auth": {"status": "KNOWN", "confidence": "high",
+                                          "facts": ["email/password login"]}},
+        }, source="turn:2")
+        self.assertEqual(data["coverage"]["auth"]["status"], "KNOWN")
+        self.assertEqual(data["coverage"]["auth"]["facts"], ["email/password login"])
+        # Every other category is untouched by a turn that never mentioned it.
+        for key, entry in data["coverage"].items():
+            if key not in ("auth", "deployment"):
+                self.assertEqual(entry["status"], "UNKNOWN", key)
 
-    def test_a_repeating_topic_asks_once_per_subject(self):
-        asked = self._walk("booking", {"auth_roles": ["admin", "customer"],
-                                       "data_tables": ["bookings", "rooms"],
-                                       "account_creation": "open"})
-        self.assertIn("role_functions:admin", asked)
-        self.assertIn("role_functions:customer", asked)
-        self.assertIn("table_entities:bookings", asked)
-        self.assertIn("table_entities:rooms", asked)
+    def test_a_found_contradiction_is_recorded_unresolved(self):
+        from server_modules import coverage
+        from srs_agent import interview
 
-    def test_a_conditional_topic_stays_shut_until_its_condition_holds(self):
-        # `signup_role` exists only where the public may sign themselves up.
-        opened = self._walk("saas", {"auth_roles": ["admin"], "data_tables": ["items"],
-                                     "account_creation": "open"})
-        closed = self._walk("saas", {"auth_roles": ["admin"], "data_tables": ["items"],
-                                     "account_creation": "admin_created"})
-        self.assertIn("signup_role", opened)
-        self.assertNotIn("signup_role", closed)
+        data = {"coverage": coverage.blank_coverage(), "contradictions": [], "assumptions": []}
+        interview._apply_turn(data, {
+            "stage": "gathering",
+            "contradiction": {"found": True, "category": "permissions",
+                              "statement_a": {"quote": "only admins approve"},
+                              "statement_b": {"quote": "staff can too"}},
+        }, source="turn:5")
+        self.assertEqual(len(data["contradictions"]), 1)
+        self.assertFalse(data["contradictions"][0]["resolved"])
+        self.assertEqual(data["contradictions"][0]["category"], "permissions")
 
-    def test_a_landing_page_is_never_asked_about_records_or_roles(self):
-        asked = self._walk("landing", {"lead_capture": "true"})
-        for unwanted in ("data_tables", "auth_roles", "table_entities"):
-            self.assertFalse(any(k.startswith(unwanted) for k in asked),
-                             f"a landing page was asked about {unwanted}")
-        self.assertIn("sections", asked)
-        self.assertIn("cta", asked)
+    def test_question_from_turn_produces_the_view_compatible_shape(self):
+        from srs_agent import interview
 
-    def test_a_tool_is_asked_about_its_job_not_about_a_storefront(self):
-        asked = self._walk("utility")
-        self.assertIn("tool_job", asked)
-        self.assertIn("tool_inputs", asked)
-        self.assertFalse(any(k.startswith("store_") for k in asked))
+        question = interview._question_from_turn({
+            "question": "Do people sign in with email, Google, or both?",
+            "answer_type": "single_choice", "topic": "auth_method",
+            "options": [{"label": "Email and password", "value": "email"},
+                       {"label": "Google", "value": "google"}],
+            "recommended": "email", "coverage": ["auth"],
+        }, index=3, total=8)
+        self.assertEqual(question["id"], "auth_method:3")
+        self.assertEqual(question["answer_type"], "single_choice")
+        self.assertEqual(question["kind"], "single")
+        self.assertEqual({o["value"] for o in question["options"]}, {"email", "google"})
+        self.assertEqual(question["coverage_areas"], ["auth"])
+
+    def test_confirmation_question_offers_confirm_or_correct(self):
+        from srs_agent import interview
+
+        question = interview._confirmation_question("Here is what I understood...", index=9, total=9)
+        self.assertEqual(question["answer_type"], "single_choice")
+        self.assertEqual({o["value"] for o in question["options"]}, {"confirmed", "correct"})
+        self.assertIn("understood", question["question"])
+
+
+class CoverageTests(unittest.TestCase):
+    """The coverage taxonomy is hardcoded categories, not questions or order —
+    what gets asked, in what order, is the model's decision each turn."""
+
+    def test_every_category_carries_a_label_ask_about_and_importance(self):
+        from server_modules import coverage
+
+        cats = coverage.categories()
+        self.assertGreaterEqual(len(cats), 15)
+        for key, entry in cats.items():
+            self.assertTrue(entry.get("label"), f"{key} has no label")
+            self.assertTrue(entry.get("ask_about"), f"{key} has no ask_about")
+            self.assertIn(entry.get("importance"), ("critical", "high", "normal"), key)
+
+    def test_deployment_starts_not_applicable_everything_else_starts_unknown(self):
+        from server_modules import coverage
+
+        blank = coverage.blank_coverage()
+        self.assertEqual(blank["deployment"]["status"], "NOT_APPLICABLE")
+        others = [k for k in blank if k != "deployment"]
+        self.assertTrue(others)
+        for key in others:
+            self.assertEqual(blank[key]["status"], "UNKNOWN", key)
+
+    def test_category_keys_matches_the_taxonomy(self):
+        from server_modules import coverage
+
+        self.assertEqual(coverage.category_keys(), set(coverage.categories()))
 
 
 class JsonExtractionTests(unittest.TestCase):
