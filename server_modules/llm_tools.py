@@ -22,6 +22,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+import ollama
+
 from ollama_terminal.tools import MAX_OUTPUT, TOOL_SCHEMAS, WorkspaceTools, tools_unsupported
 
 from . import bus
@@ -125,23 +127,68 @@ class ReadOnlyTools:
             bus.log(self.project, "INFO", f'Fetched {args.get("url", "")}', agent=self.role)
 
 
+def _stream_chat(chat: Callable[..., Any], kwargs: dict[str, Any],
+                 on_token: Callable[[str], None]) -> Any:
+    """One `chat(**kwargs, stream=True)` call, forwarding each content delta
+    to `on_token` as it arrives, returning the same shape a non-streamed call
+    returns (one assembled message) so every caller downstream — the tool-call
+    loop above, `llm.py`'s own repair loops — reads it identically either way.
+
+    Ollama's streaming chunks carry a delta in `.message.content`, not a
+    running total, and `.message.tool_calls` on whichever chunk actually
+    carries them (not necessarily the last one) — both are accumulated here.
+    """
+    content: list[str] = []
+    thinking: list[str] = []
+    calls: list[Any] = []
+    for chunk in chat(**{**kwargs, "stream": True}):
+        delta = chunk.message
+        if delta.content:
+            content.append(delta.content)
+            on_token(delta.content)
+        if delta.thinking:
+            thinking.append(delta.thinking)
+        if delta.tool_calls:
+            calls.extend(delta.tool_calls)
+    return ollama.Message(role="assistant", content="".join(content),
+                          thinking="".join(thinking) or None, tool_calls=calls or None)
+
+
 def run_chat(chat: Callable[..., Any], kwargs: dict[str, Any],
-             tools: "ReadOnlyTools | None", max_rounds: int = MAX_TOOL_ROUNDS) -> Any:
+             tools: "ReadOnlyTools | None", max_rounds: int = MAX_TOOL_ROUNDS,
+             on_stream_start: Callable[[], None] | None = None,
+             on_stream_token: Callable[[str], None] | None = None) -> Any:
     """Drive one `chat(**kwargs)` call through read-only tool round trips.
 
     Returns the final message. `chat` is the caller's own bound `client().chat`,
     injected so this module never has to import `llm.py`. With `tools=None`,
     or a model already known this process not to support tool calling at all,
     this is exactly `chat(**kwargs).message` — today's behavior, unchanged.
+
+    `on_stream_token`, when given, streams every round through it live rather
+    than waiting for each call to finish — including a tool round's own
+    narration before its tool call, which is real model output but not "the
+    file". `on_stream_start` fires before each round's first token, which a
+    caller uses to reset what it's showing: a round that turns out to want a
+    tool is superseded by the next round's reset the moment it starts, so
+    what is left on screen once the loop returns is always the true final
+    content, never a stale tool-round narration.
     """
+    def call(round_kwargs: dict[str, Any]) -> Any:
+        if on_stream_token is None:
+            return chat(**round_kwargs).message
+        if on_stream_start is not None:
+            on_stream_start()
+        return _stream_chat(chat, round_kwargs, on_stream_token)
+
     model = kwargs.get("model")
     if tools is None or model in _UNSUPPORTED_MODELS:
-        return chat(**kwargs).message
+        return call(kwargs)
     tool_kwargs = {**kwargs, "tools": READ_ONLY_SCHEMAS}
     messages = tool_kwargs["messages"]
     for _ in range(max(1, max_rounds)):
         try:
-            message = chat(**tool_kwargs).message
+            message = call(tool_kwargs)
         except Exception as exc:  # noqa: BLE001 - re-raised unless it's the one case handled
             if not tools_unsupported(exc):
                 raise
@@ -150,14 +197,14 @@ def run_chat(chat: Callable[..., Any], kwargs: dict[str, Any],
                 bus.log(tools.project, "WARN",
                         f"{model} does not support tool calling; continuing without "
                         f"a read tool for this and later calls to it.", agent=tools.role)
-            return chat(**kwargs).message   # the original, tools-less kwargs
+            return call(kwargs)   # the original, tools-less kwargs
         calls = message.tool_calls or []
         messages.append(message.model_dump(exclude_none=True))
         if not calls:
             return message
-        for call in calls:
-            name, args = call.function.name, (call.function.arguments or {})
+        for call_ in calls:
+            name, args = call_.function.name, (call_.function.arguments or {})
             messages.append({"role": "tool", "tool_name": name, "content": tools.call(name, args)})
     # Rounds exhausted: force a final answer, with no more reads offered.
     tool_kwargs.pop("tools", None)
-    return chat(**tool_kwargs).message
+    return call(tool_kwargs)

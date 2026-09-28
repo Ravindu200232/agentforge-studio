@@ -331,6 +331,61 @@ def stream_end(project: str, file: str, content: str, agent: str = DEVELOPER) ->
           "file": file, "content": content})
 
 
+class StreamWriter:
+    """One file's live stream, front to back — `start()`, `token()` per
+    delta, `end()` once the true final content is known.
+
+    A focused call like `llm.complete_html()` can run several rounds behind
+    one write: a tool round before the real content, a repair attempt if the
+    first draft fails validation. Each of those calls `on_stream_start()`
+    again before it writes — `start()` clears whatever this writer still had
+    buffered from the round before, so an earlier round's leftover, unflushed
+    tail can never bleed into the round that actually became the file.
+
+    Token events are batched rather than sent one per delta: `stream` is
+    deliberately not `DURABLE` (see that set above), but it still occupies a
+    slot in the bounded, in-memory event history on its way past, and a raw
+    per-token firehose can be thousands of events for one twenty-thousand-
+    character page. `token()` flushes at least every `min_interval` seconds
+    or `min_chars` characters, whichever comes first — still well under
+    human reading speed. `end()` flushes any remainder itself, so the last
+    few characters (routinely under both thresholds) are never left sitting
+    unsent.
+    """
+
+    def __init__(self, project: str, agent: str = DEVELOPER,
+                min_interval: float = 0.08, min_chars: int = 24):
+        self.project = project
+        self.agent = agent
+        self.min_interval = min_interval
+        self.min_chars = min_chars
+        self._buf = ""
+        self._last = time.monotonic()
+
+    def start(self, file: str) -> None:
+        self._buf = ""
+        self._last = time.monotonic()
+        stream_start(self.project, file, agent=self.agent)
+
+    def token(self, text: str) -> None:
+        if not text:
+            return
+        self._buf += text
+        now = time.monotonic()
+        if len(self._buf) >= self.min_chars or (now - self._last) >= self.min_interval:
+            self._flush()
+
+    def _flush(self) -> None:
+        if self._buf:
+            stream(self.project, self._buf, agent=self.agent)
+            self._buf = ""
+            self._last = time.monotonic()
+
+    def end(self, file: str, content: str) -> None:
+        self._flush()
+        stream_end(self.project, file, content, agent=self.agent)
+
+
 def prototype_changed(project: str) -> None:
     emit({"type": "prototype", "project": project, "agent": DESIGNER})
 

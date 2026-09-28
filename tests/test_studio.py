@@ -628,6 +628,144 @@ class EventStreamTests(unittest.TestCase):
             self.assertIn("project", event)
 
 
+class StreamWriterTests(unittest.TestCase):
+    """Phase 6's token batching: a fast model's deltas are coalesced before
+    they reach the bus, so one page does not flood the shared event history."""
+
+    def _own_role_events(self, seen):
+        # MIRROR_ROLES files every event under both roles; count the one the
+        # writer was actually created for ("developer", StreamWriter's default).
+        return [e for e in seen if e["agent"] == "developer"]
+
+    def test_small_bursts_under_the_thresholds_are_not_flushed_yet(self):
+        from server_modules import bus
+
+        seen = []
+        cancel = bus.subscribe(seen.append)
+        try:
+            writer = bus.StreamWriter("prj_stream", min_interval=10, min_chars=1000)
+            writer.start("a.html")
+            writer.token("a")
+            writer.token("bit")
+            writer.token("more")
+        finally:
+            cancel()
+            bus.forget("prj_stream")
+        # start() itself emits stream_start; no stream (token) event yet.
+        self.assertNotIn("stream", [e["type"] for e in self._own_role_events(seen)])
+
+    def test_crossing_the_character_threshold_flushes_once(self):
+        from server_modules import bus
+
+        seen = []
+        cancel = bus.subscribe(seen.append)
+        try:
+            writer = bus.StreamWriter("prj_stream", min_interval=10, min_chars=5)
+            writer.start("a.html")
+            writer.token("hel")
+            writer.token("lo!")   # 6 characters buffered, over the 5-character threshold
+        finally:
+            cancel()
+            bus.forget("prj_stream")
+        tokens = [e for e in self._own_role_events(seen) if e["type"] == "stream"]
+        self.assertEqual(len(tokens), 1)
+        self.assertEqual(tokens[0]["token"], "hello!")
+
+    def test_crossing_the_time_threshold_flushes_even_a_short_buffer(self):
+        from server_modules import bus
+
+        seen = []
+        cancel = bus.subscribe(seen.append)
+        try:
+            writer = bus.StreamWriter("prj_stream", min_interval=0, min_chars=1000)
+            writer.start("a.html")
+            writer.token("x")
+        finally:
+            cancel()
+            bus.forget("prj_stream")
+        tokens = [e for e in self._own_role_events(seen) if e["type"] == "stream"]
+        self.assertEqual(len(tokens), 1)
+        self.assertEqual(tokens[0]["token"], "x")
+
+    def test_an_empty_token_is_ignored(self):
+        from server_modules import bus
+
+        seen = []
+        cancel = bus.subscribe(seen.append)
+        try:
+            writer = bus.StreamWriter("prj_stream", min_interval=0, min_chars=1)
+            writer.start("a.html")
+            writer.token("")
+        finally:
+            cancel()
+            bus.forget("prj_stream")
+        self.assertEqual([e for e in self._own_role_events(seen) if e["type"] == "stream"], [])
+
+    def test_end_flushes_a_buffered_tail_that_never_crossed_a_threshold(self):
+        from server_modules import bus
+
+        seen = []
+        cancel = bus.subscribe(seen.append)
+        try:
+            writer = bus.StreamWriter("prj_stream", min_interval=10, min_chars=1000)
+            writer.start("a.html")
+            writer.token("just a few characters")
+            own = self._own_role_events(seen)
+            self.assertEqual([e for e in own if e["type"] == "stream"], [])   # not flushed yet
+            writer.end("a.html", "just a few characters")
+        finally:
+            cancel()
+            bus.forget("prj_stream")
+        own = self._own_role_events(seen)
+        tokens = [e for e in own if e["type"] == "stream"]
+        ends = [e for e in own if e["type"] == "stream_end"]
+        self.assertEqual(len(tokens), 1)
+        self.assertEqual(tokens[0]["token"], "just a few characters")
+        self.assertEqual(len(ends), 1)
+        self.assertEqual(ends[0]["content"], "just a few characters")
+
+    def test_a_second_start_clears_a_still_unflushed_tail_from_the_first_round(self):
+        """The bug a naive per-call sink had: a draft round's small,
+        never-flushed leftover text used to bleed into the repair round that
+        replaced it, because the two rounds shared one buffer with nothing
+        resetting it in between. `start()` now owns that reset itself."""
+        from server_modules import bus
+
+        seen = []
+        cancel = bus.subscribe(seen.append)
+        try:
+            writer = bus.StreamWriter("prj_stream", min_interval=10, min_chars=1000)
+            writer.start("a.html")
+            writer.token("draft round narration, never long enough to flush")
+            # A new round begins (e.g. a validation repair) without the first
+            # round ever having flushed or ended.
+            writer.start("a.html")
+            writer.token("the real page")
+            writer.end("a.html", "the real page")
+        finally:
+            cancel()
+            bus.forget("prj_stream")
+        tokens = [e for e in self._own_role_events(seen) if e["type"] == "stream"]
+        self.assertEqual(len(tokens), 1)
+        self.assertEqual(tokens[0]["token"], "the real page")
+
+    def test_end_with_nothing_buffered_still_ends_the_stream(self):
+        from server_modules import bus
+
+        seen = []
+        cancel = bus.subscribe(seen.append)
+        try:
+            writer = bus.StreamWriter("prj_stream", min_interval=10, min_chars=1000)
+            writer.start("a.html")
+            writer.end("a.html", "")
+        finally:
+            cancel()
+            bus.forget("prj_stream")
+        own = self._own_role_events(seen)
+        self.assertEqual([e for e in own if e["type"] == "stream"], [])
+        self.assertEqual(len([e for e in own if e["type"] == "stream_end"]), 1)
+
+
 class PlanningStreamTests(unittest.TestCase):
     def test_planning_shows_activity_without_publishing_the_generated_plan(self):
         from server_modules import bus
@@ -866,7 +1004,7 @@ class WireframeGenerationTests(unittest.TestCase):
 
             systems = []
 
-            def draw(_session, _project, _doc, page, _docs, _request, system):
+            def draw(_session, _project, _doc, page, _docs, _request, system, **_kwargs):
                 systems.append(system)
                 if page["route"] == "/checkout":
                     raise ValueError("model unavailable")

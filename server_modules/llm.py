@@ -236,9 +236,17 @@ def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None
 def complete_html(system: str, user: str, model: str = "", minimum: int = 0,
                   label: str = "html", attempts: int = 2,
                   think: bool | None = None,
-                  project: str = "", workspace: Path | None = None, role: str = "") -> str:
+                  project: str = "", workspace: Path | None = None, role: str = "",
+                  on_stream_start: Callable[[], None] | None = None,
+                  on_stream_token: Callable[[str], None] | None = None) -> str:
     """One call answered as a complete HTML document. When `project`/`workspace`
-    are given, the model gets a read-only tool instead of pre-embedded file content."""
+    are given, the model gets a read-only tool instead of pre-embedded file content.
+
+    `on_stream_start`/`on_stream_token`, when given, are called as the model
+    writes — the caller decides what "streaming" means to it (a bus event, a
+    log line); this module stays oblivious to that, same as it stays
+    oblivious to `bus` everywhere else.
+    """
     from . import llm_tools
     tools = _tools_for(project, workspace, role)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -249,7 +257,8 @@ def complete_html(system: str, user: str, model: str = "", minimum: int = 0,
         context = _context_for(kwargs["model"])
         if context and not config.setting("cloud"):
             kwargs["options"] = {"num_ctx": context}
-        message = llm_tools.run_chat(client().chat, kwargs, tools)
+        message = llm_tools.run_chat(client().chat, kwargs, tools,
+                                     on_stream_start=on_stream_start, on_stream_token=on_stream_token)
         llm_tools.tag_effort(tools, kwargs["think"], label)
         last = ((getattr(message, "content", "") or "")
                 or (getattr(message, "thinking", "") or "")).strip()

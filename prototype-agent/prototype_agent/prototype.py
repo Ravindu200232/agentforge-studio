@@ -279,17 +279,25 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
         # when the approved wireframe was concise. Keep a useful floor while
         # bounding output so generation time follows the actual screen.
         minimum = max(2800, min(6500, weight * 650))
+        relative = f".agentforge/prototype/{row['file']}"
+        # Screens are drawn one at a time (lanes=1, above) precisely so each
+        # can see the last one's flow — which also makes it the one drawing
+        # path in this file safe to stream: never two screens competing for
+        # the studio's one live-file buffer at once.
+        writer = bus.StreamWriter(project, agent=bus.DESIGNER)
         html = llm.complete_html(system, user, minimum=minimum,
                                  label=f"prototype {row['route']}", attempts=3,
                                  think=False, project=project, workspace=session.workspace,
-                                 role=bus.DESIGNER)
+                                 role=bus.DESIGNER,
+                                 on_stream_start=lambda: writer.start(relative),
+                                 on_stream_token=writer.token)
         if session.cancelled:
             raise RunCancelled(project)
         html = prototype_brief.ensure_assets(html)
         html = normalize_inline_svg(html, spec)
         path.write_text(html, encoding="utf-8")
-        bus.file_written(project, f".agentforge/prototype/{row['file']}", html,
-                         note="drawn", agent=bus.DESIGNER)
+        writer.end(relative, html)
+        bus.file_written(project, relative, html, note="drawn", agent=bus.DESIGNER)
         with progress_lock:
             completed += 1
             ready_routes.append(row)

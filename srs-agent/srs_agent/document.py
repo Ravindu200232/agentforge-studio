@@ -322,8 +322,16 @@ def _page_instruction(project: str, doc: dict, page: dict, docs: dict[str, str],
 
 def _draw_page(session: ProjectSession, project: str, doc: dict, page: dict,
                docs: dict[str, str] | None = None, request: str = "",
-               system: dict[str, str] | None = None, quiet: bool = False) -> dict:
-    """One wireframe: a complete HTML document for one route."""
+               system: dict[str, str] | None = None, quiet: bool = False,
+               stream: bool = False) -> dict:
+    """One wireframe: a complete HTML document for one route.
+
+    `stream` is only ever true for a single-page draw (one route, never the
+    whole-set `llm.in_lanes` fan-out) — the studio's live file buffer is one
+    slot, and three pages streaming into it at once would interleave into
+    garbage. A bulk draw stays exactly as before: silent until the page is
+    whole, then one `file_written`.
+    """
     route = str(page.get("route") or "/")
     if not quiet:
         bus.agent_msg(project, f"Drawing {page.get('page_name') or route} ({route}) from the approved specification and handoff.",
@@ -334,13 +342,21 @@ def _draw_page(session: ProjectSession, project: str, doc: dict, page: dict,
     functions = page.get("functions") or []
     weight = max(1, len(sections) + len(functions) // 2)
 
+    slug = _slug(route)
+    path = session.record_path(SRS_DIR, "wireframes", f"{slug}.html")
+    relative = path.relative_to(session.workspace).as_posix()
+    writer = bus.StreamWriter(project, agent=bus.DEVELOPER) if stream else None
+    on_start = (lambda: writer.start(relative)) if stream else None
+    on_token = writer.token if stream else None
+
     instruction = _page_instruction(project, doc, page, docs, request,
                                     ideas=system.get("ideas", ""), layout=system.get("layout", ""))
     minimum = max(completeness.WIREFRAME_FLOOR,
                   weight * completeness.WIREFRAME_CHARS_PER_SECTION)
     html = llm.complete_html(system=prompts.load("srs/system"), user=instruction,
                              minimum=minimum, label=f"wireframe:{route}",
-                             project=project, workspace=session.workspace, role=bus.DEVELOPER)
+                             project=project, workspace=session.workspace, role=bus.DEVELOPER,
+                             on_stream_start=on_start, on_stream_token=on_token)
     gaps = completeness.wireframe_depth([(route, html)], doc)
     if gaps:
         html = llm.complete_html(
@@ -349,21 +365,21 @@ def _draw_page(session: ProjectSession, project: str, doc: dict, page: dict,
                  + completeness.as_instructions(gaps)
                  + "\n\nReturn a complete corrected HTML page, with its inline CSS.",
             label=f"wireframe_repair:{route}",
-            project=project, workspace=session.workspace, role=bus.DEVELOPER)
+            project=project, workspace=session.workspace, role=bus.DEVELOPER,
+            on_stream_start=on_start, on_stream_token=on_token)
         gaps = completeness.wireframe_depth([(route, html)], doc)
         if gaps:
             raise ValueError("; ".join(gaps)[:400])
 
-    slug = _slug(route)
-    path = session.record_path(SRS_DIR, "wireframes", f"{slug}.html")
     path.write_text(html, encoding="utf-8")
+    if stream:
+        writer.end(relative, html)
     if not quiet:
-        bus.file_written(project, path.relative_to(session.workspace).as_posix(), html,
-                         note="drawn")
+        bus.file_written(project, relative, html, note="drawn")
         bus.log(project, "SUCCESS",
                 f"Wireframe · {page.get('page_name') or route} ({len(html):,} characters)")
     return {"route": route, "name": str(page.get("page_name") or route), "slug": slug,
-            "file": path.relative_to(session.workspace).as_posix()}
+            "file": relative}
 
 
 def _wireframe_system(session: ProjectSession, project: str, doc: dict, docs: dict[str, str], fresh: bool,
@@ -1078,11 +1094,13 @@ def _generate_wireframes(session: ProjectSession, project: str, doc: dict,
             session.write_record(*WIREFRAME_INDEX, data=state)
 
     system: dict[str, str] = {}
+    # Only a single-route draw can safely stream — see _draw_page's own note.
+    stream_this = len(selected) == 1
 
     def draw(page: dict) -> dict | None:
         try:
-            result = (_draw_page(session, project, doc, page, docs, request, system, quiet=True)
-                      if quiet else _draw_page(session, project, doc, page, docs, request, system))
+            result = _draw_page(session, project, doc, page, docs, request, system,
+                                quiet=quiet, stream=stream_this)
             update(page, result=result)
             return result
         except Exception as exc:  # one failed route must not hide the others

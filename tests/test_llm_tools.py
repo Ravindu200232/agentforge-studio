@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import ollama
+
 ROOT = Path(__file__).resolve().parent.parent
 for folder in (".", "src"):
     sys.path.insert(0, str(ROOT / folder))
@@ -107,6 +109,97 @@ class RunChatTests(unittest.TestCase):
         with self.assertRaises(ResponseError):
             llm_tools.run_chat(chat, {"model": "m", "messages": []}, tools)
         self.assertNotIn("m", llm_tools._UNSUPPORTED_MODELS)
+
+
+class FakeChunk:
+    def __init__(self, content="", thinking="", calls=None):
+        self.message = SimpleNamespace(content=content, thinking=thinking, tool_calls=calls)
+
+
+class StreamingTests(unittest.TestCase):
+    """Phase 6: `on_stream_token` turns a blocking chat() into a live one,
+    without changing what `run_chat()` ultimately returns."""
+
+    def setUp(self):
+        llm_tools._UNSUPPORTED_MODELS.clear()
+
+    def test_stream_chat_forwards_each_delta_and_assembles_the_full_message(self):
+        def chat(**kwargs):
+            self.assertTrue(kwargs["stream"])
+            return iter([FakeChunk("hello"), FakeChunk(" world"), FakeChunk("")])
+
+        tokens = []
+        message = llm_tools._stream_chat(chat, {"model": "m", "messages": []}, tokens.append)
+        self.assertEqual(tokens, ["hello", " world"])
+        self.assertEqual(message.content, "hello world")
+        self.assertIsNone(message.tool_calls)
+
+    def test_stream_chat_collects_tool_calls_wherever_they_land(self):
+        call = ollama.Message.ToolCall(
+            function=ollama.Message.ToolCall.Function(name="read_file", arguments={"path": "a"}))
+
+        def chat(**kwargs):
+            return iter([FakeChunk("I'll check that."), FakeChunk("", calls=[call]), FakeChunk("")])
+
+        tokens = []
+        message = llm_tools._stream_chat(chat, {"model": "m", "messages": []}, tokens.append)
+        self.assertEqual(tokens, ["I'll check that."])
+        self.assertEqual(message.content, "I'll check that.")
+        self.assertEqual(message.tool_calls, [call])
+
+    def test_run_chat_streams_the_no_tools_path(self):
+        def chat(**kwargs):
+            return iter([FakeChunk("hi")])
+
+        tokens, starts = [], []
+        message = llm_tools.run_chat(chat, {"model": "m", "messages": []}, None,
+                                     on_stream_start=lambda: starts.append(1),
+                                     on_stream_token=tokens.append)
+        self.assertEqual(message.content, "hi")
+        self.assertEqual(tokens, ["hi"])
+        self.assertEqual(len(starts), 1)
+
+    def test_run_chat_streams_every_round_and_resets_after_a_tool_round(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "hello.txt").write_text("hello", encoding="utf-8")
+            tools = llm_tools.ReadOnlyTools(Path(folder), project="prj", role=bus.DEVELOPER)
+            call = ollama.Message.ToolCall(
+                function=ollama.Message.ToolCall.Function(name="read_file", arguments={"path": "hello.txt"}))
+            rounds = []
+
+            def chat(**kwargs):
+                self.assertTrue(kwargs["stream"])
+                if not rounds:
+                    rounds.append(1)
+                    return iter([FakeChunk("checking the file..."), FakeChunk("", calls=[call])])
+                return iter([FakeChunk("Found it.")])
+
+            starts, tokens = [], []
+            message = llm_tools.run_chat(chat, {"model": "m", "messages": []}, tools,
+                                         on_stream_start=lambda: starts.append(len(tokens)),
+                                         on_stream_token=tokens.append)
+            self.assertEqual(message.content, "Found it.")
+            # A start fired for both rounds — the second start is what the
+            # caller uses to reset a buffer the first (tool) round wrote into.
+            self.assertEqual(len(starts), 2)
+            self.assertEqual(tokens, ["checking the file...", "Found it."])
+
+    def test_a_model_that_cannot_stream_with_tools_still_falls_back_streaming(self):
+        tools = llm_tools.ReadOnlyTools(Path("/tmp"), project="prj", role=bus.DEVELOPER)
+        calls = []
+
+        def chat(**kwargs):
+            calls.append(kwargs)
+            if "tools" in kwargs:
+                raise ResponseError('model "m" does not support tools', 400)
+            return iter([FakeChunk("plain answer")])
+
+        tokens = []
+        message = llm_tools.run_chat(chat, {"model": "m", "messages": []}, tools,
+                                     on_stream_token=tokens.append)
+        self.assertEqual(message.content, "plain answer")
+        self.assertEqual(tokens, ["plain answer"])
+        self.assertIn("m", llm_tools._UNSUPPORTED_MODELS)
 
 
 class WebToolsTests(unittest.TestCase):
