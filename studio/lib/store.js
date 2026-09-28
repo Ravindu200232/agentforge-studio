@@ -61,6 +61,12 @@ export const useStore = create((set, get) => ({
   buildAvailability: {},
   projectSync: {},
   srsStamp: {},
+  // Whether a typed change is planned first (propose -> approve) or applied
+  // at once — per project, defaulting true (today's always-on behavior) for
+  // any project that has never set it.
+  planModeByProject: {},
+  setPlanMode: (project, enabled) => set(state => ({
+    planModeByProject: { ...state.planModeByProject, [project]: enabled } })),
   // Artifact-specific refresh signals. They update only the matching panel and
   // never reset project navigation or reload the whole Studio app.
   prototypeArtifactStamp: {},
@@ -86,7 +92,7 @@ export const useStore = create((set, get) => ({
     get().reset(null)
     get().resetSrs()
     try { LS?.removeItem('agentforge-project-views') } catch { }
-    set({ accountEpoch: get().accountEpoch + 1, streams: {}, projectSessions: {}, projectViews: {}, buildAvailability: {}, projectSync: {},
+    set({ accountEpoch: get().accountEpoch + 1, streams: {}, projectSessions: {}, projectViews: {}, buildAvailability: {}, projectSync: {}, planModeByProject: {},
       srsStamp: {}, prototypeArtifactStamp: {}, runtimes: {}, queue: [] })
   },
   switchAgent: (agentRole) => set(state => {
@@ -148,6 +154,8 @@ export const useStore = create((set, get) => ({
     return { buildAvailability: { ...state.buildAvailability, [snapshot.project]: allowed },
       projectSync: { ...state.projectSync, [snapshot.project]: snapshot.sync },
       projectSessions: { ...state.projectSessions, [snapshot.project]: restored },
+      planModeByProject: { ...state.planModeByProject,
+        [snapshot.project]: snapshot.plan_mode !== false },
       ...(state.project === snapshot.project ? restored[state.agentRole] : {}) }
   }),
 

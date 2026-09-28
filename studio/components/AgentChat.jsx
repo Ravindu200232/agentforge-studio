@@ -66,6 +66,23 @@ export default function AgentChat({ projectTitle = '' }) {
   const selection = useStore(s => s.selection)
   const removeSelection = useStore(s => s.removeSelection)
   const clearSelection = useStore(s => s.clearSelection)
+  const planMode = useStore(s => s.planModeByProject[project] ?? true)
+  const setPlanModeStore = useStore(s => s.setPlanMode)
+  const [planModeBusy, setPlanModeBusy] = useState(false)
+  const togglePlanMode = async () => {
+    if (!project || planModeBusy) return
+    const next = !planMode
+    setPlanModeBusy(true)
+    setPlanModeStore(project, next)   // optimistic — a typed change reads this immediately
+    try {
+      await api.setPlanMode(project, next)
+    } catch (e) {
+      setPlanModeStore(project, !next)
+      useStore.getState().addLog('WARN', `Could not change plan mode — ${e.message}`)
+    } finally {
+      setPlanModeBusy(false)
+    }
+  }
 
   // Collapsing gives the whole width back to the work when someone wants it.
   const [open, setOpen] = useState(true)
@@ -321,6 +338,8 @@ export default function AgentChat({ projectTitle = '' }) {
         </div>
       </header>
 
+      {project && <StageProgress lifecycle={lifecycle} />}
+
       <div ref={scrollRef} onScroll={handleScroll} className="relative min-h-0 flex-1 overflow-y-auto px-3.5 py-3">
         <div className="space-y-3">
           {/* The last row is the one happening now, so it is the one that
@@ -383,15 +402,24 @@ export default function AgentChat({ projectTitle = '' }) {
                 <EditAttach attach={attach} project={project}
                         onSpoken={said => setText((text ? text.trimEnd() + ' ' : '') + said)} disabled={reading} />
                 <PluginPicker project={project} />
-                <span
-                  title={selection.length
-                    ? 'Element-specific edits are scoped to the selected artifact.'
-                    : 'Every request is planned first: you read the plan and approve it before anything changes.'}
-                  className={cn('ml-1 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold transition-colors',
-                    !selection.length ? 'bg-accent text-ink' : 'text-muted2')}>
-                  <ListChecks className="size-3" />
-                  {selection.length ? 'Direct element edit' : 'Plan first'}
-                </span>
+                {selection.length ? (
+                  <span
+                    title="Element-specific edits are scoped to the selected artifact."
+                    className="ml-1 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold text-muted2">
+                    <ListChecks className="size-3" />
+                    Direct element edit
+                  </span>
+                ) : (
+                  <button type="button" onClick={togglePlanMode} disabled={!project || planModeBusy}
+                    title={planMode
+                      ? 'Every request is planned first: you read the plan and approve it before anything changes. Click to apply changes directly instead.'
+                      : 'Changes apply at once, with no plan to approve first. Click to plan first instead.'}
+                    className={cn('ml-1 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold transition-colors disabled:opacity-50',
+                      planMode ? 'bg-accent text-ink hover:bg-press' : 'text-muted2 hover:bg-panel2 hover:text-ink')}>
+                    <ListChecks className="size-3" />
+                    {planMode ? 'Plan first' : 'Apply directly'}
+                  </button>
+                )}
               </span>
             ) : <span />}
             <button onClick={submit}
@@ -425,6 +453,43 @@ function evidenceDetail(item) {
   if (item.tool_calls != null) facts.push(`${item.tool_calls} tool call(s)`)
   if (item.state) facts.push(String(item.state))
   return facts.join(' · ') || String(item.detail || '')
+}
+
+const STAGE_ORDER = [
+  ['interview', 'Interview'], ['plan', 'Plan'], ['srs', 'SRS'], ['design', 'Design'],
+  ['prototype', 'Prototype'], ['build', 'Build'], ['test', 'Test'], ['deploy', 'Deploy'], ['done', 'Done'],
+]
+
+/** A compact read of every stage's own status, from the same /lifecycle
+ * record the chat's stage cards already render — one place to see where a
+ * project stands instead of piecing it together from scattered tab state. */
+function StageProgress({ lifecycle }) {
+  if (!lifecycle?.stages) return null
+  return (
+    <div className="flex items-center gap-1 overflow-x-auto px-3.5 py-1.5 no-scrollbar border-b border-line/60">
+      {STAGE_ORDER.map(([key, label], i) => {
+        const stage = lifecycle.stages[key]
+        const status = stage?.status || 'pending'
+        const passed = status === 'passed'
+        const running = status === 'running'
+        const failed = status === 'failed' || status === 'paused'
+        return (
+          <div key={key} className="flex items-center gap-1" title={`${label} · ${status.replaceAll('_', ' ')}${stage?.summary ? ' — ' + stage.summary : ''}`}>
+            <span className={cn('flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9.5px] font-semibold whitespace-nowrap',
+              passed ? 'text-ok' : running ? 'text-accent' : failed ? 'text-warn' : 'text-muted2')}>
+              {running
+                ? <Loader2 className="size-2.5 animate-spin" />
+                : failed
+                ? <CircleAlert className="size-2.5" />
+                : <span className={cn('size-1.5 rounded-full', passed ? 'bg-ok' : 'bg-muted2/50')} />}
+              {label}
+            </span>
+            {i < STAGE_ORDER.length - 1 && <span className="h-px w-2 shrink-0 bg-line" />}
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 function lifecycleTurns(lifecycle) {

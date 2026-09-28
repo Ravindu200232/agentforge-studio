@@ -15,21 +15,28 @@ import DeployAccounts from './deploy/DeployAccounts'
 import PluginAccounts from './PluginAccounts'
 import McpServers from './McpServers'
 
+const THINKING_LEVELS = [
+  { id: 'off', label: 'Off', hint: 'Fastest. No reasoning, no extra verification nudge.' },
+  { id: 'low', label: 'Low', hint: 'No reasoning, but the agent is told to verify with a read tool rather than guess.' },
+  { id: 'high', label: 'High', hint: 'Reasons before answering, plus the same verification nudge. Slower, better on hard changes.' },
+]
+
 /** Model picker interface for selecting and configuring LLM models across all agent roles. */
 function ModelPicker({ meta, onSaved }) {
   const [catalog, setCatalog] = useState(null)
   const [chosen, setChosen] = useState('')
-  const [think, setThink] = useState(true)
+  const [thinkingLevel, setThinkingLevel] = useState('high')
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
   // Server-synced state to track whether chosen model settings have been saved.
-  const [saved, setSaved] = useState({ model: '', think: true })
+  const [saved, setSaved] = useState({ model: '', thinkingLevel: 'high' })
 
   useEffect(() => {
     if (!meta) return
+    const level = THINKING_LEVELS.some(l => l.id === meta.thinking_level) ? meta.thinking_level : 'high'
     setChosen(meta.agent_model || '')
-    setThink(meta.agent_think !== false)
-    setSaved({ model: meta.agent_model || '', think: meta.agent_think !== false })
+    setThinkingLevel(level)
+    setSaved({ model: meta.agent_model || '', thinkingLevel: level })
   }, [meta])
 
   useEffect(() => {
@@ -41,18 +48,18 @@ function ModelPicker({ meta, onSaved }) {
   async function save() {
     setBusy(true); setNote('')
     try {
-      await api.saveSettings({ agent_model: chosen, agent_think: think })
+      await api.saveSettings({ agent_model: chosen, thinking_level: thinkingLevel })
       // The server's `agent_model` is only a fallback: the studio keeps a
       // model per role and sends it on every run, so without this the saved
       // choice would lose to whatever those roles already held.
       const roles = useStore.getState().applyModel(chosen)
-      setSaved({ model: chosen, think })
+      setSaved({ model: chosen, thinkingLevel })
       setNote(`saved — ${roles.length} agents now use it`)
       onSaved?.()
     } catch (failure) { setNote(failure.message) } finally { setBusy(false) }
   }
 
-  const dirty = chosen !== saved.model || think !== saved.think
+  const dirty = chosen !== saved.model || thinkingLevel !== saved.thinkingLevel
 
   const groups = [
     ['On this machine', catalog?.local_models || []],
@@ -62,21 +69,30 @@ function ModelPicker({ meta, onSaved }) {
 
   return (
     <div className="max-w-[700px] space-y-4">
-      <div className="flex items-center justify-between rounded-2xl border border-line bg-panel px-4 py-3.5 shadow-sm">
-        <div>
-          <p className="text-[12.5px] font-medium text-ink">Thinking</p>
-          <p className="mt-0.5 text-[11px] text-muted">
-            Reasoning before answering. Slower, and better on hard changes. The
-            specification agent never uses it.
-          </p>
+      <div className="rounded-2xl border border-line bg-panel px-4 py-3.5 shadow-sm">
+        <p className="text-[12.5px] font-medium text-ink">Thinking</p>
+        <p className="mt-0.5 text-[11px] text-muted">
+          How much the agent reasons and verifies before it answers. The
+          specification agent never reasons regardless of this setting.
+        </p>
+        <div className="mt-3 grid grid-cols-3 gap-1.5">
+          {THINKING_LEVELS.map(level => {
+            const picked = level.id === thinkingLevel
+            return (
+              <button key={level.id} type="button" disabled={busy}
+                title={level.hint}
+                onClick={() => { setThinkingLevel(level.id); setNote('') }}
+                aria-pressed={picked}
+                className={cn('rounded-xl border px-2.5 py-2 text-[11.5px] font-semibold transition-colors',
+                  picked ? 'border-accent bg-accent text-ink' : 'border-line bg-panel2/60 text-muted hover:text-ink')}>
+                {level.label}
+              </button>
+            )
+          })}
         </div>
-        <button type="button" disabled={busy} onClick={() => { setThink(!think); setNote('') }}
-          aria-pressed={think}
-          className={cn('h-6 w-11 shrink-0 rounded-full border transition-colors',
-            think ? 'border-accent bg-accent' : 'border-line bg-panel2')}>
-          <span className={cn('block size-4 rounded-full bg-white transition-transform',
-            think ? 'translate-x-6' : 'translate-x-1')} />
-        </button>
+        <p className="mt-2 text-[10.5px] text-muted2">
+          {THINKING_LEVELS.find(l => l.id === thinkingLevel)?.hint}
+        </p>
       </div>
 
       <div className="rounded-2xl border border-line bg-panel shadow-sm">
@@ -440,7 +456,8 @@ export default function SettingsModal({ onClose, onSaved }) {
                                                          : meta.agent_model)
                                            : 'whatever Ollama reports as largest'}
                       </b>
-                      {meta?.agent_think === false ? ', with thinking off.' : '.'}
+                      {meta?.thinking_level && meta.thinking_level !== 'high'
+                        ? `, thinking set to ${meta.thinking_level}.` : '.'}
                     </p>
                   </div>
             )}

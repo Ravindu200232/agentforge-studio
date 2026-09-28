@@ -330,7 +330,7 @@ class ProjectSession:
                     mcp=self._agent.mcp,
                 )
                 self._agent.base_system = self._system()
-                self._agent.think = bool(saved.get("agent_think"))
+                self._agent.think = config.thinking_enabled(saved)
                 self._agent.messages[0]["content"] = self._agent._system_message()
                 self._model = wanted
                 self._restore_context()
@@ -346,11 +346,14 @@ class ProjectSession:
                 # project's, not the model's.
                 self._agent.set_model(self._client(), wanted, bool(saved.get("cloud")))
                 self._model = wanted
-            self._agent.think = bool(saved.get("agent_think"))
+            self._agent.think = config.thinking_enabled(saved)
             return self._agent
 
     def _system(self) -> str:
-        return (prompts.load("shared/engine", workspace=str(self.workspace))
+        guidance = ("8. Verify with a read tool before you answer or act — check the file, "
+                    "the current route, the actual data — rather than proceeding on an assumption."
+                    if config.thinking_encourages_tools() else "")
+        return (prompts.load("shared/engine", workspace=str(self.workspace), thinking_guidance=guidance)
                 + f"\n\nWorkspace: {self.workspace}\nProject: {self.project}")
 
     # --- keeping the one context across restarts ---------------------------

@@ -163,7 +163,7 @@ def complete(system: str, user: str, model: str = "", think: bool | None = None,
                      {"role": "user", "content": user}],
         "stream": False,
     }
-    kwargs["think"] = bool(config.setting("agent_think")) if think is None else think
+    kwargs["think"] = config.thinking_enabled() if think is None else think
     context = _context_for(kwargs["model"])
     if context and not config.setting("cloud"):
         kwargs["options"] = {"num_ctx": context}
@@ -201,7 +201,7 @@ def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None
         selected = kwargs["model"].lower()
         if tools is None and not config.setting("cloud") and not selected.endswith(":cloud"):
             kwargs["format"] = "json"
-        kwargs["think"] = bool(config.setting("agent_think"))
+        kwargs["think"] = config.thinking_enabled()
         context = _context_for(kwargs["model"])
         if context and not config.setting("cloud"):
             kwargs["options"] = {"num_ctx": context}
@@ -253,7 +253,7 @@ def complete_html(system: str, user: str, model: str = "", minimum: int = 0,
     last = ""
     for _ in range(max(1, attempts)):
         kwargs: dict[str, Any] = {"model": _model(model), "messages": messages, "stream": False}
-        kwargs["think"] = bool(config.setting("agent_think")) if think is None else think
+        kwargs["think"] = config.thinking_enabled() if think is None else think
         context = _context_for(kwargs["model"])
         if context and not config.setting("cloud"):
             kwargs["options"] = {"num_ctx": context}

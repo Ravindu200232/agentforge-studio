@@ -162,6 +162,7 @@ def read_settings(_ctx: dict) -> Any:
     deploy["mongodb_uri_hint"] = production[-4:] if production else ""
     return {**{k: v for k, v in saved.items() if not any(word in k for word in ("token", "api_key", "credentials", "mongodb_uri", "deploy_env"))},
             "admin": True, "local_num_ctx": saved.get("context") or saved.get("local_num_ctx") or 0,
+            "thinking_level": config.thinking(saved),
             "mcp_servers": _safe_mcp_servers(saved.get("mcp_servers")),
             "cloud_enabled": bool(catalog["cloud_enabled"]),
             "cloud_reachable": bool(catalog["cloud"] and catalog["ollama_ready"]),
@@ -536,6 +537,7 @@ def workflow(ctx: dict) -> Any:
         "agents": bus.run_status(project),
         "build_available": store.build_available(record),
         "sync": _last_sync(project),
+        "plan_mode": record.get("plan_mode", True),
     }
 
 
@@ -548,6 +550,17 @@ def _last_sync(project: str) -> dict:
                 break
             return event
     return {"type": "sync_state", "project": project, "status": "clean"}
+
+
+@route("POST", r"/projects/(?P<project>[^/]+)/plan-mode")
+def set_plan_mode(ctx: dict) -> Any:
+    """Turn plan mode on or off for one project: on (the default, and every
+    project's behavior before this existed) proposes a plan for a typed
+    change and waits for approval; off applies it at once, the way a project
+    with no specification yet already does."""
+    project = _project(ctx)
+    record = store.update(project, plan_mode=bool(ctx.get("enabled", True)))
+    return {"project": project, "plan_mode": record.get("plan_mode", True)}
 
 
 @route("GET", r"/lifecycle/(?P<project>[^/]+)")

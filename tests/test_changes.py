@@ -383,5 +383,55 @@ class RoutingTests(unittest.TestCase):
             self.assertIn(word, plan)
 
 
+class PlanModeTests(unittest.TestCase):
+    """Phase 7: a real per-project plan on/off toggle, feeding `applies()`
+    exactly where routing already decides plan-first vs. direct apply."""
+
+    def test_a_project_that_never_set_it_keeps_todays_always_on_behavior(self):
+        with mock.patch.object(changes.store, "get", return_value={"id": "p"}), \
+             mock.patch("srs_agent.document.has_document", return_value=True):
+            self.assertTrue(changes.applies("p"))
+
+    def test_plan_mode_off_skips_planning_even_with_a_specification(self):
+        with mock.patch.object(changes.store, "get", return_value={"id": "p", "plan_mode": False}), \
+             mock.patch("srs_agent.document.has_document", return_value=True):
+            self.assertFalse(changes.applies("p"))
+
+    def test_plan_mode_on_is_unaffected(self):
+        with mock.patch.object(changes.store, "get", return_value={"id": "p", "plan_mode": True}), \
+             mock.patch("srs_agent.document.has_document", return_value=True):
+            self.assertTrue(changes.applies("p"))
+
+    def test_a_project_with_no_specification_still_never_plans_either_way(self):
+        with mock.patch.object(changes.store, "get", return_value={"id": "p", "plan_mode": True}), \
+             mock.patch("srs_agent.document.has_document", return_value=False):
+            self.assertFalse(changes.applies("p"))
+
+    def test_the_route_toggles_it_and_workflow_reports_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            original = config.PROJECTS_FILE
+            config.PROJECTS_FILE = Path(folder) / "projects.json"
+            original_workspaces = config.WORKSPACES
+            config.WORKSPACES = Path(folder) / "workspaces"
+            try:
+                from server_modules import store
+                record = store.create("an idea")
+                project = record["id"]
+                match = mock.Mock(group=lambda name: project)
+
+                seen = httpd.workflow({"_match": match})
+                self.assertTrue(seen["plan_mode"])   # never set yet -> on
+
+                result = httpd.set_plan_mode({"_match": match, "enabled": False})
+                self.assertFalse(result["plan_mode"])
+
+                seen = httpd.workflow({"_match": match})
+                self.assertFalse(seen["plan_mode"])
+            finally:
+                config.PROJECTS_FILE = original
+                config.WORKSPACES = original_workspaces
+                bus.forget(project)
+
+
 if __name__ == "__main__":
     unittest.main()

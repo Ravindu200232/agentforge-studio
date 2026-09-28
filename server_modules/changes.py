@@ -153,9 +153,15 @@ def _language(project: str) -> str:
 
 
 def applies(project: str) -> bool:
-    """Whether there is something to change: a project with a specification is planned against it."""
+    """Whether a typed change goes through propose->approve: a project with a
+    specification is planned against it, unless the customer turned plan mode
+    off for this project (a real per-project choice — a project that has
+    never set it behaves exactly as it always has, plan mode on)."""
     from srs_agent import document as srs_document
 
+    record = store.get(project)
+    if record is not None and not record.get("plan_mode", True):
+        return False
     return srs_document.has_document(project)
 
 

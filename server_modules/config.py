@@ -36,6 +36,11 @@ DEFAULTS: dict[str, Any] = {
     "context": 0,
     "local_num_ctx": 0,
     "agent_think": False,
+    # The multi-level control "agent_think" alone can't express: "" (unset)
+    # means a settings.json saved before this existed, so agent_think's own
+    # boolean still decides — see thinking() below. Once set, it is the one
+    # source of truth and agent_think is kept only for older readers.
+    "thinking_level": "",
     "mongodb_uri": "",
     # What a deployment run is given (see deploy_vars.py): the production database, and every other value
     # the customer saved for it by name. Kept apart from `mongodb_uri`, which is the studio's own.
@@ -93,6 +98,9 @@ def settings() -> dict[str, Any]:
     return {**DEFAULTS, **(saved if isinstance(saved, dict) else {})}
 
 
+THINKING_LEVELS = ("off", "low", "high")
+
+
 def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
     current = _read(SETTINGS_FILE, {})
     if not isinstance(current, dict):
@@ -104,6 +112,12 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
             clean["local_num_ctx"] = clean["context"]
         except (TypeError, ValueError):
             raise ValueError("context length must be a number") from None
+    if "thinking_level" in clean:
+        if clean["thinking_level"] not in THINKING_LEVELS:
+            raise ValueError(f"thinking_level must be one of {', '.join(THINKING_LEVELS)}")
+        # A reader that still only knows the old boolean gets a coherent
+        # answer: agent_think was always "does it reason", true only at "high".
+        clean["agent_think"] = clean["thinking_level"] == "high"
     current.update(clean)
     _write(SETTINGS_FILE, current)
     return settings()
@@ -111,6 +125,34 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
 
 def setting(name: str, fallback: Any = None) -> Any:
     return settings().get(name, fallback)
+
+
+def thinking(saved: dict[str, Any] | None = None) -> str:
+    """The multi-level thinking/tool-use setting: "off", "low" or "high".
+
+    A settings.json saved before this existed has no `thinking_level` — its
+    `agent_think` boolean still decides, so nobody's existing preference
+    silently changes on upgrade.
+    """
+    saved = saved if saved is not None else settings()
+    level = str(saved.get("thinking_level") or "").strip().lower()
+    if level in THINKING_LEVELS:
+        return level
+    return "high" if saved.get("agent_think") else "off"
+
+
+def thinking_enabled(saved: dict[str, Any] | None = None) -> bool:
+    """Whether the model reasons before answering (Ollama's native `think`).
+    Only "high" does — "low" is deliberately reasoning-free, see
+    `thinking_encourages_tools()` for what it does get."""
+    return thinking(saved) == "high"
+
+
+def thinking_encourages_tools(saved: dict[str, Any] | None = None) -> bool:
+    """Whether the customer asked for extra encouragement to verify with a
+    read tool rather than guess — "low" gets this without paying for
+    reasoning tokens; "high" gets both."""
+    return thinking(saved) in ("low", "high")
 
 
 def workspace_for(project: str) -> Path:
