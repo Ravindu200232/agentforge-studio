@@ -89,6 +89,27 @@ def extract_html(text: str) -> str:
 
 _local = threading.local()
 
+# A model's real context window, once learned. These calls have no Agent to
+# remember it between turns the way the tool-using session does, and asking
+# the server on every single call would add a round trip to every wireframe
+# page and every diagram — so it is looked up once per model, here.
+_context_cache: dict[str, int | None] = {}
+
+
+def _num_ctx(model: str) -> int | None:
+    """The context window to request for `model`: a manual override if one is
+    saved in settings, else the model's own advertised maximum — the same
+    sizing `Agent` already does for the tool-using conversation, extended
+    here so a one-shot call is never silently limited to Ollama's small
+    default just because nobody set `context` in settings."""
+    override = int(config.setting("context") or 0)
+    if override:
+        return override
+    if model not in _context_cache:
+        from ollama_terminal.agent import model_context_length
+        _context_cache[model] = model_context_length(client(), model)
+    return _context_cache[model]
+
 
 def client() -> Any:
     """One Ollama client per thread, so parallel lanes do not share a socket."""
@@ -141,9 +162,10 @@ def complete(system: str, user: str, model: str = "", think: bool | None = None,
         "stream": False,
     }
     kwargs["think"] = bool(config.setting("agent_think")) if think is None else think
-    context = int(config.setting("context") or 0)
-    if context and not config.setting("cloud"):
-        kwargs["options"] = {"num_ctx": context}
+    if not config.setting("cloud"):
+        num_ctx = _num_ctx(kwargs["model"])
+        if num_ctx:
+            kwargs["options"] = {"num_ctx": num_ctx}
     tools = _tools_for(project, workspace, role)
     message = llm_tools.run_chat(client().chat, kwargs, tools)
     llm_tools.tag_effort(tools, kwargs["think"], "completion")
@@ -179,9 +201,10 @@ def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None
         if tools is None and not config.setting("cloud") and not selected.endswith(":cloud"):
             kwargs["format"] = "json"
         kwargs["think"] = bool(config.setting("agent_think"))
-        context = int(config.setting("context") or 0)
-        if context and not config.setting("cloud"):
-            kwargs["options"] = {"num_ctx": context}
+        if not config.setting("cloud"):
+            num_ctx = _num_ctx(kwargs["model"])
+            if num_ctx:
+                kwargs["options"] = {"num_ctx": num_ctx}
         message = llm_tools.run_chat(client().chat, kwargs, tools)
         llm_tools.tag_effort(tools, kwargs["think"], label)
         last = ((getattr(message, "content", "") or "")
@@ -223,9 +246,10 @@ def complete_html(system: str, user: str, model: str = "", minimum: int = 0,
     for _ in range(max(1, attempts)):
         kwargs: dict[str, Any] = {"model": _model(model), "messages": messages, "stream": False}
         kwargs["think"] = bool(config.setting("agent_think")) if think is None else think
-        context = int(config.setting("context") or 0)
-        if context and not config.setting("cloud"):
-            kwargs["options"] = {"num_ctx": context}
+        if not config.setting("cloud"):
+            num_ctx = _num_ctx(kwargs["model"])
+            if num_ctx:
+                kwargs["options"] = {"num_ctx": num_ctx}
         message = llm_tools.run_chat(client().chat, kwargs, tools)
         llm_tools.tag_effort(tools, kwargs["think"], label)
         last = ((getattr(message, "content", "") or "")

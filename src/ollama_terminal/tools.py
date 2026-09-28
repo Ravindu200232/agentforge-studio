@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -20,6 +21,38 @@ MAX_OUTPUT = 24_000
 MAX_READ = 32_000
 MAX_COMMAND_SECONDS = 600
 SERVER_COMMAND_SECONDS = 75
+
+# What an agent is never allowed to run, regardless of workspace or approval —
+# a fixed floor under `run_command`, not something a project or a setting can
+# widen. Matched against the whole command line, not just its first word, so
+# `foo && rm -rf /` is caught the same as `rm -rf /` alone. This is a coarse
+# safety net for unambiguous, high-damage command *shapes*, not a sandbox: it
+# does not try to catch every way an LLM could misuse a shell, only the ones
+# whose blast radius reaches outside the project it was asked to build.
+_BLOCKED_COMMANDS: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(r"\brm\s+(?:-\w+\s+)*-[a-z]*r[a-z]*f[a-z]*(?:\s+-\w+)*\s+"
+                r"(?:/|~|\.\.?)?/?\*?\s*(?:$|[;&|])", re.I),
+     "a recursive force-delete of the filesystem root, home directory or everything in the current one"),
+    (re.compile(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:", re.I), "a fork bomb"),
+    (re.compile(r"\bmkfs(?:\.\w+)?\b", re.I), "formatting a filesystem"),
+    (re.compile(r"\bdd\b[^;&|]*\bof=/dev/", re.I), "writing raw bytes over a device"),
+    (re.compile(r"\bformat\s+[a-z]:", re.I), "formatting a drive"),
+    (re.compile(r"remove-item\b[^;&|]*-recurse\b[^;&|]*-force\b[^;&|]*[a-z]:\\?\s*(?:$|[;&|])", re.I),
+     "a recursive force-delete of a drive root"),
+    (re.compile(r"\bsudo\b|\brunas\b|\bsu\s+-", re.I), "privilege escalation"),
+    (re.compile(r"\b(?:curl|wget|iwr|invoke-webrequest)\b[^|]*\|\s*"
+                r"(?:sh|bash|zsh|powershell|pwsh|iex|invoke-expression)\b", re.I),
+     "piping a downloaded script straight into a shell"),
+    (re.compile(r"\b(?:shutdown|reboot|halt|poweroff)\b", re.I), "shutting down or rebooting the machine"),
+)
+
+
+def _blocked_reason(command: str) -> str:
+    """Why `command` is refused, or an empty string when it is allowed."""
+    for pattern, reason in _BLOCKED_COMMANDS:
+        if pattern.search(command):
+            return reason
+    return ""
 
 
 def tools_unsupported(exc: Exception) -> bool:
@@ -176,6 +209,9 @@ class WorkspaceTools:
     def tool_run_command(self, command: str, timeout_seconds: int = 600) -> str:
         if not command.strip():
             raise ValueError("Empty command")
+        blocked = _blocked_reason(command)
+        if blocked:
+            raise ValueError(f"This command is blocked: {blocked}. Use a narrower, safer command.")
         # A generated app may own one or more Node processes. Killing every
         # `node.exe` also kills the Studio, unrelated previews and the build
         # itself. Commands must target a known PID when cleanup is needed.
