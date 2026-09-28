@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+import httpx
 import ollama
 
 from ollama_terminal.agent import Agent
@@ -51,7 +52,12 @@ def _transient(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     if isinstance(status, int):
         return status in {408, 425, 429, 500, 502, 503, 504, 522, 524}
-    return isinstance(exc, (ConnectionError, TimeoutError, OSError))
+    # ollama's client raises through httpx, whose transport-level exceptions
+    # (a connection reset, a read/write timeout, "server disconnected without
+    # sending a response") are not Python's own ConnectionError/OSError/
+    # TimeoutError — a real one slipped through here uncaught on a live run
+    # (see commit history), which is exactly the "bad minute" this exists for.
+    return isinstance(exc, (ConnectionError, TimeoutError, OSError, httpx.TransportError))
 
 
 class RetryingClient:
