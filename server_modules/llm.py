@@ -145,7 +145,10 @@ def _tools_for(project: str, workspace: Path | None, role: str) -> Any:
     if not project or workspace is None:
         return None
     from . import llm_tools
-    return llm_tools.ReadOnlyTools(workspace, project=project, role=role)
+    saved = config.settings()
+    return llm_tools.ReadOnlyTools(workspace, project=project, role=role, client=client(),
+                                   use_local_web=not saved.get("cloud"),
+                                   web_host=saved.get("ollama_host") or "http://localhost:11434")
 
 
 def complete(system: str, user: str, model: str = "", think: bool | None = None,

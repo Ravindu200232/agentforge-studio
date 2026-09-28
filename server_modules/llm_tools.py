@@ -8,13 +8,14 @@ string, which never shows up in the studio's chat stream the way a real tool
 call does. This gives those calls an opt-in, read-only escape hatch: the same
 Ollama SDK tool-calling mechanism the main agent already uses
 (`src/ollama_terminal/agent.py`), restricted to `list_files`/`read_file`/
-`search_text`, with every read reported the same way `StudioTools` already
-reports the main agent's reads.
+`search_text`/`web_search`/`web_fetch` — nothing that writes to the
+workspace or runs a command — with every call reported the same way
+`StudioTools` already reports the main agent's own.
 
 Kept out of `llm.py` itself so its common no-tools path carries no extra
 import cost, and so this dispatcher is testable on its own. Never imports
-`llm.py` (the caller injects its own bound `chat` function), so there is no
-import cycle.
+`llm.py` (the caller injects its own bound `chat` function and client), so
+there is no import cycle.
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ from ollama_terminal.tools import MAX_OUTPUT, TOOL_SCHEMAS, WorkspaceTools, tool
 
 from . import bus
 
-READ_ONLY_NAMES = ("list_files", "read_file", "search_text")
+READ_ONLY_NAMES = ("list_files", "read_file", "search_text", "web_search", "web_fetch")
 READ_ONLY_SCHEMAS = [schema for schema in TOOL_SCHEMAS
                      if schema["function"]["name"] in READ_ONLY_NAMES]
 MAX_TOOL_ROUNDS = 6
@@ -72,14 +73,16 @@ class ReadOnlyTools:
     """Workspace-rooted, read-only dispatcher.
 
     `call()` only ever invokes `tool_list_files`/`tool_read_file`/
-    `tool_search_text` directly — it never goes through
-    `WorkspaceTools.execute()`'s generic name-based dispatch, so there is no
-    code path to `write_file`/`replace_text`/`run_command` at all, even if a
-    model hallucinates one of those names.
+    `tool_search_text`/`tool_web_search`/`tool_web_fetch` directly — it never
+    goes through `WorkspaceTools.execute()`'s generic name-based dispatch, so
+    there is no code path to `write_file`/`replace_text`/`run_command` at
+    all, even if a model hallucinates one of those names.
     """
 
-    def __init__(self, workspace: Path, project: str = "", role: str = ""):
-        self._tools = WorkspaceTools(workspace, client=None, approve=lambda _question: False)
+    def __init__(self, workspace: Path, project: str = "", role: str = "", client: Any = None,
+                 use_local_web: bool = True, web_host: str = "http://localhost:11434"):
+        self._tools = WorkspaceTools(workspace, client, approve=lambda _question: False,
+                                     web_host=web_host, use_local_web=use_local_web)
         self.project = project
         self.role = role or bus.DEVELOPER
         self.rounds = 0
@@ -116,6 +119,10 @@ class ReadOnlyTools:
         elif name == "search_text":
             bus.log(self.project, "INFO",
                     f'Searched for "{args.get("query", "")}" in {args.get("path", ".")}', agent=self.role)
+        elif name == "web_search":
+            bus.log(self.project, "INFO", f'Searched the web for "{args.get("query", "")}"', agent=self.role)
+        elif name == "web_fetch":
+            bus.log(self.project, "INFO", f'Fetched {args.get("url", "")}', agent=self.role)
 
 
 def run_chat(chat: Callable[..., Any], kwargs: dict[str, Any],

@@ -109,6 +109,30 @@ class RunChatTests(unittest.TestCase):
         self.assertNotIn("m", llm_tools._UNSUPPORTED_MODELS)
 
 
+class WebToolsTests(unittest.TestCase):
+    """Focused calls can reach for web_search/web_fetch themselves now, not
+    only through a Python-side pre-fetch — still never a write or a command."""
+
+    def test_web_search_and_web_fetch_are_offered_read_only(self):
+        names = {s["function"]["name"] for s in llm_tools.READ_ONLY_SCHEMAS}
+        self.assertIn("web_search", names)
+        self.assertIn("web_fetch", names)
+        self.assertNotIn("write_file", names)
+        self.assertNotIn("run_command", names)
+
+    def test_a_web_search_call_reaches_the_injected_client(self):
+        class FakeClient:
+            def web_search(self, query, max_results):
+                return SimpleNamespace(model_dump=lambda: {"results": [{"title": query}]})
+
+        with tempfile.TemporaryDirectory() as folder:
+            tools = llm_tools.ReadOnlyTools(Path(folder), project="prj", role=bus.DEVELOPER,
+                                            client=FakeClient(), use_local_web=False)
+            result = tools.call("web_search", {"query": "test query"})
+            self.assertIn("test query", result)
+            self.assertEqual(tools.rounds, 1)
+
+
 class EffortLevelTests(unittest.TestCase):
     def test_the_four_levels_follow_thinking_and_tool_round_count(self):
         self.assertEqual(llm_tools.effort_level(False, 0), "low")
