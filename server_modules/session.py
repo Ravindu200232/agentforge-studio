@@ -27,7 +27,7 @@ from ollama_terminal.agent import Agent
 from ollama_terminal.mcp_client import NAME_PREFIX as MCP_NAME_PREFIX
 from ollama_terminal.tools import WorkspaceTools
 
-from . import bus, config, deploy_vars, live, plugins, prompts
+from . import bus, config, deploy_vars, live, plugins, prompts, stage_evidence
 
 
 class RunCancelled(Exception):
@@ -403,12 +403,18 @@ class ProjectSession:
 
     def begin(self, stage: str, role: str = bus.DEVELOPER, run_id: str = "") -> None:
         self._cancel.clear()
+        if stage_evidence.was_interrupted(self.project, stage):
+            bus.log(self.project, "WARN",
+                    f"the previous {stage.replace('_', ' ')} run did not finish "
+                    f"(the server stopped mid-run) — starting a fresh one now.", agent=role)
+        stage_evidence.begin(self.project, stage)
         self.stage = stage
         self.role = role
         bus.run_state(self.project, "running", run_id=run_id or stage, agent=role)
         bus.phase(self.project, stage, stage.replace("_", " ").title(), status="active")
 
     def finish(self, text: str = "") -> None:
+        stage_evidence.finish(self.project, self.stage, text)
         bus.phase(self.project, self.stage, self.stage.replace("_", " ").title(),
                   status="complete")
         bus.done(self.project, text, agent=self.role)
@@ -416,6 +422,7 @@ class ProjectSession:
         self.stage = "idle"
 
     def fail(self, text: str) -> None:
+        stage_evidence.fail(self.project, self.stage, text)
         bus.phase(self.project, self.stage, self.stage.replace("_", " ").title(),
                   status="failed", detail=text[:300])
         bus.failed(self.project, text, agent=self.role)
