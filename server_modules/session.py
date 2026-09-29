@@ -152,12 +152,14 @@ class StudioTools(WorkspaceTools):
         bus.agent_msg(self.project, self._display_command(command), title=f"Running command · up to {timeout}s",
                       kind="command", agent=role)
 
-    def command_output(self, text: str) -> None:
-        # The complete captured output is added as one expandable terminal card
-        # at completion. These lines are the live trail while it runs.
-        line = text.strip()
-        if line:
-            bus.log(self.project, "INFO", f"› {line[:500]}", agent=self._role_of())
+    # command_output() is left at WorkspaceTools' own no-op: it used to echo
+    # every line as its own `bus.log` INFO row - a raw, un-decoded, choppy
+    # wall of third-party tool output (npm/Next.js's own box-drawing and
+    # checkmark characters, which a plain terminal renders fine but a chat
+    # bubble does not) duplicating the one clean `command_output`-kind card
+    # `execute()` already posts below once the command finishes.
+    # command_heartbeat() below is the "is it still alive" signal while a
+    # long command runs; the complete output belongs in that one final card.
 
     def command_finished(self, command: str, exit_code: int, timed_out: bool) -> None:
         # Whatever the command streamed to the preview is over with it.

@@ -344,7 +344,12 @@ class WorkspaceTools:
         try:
             process = subprocess.Popen(shell_args, cwd=self.root, stdout=subprocess.PIPE,
                                        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                       text=True, errors="replace",
+                                       # A child's stdout is UTF-8 (npm/Next.js/Node all emit it once
+                                       # piped, not a TTY) regardless of the Windows console's own active
+                                       # code page. `text=True` without this decoded with that code page
+                                       # instead - every box-drawing/checkmark character npm and Next.js
+                                       # print came out as mojibake ("â–²" for "▲", "Æ’" for "ƒ").
+                                       text=True, encoding="utf-8", errors="replace",
                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                                        env=getattr(self, "command_env", None))
             self.command_started(command, timeout)

@@ -948,6 +948,48 @@ class PlanningStreamTests(unittest.TestCase):
         self.assertIn("list_files(handoff.md)", warn_calls[0].args[2])
         self.assertIn("Not a directory", warn_calls[0].args[2])
 
+    def test_running_a_command_posts_one_clean_output_card_not_a_line_per_line_echo(self):
+        # Found live: every line of a real npm build's output streamed into the
+        # chat as its own separate, unformatted bus.log entry (readable fine in
+        # a terminal, choppy and symbol-mangled as individual chat bubbles) -
+        # and then the *same* complete output was posted again as one block
+        # once the command finished. A wall of raw lines followed by a full
+        # duplicate, instead of the one clean card Claude Code/Codex show.
+        from server_modules import bus, config, store
+        from server_modules.session import StudioTools, drop
+
+        with tempfile.TemporaryDirectory() as folder:
+            original_projects, original_workspaces = config.PROJECTS_FILE, config.WORKSPACES
+            config.PROJECTS_FILE = Path(folder) / "projects.json"
+            config.WORKSPACES = Path(folder) / "workspaces"
+            project = None
+            try:
+                record = store.create("a test idea")
+                project = record["id"]
+                workspace = config.workspace_for(project)
+                (workspace / "emit.py").write_text(
+                    "print('line one')\nprint('line two')\nprint('line three')\n", encoding="utf-8")
+                tools = StudioTools(workspace, None, lambda _q: True,
+                                    project=project, role_of=lambda: bus.DEVELOPER)
+                events = []
+                self.addCleanup(bus.subscribe(events.append))
+                result = tools.execute("run_command", {"command": f"{sys.executable} emit.py"})
+            finally:
+                if project:
+                    drop(project)
+                config.PROJECTS_FILE, config.WORKSPACES = original_projects, original_workspaces
+
+        self.assertIn("line one", result)
+        # No per-line "› ..." echo at all anymore.
+        echoes = [e for e in events if e.get("type") == "log" and str(e.get("text", "")).startswith("›")]
+        self.assertEqual(echoes, [])
+        # Exactly one clean card with the whole output, posted once.
+        cards = [e for e in events if e.get("type") == "agent_msg" and e.get("kind") == "command_output"]
+        self.assertTrue(cards)
+        for card in cards:
+            self.assertIn("line one", card["text"])
+            self.assertIn("line three", card["text"])
+
 
 class OneContextTests(unittest.TestCase):
     """One project, one context, across all six stages."""
