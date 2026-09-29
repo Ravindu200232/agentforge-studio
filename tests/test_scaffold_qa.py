@@ -131,7 +131,7 @@ class ScaffoldTests(unittest.TestCase):
         for name in ("builder/generate", "builder/update", "testing/run"):
             prompt = (ROOT / "prompts" / f"{name}.md").read_text(encoding="utf-8")
             self.assertIn("qa:inventory", prompt, name)
-        self.assertIn("every page", (ROOT / "prompts/builder/generate.md").read_text(encoding="utf-8"))
+        self.assertIn("every approved page", (ROOT / "prompts/builder/generate.md").read_text(encoding="utf-8"))
 
     def test_shared_guidance_and_templates_name_no_particular_app(self):
         # The skill, the templates and the prompts are for every product, not the one they were learned on.
