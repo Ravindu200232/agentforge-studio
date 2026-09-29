@@ -290,6 +290,48 @@ class InterviewTurnTests(unittest.TestCase):
         self.assertEqual({o["value"] for o in question["options"]}, {"confirmed", "correct"})
         self.assertIn("understood", question["question"])
 
+    def test_clicking_yes_thats_right_ends_the_interview_with_no_model_call(self):
+        # Found live: the interview looped forever on the confirmation screen.
+        # Interview.jsx's submitAnswer() always sends `text` as the picked
+        # option's own label ("Yes, that's right") even on a bare click - only
+        # `custom` (what the customer typed themselves) is empty then. The old
+        # guard required `not text` too, so it never matched a real click, fell
+        # through to a full model turn every time, and the model - nothing new
+        # to extract, still told stage="confirming" - handed back the same
+        # summary again. Reproduces record_answer() with a payload shaped
+        # exactly like that real click.
+        from server_modules import config, store
+        from server_modules.session import session_for, drop
+        from srs_agent import interview
+
+        with tempfile.TemporaryDirectory() as folder:
+            original_projects, original_workspaces = config.PROJECTS_FILE, config.WORKSPACES
+            config.PROJECTS_FILE = Path(folder) / "projects.json"
+            config.WORKSPACES = Path(folder) / "workspaces"
+            try:
+                record = store.create("a boutique hotel booking site")
+                project = record["id"]
+                session = session_for(project)
+                data = interview.state(session)
+                data["stage"] = "confirming"
+                question = interview._confirmation_question("Here is what I understood...", 9, 9)
+                data["transcript"].append(question)
+                data["order"].append(question["id"])
+                interview.save(session, data)
+
+                with patch.object(interview.llm, "complete_json",
+                                  side_effect=AssertionError("must not call the model")):
+                    result = interview.record_answer(project, {
+                        "key": question["id"], "value": "confirmed",
+                        "text": "Yes, that's right", "selected": ["confirmed"], "custom": "",
+                    })
+
+                self.assertTrue(result["done"])
+                self.assertEqual(store.get(project)["stage"], "plan")
+            finally:
+                drop(project)
+                config.PROJECTS_FILE, config.WORKSPACES = original_projects, original_workspaces
+
 
 class CoverageTests(unittest.TestCase):
     """The coverage taxonomy is hardcoded categories, not questions or order —

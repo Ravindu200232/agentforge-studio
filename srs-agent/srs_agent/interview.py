@@ -462,7 +462,11 @@ def record_answer(project: str, payload: dict[str, Any]) -> dict[str, Any]:
 
     # A plain "yes, that's right" to the confirmation question ends the
     # interview outright — no model call needed just to agree with itself.
-    if data["stage"] == "confirming" and "confirmed" in selected and not custom and not text:
+    # `text` always carries the picked option's own label (see Interview.jsx's
+    # submitAnswer — `text: combined || customText || selectedText`), so it is
+    # never empty for a plain click; only `custom` (what the customer typed
+    # themselves) tells a bare acceptance apart from an actual correction.
+    if data["stage"] == "confirming" and "confirmed" in selected and not custom:
         data["done"] = True
         save(session, data)
         bus.log(project, "SUCCESS", "The customer confirmed the summary — writing the plan next.")
