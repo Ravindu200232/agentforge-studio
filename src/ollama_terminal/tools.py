@@ -120,6 +120,31 @@ def tools_unsupported(exc: Exception) -> bool:
             and "tool" in str(getattr(exc, "error", "") or exc).lower())
 
 
+def describe_call(name: str, args: dict[str, Any]) -> str:
+    """A short human label for a tool call, e.g. `read_file(srs/spec.md)`.
+
+    Used only for logging a *failed* call to the studio's activity feed —
+    the success path already has its own per-tool phrasing ("Listed X",
+    "Read X (N lines)", ...). Without this, a WARN line for a failure was
+    just the bare exception text ("Tool error: Not a directory") with no
+    way to tell which call produced it, even though the model recovers on
+    its own next turn.
+    """
+    if name in ("list_files", "write_file", "replace_text"):
+        return f"{name}({args.get('path') or '.'})"
+    if name == "read_file":
+        return f"read_file({args.get('path') or ''})"
+    if name == "search_text":
+        return f'search_text("{args.get("query") or ""}", {args.get("path") or "."})'
+    if name == "run_command":
+        return f"run_command({str(args.get('command') or '')[:80]})"
+    if name == "web_search":
+        return f'web_search("{args.get("query") or ""}")'
+    if name == "web_fetch":
+        return f"web_fetch({args.get('url') or ''})"
+    return f"{name}({', '.join(f'{k}={v!r}' for k, v in args.items())})"
+
+
 def _schema(name: str, description: str, properties: dict, required: list[str]) -> dict:
     return {"type": "function", "function": {"name": name, "description": description,
             "parameters": {"type": "object", "properties": properties, "required": required}}}

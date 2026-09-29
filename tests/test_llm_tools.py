@@ -74,6 +74,26 @@ class RunChatTests(unittest.TestCase):
             self.assertIn("hello", calls[1]["messages"][-1]["content"])
             self.assertEqual(tools.rounds, 1)
 
+    def test_a_failed_call_names_itself_in_the_warn_log(self):
+        # Found live: a focused SRS/diagram call listing a path that turned
+        # out to be a file got a WARN log reading just "Tool error: Not a
+        # directory" - no clue which call, even though the model recovers on
+        # its own right after. The log line now names the call.
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "dfd.json").write_text("{}", encoding="utf-8")
+            tools = llm_tools.ReadOnlyTools(Path(folder), project="prj", role=bus.DEVELOPER)
+            events = []
+            self.addCleanup(bus.subscribe(events.append))
+            result = tools.call("list_files", {"path": "dfd.json"})
+
+        self.assertIn("Not a directory", result)
+        # Every event is mirrored across both agent roles (bus.emit's
+        # MIRROR_ROLES) so both chat tabs stay in sync - not a duplicate log.
+        warnings = [e for e in events if e.get("level") == "WARN"]
+        self.assertTrue(warnings)
+        self.assertTrue(all("list_files(dfd.json)" in w["text"] and "Not a directory" in w["text"]
+                            for w in warnings))
+
     def test_a_model_that_cannot_take_tools_falls_back_and_is_remembered(self):
         events = []
         self.addCleanup(bus.subscribe(events.append))

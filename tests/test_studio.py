@@ -881,6 +881,31 @@ class PlanningStreamTests(unittest.TestCase):
         file_read.assert_called_once()
         self.assertIn("Read handoff.md (3 lines)", logged.call_args.args[2])
 
+    def test_a_failed_tool_call_names_itself_in_the_warn_log(self):
+        # Found live: a model calling list_files on a path that turned out to
+        # be a file got a WARN log that just said "Tool error: Not a
+        # directory" — no way to tell from the studio's activity feed which
+        # call produced it, even though the model recovers on its own right
+        # after. The log line now names the call.
+        from server_modules import bus
+        from server_modules.session import StudioTools
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "handoff.md").write_text("one\n", encoding="utf-8")
+            tools = StudioTools(root, None, lambda _question: True,
+                                project="prj_plan", role_of=lambda: bus.DEVELOPER)
+            dormant = type("Dormant", (), {"_agent": None})()
+            with patch("server_modules.session.session_for", return_value=dormant), \
+                 patch.object(bus, "log") as logged:
+                result = tools.execute("list_files", {"path": "handoff.md"})
+
+        self.assertIn("Not a directory", result)
+        warn_calls = [call for call in logged.call_args_list if call.args[1] == "WARN"]
+        self.assertEqual(len(warn_calls), 1)
+        self.assertIn("list_files(handoff.md)", warn_calls[0].args[2])
+        self.assertIn("Not a directory", warn_calls[0].args[2])
+
 
 class OneContextTests(unittest.TestCase):
     """One project, one context, across all six stages."""

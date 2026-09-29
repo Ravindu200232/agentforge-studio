@@ -24,7 +24,7 @@ from typing import Any, Callable
 
 import ollama
 
-from ollama_terminal.tools import MAX_OUTPUT, TOOL_SCHEMAS, WorkspaceTools, tools_unsupported
+from ollama_terminal.tools import MAX_OUTPUT, TOOL_SCHEMAS, WorkspaceTools, describe_call, tools_unsupported
 
 from . import bus
 
@@ -103,7 +103,7 @@ class ReadOnlyTools:
 
     def _announce(self, name: str, args: dict[str, Any], result: str) -> None:
         if result.startswith("Tool error"):
-            bus.log(self.project, "WARN", result, agent=self.role)
+            bus.log(self.project, "WARN", f"{describe_call(name, args)} — {result}", agent=self.role)
             return
         if name == "read_file":
             try:
