@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "purpose": "Public requirements-corpus and SRS-template provenance. Records with unknown licensing are reference-only and cannot enter a model prompt or local corpus.",
+  "sources": [
+    {
+      "id": "pure-2017",
+      "title": "PURE: a Dataset of Public Requirements Documents",
+      "source_url": "https://zenodo.org/records/1414117",
+      "download_url": "https://zenodo.org/records/1414117/files/requirements-xml.zip?download=1",
+      "known_checksums": {"md5": "c81235c40f88a2c947ae66e0eddad585"},
+      "format": "requirements_document_xml",
+      "scale": {"source_reported_documents": 79, "source_reported_sentences": 34268, "archive_observed_document_files": 18},
+      "license": "CC-BY-3.0",
+      "license_url": "https://creativecommons.org/licenses/by/3.0/",
+      "ingestion": "allowed_with_attribution",
+      "role": "public-document structure and requirement-language evaluation; not an IEEE conformance oracle",
+      "quality_evidence": {"kind": "peer-reviewed public corpus", "agentforge_rating": 4, "scale_score": 2, "notes": "Use its provenance and structure, not its business-domain content, for evaluation."},
+      "attribution": "Ferrari, A., Spagnolo, G. O., & Gnesi, S. (2017), PURE: a Dataset of Public Requirements Documents."
+    },
+    {
+      "id": "promise-exp",
+      "title": "PROMISE expanded non-functional-requirements dataset",
+      "source_url": "https://github.com/AleksandarMitrevski/se-requirements-classification/blob/master/0-datasets/PROMISE_exp/PROMISE_exp.arff",
+      "download_url": "https://raw.githubusercontent.com/AleksandarMitrevski/se-requirements-classification/master/0-datasets/PROMISE_exp/PROMISE_exp.arff",
+      "format": "labelled_requirement_records_arff",
+      "scale": {"requirements": 969, "projects": 49},
+      "license": "CC-BY-SA-3.0",
+      "license_url": "https://creativecommons.org/licenses/by-sa/3.0/",
+      "ingestion": "allowed_with_attribution_and_share_alike",
+      "role": "functional/non-functional classification and measurable-quality-requirement evaluation; not a complete SRS corpus",
+      "quality_evidence": {"kind": "published labelled dataset", "agentforge_rating": 4, "scale_score": 1, "notes": "Class labels allow category checks; individual statements still need project-specific validation."},
+      "attribution": "PROMISE Software Engineering Repository dataset; Jane Cleland-Huang (2007); expanded dataset attribution retained."
+    },
+    {
+      "id": "ieee-29148-template",
+      "title": "ISO/IEC/IEEE 29148 SRS template",
+      "source_url": "https://github.com/DIN-DKE/ISO_IEC_IEEE_29148__SRS-Template",
+      "format": "srs_template_markdown",
+      "scale": {"templates": 1},
+      "license": "repository license must be checked at fetch time",
+      "ingestion": "reference_only",
+      "role": "section-structure cross-check for IEEE 830 / ISO/IEC/IEEE 29148-aligned SRS output",
+      "quality_evidence": {"kind": "standard-aligned template", "agentforge_rating": 5, "scale_score": 0, "notes": "Formatting reference only; the paid ISO standard itself is never copied into this repository."},
+      "attribution": "DIN-DKE / ISO_IEC_IEEE_29148__SRS-Template repository."
+    },
+    {
+      "id": "gitreq-2026",
+      "title": "GitReq: A Gold Standard Dataset for Software Quality Requirements",
+      "source_url": "https://arxiv.org/abs/2606.21810",
+      "format": "expert_validated_quality_requirement_records",
+      "scale": {"validated_requirements": 6302, "raw_candidates": 55588, "repositories": 4080},
+      "license": "not verified",
+      "ingestion": "reference_only",
+      "role": "quality-requirement rating evidence and ISO/IEC 25010 category cross-check; no download until the dataset licence is verified",
+      "quality_evidence": {"kind": "expert annotation", "agentforge_rating": 5, "inter_annotator_agreement": "Fleiss kappa approximately 0.72", "notes": "The rating records evidence quality, not a licence grant."},
+      "attribution": "GitReq authors and dataset publication; retain the final source citation before any future import."
+    }
+  ]
+}

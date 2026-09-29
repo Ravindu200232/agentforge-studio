@@ -47,6 +47,14 @@ is two requirements. Give each one a `verification_method` — `Functional Test`
 `Test / Inspection`, `Demonstration / Inspection` or `Analysis` — and a
 `rationale` naming the approved capability it serves. Use stable sequential IDs.
 
+Before returning, check the same evidence an independent reviewer will check:
+both requirement sets exist; every ID is unique and shaped `FR-###` or
+`NFR-###`; every statement contains `shall`; every row has an approved
+verification method; each functional row has a rationale; each non-functional
+row has a measurable threshold or named standard; and each functional row has
+exactly one traceability row with a `test_case`. These checks make the SRS
+testable without copying another product's requirements or expanding scope.
+
 Non-functional requirements follow the same rule and carry a **measurable
 threshold**: twelve to twenty of them across performance, scalability,
 availability, security, accessibility, usability, maintainability and

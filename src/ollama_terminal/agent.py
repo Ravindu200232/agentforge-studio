@@ -128,6 +128,10 @@ class Agent:
         self.last_terminal_signal = ""
         self.memory_summary = ""
         self.last_prompt_tokens = 0
+        # ``think`` is the provider's on/off flag.  The level holds the
+        # product-level choice too, so xhigh can ask for a deliberate final
+        # verification pass even on providers without a native effort knob.
+        self.reasoning_level = "off"
         self.context_override = context
         self.context = context or model_context_length(client, model)
         self.options = {"num_ctx": self.context} if self.context and not cloud else None
@@ -155,6 +159,11 @@ class Agent:
         self.context = context
         self.options = {"num_ctx": context} if not self.cloud else None
 
+    def set_reasoning_level(self, level: str) -> None:
+        """Apply effort without replacing the project's message history."""
+        chosen = str(level or "off").strip().lower()
+        self.reasoning_level = chosen if chosen in {"off", "low", "high", "xhigh"} else "off"
+
     def set_mode(self, mode: str) -> None:
         if mode not in {"plan", "act"}:
             raise ValueError("Mode must be plan or act")
@@ -174,7 +183,11 @@ class Agent:
                      f"End with {COMPLETE} only when the entire plan is done and checked. "
                      f"If an external blocker prevents progress, end with {BLOCKED} and explain it.")
         memory = f"\nMemory summary from earlier turns:\n{self.memory_summary}" if self.memory_summary else ""
-        return getattr(self, "base_system", SYSTEM) + f"\nWorkspace: {self.tools.root}\n{mode_rule}{memory}"
+        extra_effort = ("\nEXTRA-HIGH EFFORT: before you claim the task is complete, do one independent "
+                        "final check of the changed files and the relevant result. State a real blocker "
+                        "instead of guessing when that check cannot run."
+                        if self.reasoning_level == "xhigh" else "")
+        return getattr(self, "base_system", SYSTEM) + f"\nWorkspace: {self.tools.root}\n{mode_rule}{extra_effort}{memory}"
 
     def _summarize_history(self) -> None:
         if not self.context or (max(_approx_tokens(self.messages), self.last_prompt_tokens)

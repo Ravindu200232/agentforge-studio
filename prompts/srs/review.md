@@ -46,6 +46,16 @@ project's own requirements.
 
 {{structure}}
 
+## Corpus-aligned writing evidence (already computed, not for you to recompute)
+
+{{corpus_audit}}
+
+This score is an AgentForge diagnostic based on a provenance-controlled public
+corpus catalogue. It is not a source-author quality rating and it must never
+be used to invent product scope. Where it identifies a real writing,
+measurability, verification, or traceability gap, report the owning existing
+requirement or a low score so the repair loop can correct it.
+
 An empty section listed above can be entirely legitimate for this product —
 judge whether it should exist here, the way you judge everything else; do not
 treat this readout as a checklist to fill for its own sake.

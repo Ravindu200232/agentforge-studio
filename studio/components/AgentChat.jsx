@@ -15,6 +15,7 @@ import { chatTurns } from '@/lib/chat'
 import { chatDisplayBlocks, cleanChatProse } from '@/lib/chat-display'
 import { consoleReport, forgetConsole } from '@/lib/console-log'
 import { computeLineDiff } from '@/lib/diff'
+import { modelLabel } from '@/lib/models'
 import { useStore } from '@/lib/store'
 import { useEditAttachments } from '@/lib/use-edit-attachments'
 import { answerAsk, answerOption, answerQuestion, answerValue, declineAsk, reviseDrawing, send } from '@/lib/ws'
@@ -256,6 +257,7 @@ export default function AgentChat({ projectTitle = '' }) {
       project, route, agent: agentRole,
       model: (agentRole === 'designer' ? useStore.getState().models.design : useStore.getState().models.builder) || useStore.getState().models.agent,
       think: useStore.getState().think,
+      thinking_level: useStore.getState().thinkingLevel,
       qa_model: useStore.getState().models.qa || '',
       console: consoleReport(),
     }
@@ -336,6 +338,7 @@ export default function AgentChat({ projectTitle = '' }) {
             <ChevronDown className="size-3.5 -rotate-90" />
           </button>
         </div>
+        <ChatModelControls project={project} agentRole={agentRole} busy={lifecycleStream.busy} />
       </header>
 
       {project && <StageProgress lifecycle={lifecycle} />}
@@ -434,6 +437,102 @@ export default function AgentChat({ projectTitle = '' }) {
 
       <StatusLine stats={stats} />
     </aside>
+  )
+}
+
+/**
+ * The conversation owns its history; a model is only the engine used for the
+ * next turn. Keeping this next to the stream makes that distinction visible
+ * instead of burying it in global Settings.
+ */
+function ChatModelControls({ project, agentRole, busy }) {
+  const models = useStore(s => s.models)
+  const thinkingLevel = useStore(s => s.thinkingLevel)
+  const setRoleModel = useStore(s => s.setRoleModel)
+  const setThinkingLevel = useStore(s => s.setThinkingLevel)
+  const addLog = useStore(s => s.addLog)
+  const [catalog, setCatalog] = useState(null)
+  const [saving, setSaving] = useState(false)
+
+  const role = agentRole === 'designer' ? 'design' : 'builder'
+  const current = models[role] || models.agent || ''
+  const groups = [
+    ['On this machine', catalog?.local_models || []],
+    ['Cloud', catalog?.cloud || []],
+  ]
+  const inCatalog = groups.some(([, rows]) => rows.some(row => (row.id || row) === current))
+
+  useEffect(() => {
+    let alive = true
+    api.models().then(result => { if (alive) setCatalog(result || {}) })
+      .catch(() => { if (alive) setCatalog({}) })
+    return () => { alive = false }
+  }, [])
+
+  async function save(nextModel, nextLevel) {
+    if (!project) return
+    setSaving(true)
+    try {
+      await api.saveSettings({ agent_model: nextModel, thinking_level: nextLevel })
+    } catch (error) {
+      addLog('WARN', `Could not save the chat model preference — ${error.message}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function chooseModel(event) {
+    const next = event.target.value
+    if (!next) return
+    setRoleModel(role, next)
+    save(next, thinkingLevel)
+  }
+
+  function chooseEffort(level) {
+    setThinkingLevel(level)
+    save(current, level)
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-line/50 pt-2">
+      <label className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-line bg-panel2/70 px-2 py-1">
+        <span className="shrink-0 text-[9.5px] font-semibold uppercase tracking-wide text-muted2">Model</span>
+        <select aria-label="Chat model" value={current} onChange={chooseModel}
+                disabled={!project || saving}
+                className="min-w-0 flex-1 bg-transparent text-[10.5px] font-medium text-ink outline-none disabled:opacity-50">
+          {!current && <option value="">Choose a model</option>}
+          {current && !inCatalog && <option value={current}>{current}</option>}
+          {groups.map(([name, rows]) => rows.length > 0 && (
+            <optgroup key={name} label={name}>
+              {rows.map(row => {
+                const id = row.id || row
+                return <option key={id} value={id}>{modelLabel(row) || id}</option>
+              })}
+            </optgroup>
+          ))}
+        </select>
+      </label>
+      <div aria-label="Reasoning effort" className="flex items-center rounded-lg border border-line bg-panel2/70 p-0.5">
+        {[
+          ['low', 'Low'], ['high', 'High'], ['xhigh', 'Extra high'],
+        ].map(([id, label]) => (
+          <button key={id} type="button" disabled={!project || saving} onClick={() => chooseEffort(id)}
+                  title={id === 'xhigh'
+                    ? 'Reasons and performs a separate final verification pass. Applies to the next turn.'
+                    : `${label} effort. Applies to the next turn without clearing this project history.`}
+                  aria-pressed={thinkingLevel === id}
+                  className={cn('rounded-md px-1.5 py-1 text-[9.5px] font-semibold transition-colors disabled:opacity-45',
+                    thinkingLevel === id ? 'bg-accent text-ink' : 'text-muted2 hover:text-ink')}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <span className="basis-full text-[9.5px] text-muted2">
+        {saving ? 'Saving preference…' : busy
+          ? 'Saved for the next turn; the current run keeps its model.'
+          : 'Model changes keep this project’s conversation and durable memory.'}
+      </span>
+    </div>
   )
 }
 

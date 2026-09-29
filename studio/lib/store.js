@@ -17,7 +17,9 @@ const DEFAULTS = {
 
   models: { planner: '', design: '', builder: '', agent: '', qa: '',
             srs: '', deploy: '', image: 'fooocus' },
-  // Both tiers, High and Ultra, think; there is no switch for it any more.
+  // Kept alongside the boolean for older build controls. The chat picker uses
+  // this richer level so it can offer Low, High and Extra high explicitly.
+  thinkingLevel: 'high',
   think: true,
   // Whether the run in flight is actually reasoning, as reported by the
   // engine - not the same thing as the `think` switch, which is only a request.
@@ -35,7 +37,7 @@ export const KEYS = {
   srs: 'agentforge-sm', deploy: 'agentforge-dm', image: 'agentforge-im',
 
   srsId: 'agentforge-srs-id', srsPhase: 'agentforge-srs-phase',
-  think: 'agentforge-think', images: 'agentforge-img',
+  think: 'agentforge-think', thinkingLevel: 'agentforge-thinking-level', images: 'agentforge-img',
   starred: 'agentforge-starred', recent: 'agentforge-recent',
 }
 
@@ -374,6 +376,8 @@ export const useStore = create((set, get) => ({
       // Both tiers think. What an older browser saved came from the switch
       // the tiers replaced, and would have sent High without its thinking.
       think: DEFAULTS.think,
+      thinkingLevel: ['low', 'high', 'xhigh'].includes(read(KEYS.thinkingLevel, ''))
+        ? read(KEYS.thinkingLevel, 'high') : DEFAULTS.thinkingLevel,
       images: read(KEYS.images, '0') === '1',
       hist: readJSON(KEYS.hist, []),
       projectViews: readJSON('agentforge-project-views', {}),
@@ -412,6 +416,21 @@ export const useStore = create((set, get) => ({
       try { LS?.setItem(KEYS[role], chosen) } catch { }
     }
     return roles
+  },
+
+  /** Change only the model this chat role will send on its next turn. */
+  setRoleModel: (role, model) => {
+    const chosen = String(model || '').trim()
+    if (!chosen || !useStore.getState().ROLE_MODELS.includes(role)) return
+    set(state => ({ models: { ...state.models, [role]: chosen } }))
+    try { LS?.setItem(KEYS[role], chosen) } catch { }
+  },
+
+  /** The richer effort setting mirrors the legacy on/off request for old flows. */
+  setThinkingLevel: (thinkingLevel) => {
+    const level = ['low', 'high', 'xhigh'].includes(thinkingLevel) ? thinkingLevel : 'high'
+    set({ thinkingLevel: level, think: level !== 'low' })
+    try { LS?.setItem(KEYS.thinkingLevel, level) } catch { }
   },
 
   /** Persisted chat and log streams cached per project across workspace navigation. */

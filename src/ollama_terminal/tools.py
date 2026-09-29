@@ -25,6 +25,10 @@ MAX_READ = 32_000
 MAX_COMMAND_SECONDS = 600
 SERVER_COMMAND_SECONDS = 75
 
+# A CLI that colours its own output (netlify, vercel, npm...) still does so once piped,
+# leaving raw escape codes ("[32m...[39m") in what both the model and the chat card see.
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
 
 # What a web-app build/test/deploy stage legitimately runs. Not a security
 # sandbox on its own (a shell string can still be obfuscated past a prefix
@@ -390,9 +394,12 @@ class WorkspaceTools:
         def append(text: str) -> None:
             if not text:
                 return
+            clean = _ANSI.sub("", text.replace("\r", ""))
+            if not clean:
+                return
             used = sum(len(part) for part in output_parts)
             if used < MAX_OUTPUT:
-                output_parts.append(text[:MAX_OUTPUT - used])
+                output_parts.append(clean[:MAX_OUTPUT - used])
 
         def stop_tree(child: subprocess.Popen) -> None:
             if child.poll() is not None:

@@ -84,13 +84,14 @@ class RunEnvironmentTests(SettingsCase):
             tools.execute("run_command", {"command": "echo"})
         return seen
 
-    def test_every_stage_gets_the_projects_own_supabase_connection_but_only_deploy_gets_saved_variables(self):
-        env = self._command_env("build")
+    def test_every_stage_gets_the_projects_own_supabase_connection_but_only_deploy_and_build_get_saved_variables(self):
+        env = self._command_env("srs")
         self.assertEqual(env["SUPABASE_URL"], "https://abcdefgh.supabase.co")
         self.assertNotIn("ADMIN_EMAIL", env)
-        env = self._command_env("deploy")
-        self.assertEqual((env["ADMIN_EMAIL"], env["SUPABASE_URL"]),
-                         ("a@b.example", "https://abcdefgh.supabase.co"))
+        for stage in ("deploy", "build", "build-edit"):
+            env = self._command_env(stage)
+            self.assertEqual((env["ADMIN_EMAIL"], env["SUPABASE_URL"]),
+                             ("a@b.example", "https://abcdefgh.supabase.co"), stage)
 
     def test_a_saved_variable_overrides_the_connected_project_at_deploy_time(self):
         deploy_vars.save("SUPABASE_URL", "https://a-different-project.supabase.co", secret=False)

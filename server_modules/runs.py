@@ -31,8 +31,20 @@ def _model_from(message: dict[str, Any]) -> str:
 
 def _remember_model(message: dict[str, Any]) -> None:
     chosen = _model_from(message)
+    level = str(message.get("thinking_level") or "").strip().lower()
+    patch: dict[str, Any] = {}
     if chosen and chosen != config.setting("model"):
-        config.save_settings({"model": chosen})
+        patch["model"] = chosen
+    if level in config.THINKING_LEVELS and level != config.thinking():
+        patch["thinking_level"] = level
+    if patch:
+        config.save_settings(patch)
+
+
+def _thinking_from(message: dict[str, Any]) -> str:
+    """A message-level effort setting wins for its own chat turn."""
+    chosen = str(message.get("thinking_level") or "").strip().lower()
+    return chosen if chosen in config.THINKING_LEVELS else config.thinking()
 
 
 def _in_background(name: str, fn, *args: Any, **kwargs: Any) -> None:
@@ -142,11 +154,12 @@ def agent_update_direct(message: dict[str, Any]) -> dict[str, Any]:
                        _project=project)
     else:
         bus.run_state(project, "queued", agent=role)
-        _in_background(f"chat:{project}", _chat, project, request, role, _project=project)
+        _in_background(f"chat:{project}", _chat, project, request, role,
+                       _model_from(message), _thinking_from(message), _project=project)
     return {"ok": True, "project": project}
 
 
-def _chat(project: str, request: str, role: str) -> None:
+def _chat(project: str, request: str, role: str, model: str = "", thinking_level: str = "") -> None:
     """A message to a project that has nothing built yet: answer it in place."""
     session = session_for(project)
     session.begin("chat", role=role)
@@ -158,7 +171,7 @@ def _chat(project: str, request: str, role: str) -> None:
             "chat/update", message=request,
             stage=record.get("stage", "interview"),
             artifacts=artifacts,
-            language=record.get("language", "English")))
+            language=record.get("language", "English")), model=model, thinking_level=thinking_level)
         text = result.get("text", "").strip()
         if text:
             bus.agent_msg(project, text, agent=role)

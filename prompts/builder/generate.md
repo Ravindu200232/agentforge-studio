@@ -17,11 +17,23 @@ Before writing the implementation plan:
 
 While implementing, work route by route. Immediately before creating or editing a real application page, reopen its mapped prototype HTML and the shared prototype assets it references. Reproduce the same page structure, visible copy, typography, colors, spacing, sizing, images, image crops, ordering, shells, responsive states, controls, hover/focus states, buttons, links, destinations and navigation flow. Reuse the exact same prototype images and URLs; do not replace them with placeholders, stock substitutes, generated images or different crops. Copy a local prototype asset into the application's public assets when the framework needs a served file, and keep its appearance unchanged.
 
+The prototype's `assets/app.css` already fixes one numeric spacing scale and one definition per common component (button, input, card, table row, empty state) — port those into the application's own styling system once (the framework's theme config, a global stylesheet or CSS custom properties) and build one shared component per kind (`Button`, `Card`, `Input`, ...) that every page imports. Do not let each page's own file re-derive its own padding, margin or control size by eyeballing the prototype HTML page by page: that is exactly how the real app drifts from the prototype's own consistency one page at a time. Two buttons of the same kind, on two different pages, use the same shared component and are pixel-identical unless the design spec defines a real size variant.
+
 The SRS defines data, permissions and business behaviour. The mapped prototype HTML defines the frontend presentation and interaction. Connect real data without redesigning, simplifying, restyling or inventing a different screen. If a detail is forgotten, reopen the mapped HTML instead of guessing. Never expose credentials from `demo-accounts.json` in the visible interface.
 
 ## Requirement recovery rule
 
 If any requirement appears missing, contradictory or unclear while building or checking the app, do not guess and do not create another plan. Keep the current single plan, reopen the approved plan plus the relevant SRS handoff section, mapped prototype HTML/shared asset and current output application file, then correct only the affected work and continue from the current phase. Repeat this targeted read whenever memory is uncertain. Do not restart completed phases or reread unrelated files.
+
+## When only the customer can settle it
+
+Before asking anything, decide whether this is actually something only the customer can supply. A current API signature, a config option, an error message, a provider's own required setup step — anything you could find out yourself — is a `web_search`/`web_fetch` job, not a question; look it up against the framework's or provider's own official site first, the same as the guides above already tell you to. Ask the customer only what is left after that: a real value or choice that is genuinely not written anywhere in the project, not discoverable by searching, and cannot be safely assumed — which of two acceptable directions to take, or a value only the customer holds (a provider account's own credential, a real password, a business decision with no default). Never invent, hardcode or placeholder a value like that, and never silently skip the work that needs it. Write `.agentforge/build/question.json`, exactly
+
+```
+{"question": "...", "why": "...", "options": [{"label": "...", "hint": "..."}], "assumption": "..."}
+```
+
+and end your reply with the blocked marker. The customer is asked in the chat and this plan continues from exactly where it stopped once they answer — you are not restarted and finished work is not redone. A value only the customer has (a password, a key, a real account detail) is asked for the same way with `"variable": "NAME"` and `"secret": true`: the studio shows a private box, keeps it out of the conversation and tells you only that it was saved. Your commands then receive it in the environment under that name; you never see it. Ask as many times as the build genuinely needs to — there is no cap — but ask only for a real, current blocker, never speculatively.
 
 ## E2E journey contract
 

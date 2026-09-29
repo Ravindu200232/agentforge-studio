@@ -119,7 +119,16 @@ code is owned, reviewable and rebuildable by someone else.
   silently.
 - **CI.** When the customer wants it and the token allows it: one workflow that installs from the
   lockfile, runs the tests and the production build on every push and pull request, with no secrets in
-  it, and it passes. Do not make the workflow the thing that deploys unless the plan says so.
+  it, and it passes. Do not make the workflow the thing that deploys unless the plan says so. The
+  scaffold's own `.github/workflows/quality.yml`, when present, already reads what it needs as
+  repository secrets (`${{ secrets.NAME }}`) rather than embedding them - read that file for the exact
+  names it expects and set each one as a real repository secret (`gh secret set NAME --repo owner/repo`,
+  the value piped in or read from a file, never typed where it would be echoed or logged) from the same
+  values already connected for this deployment, before or immediately after the push that first adds the
+  workflow. That push runs it automatically: check its result (`gh run list --workflow=quality.yml
+  --limit 1`, then `gh run view <id> --log-failed` on a failure) the same way every other check on this
+  page is treated - a failing run is a real defect to repair from its log, not something to leave red and
+  call the deployment done.
 
 ## 6. Environment and database
 

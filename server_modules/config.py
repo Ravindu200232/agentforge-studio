@@ -105,7 +105,11 @@ def settings() -> dict[str, Any]:
     return {**DEFAULTS, **(saved if isinstance(saved, dict) else {})}
 
 
-THINKING_LEVELS = ("off", "low", "high")
+# ``xhigh`` is intentionally a distinct setting rather than an alias for
+# ``high``.  Ollama itself only accepts think on/off, but the agent can still
+# turn the extra choice into useful work by requiring a separate final
+# verification pass (see ProjectSession._system()).
+THINKING_LEVELS = ("off", "low", "high", "xhigh")
 
 
 def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
@@ -123,8 +127,9 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
         if clean["thinking_level"] not in THINKING_LEVELS:
             raise ValueError(f"thinking_level must be one of {', '.join(THINKING_LEVELS)}")
         # A reader that still only knows the old boolean gets a coherent
-        # answer: agent_think was always "does it reason", true only at "high".
-        clean["agent_think"] = clean["thinking_level"] == "high"
+        # answer: agent_think was always "does it reason", so both high
+        # levels map to true for older readers that only understand a boolean.
+        clean["agent_think"] = clean["thinking_level"] in ("high", "xhigh")
     current.update(clean)
     _write(SETTINGS_FILE, current)
     return settings()
@@ -135,7 +140,7 @@ def setting(name: str, fallback: Any = None) -> Any:
 
 
 def thinking(saved: dict[str, Any] | None = None) -> str:
-    """The multi-level thinking/tool-use setting: "off", "low" or "high".
+    """The multi-level thinking/tool-use setting.
 
     A settings.json saved before this existed has no `thinking_level` — its
     `agent_think` boolean still decides, so nobody's existing preference
@@ -150,16 +155,16 @@ def thinking(saved: dict[str, Any] | None = None) -> str:
 
 def thinking_enabled(saved: dict[str, Any] | None = None) -> bool:
     """Whether the model reasons before answering (Ollama's native `think`).
-    Only "high" does — "low" is deliberately reasoning-free, see
+    "high" and "xhigh" do — "low" is deliberately reasoning-free, see
     `thinking_encourages_tools()` for what it does get."""
-    return thinking(saved) == "high"
+    return thinking(saved) in ("high", "xhigh")
 
 
 def thinking_encourages_tools(saved: dict[str, Any] | None = None) -> bool:
     """Whether the customer asked for extra encouragement to verify with a
     read tool rather than guess — "low" gets this without paying for
-    reasoning tokens; "high" gets both."""
-    return thinking(saved) in ("low", "high")
+    reasoning tokens; both high levels get reasoning as well."""
+    return thinking(saved) in ("low", "high", "xhigh")
 
 
 def workspace_for(project: str) -> Path:

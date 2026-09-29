@@ -366,6 +366,7 @@ export default function Studio() {
            planner_model: st.models.planner || st.models.agent,
            design_model: st.models.design || st.models.agent,
            think: st.think,
+           thinking_level: st.thinkingLevel,
            qa_model: st.models.qa })
   }
 

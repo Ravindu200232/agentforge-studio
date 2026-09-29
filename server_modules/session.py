@@ -193,9 +193,12 @@ class StudioTools(WorkspaceTools):
             # in build, test and deploy alike - unlike the old studio-wide MongoDB setting, there is
             # no separate "the studio's own" database to fall back to here.
             self.command_env.update(supabase_connect.env_for(self.project))
-            if session_for(self.project).stage.startswith("deploy"):
+            stage = session_for(self.project).stage
+            if stage.startswith("deploy") or stage in {"build", "build-edit"}:
                 # A deployment may also override with what the customer saved for it explicitly
-                # (pointing production at a different Supabase project, or an unrelated variable).
+                # (pointing production at a different Supabase project, or an unrelated variable);
+                # a build/update that paused to ask for a value only the customer has needs that
+                # same saved value reachable once it resumes.
                 self.command_env.update(deploy_vars.environment())
         result = super().execute(name, args)
 
@@ -274,6 +277,7 @@ class ProjectSession:
         self._cancel = threading.Event()
         self._agent: Agent | None = None
         self._model = ""
+        self._thinking_level = ""
         # Stage notes recorded before anything opened the conversation — the
         # interview runs long before a tool-using stage creates the agent.
         self._pending_notes: list[str] = []
@@ -325,10 +329,33 @@ class ProjectSession:
         else:
             bus.log(self.project, "INFO", text, agent=self.role)
 
-    def agent(self, model: str = "") -> Agent:
+    def _saved_context_preferences(self) -> tuple[str, str]:
+        """Read only the persisted choices, never treating a bad checkpoint as fatal."""
+        try:
+            saved = json.loads(self._context_file().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return "", ""
+        if not isinstance(saved, dict):
+            return "", ""
+        model = str(saved.get("model") or "").strip()
+        level = str(saved.get("thinking_level") or "").strip().lower()
+        return model, level if level in config.THINKING_LEVELS else ""
+
+    def _apply_effort(self, agent: Agent, level: str) -> None:
+        """Keep provider reasoning and our explicit verification rule aligned."""
+        agent.set_reasoning_level(level)
+        agent.think = config.thinking_enabled({"thinking_level": level})
+        agent.base_system = self._system(level)
+        agent.messages[0]["content"] = agent._system_message()
+
+    def agent(self, model: str = "", thinking_level: str = "") -> Agent:
         """The single agent for this project, created once and then reused."""
         saved = config.settings()
-        wanted = (model or saved.get("model") or "").strip()
+        saved_model, saved_level = self._saved_context_preferences() if self._agent is None else ("", "")
+        wanted = (model or (saved_model if self._agent is None else "") or saved.get("model") or "").strip()
+        requested_level = str(thinking_level or "").strip().lower()
+        level = (requested_level if requested_level in config.THINKING_LEVELS
+                 else (saved_level if self._agent is None and saved_level else config.thinking(saved)))
         if not wanted:
             raise EngineUnavailable(
                 "No model is selected. Pick one in the studio before starting.")
@@ -360,10 +387,9 @@ class ProjectSession:
                     role_of=lambda: self.role,
                     mcp=self._agent.mcp,
                 )
-                self._agent.base_system = self._system()
-                self._agent.think = config.thinking_enabled(saved)
-                self._agent.messages[0]["content"] = self._agent._system_message()
+                self._apply_effort(self._agent, level)
                 self._model = wanted
+                self._thinking_level = level
                 self._restore_context()
                 # Everything the earlier stages recorded before this existed. The
                 # interview and the specification run long before any tool-using
@@ -377,13 +403,17 @@ class ProjectSession:
                 # project's, not the model's.
                 self._agent.set_model(self._client(), wanted, bool(saved.get("cloud")))
                 self._model = wanted
-            self._agent.think = config.thinking_enabled(saved)
+            self._thinking_level = level
+            self._apply_effort(self._agent, level)
             return self._agent
 
-    def _system(self) -> str:
+    def _system(self, thinking_level: str = "") -> str:
         guidance = ("8. Verify with a read tool before you answer or act — check the file, "
                     "the current route, the actual data — rather than proceeding on an assumption."
-                    if config.thinking_encourages_tools() else "")
+                    if config.thinking_encourages_tools({"thinking_level": thinking_level or config.thinking()}) else "")
+        if thinking_level == "xhigh":
+            guidance += ("\n9. EXTRA-HIGH EFFORT: after implementation, independently re-read the changed "
+                         "files and run the smallest relevant verification before reporting success.")
         return (prompts.load("shared/engine", workspace=str(self.workspace), thinking_guidance=guidance)
                 + f"\n\nWorkspace: {self.workspace}\nProject: {self.project}")
 
@@ -425,6 +455,7 @@ class ProjectSession:
             self._context_file().parent.mkdir(parents=True, exist_ok=True)
             self._context_file().write_text(json.dumps({
                 "model": self._model,
+                "thinking_level": self._thinking_level,
                 "memory_summary": self._agent.memory_summary,
                 "tool_calls": self._agent.tool_call_count,
                 "messages": self._agent.messages,
@@ -576,7 +607,7 @@ class ProjectSession:
         raise ValueError(f"the model could not produce valid JSON after "
                          f"{attempts} attempts: {last[:300]}")
 
-    def run_task(self, request: str, model: str = "", plan_directory: str = "",
+    def run_task(self, request: str, model: str = "", thinking_level: str = "", plan_directory: str = "",
                  audit: bool = False, parallel_write_limit: int = 1) -> dict[str, Any]:
         """Plan silently, then carry the plan out.
 
@@ -585,7 +616,11 @@ class ProjectSession:
         and immediately executed in the same conversation. Callers may skip the
         extra audit pass when later phases already provide the relevant checks.
         """
-        agent = self.agent(model)
+        # Keep the one-argument call shape for lightweight adapters/tests that
+        # provide an ``agent(model)`` callable. A real chat turn passes the
+        # explicit level; all older stage callers continue to use the saved
+        # preference without a compatibility break.
+        agent = self.agent(model, thinking_level) if thinking_level else self.agent(model)
         if self._cancel.is_set():
             raise RunCancelled(self.project)
 

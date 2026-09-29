@@ -20,6 +20,14 @@ Commit to all four across the entire product; a later page contradicting an earl
 - Use responsive CSS Grid/Flex layouts with `clamp()` sizing and touch-friendly controls (44px minimum target size).
 - Add restrained CSS-first entrance motion and useful micro-interactions. Respect `prefers-reduced-motion`.
 
+## Spacing, sizing and common components — numbers, not descriptions
+
+Inconsistent padding, margin, width and height between pages is the single most common way a generated UI reads as amateur rather than premium, and it happens because each page invents its own numbers instead of reusing a fixed set. Fix this structurally, not by trying harder:
+
+- Read the approved design spec's `space` scale and declare it once in `assets/app.css` as CSS custom properties (`--space-1: 4px; --space-2: 8px; --space-3: 12px; ...`, following the scale's own values). Every `padding`, `margin` and `gap` anywhere in the prototype is one of these variables — never a bare pixel/rem value typed on the page, and never a value not on the scale, even one that "looks close."
+- Define each common component — button, input, card, table row, nav item, dialog, empty state — **once**, in `assets/app.css`, as a class using the design spec's `components` tokens for its height and padding (`.btn`, `.card`, `.field`, ...). Every page reuses that same class for that component. A page that needs the button smaller or the card tighter picks a documented size variant (`.btn--sm`) added once to the shared kit, never a one-off inline style or a page-local rule that quietly redefines `.btn`'s padding.
+- Before drawing a new page, check `assets/app.css` for a component that already fits — do not redeclare a near-duplicate `.card-2` or `.button-alt` because the first one drawn used a slightly different padding for no reason. Two instances of the same kind of thing (two cards, two primary buttons) must be pixel-identical in spacing and size unless the design spec itself defines a real size variant.
+
 ## Accessible by construction
 
 Build these in while drawing the page, not as a later pass — each is a real POUR requirement (Perceivable, Operable, Understandable, Robust), not a style preference:

@@ -19,6 +19,7 @@ const THINKING_LEVELS = [
   { id: 'off', label: 'Off', hint: 'Fastest. No reasoning, no extra verification nudge.' },
   { id: 'low', label: 'Low', hint: 'No reasoning, but the agent is told to verify with a read tool rather than guess.' },
   { id: 'high', label: 'High', hint: 'Reasons before answering, plus the same verification nudge. Slower, better on hard changes.' },
+  { id: 'xhigh', label: 'Extra high', hint: 'Reasons and requires a separate final verification pass. Slowest; use for risky or difficult work.' },
 ]
 
 /** Model picker interface for selecting and configuring LLM models across all agent roles. */
@@ -53,6 +54,7 @@ function ModelPicker({ meta, onSaved }) {
       // model per role and sends it on every run, so without this the saved
       // choice would lose to whatever those roles already held.
       const roles = useStore.getState().applyModel(chosen)
+      useStore.getState().setThinkingLevel(thinkingLevel === 'off' ? 'low' : thinkingLevel)
       setSaved({ model: chosen, thinkingLevel })
       setNote(`saved — ${roles.length} agents now use it`)
       onSaved?.()
@@ -75,7 +77,7 @@ function ModelPicker({ meta, onSaved }) {
           How much the agent reasons and verifies before it answers. The
           specification agent never reasons regardless of this setting.
         </p>
-        <div className="mt-3 grid grid-cols-3 gap-1.5">
+        <div className="mt-3 grid grid-cols-2 gap-1.5">
           {THINKING_LEVELS.map(level => {
             const picked = level.id === thinkingLevel
             return (

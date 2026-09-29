@@ -19,11 +19,11 @@ A UML use case diagram shows the system boundary, the external actors that use t
   ```
   (a trapezoid/parallelogram shape, or apply `classDef actor` with a visibly different fill — pick one convention and hold it for every actor.)
 - An actor-to-use-case line is a plain, unlabeled association: `actor1 --- uc1`.
-- `<<include>>` (this use case always triggers the other) and `<<extend>>` (it triggers it only sometimes, from an extension point) are edge labels, not plain lines: `uc1 -->|"<<include>>"| uc2`.
+- `<<include>>` and `<<extend>>` are **dashed directed dependencies**, never plain solid lines. The direction is material: base → included use case for `<<include>>`, and extending use case → base use case for `<<extend>>`: `checkout -.->|"<<include>>"| validatePayment`; `applyDiscount -.->|"<<extend>>"| checkout`.
 - Actor generalization (one actor role is a specialization of another) is a labeled edge too: `admin --- staff` won't do; use `staff -->|"is a"| admin` or state it in a note — Mermaid has no generalization arrowhead for this diagram type.
 
 ## How to draw it
 
 - Start with actors outside one named system boundary and place actor goals inside it as stadium-shaped use cases.
 - Connect actors only to goals supported by the approved roles and capabilities — a role the plan never grants an action to gets no edge to that use case.
-- Add `<<include>>`, `<<extend>>`, or an actor generalization only when that relationship is explicit in the SRS; most use cases connect straight to their actor with nothing more.
+- Name each actor with a noun/role and each use case with a verb–noun goal. Add `<<include>>`, `<<extend>>`, or an actor generalization only when that relationship is explicit in the SRS; most use cases connect straight to their actor with nothing more. Never connect actor to actor, and do not show sequence/order of steps here.

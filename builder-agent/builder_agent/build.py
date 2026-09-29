@@ -5,12 +5,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from server_modules import bus, plugins, prompts, reference_staging, store, supabase_connect
+from server_modules import bus, changes, plugins, prompts, reference_staging, store, supabase_connect
 from server_modules.qa_report import summary_counts
 from server_modules.session import session_for
 
 BUILD_DIR = "build"
 REPORT = (BUILD_DIR, "report.json")
+QUESTION = (BUILD_DIR, "question.json")
+PENDING = (BUILD_DIR, "pending.json")
 
 
 def report(project: str) -> dict[str, Any]:
@@ -20,6 +22,77 @@ def report(project: str) -> dict[str, Any]:
 
 def built(project: str) -> bool:
     return bool(report(project))
+
+
+def pending_question(project: str) -> dict[str, Any] | None:
+    saved = session_for(project).read_record(*QUESTION, fallback=None)
+    return saved if isinstance(saved, dict) and saved.get("question") else None
+
+
+def waiting(project: str) -> dict[str, Any] | None:
+    """A build or update paused mid-run, waiting on the customer's answer."""
+    saved = session_for(project).read_record(*PENDING, fallback=None)
+    return saved if isinstance(saved, dict) and saved.get("question") else None
+
+
+def _ask(project: str, question: dict[str, Any]) -> None:
+    bus.ask(project, "question", question["question"], options=question["options"],
+           agent=bus.DEVELOPER, why=question["why"], assumption=question["assumption"],
+           flow="build", variable=question.get("variable", ""),
+           secret=question.get("secret", False), check=question.get("check", ""))
+
+
+def _settle(project: str, session: Any, mode: str, request: str, plan: str,
+           result: dict[str, Any]) -> dict[str, Any]:
+    """A `run_task`/`execute_approved` outcome: pass a real result through unchanged, or turn a
+    genuine question the model raised into a paused, resumable wait instead of a hard failure.
+
+    A value only the customer has - a provider credential, a real password, a business decision
+    with no safe default - cannot be guessed or hardcoded, so the model is told to write
+    `.agentforge/build/question.json` and stop rather than invent one. There is deliberately no
+    cap on how many times a build may ask: a build has no plan card to fall back to the way a
+    revised chat request does, so refusing a real question here would only leave it stuck.
+    """
+    if result.get("status") != "blocked":
+        session.write_record(*PENDING, data={})
+        return result
+    question = pending_question(project)
+    session.write_record(*QUESTION, data={})
+    if not question:
+        raise ValueError(result.get("text") or "the build was blocked")
+    asked = changes.check_question({"kind": "question", **question}, True)
+    session.write_record(*PENDING, data={"mode": mode, "request": request, "plan": plan, "question": asked})
+    _ask(project, asked)
+    session.finish("Waiting for your answer.")
+    return {"status": "asking", "question": asked}
+
+
+def answer(project: str, reply: str) -> dict[str, Any]:
+    """Continue a build or update that paused to ask the customer something.
+
+    Resumes the same agent conversation with the answer folded in - never a fresh separate
+    request - so work already finished is not redone and the plan already approved still holds.
+    """
+    pending = waiting(project)
+    if not pending:
+        raise ValueError("this project has no build or update waiting on a question")
+    session = session_for(project)
+    text = reply.strip() or prompts.load("changes/unanswered").strip()
+    request = pending.get("request") or ""
+    plan = pending.get("plan") or ""
+    mode = pending.get("mode") or "run"
+    resume_request = request + "\n" + prompts.load(
+        "builder/resume", question=(pending.get("question") or {}).get("question", ""), answer=text)
+    session.begin("build" if mode == "run" else "build-edit", role=bus.DEVELOPER)
+    try:
+        result = session.execute_approved(resume_request, plan, model="")
+        settled = _settle(project, session, mode, request, plan, result)
+        if settled.get("status") == "asking":
+            return settled
+        return _finish_run(project, session, settled) if mode == "run" else _finish_update(project, session, settled)
+    except Exception as exc:  # noqa: BLE001
+        session.fail(str(exc))
+        raise
 
 
 def _recoverably_incomplete(qa_report: Any) -> bool:
@@ -78,12 +151,70 @@ def _prototype_context_block(workspace: Path) -> str:
     )
 
 
+def _finish_run(project: str, session: Any, build_result: dict[str, Any]) -> dict[str, Any]:
+    bus.phase(project, "build:write", "Building the application", status="complete")
+
+    built_report = report(project)
+    qa_report = session.read_record("qa", "report.json", fallback=None)
+    if not (session.workspace / "package.json").is_file() or not built_report:
+        raise ValueError("builder finished without a runnable app and build/report.json")
+    if not isinstance(qa_report, dict) or not qa_report.get("complete"):
+        if not _recoverably_incomplete(qa_report):
+            raise ValueError("the single build plan ended without a complete qa/report.json")
+        qa_report["complete"] = True
+        session.write_record("qa", "report.json", data=qa_report)
+        bus.log(project, "WARN",
+               "qa/report.json had real recorded evidence but its `complete` flag was "
+               "never written (likely an interrupted earlier run) - set it rather than "
+               "fail a build whose testing genuinely finished.")
+    # The SRS emits one stable UJ id per business journey. Derive coverage
+    # from Playwright's actual result JSON rather than accepting a generic
+    # E2E count or an agent-authored success sentence.
+    from qa_agent import build_evidence
+    derived = build_evidence.derive(session.workspace, qa_report)
+    journey_coverage = (((derived.get("report") or {}).get("e2e") or {})
+                        .get("journeyCoverage") or {})
+    if journey_coverage.get("required") and journey_coverage.get("status") != "passed":
+        missing = [*journey_coverage.get("missing", []), *journey_coverage.get("failed", [])]
+        qa_report["complete"] = False
+        session.write_record("qa", "report.json", data=qa_report)
+        raise ValueError("E2E user-journey coverage is incomplete: "
+                         + ", ".join(missing or ["no passing journey tests recorded"]))
+    gaps = built_report.get("gaps") or []
+    # The report is agent-authored.  A prose ``summary`` remains valid
+    # evidence when its layer rows are structured, so normalize it rather
+    # than crashing after all verification completed.
+    summary = summary_counts(qa_report)
+    failed = summary["fail"]
+    store.update(project, spec_only=False, prototype_only=False,
+                 build_available=True,
+                 status="tested-with-failures" if failed else "tested")
+    store.advance(project, "test")
+    bus.agent_msg(project, "The single build plan is complete: app, focused unit tests and final checks."
+                  + (f" {len(gaps)} disclosed gap(s) remain." if gaps else "")
+                  + (f" {failed} test failure(s) are recorded." if failed else ""),
+                  title="Build and testing complete")
+    session.note(
+        "The single sequential plan completed the application, focused business "
+        "unit tests and final product checks. Routes delivered: "
+        + ", ".join(str(r) for r in (built_report.get("routes") or []))
+        + ".")
+    session.finish("Single build, unit and final-check plan complete.")
+    plugins.consume_handoff(project)
+    show_preview(project)
+    return {"report": report(project), "status": build_result.get("status", "complete"),
+            "plans": [build_result.get("plan_file")]}
+
+
 def run(project: str, direction: str = "") -> dict[str, Any]:
     """Build the application from everything the project already settled."""
     from srs_agent import document as srs_document
 
     if not srs_document.has_document(project):
         raise ValueError("write the specification before building")
+    if waiting(project):
+        raise ValueError("this project already has a build waiting on an earlier question - "
+                         "answer it before starting another")
 
     record = store.require(project)
     session = session_for(project)
@@ -127,80 +258,41 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
             request += f"\n\n## What the customer asked for on top of that\n\n{direction.strip()}"
 
         build_result = session.run_task(request, plan_directory="plan", audit=False)
-        if build_result.get("status") == "blocked":
-            raise ValueError(build_result.get("text") or "the build was blocked")
-        bus.phase(project, "build:write", "Building the application", status="complete")
-
-        built_report = report(project)
-        qa_report = session.read_record("qa", "report.json", fallback=None)
-        if not (session.workspace / "package.json").is_file() or not built_report:
-            raise ValueError("builder finished without a runnable app and build/report.json")
-        if not isinstance(qa_report, dict) or not qa_report.get("complete"):
-            if not _recoverably_incomplete(qa_report):
-                raise ValueError("the single build plan ended without a complete qa/report.json")
-            qa_report["complete"] = True
-            session.write_record("qa", "report.json", data=qa_report)
-            bus.log(project, "WARN",
-                   "qa/report.json had real recorded evidence but its `complete` flag was "
-                   "never written (likely an interrupted earlier run) - set it rather than "
-                   "fail a build whose testing genuinely finished.")
-        # The SRS emits one stable UJ id per business journey. Derive coverage
-        # from Playwright's actual result JSON rather than accepting a generic
-        # E2E count or an agent-authored success sentence.
-        from qa_agent import build_evidence
-        derived = build_evidence.derive(session.workspace, qa_report)
-        journey_coverage = (((derived.get("report") or {}).get("e2e") or {})
-                            .get("journeyCoverage") or {})
-        if journey_coverage.get("required") and journey_coverage.get("status") != "passed":
-            missing = [*journey_coverage.get("missing", []), *journey_coverage.get("failed", [])]
-            qa_report["complete"] = False
-            session.write_record("qa", "report.json", data=qa_report)
-            raise ValueError("E2E user-journey coverage is incomplete: "
-                             + ", ".join(missing or ["no passing journey tests recorded"]))
-        gaps = built_report.get("gaps") or []
-        # The report is agent-authored.  A prose ``summary`` remains valid
-        # evidence when its layer rows are structured, so normalize it rather
-        # than crashing after all verification completed.
-        summary = summary_counts(qa_report)
-        failed = summary["fail"]
-        store.update(project, spec_only=False, prototype_only=False,
-                     build_available=True,
-                     status="tested-with-failures" if failed else "tested")
-        store.advance(project, "test")
-        bus.agent_msg(project, "The single build plan is complete: app, focused unit tests and final checks."
-                      + (f" {len(gaps)} disclosed gap(s) remain." if gaps else "")
-                      + (f" {failed} test failure(s) are recorded." if failed else ""),
-                      title="Build and testing complete")
-        session.note(
-            "The single sequential plan completed the application, focused business "
-            "unit tests and final product checks. Routes delivered: "
-            + ", ".join(str(r) for r in (built_report.get("routes") or []))
-            + ".")
-        session.finish("Single build, unit and final-check plan complete.")
-        plugins.consume_handoff(project)
-        show_preview(project)
-        return {"report": report(project), "status": build_result.get("status", "complete"),
-                "plans": [build_result.get("plan_file")]}
+        settled = _settle(project, session, "run", request, build_result.get("plan") or "", build_result)
+        if settled.get("status") == "asking":
+            return settled
+        return _finish_run(project, session, settled)
     except Exception as exc:  # noqa: BLE001
         session.fail(str(exc))
         raise
+
+
+def _finish_update(project: str, session: Any, result: dict[str, Any]) -> dict[str, Any]:
+    session.finish(result.get("text", "") or "Change applied.")
+    if result.get("status") == "complete":
+        plugins.consume_handoff(project)
+    show_preview(project)
+    return {"status": result.get("status", "complete"), "text": result.get("text", "")}
 
 
 def update(project: str, request: str) -> dict[str, Any]:
     """Change the built application from a message typed into the chat stream."""
     if not built(project):
         raise ValueError("there is nothing built to change yet")
+    if waiting(project):
+        raise ValueError("this project already has a change waiting on an earlier question - "
+                         "answer it before starting another")
 
     session = session_for(project)
     session.begin("build-edit", role=bus.DEVELOPER)
     try:
         bus.user_msg(project, request)
-        result = session.run_task(prompts.load("builder/update", request=request), audit=False)
-        session.finish(result.get("text", "") or "Change applied.")
-        if result.get("status") == "complete":
-            plugins.consume_handoff(project)
-        show_preview(project)
-        return {"status": result.get("status", "complete"), "text": result.get("text", "")}
+        full_request = prompts.load("builder/update", request=request)
+        result = session.run_task(full_request, audit=False)
+        settled = _settle(project, session, "update", full_request, result.get("plan") or "", result)
+        if settled.get("status") == "asking":
+            return settled
+        return _finish_update(project, session, settled)
     except Exception as exc:  # noqa: BLE001
         session.fail(str(exc))
         raise

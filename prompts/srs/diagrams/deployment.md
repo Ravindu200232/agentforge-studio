@@ -18,7 +18,7 @@ A UML deployment diagram shows runtime nodes, the software artifacts hosted on t
     a1["<<artifact>>\nnextjs-app"]
   end
   ```
-- A communication path between nodes is a plain labeled edge naming the protocol: `n1 -->|HTTPS| n2`, `n2 -->|MongoDB Wire Protocol| n3`.
+- A communication path between nodes is a plain labeled edge naming the protocol: `n1 -->|HTTPS| n2`, `n2 -->|PostgreSQL| n3`.
 - An external managed service (a hosted database, an email API) the app depends on at runtime but does not deploy itself is its own node, shaped or coloured distinctly from a node the team deploys: `n4["<<device>>\nExternal: Email provider"]`.
 
 ## How to draw it

@@ -24,6 +24,7 @@ from typing import Any
 from server_modules import bus, config, journeys, llm, mermaid, prompts, reference_staging, store
 from server_modules.session import ProjectSession, session_for
 from server_modules.validation import completeness
+from server_modules.validation import corpus as corpus_rules
 from server_modules.validation import review as review_rules
 from server_modules.validation import srs_schema
 
@@ -49,6 +50,42 @@ DIAGRAM_KINDS = ("system_context", "use_case", "erd", "sequence", "activity",
 _reference_cache: dict[str, str] = {}
 _reference_lock = threading.Lock()
 
+# Each query is deliberately tied to a recognised source for this notation
+# rather than asking a generic search result to define a modelling standard.
+# Search snippets are presentation guidance only; the project SRS remains the
+# sole source of actors, entities, flows, and relationships.
+_NOTATION_SEARCHES = {
+    "activity": "site:sparxsystems.org UML activity diagram initial final decision fork join notation",
+    "bpmn": "site:omg.org BPMN 2.0 start event end event task gateway pool lane sequence flow",
+    "class_object": "site:visual-paradigm.com UML class diagram notation visibility multiplicity composition aggregation",
+    "component": "site:online.visual-paradigm.com UML component diagram provided required interface notation",
+    "deployment": "site:support.microsoft.com UML deployment diagram nodes artifacts communication path",
+    "dfd": "site:gov.uk data flow diagram Yourdon DeMarco Gane Sarson notation",
+    "erd": "site:mermaid.js.org entity relationship diagram crow foot cardinality syntax",
+    "sequence": "site:mermaid.js.org sequence diagram activation return alt loop syntax",
+    "state_machine": "site:uml-diagrams.org UML state machine diagram initial final transition notation",
+    "system_context": "system context diagram system boundary external entities notation",
+    "use_case": "site:visual-paradigm.com UML use case diagram actors system boundary include extend notation",
+}
+_NOTATION_CATALOG = Path(__file__).resolve().parents[2] / "srs-test-sources" / "diagram-sources" / "catalog.json"
+
+
+def _catalog_reference(kind: str) -> str:
+    """The checked local source catalogue, small enough to hand to one diagram call."""
+    try:
+        catalog = json.loads(_NOTATION_CATALOG.read_text(encoding="utf-8"))
+        entry = (catalog.get("kinds") or {}).get(kind) or {}
+    except (OSError, json.JSONDecodeError):
+        return ""
+    sources = entry.get("sources") or []
+    links = "\n".join(f"- {row.get('title')}: {row.get('url')}" for row in sources
+                      if isinstance(row, dict) and row.get("url"))
+    notation = ", ".join(str(item) for item in (entry.get("accepted_notation") or []))
+    visual = str(entry.get("visual_observation") or "")
+    return ("Checked notation sources (style/notation only):\n" + links
+            + (f"\nAccepted notation: {notation}" if notation else "")
+            + (f"\nVisual observation: {visual}" if visual else ""))[:1600]
+
 
 def _diagram_reference(kind: str) -> str:
     """A short, real-world grounding note on standard notation for this diagram
@@ -57,9 +94,12 @@ def _diagram_reference(kind: str) -> str:
     with _reference_lock:
         if kind in _reference_cache:
             return _reference_cache[kind]
-    found = llm.web_search(f"UML {kind.replace('_', ' ')} diagram example correct notation", max_results=3)
-    note = "\n".join(f"- {row['title']}: {row['content'][:300]}"
-                     for row in found if row.get("content"))[:1200]
+    local = _catalog_reference(kind)
+    found = llm.web_search(_NOTATION_SEARCHES.get(
+        kind, f"UML {kind.replace('_', ' ')} diagram example correct notation"), max_results=3)
+    searched = "\n".join(f"- {row['title']}: {row['content'][:300]}"
+                           for row in found if row.get("content"))[:900]
+    note = "\n\n".join(piece for piece in (local, searched) if piece)[:2400]
     with _reference_lock:
         _reference_cache[kind] = note
     return note
@@ -82,11 +122,16 @@ def _srs_quality_reference() -> str:
     with _srs_reference_lock:
         if _srs_reference is not None:
             return _srs_reference
+    try:
+        local = corpus_rules.quality_grounding()
+    except ValueError:
+        local = ""
     found = llm.web_search(
         "IEEE 830 software requirements specification quality checklist "
         "ambiguity traceability well-written requirement examples", max_results=3)
-    note = "\n".join(f"- {row['title']}: {row['content'][:300]}"
-                     for row in found if row.get("content"))[:1200]
+    searched = "\n".join(f"- {row['title']}: {row['content'][:300]}"
+                          for row in found if row.get("content"))[:900]
+    note = "\n\n".join(piece for piece in (local, searched) if piece)[:2400]
     with _srs_reference_lock:
         _srs_reference = note
     return note
@@ -205,6 +250,43 @@ def _write_user_journeys(session: ProjectSession, project: str, doc: dict) -> di
     return contract
 
 
+def _diagram_review_validator(envelope: Any) -> None:
+    """Keep the cloud reviewer machine-readable before it can request a retry."""
+    review = envelope.get("diagram_review") if isinstance(envelope, dict) else None
+    if not isinstance(review, dict):
+        raise ValueError("diagram review must contain a diagram_review object")
+    if review.get("verdict") not in ("pass", "repair"):
+        raise ValueError("diagram review verdict must be pass or repair")
+    for key in ("findings", "checks"):
+        value = review.get(key)
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise ValueError(f"diagram review {key} must be a list of strings")
+
+
+def _workspace_relative(path: Path, workspace: Path) -> str:
+    """A path a workspace-rooted read-only tool is actually allowed to read."""
+    try:
+        return path.resolve().relative_to(workspace.resolve()).as_posix()
+    except ValueError:
+        # The reviewer must never receive an absolute path it cannot read. A
+        # basename produces a helpful ordinary "file does not exist" response
+        # if a caller accidentally stages context in the wrong workspace.
+        return path.name
+
+
+def _review_diagram(project: str, workspace: Path, kind: str, source: str,
+                    document_path: Path) -> dict[str, Any]:
+    """Compare a rendered source with local web-source evidence using the cloud model."""
+    reviewed = llm.complete_json(
+        system=prompts.load("srs/system"),
+        user=prompts.load("srs/diagram-review", kind=kind, source=source,
+                          document=_workspace_relative(document_path, workspace),
+                          sources=_catalog_reference(kind) or "(catalog unavailable)"),
+        validator=_diagram_review_validator, label="diagram_review",
+        project=project, workspace=workspace)
+    return reviewed["diagram_review"]
+
+
 def _draw_diagram(session: ProjectSession, project: str, doc: dict,
                   kind: str) -> dict | None:
     """One diagram: its source, and its SVG when a renderer is installed."""
@@ -262,6 +344,7 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
     mmd = session.record_path(SRS_DIR, "diagrams", f"{kind}.mmd")
     svg = session.record_path(SRS_DIR, "diagrams", f"{kind}.svg")
     rendered, why = False, "no renderer"
+    review: dict[str, Any] | None = None
 
     for attempt in range(3):
         wrong = mermaid.problems(kind, source)
@@ -272,13 +355,32 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
             bus.agent_msg(project, "SVG rendered successfully." if rendered else why,
                           title="Mermaid output", kind="command_output")
             if rendered:
-                break
-            wrong = [why]
+                try:
+                    review = _review_diagram(project, session.workspace, kind, source, context_path)
+                except Exception as exc:
+                    # Mermaid has already validated the source. Record a
+                    # temporary cloud-review outage explicitly instead of
+                    # silently calling it a passed comparison.
+                    review = {"verdict": "unavailable", "findings": [str(exc)[:240]], "checks": []}
+                    bus.log(project, "WARN", f"Cloud diagram review unavailable for {kind}: {str(exc)[:120]}")
+                    break
+                if review["verdict"] == "pass":
+                    break
+                wrong = review["findings"] or ["cloud reviewer requested a notation repair"]
+            if not rendered:
+                wrong = [why]
         if not wrong or attempt == 2:
             break
         source = _ask(f"\n\n## Your last attempt\n\n```\n{source[:4000]}\n```\n\n"
                       f"It was rejected: {'; '.join(wrong)}\n\n"
                       f"Return corrected Mermaid source only.")
+
+    # A rendered SVG is not a final SRS figure until the configured cloud
+    # comparison explicitly passes. Keep the editable Mermaid source and the
+    # review artifact for diagnosis, but do not publish an unreviewed SVG.
+    if review and review.get("verdict") != "pass":
+        rendered = False
+        why = "cloud review did not pass: " + "; ".join(review.get("findings") or [review["verdict"]])
 
     mmd.write_text(source, encoding="utf-8")
     bus.file_written(project, mmd.relative_to(session.workspace).as_posix(), source,
@@ -297,7 +399,16 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
         entry["svg_path"] = svg.relative_to(session.workspace).as_posix()
         entry["rendered_by"] = "mermaid_cli"
         entry["format"] = "svg+mermaid-source"
-    elif mermaid.available():
+    if review:
+        review_path = session.record_path(SRS_DIR, "diagram-reviews", f"{kind}.json")
+        review_path.parent.mkdir(parents=True, exist_ok=True)
+        review_text = json.dumps(review, ensure_ascii=False, indent=2)
+        review_path.write_text(review_text, encoding="utf-8")
+        bus.file_written(project, review_path.relative_to(session.workspace).as_posix(),
+                         review_text, note="reviewed")
+        entry["review"] = review
+        entry["review_path"] = review_path.relative_to(session.workspace).as_posix()
+    if not rendered and mermaid.available():
         entry["render_error"] = why[:240]
     return entry
 
@@ -911,11 +1022,14 @@ def _review_loop(session: ProjectSession, project: str, envelope: dict,
                   detail=f"Against the requirements standards (round {round_no + 1}).")
         structure = completeness.section_completeness(doc)
         ambiguity = completeness.ambiguity_resolution(doc)
+        corpus_audit = corpus_rules.audit_document(doc)
+        doc.setdefault("requirements_quality_review", {})["corpus_evidence"] = corpus_audit
         structure_readout = (
             f"- populated: {', '.join(structure['populated']) or '(none)'}\n"
             f"- empty: {', '.join(structure['empty']) or '(none)'}\n"
             f"- ambiguities flagged: {ambiguity['total']}, resolved: {ambiguity['resolved']} "
-            f"({ambiguity['rate']:.0%})")
+            f"({ambiguity['rate']:.0%})\n"
+            + corpus_rules.audit_readout(corpus_audit))
         try:
             reference = _srs_quality_reference()
         except Exception:  # noqa: BLE001 - grounding is a bonus, never a blocker
@@ -923,11 +1037,12 @@ def _review_loop(session: ProjectSession, project: str, envelope: dict,
         try:
             verdict = llm.complete_json(
                 system=prompts.load("srs/review",
-                                    standards=prompts.skills("srs", only=review_rules.AUDIT_SKILLS,
+                               standards=prompts.skills("srs", only=review_rules.AUDIT_SKILLS,
                                                              budget=5000),
-                                    document=review_rules.digest(doc),
-                                    reference=reference or "(unavailable this run)",
-                                    structure=structure_readout),
+                               document=review_rules.digest(doc),
+                               reference=reference or "(unavailable this run)",
+                               structure=structure_readout,
+                               corpus_audit=corpus_rules.audit_readout(corpus_audit)),
                 user="Report against the standards above. Judge how the requirements "
                      "are written, not what the product does.",
                 validator=review_rules.review_validator(doc), label="srs_review")
@@ -936,6 +1051,18 @@ def _review_loop(session: ProjectSession, project: str, envelope: dict,
             review_rules.stamp(doc, "skipped", round_no, "the review did not complete")
             return envelope
 
+        # The cloud critic reports the subjective engineering review; a small
+        # set of corpus-aligned facts (such as a missing verification method)
+        # is non-negotiable.  Add them after validating the model payload so a
+        # model cannot accept a document with a deterministic evidence gap.
+        evidence_findings = corpus_rules.blocking_findings(corpus_audit)
+        if evidence_findings:
+            verdict = dict(verdict)
+            verdict["findings"] = list(verdict.get("findings") or []) + [
+                {"severity": "blocker", "skill": "corpus-evidence",
+                 "rule": "deterministic SRS evidence audit", "problem": problem}
+                for problem in evidence_findings]
+
         blocking = review_rules.blockers(verdict)
         session.write_record(SRS_DIR, "reviews", f"round-{round_no + 1}.json", data=verdict)
 
@@ -943,13 +1070,15 @@ def _review_loop(session: ProjectSession, project: str, envelope: dict,
             bus.log(project, "SUCCESS", f"Specification accepted after {round_no + 1} round(s).")
             review_rules.stamp(doc, "accepted", round_no + 1,
                                "the draft met the standards", verdict,
-                               structural={"sections": structure, "ambiguity": ambiguity})
+                               structural={"sections": structure, "ambiguity": ambiguity,
+                                           "corpus": corpus_audit})
             return envelope
 
         if round_no >= cap:
             review_rules.stamp(doc, "capped", round_no + 1,
                                f"the {cap}-round review limit was reached", verdict,
-                               structural={"sections": structure, "ambiguity": ambiguity})
+                               structural={"sections": structure, "ambiguity": ambiguity,
+                                           "corpus": corpus_audit})
             return envelope
 
         if previous is not None and len(blocking) >= previous:

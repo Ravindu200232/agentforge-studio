@@ -5,7 +5,7 @@ This update replaces the generic/auto-layout appearance of the SRS diagrams with
 ## What changed
 
 ### Canonical renderer for all 11 diagrams
-All customer-visible SVG/PDF diagrams now use the native ReportLab vector renderer. Mermaid remains an editable source/fallback only. LLM output no longer controls the visible layout of System Context, Component or Deployment diagrams.
+All customer-visible diagrams are validated and rendered with Mermaid CLI from an editable Mermaid source. The generator constrains each diagram to its standard notation and verifies that the source can render before treating it as a finished figure.
 
 ### Shared visual system
 - white canvas (no transparent SVG over grey viewer backgrounds)

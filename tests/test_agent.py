@@ -125,9 +125,26 @@ class AgentTests(unittest.TestCase):
             client = FakeClient()
             agent = Agent(client, "test", Path(directory), lambda _: False,
                           context=16384, announce=lambda _: None)
+            agent.messages.extend([
+                {"role": "user", "content": "Keep the approved checkout flow."},
+                {"role": "assistant", "content": "Noted."},
+            ])
+            agent.memory_summary = "Checkout needs guest and member paths."
             agent.set_model(client, "other", cloud=True)
             self.assertEqual(agent.context, 16384)
             self.assertIsNone(agent.options)
+            self.assertIn("approved checkout", agent.messages[1]["content"])
+            self.assertIn("guest and member", agent.memory_summary)
+
+    def test_extra_high_effort_keeps_context_and_adds_a_final_check_rule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent = Agent(FakeClient(), "test", Path(directory), lambda _: False,
+                          announce=lambda _: None)
+            agent.messages.append({"role": "user", "content": "Keep this turn."})
+            agent.set_reasoning_level("xhigh")
+            system = agent._system_message()
+            self.assertIn("EXTRA-HIGH EFFORT", system)
+            self.assertEqual(agent.messages[-1]["content"], "Keep this turn.")
 
     def test_local_web_search_needs_no_sdk_api_key(self):
         with tempfile.TemporaryDirectory() as directory:

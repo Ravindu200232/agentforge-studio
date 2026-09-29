@@ -37,15 +37,17 @@ class ThinkingHelperTests(unittest.TestCase):
         # the level is the one source of truth once it exists.
         self.assertEqual(config.thinking({"thinking_level": "low", "agent_think": True}), "low")
 
-    def test_only_low_and_high_encourage_tool_verification(self):
+    def test_low_and_both_high_levels_encourage_tool_verification(self):
         self.assertFalse(config.thinking_encourages_tools({"thinking_level": "off"}))
         self.assertTrue(config.thinking_encourages_tools({"thinking_level": "low"}))
         self.assertTrue(config.thinking_encourages_tools({"thinking_level": "high"}))
+        self.assertTrue(config.thinking_encourages_tools({"thinking_level": "xhigh"}))
 
-    def test_only_high_actually_reasons(self):
+    def test_both_high_levels_actually_reason(self):
         self.assertFalse(config.thinking_enabled({"thinking_level": "off"}))
         self.assertFalse(config.thinking_enabled({"thinking_level": "low"}))
         self.assertTrue(config.thinking_enabled({"thinking_level": "high"}))
+        self.assertTrue(config.thinking_enabled({"thinking_level": "xhigh"}))
 
 
 class SaveSettingsTests(SettingsCase):
@@ -55,6 +57,10 @@ class SaveSettingsTests(SettingsCase):
         self.assertFalse(saved["agent_think"])
 
         saved = config.save_settings({"thinking_level": "high"})
+        self.assertTrue(saved["agent_think"])
+
+        saved = config.save_settings({"thinking_level": "xhigh"})
+        self.assertEqual(saved["thinking_level"], "xhigh")
         self.assertTrue(saved["agent_think"])
 
     def test_an_invalid_level_is_refused(self):

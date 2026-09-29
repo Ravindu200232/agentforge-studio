@@ -1020,6 +1020,21 @@ class OneContextTests(unittest.TestCase):
             finally:
                 config.WORKSPACES = original
 
+    def test_context_checkpoint_keeps_the_project_model_preference(self):
+        from server_modules import config
+
+        with tempfile.TemporaryDirectory() as directory:
+            session, original = self._session(directory)
+            try:
+                session._context_file().write_text(json.dumps({
+                    "model": "cloud-model-a",
+                    "thinking_level": "xhigh",
+                    "messages": [],
+                }), encoding="utf-8")
+                self.assertEqual(session._saved_context_preferences(), ("cloud-model-a", "xhigh"))
+            finally:
+                config.WORKSPACES = original
+
     def test_the_memory_carries_every_stage_into_the_focused_calls(self):
         from server_modules import config
 

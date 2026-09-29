@@ -157,7 +157,7 @@ export default function Home({
 
   function begin(p, srs = '', prototypeOnly = false) {
     if (!p || !builderModel.trim()) return
-    const config = { model: builderModel.trim(), stack, think }
+    const config = { model: builderModel.trim(), stack, think, thinking_level: s.thinkingLevel }
     chooseModel(config.model)
     if (images && !prototypeOnly) return setLogoFor({ idea: p, srs, config })
     startBuild(p, '', srs, null, config, prototypeOnly)
@@ -168,7 +168,7 @@ export default function Home({
   const chooseModel = model => useStore.getState().applyModel(model)
 
   function chooseThinking(value) {
-    useStore.setState({ think: value })
+    useStore.getState().setThinkingLevel(value ? 'high' : 'low')
     s.persist(KEYS.think, value ? '1' : '0')
   }
 
@@ -218,6 +218,7 @@ export default function Home({
       design_model: config?.model || designModel,
       stack: config?.stack || stack,
       think: config?.think ?? think,
+      thinking_level: config?.thinking_level || s.thinkingLevel,
       qa_model: models.qa,
       logo,
       srs_id: srs || '',
