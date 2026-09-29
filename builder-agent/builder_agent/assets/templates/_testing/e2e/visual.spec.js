@@ -5,11 +5,13 @@
 // write the file but still fail the test). Later runs compare against it. After an
 // intended change, update it with --update-snapshots. In CI (CI=true) a missing baseline
 // fails, because a baseline that was never committed compares nothing.
-// Signed-in pages are screenshotted from their journeys: signed out, these routes
-// only show the sign-in page, which would be saved under the wrong page's name.
-import fs from 'node:fs'
-import path from 'node:path'
-import { test, expect } from './fixtures.js'
+//
+// Signed-in pages are screenshotted from their journeys, not from this file: signed
+// out, these routes only show the sign-in page, which would be saved under the wrong
+// page's name. Use fixtures.js's expectMatchesBaseline(page, testInfo, name) there -
+// it is the exact same baseline-recording check this file uses below, exported so a
+// journey spec never has to re-implement or (worse) edit it here. See _guides/visual.md.
+import { test, expect, expectMatchesBaseline } from './fixtures.js'
 import { publicRoutes, slug } from './routes.js'
 
 test.describe('@visual', () => {
@@ -25,15 +27,7 @@ test.describe('@visual', () => {
         expect(overflow, 'horizontal overflow in px').toBeLessThanOrEqual(1)
       })
       await test.step('it matches its screenshot', async () => {
-        const file = `${slug(route)}.png`
-        const baseline = testInfo.snapshotPath(file)
-        if (!fs.existsSync(baseline) && !process.env.CI && testInfo.config.updateSnapshots !== 'none') {
-          fs.mkdirSync(path.dirname(baseline), { recursive: true })
-          await page.screenshot({ path: baseline, fullPage: true, animations: 'disabled' })
-          testInfo.annotations.push({ type: 'baseline', description: 'first run: baseline recorded, nothing to compare yet' })
-          return
-        }
-        await expect(page).toHaveScreenshot(file, { fullPage: true })
+        await expectMatchesBaseline(page, testInfo, slug(route))
       })
     })
   }

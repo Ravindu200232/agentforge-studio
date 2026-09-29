@@ -15,7 +15,7 @@ STACK_GUIDES = {
     "mern-microservices": "mern+miro.md",
     "remix-mongo": "remix.md",
 }
-TEST_GUIDES = ("vitest.md", "playwright.md", "axe.md", "lighthouse.md", "zap.md")
+TEST_GUIDES = ("vitest.md", "playwright.md", "visual.md", "axe.md", "lighthouse.md", "zap.md")
 # Not about one app: mistakes every build of every stack has made, and the scaffold's
 # answer to each. Read before the stack guide so they are not learned again by failing.
 COMMON_GUIDES = ("pitfalls.md", "unit-tests.md")

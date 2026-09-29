@@ -238,6 +238,33 @@ class ScaffoldTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 scaffold.install(Path(temp), "something-else")
 
+    def test_visual_regression_has_a_guide_and_a_shared_baseline_helper(self):
+        # Found live: a generated app's visual.spec.js and playwright.config.js had
+        # been rewritten away from the scaffold's own self-recording baseline
+        # contract - every re-run then reported "no snapshot exists" forever,
+        # because nothing was ever told this file exists and must be extended,
+        # never replaced. visual.md plus a shared, exported helper (instead of
+        # logic the model has to hand-copy correctly) close that gap.
+        self.assertIn("visual.md", scaffold.TEST_GUIDES)
+        for stack in scaffold.STACK_GUIDES:
+            self.assertIn("### visual.md", scaffold.guide_context(stack))
+            with tempfile.TemporaryDirectory() as temp:
+                workspace = Path(temp)
+                scaffold.install(workspace, stack)
+                fixtures = (workspace / "e2e/fixtures.js").read_text(encoding="utf-8")
+                self.assertIn("export async function expectMatchesBaseline(", fixtures)
+                visual = (workspace / "e2e/visual.spec.js").read_text(encoding="utf-8")
+                self.assertIn("expectMatchesBaseline(page, testInfo, slug(route))", visual)
+                # The self-recording branch lives in fixtures.js now, not duplicated here.
+                self.assertNotIn("testInfo.snapshotPath(", visual)
+        guide = (scaffold.ROOT / "_guides" / "visual.md").read_text(encoding="utf-8")
+        self.assertIn("expectMatchesBaseline", guide)
+        self.assertIn("snapshotPathTemplate", guide)
+        prompt = (ROOT / "prompts/testing/run.md").read_text(encoding="utf-8")
+        self.assertIn("qa:visual", prompt)
+        self.assertIn("visual.md", prompt)
+        self.assertIn("expectMatchesBaseline", prompt)
+
 
 class EvidenceTests(unittest.TestCase):
     def test_reads_runner_results_and_real_screenshots(self):
