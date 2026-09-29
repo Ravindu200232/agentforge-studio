@@ -86,12 +86,12 @@ class RunChatTests(unittest.TestCase):
             self.addCleanup(bus.subscribe(events.append))
             result = tools.call("list_files", {"path": "dfd.json"})
 
-        self.assertIn("Not a directory", result)
+        self.assertIn("is a file, not a directory", result)
         # Every event is mirrored across both agent roles (bus.emit's
         # MIRROR_ROLES) so both chat tabs stay in sync - not a duplicate log.
         warnings = [e for e in events if e.get("level") == "WARN"]
         self.assertTrue(warnings)
-        self.assertTrue(all("list_files(dfd.json)" in w["text"] and "Not a directory" in w["text"]
+        self.assertTrue(all("list_files(dfd.json)" in w["text"] and "is a file, not a directory" in w["text"]
                             for w in warnings))
 
     def test_a_model_that_cannot_take_tools_falls_back_and_is_remembered(self):

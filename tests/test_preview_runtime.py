@@ -33,16 +33,6 @@ class PreviewRuntimeTests(unittest.TestCase):
                 preview_runtime._free_port(5173, timeout=0)
             terminate.assert_called_once_with(7777)
 
-    def test_mern_stop_signal_targets_only_its_saved_runtime_id(self):
-        with tempfile.TemporaryDirectory() as directory:
-            record = Path(directory)
-            saved = {"controlMode": "file", "runtimeId": "only-this-run", "port": 5173}
-            with patch.object(preview_runtime.config, "record_dir", return_value=record), \
-                 patch.object(preview_runtime, "_port_open", return_value=False):
-                self.assertTrue(preview_runtime._signal_managed_stop("demo", saved))
-            message = json.loads((record / "preview-stop.json").read_text(encoding="utf-8"))
-            self.assertEqual(message, {"runtimeId": "only-this-run"})
-
     def test_status_rejects_stale_metadata_without_listener_ownership(self):
         with tempfile.TemporaryDirectory() as directory:
             record = Path(directory)

@@ -13,6 +13,14 @@ status`, `az account show`, ...), so the studio shows the account a deployment w
 
 Azure is signed in but no service principal is created here: that gives an identity the deployment
 can run as, and creating one changes the customer's tenant, so it stays a step they take on purpose.
+
+Supabase does not belong here, on purpose, not by oversight: its CLI's `login` refuses to run at all
+outside a real interactive terminal ("Cannot use automatic login flow inside non-TTY environments"),
+which every provider above works around by having a device- or browser-code flow that needs no TTY.
+Supabase has none - its only non-interactive path is a pasted personal access token
+(`SUPABASE_ACCESS_TOKEN` / `supabase login --token`). That one credential is handled in
+`supabase_connect.py` instead, the same paste-and-verify shape `DeployAccounts.jsx`'s
+`HostedCredential` already uses for Netlify's and Azure's own tokens.
 """
 from __future__ import annotations
 

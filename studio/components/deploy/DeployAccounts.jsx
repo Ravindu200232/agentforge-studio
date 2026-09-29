@@ -1,9 +1,11 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Check, ExternalLink, Loader2, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Button, Input, SectionLabel } from '../ui'
+import CliSignIn from '../CliSignIn'
+import SupabaseConnect from '../SupabaseConnect'
 import { cn } from '@/lib/utils'
 
 
@@ -66,7 +68,12 @@ export default function DeployAccounts({ deploy, onSaved }) {
           <HostedCredential title="Azure" provider="azure" setting="azure_credentials" saved={Boolean(deploy?.azure_credentials_set || deploy?.azure_account)} onSave={save}
             label="Service principal credentials (JSON)" href="https://learn.microsoft.com/en-us/azure/app-service/deploy-github-actions"
             hint="Enter JSON containing clientId, clientSecret, tenantId and subscriptionId for your deployment service principal. Give it access to the selected resource group." />
-          <Mongo deploy={deploy} onSave={save} />
+          <Row title="Supabase" ok={Boolean(deploy?.supabase_org)} unknown={false}
+               detail={deploy?.supabase_org ? `signed in as ${deploy.supabase_org}` : 'every Supabase-stack project gets its own real project'}>
+            <div className="mt-2 w-full">
+              <SupabaseConnect onDone={onSaved} />
+            </div>
+          </Row>
         </div>
       )}
     </section>
@@ -74,7 +81,7 @@ export default function DeployAccounts({ deploy, onSaved }) {
 }
 
 function summarise(d) {
-  if (!d) return 'GitHub, AWS, Vercel, Netlify, Azure and the production database.'
+  if (!d) return 'GitHub, AWS, Vercel, Netlify and Azure.'
   const bits = []
   bits.push(d.github_token_set
     ? `GitHub ${d.github_login || 'connected'}` : 'GitHub not connected')
@@ -82,7 +89,6 @@ function summarise(d) {
   bits.push(d.vercel_token_set ? 'Vercel connected' : 'Vercel not connected')
   bits.push(d.netlify_token_set ? 'Netlify connected' : 'Netlify not connected')
   bits.push(d.azure_credentials_set || d.azure_account ? 'Azure connected' : 'Azure not connected')
-  bits.push(d.mongodb_uri_set ? 'database set' : 'no database')
   return bits.join(' · ')
 }
 
@@ -467,169 +473,6 @@ function Aws({ deploy, onSave, probe, onRecheck }) {
 }
 
 
-/**
- * Signing in through the provider's own command line tool.
- *
- * Says whether the tool is installed (and how to install it if not), who it is already signed in as
- * (which can be used as it is, with no browser), and otherwise runs its login: the code to type and
- * the link to open appear here, and the sign-in finishes on its own once approved in the browser.
- */
-function CliSignIn({ provider, onDone, region = '', label = '' }) {
-  const [tool, setTool] = useState(undefined)        // undefined: asking; null: could not ask
-  const [state, setState] = useState(null)           // the running sign-in: { flow_id, title }
-  const [seen, setSeen] = useState(null)             // { code, uri } printed while it waits
-  const [busy, setBusy] = useState('')
-  const [err, setErr] = useState('')
-  const [copied, setCopied] = useState(false)
-  const [notice, setNotice] = useState('')         // what the server says about what it kept
-  const stop = useRef(false)
-  const opened = useRef('')
-
-  const look = useCallback((fresh = false) => api.cliSigninAvailable(provider, fresh)
-    .then(d => setTool(d?.providers?.[provider] || null))
-    .catch(() => setTool(null)), [provider])
-
-  useEffect(() => { stop.current = false; look(); return () => { stop.current = true } }, [look])
-
-  async function finished(answer) {
-    setState(null); setSeen(null); setBusy(''); setNotice(answer?.note || '')
-    await look(true)
-    onDone?.(answer)
-  }
-
-  async function signIn() {
-    setBusy('login'); setErr(''); setSeen(null); stop.current = false; opened.current = ''
-    let started
-    try {
-      started = await api.cliSigninStart(provider, region)
-      setState(started)
-      if (started.verification_uri) setSeen({ code: '', uri: started.verification_uri })
-      const deadline = Date.now() + 10 * 60 * 1000
-      while (!stop.current && Date.now() < deadline) {
-        await new Promise(r => setTimeout(r, 2000))
-        const answer = await api.cliSigninPoll(started.flow_id)
-        if (answer.status === 'ready') return finished(answer)
-        if (answer.user_code || answer.verification_uri) {
-          setSeen({ code: answer.user_code || '', uri: answer.verification_uri || '' })
-          // The tool opens its own browser tab for some providers; for the others it is opened here, once.
-          if (answer.verification_uri && !answer.opens_browser && opened.current !== answer.verification_uri) {
-            opened.current = answer.verification_uri
-            window.open(answer.verification_uri, '_blank', 'noopener,noreferrer')
-          }
-        }
-      }
-      if (!stop.current) setErr('That sign-in did not finish in time. Start it again.')
-    } catch (e) {
-      if (!stop.current) setErr(e.message)
-    }
-    if (started?.flow_id) { try { await api.cliSigninCancel(started.flow_id) } catch { } }
-    setState(null); setSeen(null); setBusy('')
-  }
-
-  async function useExisting() {
-    setBusy('existing'); setErr('')
-    try {
-      await finished(await api.cliSigninUseExisting(provider, region))
-    } catch (e) { setErr(e.message); setBusy('') }
-  }
-
-  async function cancel() {
-    stop.current = true
-    if (state?.flow_id) { try { await api.cliSigninCancel(state.flow_id) } catch { } }
-    setBusy(''); setState(null); setSeen(null)
-  }
-
-  async function copyInstall() {
-    try {
-      await navigator.clipboard.writeText(String(tool.install).split('  (')[0])
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch { }
-  }
-
-  if (tool === undefined) {
-    return <p className="flex items-center gap-1.5 text-[10.5px] text-muted2"><Loader2 className="size-3 animate-spin" /> Looking for the command line tool…</p>
-  }
-  if (tool === null) {
-    return <p className="text-[10.5px] text-muted2">Could not ask the server about the command line tool.</p>
-  }
-
-  const title = tool.title
-  if (!tool.installed) {
-    return (
-      <div className="rounded-lg border border-line bg-panel2 p-3">
-        <p className="text-[11px] text-muted">
-          The {title} command line tool is not installed on this PC. Install it, then check again — signing in
-          then takes one click.
-        </p>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <code className="rounded-md bg-black/20 px-2 py-1 font-mono text-[11px] text-ink">{tool.install}</code>
-          <Button size="sm" variant="outline" onClick={copyInstall}>{copied ? <Check className="size-3" /> : null}{copied ? 'Copied' : 'Copy'}</Button>
-          <Button size="sm" onClick={() => { setTool(undefined); look(true) }}>Check again</Button>
-        </div>
-      </div>
-    )
-  }
-
-  const who = tool.identity?.account
-  const missing = tool.identity?.missing_scopes || []
-  const running = busy === 'login'
-  const usable = tool.signed_in && missing.length === 0
-  return (
-    <div className="space-y-2">
-      <p className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted">
-        <Check className="size-3 text-ok" />
-        {label || `${title} command line tool`} found
-        {tool.signed_in && <> · signed in as <b className="text-ink">{who}</b></>}
-        {tool.identity?.subscription && <> · {tool.identity.subscription}</>}
-      </p>
-      {missing.length > 0 && (
-        <p className="border-l-[3px] border-warn bg-warn-tint px-2.5 py-1.5 text-[10.5px] text-ink">
-          This sign-in lacks the <b>{missing.join(', ')}</b> permission the deployment needs to push its workflows.
-          Add it below; the browser asks you to approve it once.
-        </p>
-      )}
-      {seen && (
-        <div className="rounded-lg border border-line bg-panel2 p-3">
-          {seen.code ? (
-            <>
-              <p className="text-[11px] text-muted">Enter this code in the browser, then leave this open — it finishes on its own.</p>
-              <p className="my-1.5 font-mono text-[18px] font-bold tracking-[0.3em] text-ink">{seen.code}</p>
-            </>
-          ) : (
-            <p className="text-[11px] text-muted">
-              {tool.opens_browser ? 'A browser tab opened — approve the sign-in there.' : 'Open the link and approve the sign-in.'}
-            </p>
-          )}
-          {seen.uri && (
-            <a className="inline-flex items-center gap-1 break-all text-[11px] text-accent hover:underline" target="_blank"
-               rel="noreferrer" href={seen.uri}>
-              {seen.code ? seen.uri : 'Open the sign-in page'} <ExternalLink className="size-2.5 shrink-0" />
-            </a>
-          )}
-          <p className="mt-2 flex items-center gap-1.5 text-[10.5px] text-muted2"><Loader2 className="size-3 animate-spin" /> Waiting for you to approve it…</p>
-        </div>
-      )}
-      <div className="flex flex-wrap items-center gap-2">
-        {usable && !running && (
-          <Button size="sm" variant="solid" disabled={Boolean(busy)} onClick={useExisting}>
-            {busy === 'existing' && <Loader2 className="size-3 animate-spin" />} Use this account
-          </Button>
-        )}
-        <Button size="sm" variant={usable ? 'outline' : 'solid'} disabled={Boolean(busy)} onClick={signIn}>
-          {running && <Loader2 className="size-3 animate-spin" />}
-          {missing.length > 0 ? 'Add the permission' : tool.signed_in ? 'Sign in again' : `Sign in with ${title} CLI`}
-        </Button>
-        {running && <Button size="sm" variant="outline" onClick={cancel}>Cancel</Button>}
-        {!running && <Button size="sm" variant="ghost" onClick={() => { setTool(undefined); look(true) }}>Recheck</Button>}
-      </div>
-      {notice && <p className="border-l-[3px] border-accent bg-tint px-2.5 py-1.5 text-[10.5px] leading-relaxed text-deep">{notice}</p>}
-      {err && <p className="text-[10.5px] text-deep">{err}</p>}
-    </div>
-  )
-}
-
-
 function Vercel({ deploy, onSave }) {
   const [token, setToken] = useState('')
   const [busy, setBusy] = useState('')
@@ -779,77 +622,6 @@ function HostedCredential({ title, provider, setting, saved, label, hint, href, 
     </div>
   </Row>
 }
-
-function Mongo({ deploy, onSave }) {
-  const [uri, setUri] = useState('')
-  const [busy, setBusy] = useState('')
-  const [result, setResult] = useState(null)
-  const [err, setErr] = useState('')
-
-  // Tries the string typed in the box, or the saved one when the box is empty: it connects, signs in and pings.
-  async function test(typed = uri.trim()) {
-    setBusy('test')
-    setErr('')
-    setResult(null)
-    try {
-      setResult(await api.deploy('/mongodb/check', { uri: typed }))
-    } catch (e) { setErr(e.message) }
-    setBusy('')
-  }
-
-  async function save() {
-    setBusy('save')
-    setErr('')
-    try {
-      await onSave({ deploy_mongodb_uri: uri.trim() })
-      setUri('')
-    } catch (e) { setErr(e.message); setBusy(''); return }
-    setBusy('')
-    await test('')                                   // what is saved is what gets tried
-  }
-
-  return (
-    <Row title="Production database" ok={Boolean(deploy?.mongodb_uri_set)} unknown={false}
-         detail={deploy?.mongodb_uri_set ? `saved (${deploy.mongodb_uri_hint})`
-                                         : 'the deployed app needs one it can reach'}>
-      <div className="mt-2 w-full space-y-2">
-        <Field label="MongoDB URI"
-               hint="Kept separate from the MongoDB URI above, which is AgentForge's own
-                     and is usually a local one. A loopback address is refused here —
-                     deployed, it would point at a database that does not exist.">
-          <Input type="password" value={uri} onChange={e => setUri(e.target.value)}
-                 placeholder={deploy?.mongodb_uri_set
-                   ? `saved (${deploy.mongodb_uri_hint})`
-                   : 'mongodb+srv://user:password@cluster.mongodb.net/database'} />
-        </Field>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" disabled={!uri.trim() || Boolean(busy)}
-                  onClick={save}>
-            {busy === 'save' && <Loader2 className="size-3 animate-spin" />} Save
-          </Button>
-          <Button size="sm" disabled={(!uri.trim() && !deploy?.mongodb_uri_set) || Boolean(busy)} onClick={() => test()}
-                  title={uri.trim() ? 'Try what is typed above' : 'Try the saved connection string'}>
-            {busy === 'test' && <Loader2 className="size-3 animate-spin" />} Test
-          </Button>
-        </div>
-        {result && (
-          <div className="space-y-1">
-            <p className={cn('text-[10.5px]', result.ok ? (result.verified === false ? 'text-[#FFAB00]' : 'text-ink') : 'text-[#FF5630]')}>
-              {result.message}
-              {result.server_version ? ` · MongoDB ${result.server_version}` : ''}
-              {result.database ? ` · database ${result.database}` : ''}
-            </p>
-            {(result.warnings || []).map((warning, i) => (
-              <p key={i} className="text-[10.5px] text-[#FFAB00]">{warning}</p>
-            ))}
-          </div>
-        )}
-        {err && <p className="text-[10.5px] text-deep">{err}</p>}
-      </div>
-    </Row>
-  )
-}
-
 
 function Row({ title, ok, unknown, detail, actions, children }) {
   return (

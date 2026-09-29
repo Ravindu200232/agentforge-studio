@@ -319,7 +319,8 @@ def _check(data: Any, may_ask: bool) -> dict:
             deploy_vars.valid_name(variable)
             check = str(data.get("check") or "").strip()
             if check and check not in deploy_vars.CHECKS:
-                raise ValueError(f'"check" is one of {", ".join(deploy_vars.CHECKS)}, or left out')
+                allowed = ", ".join(deploy_vars.CHECKS) or "nothing right now"
+                raise ValueError(f'"check" must be left out ({allowed} is offered)')
             asked.update(variable=variable, secret=bool(data.get("secret", True)), check=check)
         return asked
     if kind != "plan":

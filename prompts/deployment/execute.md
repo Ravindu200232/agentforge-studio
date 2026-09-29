@@ -48,11 +48,11 @@ safety matter, the skill page wins and you say so.
 
   set `state` to `NEEDS_INPUT` in `run.json`, and end your reply with the blocked marker. The customer
   is asked in the chat and you are started again with their answer. A value only the customer has (a
-  connection string, a password, a key) is asked for the same way with `"variable": "NAME"`,
-  `"secret": true` and, for a MongoDB connection string, `"check": "mongodb"`: the studio shows a private
-  box, tries the value, keeps it out of the conversation and tells you it is saved. Your commands then
-  receive it in the environment under that name; you never see it. The machine facts above list the names
-  already saved.
+  password, a key, or a different production Supabase project's own values) is asked for the same way
+  with `"variable": "NAME"` and `"secret": true`: the studio shows a private box, keeps it out of the
+  conversation and tells you it is saved. Your commands then receive it in the environment under that
+  name; you never see it. The machine facts above list the names already saved and this project's own
+  Supabase project.
 
 ## The repository, README and commits
 

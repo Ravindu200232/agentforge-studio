@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, ChevronDown, Layers, Plug } from 'lucide-react'
+import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { STACKS } from '@/lib/stacks'
 import { TIERS, tierFromModel } from '@/lib/models'
+import SupabaseConnect from './SupabaseConnect'
+import { Modal } from './ui'
 
 /** The choices for the next build stay beside the brief they belong to. */
 export default function BuildSetup({
@@ -11,7 +14,22 @@ export default function BuildSetup({
 }) {
   const currentTier = tierFromModel(model, think)
   const [stackOpen, setStackOpen] = useState(false)
+  const [supabaseSignIn, setSupabaseSignIn] = useState(false)
   const stackRef = useRef(null)
+
+  // Every stack here is Supabase-backed. Picking one - the "first input" that decides it - is
+  // exactly where `vercel login`'s browser sign-in fires for Vercel, so this fires the same way for
+  // Supabase: check right now, and if no account is connected yet, pop the sign-in (SupabaseConnect
+  // / supabase_connect.py's OAuth flow - Supabase has no device-flow CLI login to reuse the way
+  // GitHub/Vercel/Netlify/Azure do). The project itself, if this build has one already, is made
+  // later, when the build actually starts (builder_agent.build.run, via ensure_project) - not here.
+  function chooseStack(id) {
+    onStackChange?.(id)
+    if (!id) return
+    api.supabaseOauthStatus().then(d => {
+      if (!d?.connected) setSupabaseSignIn(true)
+    }).catch(() => { })
+  }
 
   useEffect(() => {
     function handleClickOutside(e) {
@@ -79,7 +97,7 @@ export default function BuildSetup({
                     key={item.id || 'auto'}
                     type="button"
                     onClick={() => {
-                      onStackChange?.(item.id)
+                      chooseStack(item.id)
                       setStackOpen(false)
                     }}
                     className={cn(
@@ -119,7 +137,7 @@ export default function BuildSetup({
       <select
         id="build-stack"
         value={stack}
-        onChange={event => onStackChange?.(event.target.value)}
+        onChange={event => chooseStack(event.target.value)}
         className="sr-only"
         tabIndex={-1}
         aria-hidden="true"
@@ -127,6 +145,19 @@ export default function BuildSetup({
         <option value="">Auto stack</option>
         {STACKS.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
       </select>
+
+      {supabaseSignIn && (
+        <Modal onClose={() => setSupabaseSignIn(false)}>
+          <h2 className="text-[15px] font-semibold text-ink">Connect Supabase</h2>
+          <p className="mt-1 text-[11.5px] text-muted">
+            This stack builds on Supabase. Sign in once here — the project this build gets is
+            created automatically the moment it starts.
+          </p>
+          <div className="mt-4">
+            <SupabaseConnect onDone={() => setSupabaseSignIn(false)} />
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }

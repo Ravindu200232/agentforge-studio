@@ -37,7 +37,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from server_modules import bus, changes, cli_signin, config, deploy_vars, prompts, reference_staging, store
+from server_modules import bus, changes, cli_signin, config, deploy_vars, prompts, reference_staging, store, supabase_connect
 from server_modules.session import RunCancelled, session_for
 
 DEPLOY_DIR = "deploy"
@@ -99,7 +99,7 @@ def targets() -> list[dict[str, str]]:
 
 # --- the stack -----------------------------------------------------------------
 
-DEFAULT_STACK = "nextjs-mongo"
+DEFAULT_STACK = "nextjs-supabase"
 
 
 def stack_of(project: str) -> str:
@@ -304,21 +304,15 @@ def _tool_lines(target: str) -> str:
     return "\n".join(lines)
 
 
-def _database_fact() -> str:
-    """Whether a database connection string is saved, and whether a host could reach where it points."""
-    saved = str(config.setting("deploy_mongodb_uri") or "")
-    if not saved:
-        return "none saved"
-    host = (urlparse(re.sub(r"^[a-z+]+://", "http://", saved)).hostname or "").lower()
-    local = host in {"localhost", "127.0.0.1", "::1", "host.docker.internal", ""}
-    try:
-        local = local or ipaddress.ip_address(host).is_private
-    except ValueError:
-        pass
-    if local:
-        return f"saved, but it points at this computer ({host or 'no host'}): a hosting provider cannot reach it"
-    return f"saved, pointing at {host}, reachable from the internet if its allow-list lets the host in " \
-           f"(handed to your commands as the environment variable MONGODB_URI; never print it)"
+def _database_fact(project: str) -> str:
+    """Whether this project's own Supabase project is linked, and what it's called."""
+    row = supabase_connect.status(project)
+    if not row.get("connected"):
+        return ("none linked - this stack needs one. Tell the customer to pick a Supabase stack from "
+                "the build setup bar if they have not, which connects one automatically")
+    return (f"linked: {row.get('name') or row.get('ref')} ({row.get('url')}), reachable from the "
+            f"internet already (handed to your commands as SUPABASE_URL, SUPABASE_ANON_KEY and "
+            f"SUPABASE_SERVICE_ROLE_KEY; never print the keys)")
 
 
 def _variables_fact() -> str:
@@ -355,7 +349,7 @@ def machine_facts(project: str, target: str, workspace: Path) -> str:
     shell = "Windows PowerShell" if os.name == "nt" else "a POSIX shell (/bin/sh)"
     stack = stack_of(project)
     return prompts.load("deployment/machine", stack=f"{stack} ({stack_info(stack).get('name', stack)})",
-                        tools=_tool_lines(target), database=_database_fact(), variables=_variables_fact(),
+                        tools=_tool_lines(target), database=_database_fact(project), variables=_variables_fact(),
                         shell=f"{shell} on {platform.system()}", git=_git_fact(workspace),
                         tests=_tests_fact(project)).strip()
 

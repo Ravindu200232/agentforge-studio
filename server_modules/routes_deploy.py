@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlparse
 
 from deploy_agent import deploy as deployer
 
-from . import config, mongo_check, store
+from . import config, store
 
 Handler = Callable[[dict[str, Any]], Any]
 
@@ -98,13 +98,6 @@ def provider_status(body: dict) -> Any:
         except ValueError:
             pass
     return answer
-
-
-@route("POST", r"/mongodb/check")
-@route("GET", r"/mongodb/check")
-def mongodb_check(body: dict) -> Any:
-    """Try the connection string typed in the Settings box (or the saved one) for real."""
-    return mongo_check.check(str(body.get("uri") or ""))
 
 
 # --- one run ----------------------------------------------------------------

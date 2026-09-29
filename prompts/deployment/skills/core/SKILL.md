@@ -51,17 +51,17 @@ account or an access key, never look for a token in files.
 - A credential, token, key or connection string never appears in a file you write, a commit, a log, a
   README, a command you show, or your reply. Refer to variables by name.
 - Values reach a provider from the environment or on standard input, never as a visible command
-  argument. Your commands run with what the customer saved: the production database connection string
-  as `MONGODB_URI`, and every other value the customer gave when a question asked for it, by its own
-  name (the machine facts list the names that exist, never the values). Test that a variable is set
-  without printing it (`if ($env:NAME) { ... }`).
-- A value only the customer has (a database connection string, an administrator's first email and
-  password, a mail key, a third-party token) is asked for with a question that carries `variable` (its
-  exact NAME, for example `ADMIN_PASSWORD`), `secret` and, for a MongoDB connection string, `check`
-  set to `mongodb`. The studio shows a private box on that question, tries the value, stores it outside
-  the conversation and tells you it is saved; you never see it. It is never asked for in words, and a
-  chat message that carries a secret is refused. A secret that was pasted somewhere it should not have
-  been is treated as exposed: tell the customer to change it at its source.
+  argument. Your commands run with the project's own Supabase project already in the environment
+  (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` - the machine facts say which
+  project), and every other value the customer gave when a question asked for it, by its own name.
+  Test that a variable is set without printing it (`if ($env:NAME) { ... }`).
+- A value only the customer has (an administrator's first email and password, a mail key, a
+  third-party token, or a different production Supabase project's values) is asked for with a
+  question that carries `variable` (its exact NAME, for example `ADMIN_PASSWORD`) and `secret`. The
+  studio shows a private box on that question, stores it outside the conversation and tells you it is
+  saved; you never see it. It is never asked for in words, and a chat message that carries a secret is
+  refused. A secret that was pasted somewhere it should not have been is treated as exposed: tell the
+  customer to change it at its source.
 - The `.agentforge` folder is the studio's own record (conversation, logs, plans). It is never
   published to a repository or a host: it is in `.gitignore` and in the host's ignore file. If the
   customer wants the specification in the repository, copy the reviewed documents into `docs/`.

@@ -42,9 +42,9 @@ DEFAULTS: dict[str, Any] = {
     # source of truth and agent_think is kept only for older readers.
     "thinking_level": "",
     "mongodb_uri": "",
-    # What a deployment run is given (see deploy_vars.py): the production database, and every other value
-    # the customer saved for it by name. Kept apart from `mongodb_uri`, which is the studio's own.
-    "deploy_mongodb_uri": "",
+    # Every other value the customer saved for a deployment run, by name (see deploy_vars.py). A
+    # generated app's own Supabase project is a separate, per-project record (supabase_connect.py),
+    # not a studio-wide setting like this.
     "deploy_env": {},
     "deploy_env_secret": {},        # for each name in deploy_env: whether it was asked for as a secret
     "github_token": "",
@@ -57,13 +57,20 @@ DEFAULTS: dict[str, Any] = {
     "azure_account": "",
     "github_login": "",
     "github_client_id": "",
+    # The one Supabase account this studio is connected as (server_modules/supabase_connect.py):
+    "supabase_client_id": "",
+    "supabase_client_secret": "",
+    "supabase_oauth_access_token": "",
+    "supabase_oauth_refresh_token": "",
+    "supabase_oauth_expires_at": 0,
+    "supabase_org": "",
     "aws_start_url": "",
     "aws_sso_region": "",
     "aws_profile": "",
     "aws_region": "",
     "max_steps": 40,
     "language": "English",
-    "stack": "nextjs-mongo",
+    "stack": "nextjs-supabase",
     # The SRS already passes a deterministic schema + approved-plan coverage
     # gate before diagrams. Run one standards audit by default without asking a
     # model to rewrite a very large document in full; callers may opt into

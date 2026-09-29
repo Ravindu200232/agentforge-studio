@@ -11,16 +11,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent / "assets" / "templates"
 STACK_GUIDES = {
-    "nextjs-mongo": "next.md",
-    "mern-microservices": "mern+miro.md",
-    "remix-mongo": "remix.md",
+    "nextjs-supabase": "nextjs-supabase.md",
+    "nextjs-microservices-supabase": "nextjs-microservices-supabase.md",
+    "vite-supabase": "vite-supabase.md",
+    "vite-microservices-supabase": "vite-microservices-supabase.md",
+    "remix-supabase": "remix-supabase.md",
 }
 TEST_GUIDES = ("vitest.md", "playwright.md", "visual.md", "axe.md", "lighthouse.md", "zap.md")
 # Not about one app: mistakes every build of every stack has made, and the scaffold's
 # answer to each. Read before the stack guide so they are not learned again by failing.
 COMMON_GUIDES = ("pitfalls.md", "unit-tests.md")
-# Stack-neutral placeholder in the templates. Every generated app gets a database of
-# its own; a shared default name let one app's tests and seed touch another's data.
+# Stack-neutral placeholder in the templates. Every generated app gets a project slug of
+# its own (the local Supabase `project_id`, and the schema a test run uses) - a shared
+# default let one app's tests and local stack touch another's data.
 DB_PLACEHOLDER = "__APP_DB__"
 ENGINE_ENTRIES = frozenset({".agentforge", ".agents", ".git", ".gitignore", ".env",
                             ".env.local", ".env.example", ".vscode", ".idea", "node_modules",
@@ -39,8 +42,13 @@ def _files(root: Path) -> list[tuple[Path, str]]:
     return result
 
 
-def database_name(project: str) -> str:
-    """A MongoDB database name unique to this project: lowercase, `_`, at most 38 characters."""
+def project_slug(project: str) -> str:
+    """A project id unique to this workspace: lowercase, `_`, at most 38 characters.
+
+    Used as the local Supabase CLI's `project_id` (`supabase/config.toml`) and as the
+    test schema name, so a build's own `supabase start`/tests never collide with another
+    project's local stack.
+    """
     name = re.sub(r"[^a-z0-9_]+", "_", project.lower()).strip("_")[:38].strip("_")
     return name or "app"
 
@@ -57,7 +65,7 @@ def install(workspace: Path, stack: str) -> dict:
                 "reason": "Existing application preserved", "existing": existing, "files": []}
 
     package_name = re.sub(r"[^a-z0-9._-]+", "-", workspace.name.lower()).strip("-._") or "app"
-    db_name = database_name(workspace.name)
+    slug = project_slug(workspace.name)
     files, preserved = [], []
     for source, target in _files(ROOT / stack) + _files(ROOT / "_testing"):
         dest = (workspace / target).resolve()
@@ -70,7 +78,7 @@ def install(workspace: Path, stack: str) -> dict:
         body = source.read_text(encoding="utf-8")
         if target == "package.json":
             body = re.sub(r'"name": "[^"]*"', f'"name": "{package_name}"', body, count=1)
-        body = body.replace(DB_PLACEHOLDER, db_name)
+        body = body.replace(DB_PLACEHOLDER, slug)
         dest.write_text(body, encoding="utf-8")
         files.append(target)
 

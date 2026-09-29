@@ -45,7 +45,7 @@ def create(idea: str, language: str = "", stack: str = "") -> dict:
         "name": "",
         "idea": idea,
         "language": language or saved.get("language") or "English",
-        "stack": stack or saved.get("stack") or "nextjs-mongo",
+        "stack": stack or saved.get("stack") or "nextjs-supabase",
         "stage": "interview",
         "status": "planning",
         "created_at": time.time(),

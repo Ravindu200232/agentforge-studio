@@ -121,7 +121,7 @@ class DeployFlowCase(unittest.TestCase):
             self.addCleanup(patch.stop)
         self.addCleanup(bus.subscribe(self.events.append))
         self.addCleanup(bus.forget, PROJECT)
-        self.session.reads = [f"{SKILLS}/{slug}/SKILL.md" for slug in ("core", "vercel", "stack-nextjs")]
+        self.session.reads = [f"{SKILLS}/{slug}/SKILL.md" for slug in ("core", "vercel", "stack-nextjs-supabase")]
 
     def settle(self, change_id):
         thread = changes._threads.get(change_id)
@@ -145,10 +145,14 @@ class DeployFlowCase(unittest.TestCase):
         return {"status": "complete", "text": "Live at https://app.example.com", "rounds": 2}
 
 
+SUPABASE_STACKS = ("nextjs-supabase", "nextjs-microservices-supabase", "vite-supabase",
+                   "vite-microservices-supabase", "remix-supabase")
+
+
 class StackTests(DeployFlowCase):
     def test_every_target_has_its_pages_and_every_stack_a_page_of_its_own(self):
         for target in deploy.SKILLS_FOR:
-            for stack in ("nextjs-mongo", "remix-mongo", "mern-microservices"):
+            for stack in SUPABASE_STACKS:
                 with mock.patch.object(deploy, "stack_of", lambda project, s=stack: s):
                     paths = deploy.stage_skills(PROJECT, target)
                     self.assertEqual(paths[0], f"{SKILLS}/core/SKILL.md")
@@ -156,26 +160,23 @@ class StackTests(DeployFlowCase):
                     for path in paths:
                         self.assertGreater(len((self.workspace / path).read_text(encoding="utf-8")), 400, path)
 
-    def test_microservices_go_to_aws_and_azure_only_and_the_others_to_everywhere(self):
-        self.assertEqual(set(deploy.allowed_targets("mern-microservices")), {"aws_ec2", "aws_ecs", "azure"})
-        for stack in ("nextjs-mongo", "remix-mongo"):
+    def test_every_supabase_stack_can_go_to_every_target(self):
+        # Unlike the old Mongo-based MERN microservices stack (restricted to AWS/Azure because its
+        # services needed container hosting), the Supabase microservices variants run their services
+        # as Edge Functions on Supabase's own infrastructure, independent of where the frontend is
+        # hosted - so every stack here can go anywhere.
+        for stack in SUPABASE_STACKS:
             self.assertEqual(set(deploy.allowed_targets(stack)), set(deploy.SKILLS_FOR))
 
-    def test_a_target_the_stack_cannot_use_is_refused_before_anything_is_planned(self):
-        with mock.patch.object(deploy, "stack_of", lambda project: "mern-microservices"):
-            with self.assertRaisesRegex(ValueError, "cannot be deployed to Vercel"):
-                deploy.start(PROJECT, "vercel")
-        self.assertEqual(self.session.prompts, [])
-
-    def test_the_stack_page_says_to_ask_about_instances(self):
-        page = " ".join(prompts.skill("deployment", "stack-mern-microservices").split())
-        for words in ("One instance for everything", "one instance per service", "One ECS service per microservice",
-                      "one web app per service"):
+    def test_the_microservices_stack_page_says_to_ask_about_edge_functions(self):
+        page = " ".join(prompts.skill("deployment", "stack-nextjs-microservices-supabase").split())
+        for words in ("verified Supabase Auth JWT", "supabase functions deploy", "no internal networking"):
             self.assertIn(words.lower(), page.lower())
 
     def test_every_skill_page_carries_the_questions_the_customer_may_decide(self):
         for slug in ("core", "vercel", "netlify", "aws", "aws-ec2", "aws-ecs", "azure", "github",
-                     "stack-nextjs", "stack-remix", "stack-mern-microservices"):
+                     "stack-nextjs-supabase", "stack-remix-supabase", "stack-vite-supabase",
+                     "stack-nextjs-microservices-supabase", "stack-vite-microservices-supabase"):
             self.assertRegex(prompts.skill("deployment", slug), r"(?i)questions? to ask|how to ask", slug)
 
 
@@ -212,9 +213,9 @@ class PlanFirstTests(DeployFlowCase):
         self.start()
         prompt = " ".join(self.session.prompts[0].split())
         self.assertIn("The customer chose **Vercel**", prompt)
-        for path in (f"{SKILLS}/core/SKILL.md", f"{SKILLS}/vercel/SKILL.md", f"{SKILLS}/stack-nextjs/SKILL.md"):
+        for path in (f"{SKILLS}/core/SKILL.md", f"{SKILLS}/vercel/SKILL.md", f"{SKILLS}/stack-nextjs-supabase/SKILL.md"):
             self.assertIn(path, prompt)
-        self.assertIn("Next.js + MongoDB", prompt)
+        self.assertIn("Next.js + Supabase", prompt)
         self.assertIn("FACTS", prompt)
         self.assertIn("Collect all that apply from the pages you read", prompt)
         self.assertIn("prompts to think with, not a script", prompt)          # the lists are not a fixed set of questions
@@ -226,13 +227,13 @@ class PlanFirstTests(DeployFlowCase):
         self.session.reads = []
         with self.assertRaisesRegex(ValueError, "read the skill pages"):
             check(plan(), True)
-        for slug in ("core", "vercel", "stack-nextjs"):
+        for slug in ("core", "vercel", "stack-nextjs-supabase"):
             bus.file_read(PROJECT, f"{SKILLS}/{slug}/SKILL.md", "page")
         checked = check(plan(), True)
         self.assertEqual(len(checked["skills"]), 3)              # what it really read, not what it claims
 
     def test_a_plan_needs_live_checks_and_a_way_back_and_step_ids_are_unique(self):
-        for slug in ("core", "vercel", "stack-nextjs"):
+        for slug in ("core", "vercel", "stack-nextjs-supabase"):
             bus.file_read(PROJECT, f"{SKILLS}/{slug}/SKILL.md", "page")
         check = deploy.validator(PROJECT, {"target": "vercel", "created": 0})
         with self.assertRaisesRegex(ValueError, "verification"):

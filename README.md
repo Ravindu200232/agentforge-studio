@@ -68,9 +68,10 @@ those same files through `write_file` and `replace_text`.
 
 ## Scaffold-first build and evidence
 
-After prototype approval, the builder installs the selected Next.js + MongoDB,
-MERN microservices, or Remix + MongoDB template from
-`builder-agent/builder_agent/assets/templates/` into an empty project workspace.
+After prototype approval, the builder installs the selected stack's template —
+Next.js, Vite or Remix on Supabase, plain or with a microservices backend of
+Supabase Edge Functions — from `builder-agent/builder_agent/assets/templates/`
+into an empty project workspace.
 It never overwrites an existing application. Stack and testing guides in
 `_guides/` are passed into the build plan along with the SRS handoff, approved
 design customization and prototype. The build records its installed files in

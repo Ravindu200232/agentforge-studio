@@ -942,11 +942,11 @@ class PlanningStreamTests(unittest.TestCase):
                  patch.object(bus, "log") as logged:
                 result = tools.execute("list_files", {"path": "handoff.md"})
 
-        self.assertIn("Not a directory", result)
+        self.assertIn("is a file, not a directory", result)
         warn_calls = [call for call in logged.call_args_list if call.args[1] == "WARN"]
         self.assertEqual(len(warn_calls), 1)
         self.assertIn("list_files(handoff.md)", warn_calls[0].args[2])
-        self.assertIn("Not a directory", warn_calls[0].args[2])
+        self.assertIn("is a file, not a directory", warn_calls[0].args[2])
 
     def test_running_a_command_posts_one_clean_output_card_not_a_line_per_line_echo(self):
         # Found live: every line of a real npm build's output streamed into the

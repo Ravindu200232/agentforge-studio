@@ -55,7 +55,6 @@ class PreviewRuntimeTests(unittest.TestCase):
             mock.patch.object(preview_runtime.subprocess, "Popen", FakeProcess),
             mock.patch.object(preview_runtime, "_free_port", lambda port, timeout=6: None),
             mock.patch.object(preview_runtime, "_terminate_tree", terminate),
-            mock.patch.object(preview_runtime, "_signal_managed_stop", return_value=False),
             mock.patch.object(preview_runtime, "_wait_ready", lambda *a, **k: None),
             mock.patch.object(preview_runtime, "_listening_pids", lambda port: []),
             mock.patch.object(preview_runtime, "_port_open", lambda port: port in self.open_ports),
@@ -86,19 +85,17 @@ class PreviewRuntimeTests(unittest.TestCase):
         self.assertEqual(preview_runtime._processes["alpha"]["process"].pid, pid)   # not restarted
         self.assertEqual(self.terminated, [])
 
-    def test_mern_preview_uses_vite_5173_and_gateway_4000(self):
+    def test_vite_stack_preview_uses_port_5173(self):
+        # vite-supabase / vite-microservices-supabase: a plain Vite dev server, one process, no
+        # separate gateway port to split PORT/VITE_PORT across the way the old MERN stack needed.
         manifest = self.root / "alpha" / "package.json"
-        manifest.write_text(json.dumps({"scripts": {"dev": "node scripts/dev-all.mjs",
-                                                  "start:all": "node scripts/start-all.mjs"}}))
+        manifest.write_text(json.dumps({"scripts": {"dev": "vite"}, "devDependencies": {"vite": "6.0.0"}}))
         FakeProcess.environments.clear()
         state = preview_runtime.open_preview("alpha")
         self.assertEqual(state["port"], 5173)
         self.assertEqual(state["url"], "http://127.0.0.1:5173/")
-        self.assertEqual(FakeProcess.environments[-1]["PORT"], "4000")
-        self.assertEqual(FakeProcess.environments[-1]["VITE_PORT"], "5173")
-        self.assertEqual(FakeProcess.environments[-1]["AGENTFORGE_PREVIEW_RUNTIME_ID"],
-                         state["runtimeId"])
-        self.assertEqual(preview_runtime._processes["alpha"]["controlMode"], "file")
+        self.assertEqual(FakeProcess.environments[-1]["PORT"], "5173")
+        self.assertNotIn("VITE_PORT", FakeProcess.environments[-1])
 
     def test_remix_preview_does_not_take_nextjs_port(self):
         manifest = self.root / "alpha" / "package.json"
@@ -109,16 +106,17 @@ class PreviewRuntimeTests(unittest.TestCase):
         self.assertEqual(FakeProcess.environments[-1]["PORT"], "5173")
         self.assertNotIn("VITE_PORT", FakeProcess.environments[-1])
 
-    def test_old_mern_preview_on_3001_is_replaced(self):
+    def test_old_vite_preview_on_5173_is_replaced_by_a_nextjs_one_on_3001(self):
+        manifest = self.root / "alpha" / "package.json"
+        manifest.write_text(json.dumps({"scripts": {"dev": "vite"}, "devDependencies": {"vite": "6.0.0"}}))
         preview_runtime.open_preview("alpha")
         preview_runtime._processes["alpha"]["status"] = "running"
         old = preview_runtime._processes["alpha"]["process"].pid
-        self.open_ports.add(3001)
-        manifest = self.root / "alpha" / "package.json"
-        manifest.write_text(json.dumps({"scripts": {"dev": "node scripts/dev-all.mjs"}}))
+        self.open_ports.add(5173)
+        manifest.write_text(json.dumps({"scripts": {"dev": "next dev"}, "dependencies": {"next": "15.0.0"}}))
         state = preview_runtime.open_preview("alpha")
         self.assertIn(old, self.terminated)
-        self.assertEqual(state["port"], 5173)
+        self.assertEqual(state["port"], 3001)
 
     def test_unavailable_port_returns_failed_state_instead_of_http_error(self):
         with mock.patch.object(preview_runtime, "_free_port", side_effect=RuntimeError("Port 5173 is still in use")), \

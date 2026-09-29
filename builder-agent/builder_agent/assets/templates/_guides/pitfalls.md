@@ -6,7 +6,7 @@ These are not about any one product. They are the mistakes that cost every build
 
 - Build the complete application first. Testing is handled by the later focused phases. Do not re-run a layer after its current result is recorded unless affected code changed or it failed.
 - Use the scaffold's runners, do not write your own: `npm run qa:e2e`, `qa:visual`, `qa:a11y`, `qa:perf`, `qa:security`. Each builds nothing and starts nothing by hand: it starts the built app on a free port, runs the layer, stops only its own server. Run `npm run build` first, and again only after **app** code changed.
-- Never start dev/production servers yourself, never `taskkill /IM node` / `Stop-Process -Name node`. The Studio owns the preview on port 3001; if it is stale it is restarted for you after the build.
+- Never start dev/production servers yourself, never `taskkill /IM node` / `Stop-Process -Name node`. The Studio owns the preview (port 3001 for the Next.js stacks, 5173 for Remix and Vite); if it is stale it is restarted for you after the build.
 - Unit-test important business rules and complete critical paths in the focused unit phase. Do not use per-file inventory or 100% coverage as a completion gate.
 - Delete throwaway diagnostic scripts before finishing. Keep the ones you cite in the report.
 - Timestamps in `report.json` come from a command (`node -p "new Date().toISOString()"`), never from memory: a typed time was hours off (local time labelled UTC).
@@ -27,18 +27,18 @@ These are not about any one product. They are the mistakes that cost every build
 | `npm.ps1` / `npx.ps1` is blocked | PowerShell execution policy blocks script shims | call `npm.cmd` / `npx.cmd`, or call npm's CLI JS through `node`; do not retry the `.ps1` shim |
 | `npm install` has no CPU, network, files or output for 60 seconds, or registry fetches return `EACCES` | package registry access is unavailable | stop only that install child process. Compare this `package.json` dependency versions with sibling workspace projects; when an exact compatible installed `node_modules` exists, create a local directory junction to it and continue. Never repeat a ten-minute network wait. Recheck `Test-Path node_modules/next/package.json` before declaring the toolchain blocked |
 
-## MongoDB and test data
+## Supabase and test data
 
-- **Tests never use the application's database.** `test/helpers/db.js` (`packages/testing` for MERN) connects to `<app>_test` (override with `TEST_MONGODB_URI`) and refuses any database whose name does not end in `_test`, because `clearCollections()` deletes everything in it. Do not point it at `MONGODB_URI`. Symptoms of getting this wrong: `E11000 duplicate key` on another project's index, tests passing only once.
-- Every generated app has its own database, named after the project (see `.env.example` and `lib/db.js`); the old shared default name let apps clobber each other. **Never** `dropCollection`/`deleteMany` in a database you did not create for this project.
-- Test files share that one database, so they run one after another (`fileParallelism: false` is set). Do not turn it back on.
-- Set test environment variables (secrets, URIs) in a setup module imported before the code under test, and never "restore" them by deleting them in `afterAll` — that breaks the next file.
-- Data your E2E journeys create outlives the run: give it a unique prefix and delete it in `afterAll`, or the next run (and the seeded counts) drift.
-- `Model.create([a, b, c])` returns an array in that order: destructure exactly that many.
+- **Tests never use the project's real Supabase project.** `test/helpers/db.js` connects straight to the *local* Postgres (`supabase start`, port 54322) and refuses anything that is not a loopback address, because `clearTables()` truncates every table it finds. It deliberately does not read `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` for this reason. Symptoms of getting this wrong: a unique-constraint violation on data another suite just wrote, tests passing only once.
+- Every generated app has its own real Supabase project (created once when the stack was chosen; see `.env.example`, `lib/supabase.js`) — the old shared local default let apps clobber each other. **Never** truncate or delete against the real project's URL from a test.
+- Suites using `test/helpers/db.js` share that one local Postgres, so they run one after another (`fileParallelism: false` is set). Do not turn it back on.
+- Set test environment variables (secrets, URLs) in a setup module imported before the code under test (`vitest.env.js`), and never "restore" them by deleting them in `afterAll` — that breaks the next file.
+- Data your E2E journeys create outlives the run: give it a unique prefix and delete it in `afterAll`, or the next run (and the seeded counts) drift. `_testing/scripts/with-server.mjs` truncates the real project's tables before and after each QA run for exactly this reason — do not also hand-roll cleanup that fights it.
+- Every table an app reads or writes needs a Row Level Security policy before it holds real data; a missing one is a security bug, not a missing feature (most true on the Vite-only stacks, which have no server to fall back on).
 
 ## Vitest
 
-- jsdom is only for components. Anything that touches Mongo, `jose`, `bcrypt`, route handlers, loaders or actions runs in Node: name it `*.node.test.js` (Next.js) or start the file with `// @vitest-environment node`. Under jsdom `jose` fails with "payload must be an instance of Uint8Array".
+- jsdom is only for components. Anything that touches Postgres directly (`test/helpers/db.js`), route handlers, loaders or actions runs in Node: name it `*.node.test.js` (Next.js) or start the file with `// @vitest-environment node`.
 - Ambiguous queries fail (the most repeated time-sink): `getByText('Reports')` matches the nav link *and* the page heading, one word matches a filter chip and a stat label, the same button exists in a toolbar and in an empty state. When you write a component, give an element that repeats or shares a word a `data-testid` (or a distinct accessible name) **as you build it**; in the test use `getByRole(role, { name })`, `within(region)` or the test id, never bare `getByText` on a word the page uses twice.
 - `npx vitest run --reporter=json --outputFile=.agentforge/qa/vitest.json` for the record; while iterating, run one file.
 
@@ -60,6 +60,7 @@ These are not about any one product. They are the mistakes that cost every build
 
 ## By stack
 
-- **Next.js + MongoDB**: `middleware.js` runs on the **Edge runtime**. It must not import `mongoose`, `lib/db.js`, `bcrypt` or anything that reaches them (`next build` fails "Failed to compile"); verify the session with `jose` only and leave database checks to pages and handlers. Keep server-only credentials out of client components.
-- **Remix + MongoDB**: Mongo access lives in `loader`/`action` (server-only); importing `lib/db.js` from a component puts Mongoose in the browser bundle. `remix-serve` reads `PORT`.
-- **MERN microservices**: run QA through the gateway (`qa:*` starts `scripts/start-all.mjs`); a service is tested with `supertest` against `createApp()`, never by binding a port; service tests already run one file at a time, and use the shared `_test` database helper.
+- **Next.js + Supabase**: `middleware.js` runs on the **Edge runtime** and refreshes the Auth session cookie on every request — do not remove it or gate it behind a route matcher that skips real pages. `lib/supabase.js`'s `supabaseAdmin()` (service-role) is server code only; keep it out of anything a Client Component imports.
+- **Remix + Supabase**: build `lib/supabase.js`'s `supabaseServer(request, headers)` fresh per `loader`/`action` and copy its `headers` onto the response, or a refreshed session is silently dropped. `remix-serve` reads `PORT`.
+- **Vite + Supabase (plain or with microservices)**: there is no server, so `SUPABASE_SERVICE_ROLE_KEY` must never be imported anywhere in `src/` — every `VITE_*` variable ends up in the public bundle. RLS is this app's only security boundary; anything needing the service-role key belongs in a Supabase Edge Function instead (the microservices variant), never in client code.
+- **The two microservices stacks**: a "service" is a Supabase Edge Function under `supabase/functions/<name>/`, not an Express process — there is no gateway and no internal port scheme, and `supabase functions serve` (part of `supabase start`) runs them locally. Test a function's own logic directly; an E2E journey calls it the same way the app does, through `supabase.functions.invoke(...)`.

@@ -16,6 +16,10 @@ for folder in ("builder-agent", "qa-agent"):
 from builder_agent import scaffold  # noqa: E402
 from qa_agent.evidence import collect  # noqa: E402
 
+NEXTJS_STACKS = {"nextjs-supabase", "nextjs-microservices-supabase"}
+MICROSERVICES_STACKS = {"nextjs-microservices-supabase", "vite-microservices-supabase"}
+SPA_STACKS = {"vite-supabase", "vite-microservices-supabase"}
+
 
 class ScaffoldTests(unittest.TestCase):
     def test_uploaded_media_is_preserved_when_the_app_is_scaffolded(self):
@@ -40,24 +44,15 @@ class ScaffoldTests(unittest.TestCase):
                 self.assertTrue((workspace / "playwright.config.js").is_file())
                 self.assertTrue((workspace / "e2e/a11y.spec.js").is_file())
                 self.assertTrue((workspace / ".agentforge/build/scaffold.json").is_file())
-                if stack in {"nextjs-mongo", "mern-microservices"}:
+                if stack in NEXTJS_STACKS:
                     self.assertTrue((workspace / "scripts/port-guard.mjs").is_file())
                 manifest = json.loads((workspace / "package.json").read_text(encoding="utf-8"))
                 for script in ("build", "test", "test:e2e", "test:visual", "test:a11y", "test:perf"):
                     self.assertIn(script, manifest["scripts"])
                 self.assertIn("@axe-core/playwright", manifest["devDependencies"])
                 self.assertIn("@lhci/cli", manifest["devDependencies"])
-                if stack == "nextjs-mongo":
+                if stack in NEXTJS_STACKS:
                     self.assertIn("port-guard.mjs 3001", manifest["scripts"]["dev"])
-                if stack == "mern-microservices":
-                    self.assertIn("port-guard.mjs", (workspace / "scripts/dev-all.mjs").read_text())
-                    self.assertIn("VITE_PORT=5173", (workspace / ".env.example").read_text())
-                    self.assertIn("PORT=4000", (workspace / ".env.example").read_text())
-                    self.assertNotIn("3001", (workspace / "scripts/dev-all.mjs").read_text())
-                    self.assertIn("freePort(frontendPort)",
-                                  (workspace / "scripts/dev-all.mjs").read_text())
-                    self.assertTrue((workspace / "client/vite-dev.mjs").is_file())
-                    self.assertTrue((workspace / "client/static-preview.mjs").is_file())
                 self.assertNotIn(".slice(0, 8)", (workspace / "lighthouserc.cjs").read_text())
                 # One command per layer that needs a running app, and the runners behind them.
                 for script in ("qa:e2e", "qa:visual", "qa:a11y", "qa:perf", "qa:security"):
@@ -70,24 +65,33 @@ class ScaffoldTests(unittest.TestCase):
                 zap_scan = (workspace / "scripts/zap-scan.mjs").read_text(encoding="utf-8")
                 self.assertIn("autoInstallFailedAt", zap_scan)
                 self.assertIn("await installZap()", zap_scan)
-                # Every generated app has a database of its own, and tests can only touch `_test`.
-                db = scaffold.database_name(workspace.name)
+                # Every generated app has a Supabase project of its own; nothing here still names
+                # the shared placeholder once install() has substituted the real project slug.
+                slug = scaffold.project_slug(workspace.name)
                 texts = {t: (workspace / t).read_text(encoding="utf-8", errors="ignore") for t in result["files"]}
                 self.assertEqual([t for t, body in texts.items() if scaffold.DB_PLACEHOLDER in body], [])
-                self.assertIn(f"27017/{db}", texts[".env.example"])
-                helper = texts["packages/testing/index.js" if stack == "mern-microservices" else "test/helpers/db.js"]
-                self.assertIn(f"{db}_test", helper)
-                self.assertIn("must end in", helper)
-                self.assertNotIn("process.env.MONGODB_URI", helper)
+                self.assertIn(f'project_id = "{slug}"', texts["supabase/config.toml"])
+                helper = texts["test/helpers/db.js"]
+                self.assertIn("must be local", helper)
+                self.assertNotIn("SUPABASE_SERVICE_ROLE_KEY", helper)  # talks to local Postgres directly, no key at all
                 self.assertTrue(scaffold.guide_context(stack).lstrip().startswith("### pitfalls.md"))
-                if stack == "mern-microservices":
-                    self.assertTrue((workspace / "scaffold/service/package.json.tpl").is_file())
-                    self.assertFalse((workspace / "scaffold/service/package.json").exists())
+                if stack in MICROSERVICES_STACKS:
+                    self.assertIn("supabase/functions/example/index.ts", result["files"])
+                    self.assertIn("[functions.example]", texts["supabase/config.toml"])
+                else:
+                    self.assertFalse((workspace / "supabase/functions").exists())
+                if stack in SPA_STACKS:
+                    # This app has no server and no secret store: the service-role key must never
+                    # be *read* anywhere a browser bundle could include it (mentioning it in a
+                    # comment, to explain why not, is fine).
+                    for path in result["files"]:
+                        if path.startswith("src/"):
+                            self.assertNotIn("env.SUPABASE_SERVICE_ROLE_KEY", texts[path], path)
                 self.assertIn(scaffold.STACK_GUIDES[stack], scaffold.guide_context(stack))
 
     def test_port_guard_runs_when_invoked_directly_on_windows_paths(self):
         # `file://${process.argv[1]}` never equals import.meta.url on Windows, so the guard did nothing.
-        for stack in ("nextjs-mongo", "mern-microservices"):
+        for stack in NEXTJS_STACKS:
             guard = (scaffold.ROOT / stack / "scripts" / "port-guard.mjs").read_text(encoding="utf-8")
             self.assertIn("pathToFileURL(process.argv[1]).href", guard)
             self.assertNotIn("`file://${process.argv[1]}`", guard.split("pathToFileURL(process.argv[1])")[1])
@@ -114,8 +118,8 @@ class ScaffoldTests(unittest.TestCase):
                 config = "vitest.config.js"
                 self.assertIn(".agentforge/qa/coverage", (workspace / config).read_text(encoding="utf-8"))
         # Test helpers that keep every page/route test to its assertions.
-        self.assertIn("renderPage", (scaffold.ROOT / "nextjs-mongo/test/helpers/next.js").read_text(encoding="utf-8"))
-        self.assertIn("renderRoute", (scaffold.ROOT / "remix-mongo/test/helpers/remix.js").read_text(encoding="utf-8"))
+        self.assertIn("renderPage", (scaffold.ROOT / "nextjs-supabase/test/helpers/next.js").read_text(encoding="utf-8"))
+        self.assertIn("renderRoute", (scaffold.ROOT / "remix-supabase/test/helpers/remix.js").read_text(encoding="utf-8"))
 
     def test_builder_is_told_to_unit_test_every_page_route_and_component(self):
         self.assertIn("unit-tests.md", scaffold.COMMON_GUIDES)
@@ -186,6 +190,9 @@ class ScaffoldTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("node"), "node is needed to run the inventory script")
     def test_inventory_matches_express_routes_by_method_and_path(self):
+        # Not one of our own scaffolds (the microservices stacks are Supabase Edge Functions, not
+        # Express) - this is the inventory script's general-purpose Express support, exercised
+        # against a synthetic fixture so it keeps working for a hand-written Express service.
         script = scaffold.ROOT / "_testing" / "scripts" / "test-inventory.mjs"
         files = {
             "package.json": '{"name":"m"}',
@@ -234,7 +241,7 @@ class ScaffoldTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             workspace = Path(temp)
             (workspace / "package.json").write_text('{"name":"mine"}', encoding="utf-8")
-            result = scaffold.install(workspace, "nextjs-mongo")
+            result = scaffold.install(workspace, "nextjs-supabase")
             self.assertFalse(result["scaffolded"])
             self.assertEqual((workspace / "package.json").read_text(), '{"name":"mine"}')
             self.assertFalse((workspace / "playwright.config.js").exists())
@@ -270,6 +277,18 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn("qa:visual", prompt)
         self.assertIn("visual.md", prompt)
         self.assertIn("expectMatchesBaseline", prompt)
+
+    def test_supabase_stacks_get_a_local_only_test_database_and_the_right_clients(self):
+        for stack in ("nextjs-supabase", "remix-supabase"):
+            with self.subTest(stack=stack), tempfile.TemporaryDirectory() as temp:
+                workspace = Path(temp)
+                scaffold.install(workspace, stack)
+                # A test never sees the real project's URL/keys, even though every other command does.
+                env = (workspace / "vitest.env.js").read_text(encoding="utf-8")
+                self.assertIn("127.0.0.1:54321", env)
+                client = (workspace / "lib/supabase.js").read_text(encoding="utf-8")
+                self.assertIn("createServerClient", client)
+                self.assertIn("createClient", client)  # the admin (service-role) client
 
 
 class EvidenceTests(unittest.TestCase):
@@ -342,17 +361,6 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(result["unitInventory"]["untested_required"], 1)
             self.assertEqual(result["codeCoverage"]["lines"], 50.0)
             self.assertEqual(result["codeCoverage"]["files"][0]["file"], "app/page.jsx")
-
-    def test_next_and_remix_tests_get_their_own_database_and_connection_reuse(self):
-        for stack in ("nextjs-mongo", "remix-mongo"):
-            with tempfile.TemporaryDirectory() as temp:
-                workspace = Path(temp)
-                scaffold.install(workspace, stack)
-                env = (workspace / "vitest.env.js").read_text(encoding="utf-8")
-                self.assertIn(f"{scaffold.database_name(workspace.name)}_test", env)
-                self.assertIn("process.env.MONGODB_URI = process.env.TEST_MONGODB_URI", env)
-                self.assertIn("vitest.env.js", (workspace / "vitest.config.js").read_text(encoding="utf-8"))
-                self.assertIn("readyState === 1", (workspace / "lib/db.js").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

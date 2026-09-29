@@ -288,6 +288,16 @@ export const api = {
   cliSigninUseExisting: (provider, region = '') => post('/cli-signin/use-existing', { provider, region }),
   cliSigninCancel: (flowId) => post('/cli-signin/cancel', { flow_id: flowId }),
 
+  // Whether this project already has its own Supabase project (created at build time - see
+  // supabase_connect.ensure_project). Signing in to the Supabase account itself is the
+  // supabaseOauth* group below, studio-wide, not per-project.
+  supabaseConnectStatus: (project) => post('/supabase/connect/status', { project }),
+
+  supabaseOauthStatus: () => post('/supabase/oauth/status', {}),
+  supabaseOauthStart: () => post('/supabase/oauth/start', {}),
+  supabaseOauthPoll: (flowId) => post('/supabase/oauth/poll', { flow_id: flowId }),
+  supabaseOauthCancel: (flowId) => post('/supabase/oauth/cancel', { flow_id: flowId }),
+
   // The providers this person has an account with. `plugins()` answers with the
   // catalogue and, for each one, which settings are saved and the last four
   // characters of each — never a value, because a browser that can read a key

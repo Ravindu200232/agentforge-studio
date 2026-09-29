@@ -1,0 +1,7 @@
+# Vite + microservices + Supabase scaffold
+
+Stack ID: `vite-microservices-supabase`. Everything in `vite-supabase.md` describes the frontend half unchanged — same `src/`, same `src/lib/supabase.js`, same port `5173`, same rule that this app has no secret store and RLS is the boundary for anything read or written directly. What this stack adds is `supabase/functions/`: one directory per backend service (`supabase/functions/<service-name>/index.ts`), each its own independently deployable Deno function, declared in `supabase/config.toml`.
+
+A function exists specifically for what the plain SPA cannot do safely on its own: anything needing the service-role key, a third-party secret, or a multi-step operation that must be atomic. This is the one place in this stack `SUPABASE_SERVICE_ROLE_KEY` may appear at all — as a function's own secret, set with `supabase secrets set`, never in a `VITE_*` variable. Call a function from the SPA with `supabase.functions.invoke('<name>', ...)`; each function sets its own CORS headers for the production domain (Supabase adds none automatically) and its own `verify_jwt` setting in `config.toml` — get this right per function, the same way a missing RLS policy would be a security bug on the plain-table side of this app.
+
+Read `README.template.md`, `supabase/config.toml` and each function's `index.ts` before adding one. Keep functions small and named for the bounded context they own, matching the specification's own service boundaries.

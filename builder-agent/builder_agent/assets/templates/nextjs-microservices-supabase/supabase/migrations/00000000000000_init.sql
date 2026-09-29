@@ -1,0 +1,4 @@
+-- Add the application's own tables here as `supabase migration new <name>` files, one migration
+-- per change. Every table needs a Row Level Security policy before it holds real data - `alter
+-- table <name> enable row level security;` plus at least one `create policy`. Apply with
+-- `supabase db push` against the linked project.

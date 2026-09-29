@@ -223,23 +223,35 @@ class WorkspaceTools:
 
     def tool_list_files(self, path: str = ".") -> str:
         directory = self._path(path)
+        if not directory.exists():
+            parent = directory.parent
+            nearby = (", ".join(sorted(p.name for p in parent.iterdir()))[:300]
+                      if parent.is_dir() else "")
+            raise ValueError(f"{path!r} does not exist" +
+                             (f" - {parent.relative_to(self.root) or '.'} has: {nearby}" if nearby else ""))
         if not directory.is_dir():
-            raise ValueError("Not a directory")
+            raise ValueError(f"{path!r} is a file, not a directory - use read_file instead")
         entries = sorted(directory.iterdir(), key=lambda p: p.name.lower())[:200]
         return "\n".join(("dir  " if p.is_dir() else "file ") + str(p.relative_to(self.root)) for p in entries)
 
     def tool_read_file(self, path: str, start_line: int = 1, end_line: int = 0) -> str:
-        if start_line < 1 or end_line < 0 or (end_line and end_line < start_line):
-            raise ValueError("Invalid line range")
+        if start_line < 1:
+            raise ValueError(f"start_line must be 1 or more, got {start_line}")
+        if end_line < 0:
+            raise ValueError(f"end_line must be 0 (meaning \"to the end\") or a positive line number, got {end_line}")
+        if end_line and end_line < start_line:
+            raise ValueError(f"end_line ({end_line}) must be >= start_line ({start_line})")
         file = self._path(path)
         if not file.is_file():
-            raise ValueError("Not a file")
+            raise ValueError(f"{path!r} is not a file" + (" (it's a directory - use list_files)" if file.is_dir() else " - it does not exist"))
         if file.stat().st_size > 2_000_000:
             raise ValueError("File is too large (2 MB limit)")
         raw = file.read_bytes()
         encoding = ("utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else
                     "utf-8-sig" if raw.startswith(b"\xef\xbb\xbf") else "utf-8")
         lines = raw.decode(encoding).splitlines()
+        if start_line > len(lines):
+            raise ValueError(f"start_line ({start_line}) is past the end of the file, which has {len(lines)} lines")
         selected = lines[start_line - 1:end_line or None]
         return "\n".join(f"{i}: {line}" for i, line in enumerate(selected, start_line))[:MAX_READ]
 

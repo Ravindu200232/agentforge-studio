@@ -28,7 +28,7 @@ from ollama_terminal.agent import Agent
 from ollama_terminal.mcp_client import NAME_PREFIX as MCP_NAME_PREFIX
 from ollama_terminal.tools import WorkspaceTools, describe_call
 
-from . import bus, config, deploy_vars, live, plugins, prompts, stage_evidence
+from . import bus, config, deploy_vars, live, plugins, prompts, stage_evidence, supabase_connect
 
 
 class RunCancelled(Exception):
@@ -182,11 +182,13 @@ class StudioTools(WorkspaceTools):
             # address, and the studio's preview displays it while the test runs.
             self.command_env = {**os.environ, **plugins.environment(choices),
                                 "AGENTFORGE_LIVE_URL": live.url_for(self.project)}
-            if config.setting("mongodb_uri"):
-                self.command_env["MONGODB_URI"] = str(config.setting("mongodb_uri"))
+            # A Supabase-stack project gets the one real project `supabase_connect` made for it,
+            # in build, test and deploy alike - unlike the old studio-wide MongoDB setting, there is
+            # no separate "the studio's own" database to fall back to here.
+            self.command_env.update(supabase_connect.env_for(self.project))
             if session_for(self.project).stage.startswith("deploy"):
-                # Only a deployment is handed what the customer saved for it, and its database is the
-                # production one, not the studio's own.
+                # A deployment may also override with what the customer saved for it explicitly
+                # (pointing production at a different Supabase project, or an unrelated variable).
                 self.command_env.update(deploy_vars.environment())
         result = super().execute(name, args)
 

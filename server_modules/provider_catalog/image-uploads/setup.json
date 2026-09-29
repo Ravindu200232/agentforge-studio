@@ -40,34 +40,6 @@
       ]
     },
     {
-      "id": "supabase",
-      "label": "Supabase Storage",
-      "hint": "A bucket with public URLs, and the same project can hold your database. Good if you already use Supabase.",
-      "fields": [
-        {
-          "key": "SUPABASE_URL",
-          "label": "Project URL",
-          "example": "https://abcdefghijklmnop.supabase.co",
-          "hint": "Project Settings → API → Project URL.",
-          "secret": false
-        },
-        {
-          "key": "SUPABASE_SERVICE_ROLE_KEY",
-          "label": "Service role key",
-          "example": "eyJ<paste-your-service-role-key>",
-          "hint": "The same page, under 'service_role'. Server only — it bypasses row-level security, so it must never reach the browser.",
-          "secret": true
-        },
-        {
-          "key": "SUPABASE_BUCKET",
-          "label": "Bucket name",
-          "example": "uploads",
-          "hint": "Storage → Buckets. Create it first; the app will not.",
-          "secret": false
-        }
-      ]
-    },
-    {
       "id": "imageboss",
       "label": "ImageBoss — resizes from your own bucket",
       "hint": "ImageBoss holds no files. The app uploads to your S3-compatible bucket and ImageBoss reads from it and resizes on the way out, so both halves are needed.",

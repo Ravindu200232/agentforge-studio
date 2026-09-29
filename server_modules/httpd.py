@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import html
 import json
 import re
 import traceback
@@ -26,7 +27,7 @@ from prototype_agent import prototype as prototyper
 from qa_agent import verify as qa
 from srs_agent import document as srs_document
 
-from . import bus, changes, cli_monitor, cli_signin, config, deploy_vars, github_device, jobs, live, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, versions
+from . import bus, changes, cli_monitor, cli_signin, config, deploy_vars, github_device, jobs, live, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions
 from .session import session_for
 
 Handler = Callable[[dict[str, Any]], Any]
@@ -153,14 +154,13 @@ def read_settings(_ctx: dict) -> Any:
     saved = config.settings()
     catalog = models({})
     deploy = {key: saved.get(key, "") for key in ("aws_profile", "aws_region", "aws_start_url", "aws_sso_region",
-                                                  "github_client_id", "github_login", "azure_account")}
-    for key in ("github_token", "vercel_token", "netlify_token", "azure_credentials"):
+                                                  "github_client_id", "github_login", "azure_account",
+                                                  "supabase_client_id", "supabase_org")}
+    for key in ("github_token", "vercel_token", "netlify_token", "azure_credentials", "supabase_client_secret"):
         deploy[f"{key}_set"] = bool(saved.get(key))
         deploy[f"{key}_hint"] = str(saved.get(key) or "")[-4:] if saved.get(key) else ""
-    production = str(saved.get("deploy_mongodb_uri") or "")
-    deploy["mongodb_uri_set"] = bool(production)
-    deploy["mongodb_uri_hint"] = production[-4:] if production else ""
-    return {**{k: v for k, v in saved.items() if not any(word in k for word in ("token", "api_key", "credentials", "mongodb_uri", "deploy_env"))},
+    return {**{k: v for k, v in saved.items() if not any(word in k for word in
+                                                         ("token", "api_key", "credentials", "secret", "mongodb_uri", "deploy_env"))},
             "admin": True, "local_num_ctx": saved.get("context") or saved.get("local_num_ctx") or 0,
             "thinking_level": config.thinking(saved),
             "mcp_servers": _safe_mcp_servers(saved.get("mcp_servers")),
@@ -199,8 +199,6 @@ def _merge_mcp_servers(incoming: Any, previous: Any) -> list[dict[str, Any]]:
 @route("POST", r"/settings")
 def write_settings(ctx: dict) -> Any:
     patch = {k: v for k, v in ctx.items() if not k.startswith("_") and k != "deploy_env"}
-    if "deploy_mongodb_uri" in patch:
-        patch["deploy_mongodb_uri"] = deploy_vars.check_database_uri(patch["deploy_mongodb_uri"])
     if patch.get("ollama_api_key") == "****":
         patch.pop("ollama_api_key")
     if "mcp_servers" in patch:
@@ -311,6 +309,62 @@ def cli_signin_use_existing(ctx: dict) -> Any:
 @route("POST", r"/cli-signin/cancel")
 def cli_signin_cancel(ctx: dict) -> Any:
     return cli_signin.SIGNINS.cancel(str(ctx.get("flow_id") or ""))
+
+
+@route("POST", r"/supabase/connect/status")
+def supabase_connect_status(ctx: dict) -> Any:
+    """Whether this project already has its own Supabase project, without exposing its keys.
+
+    Signing in to the Supabase *account* is `/supabase/oauth/*` below, studio-wide - this is only
+    the per-project Supabase *project*, created once the build actually starts
+    (`builder_agent.build`, via `supabase_connect.ensure_project`)."""
+    project = str(ctx.get("project") or "")
+    store.require(project)
+    return supabase_connect.status(project)
+
+
+@route("POST", r"/supabase/oauth/status")
+def supabase_oauth_status(_ctx: dict) -> Any:
+    """Whether the studio has a Supabase OAuth app registered and an account signed in."""
+    return supabase_connect.token_status()
+
+
+@route("POST", r"/supabase/oauth/start")
+def supabase_oauth_start(_ctx: dict) -> Any:
+    return supabase_connect.OAUTH.start()
+
+
+@route("POST", r"/supabase/oauth/poll")
+def supabase_oauth_poll(ctx: dict) -> Any:
+    return supabase_connect.OAUTH.poll(str(ctx.get("flow_id") or ""))
+
+
+@route("POST", r"/supabase/oauth/cancel")
+def supabase_oauth_cancel(ctx: dict) -> Any:
+    return supabase_connect.OAUTH.cancel(str(ctx.get("flow_id") or ""))
+
+
+@route("GET", r"/supabase-oauth/callback")
+def supabase_oauth_callback(ctx: dict) -> Any:
+    """Where the browser lands after approving the sign-in on supabase.com - this exact path, on
+    this studio's own API server, is what the OAuth app's callback URL is registered as
+    (`supabase_connect.REDIRECT_URI`). Only records what arrived; `poll()` does the real exchange."""
+    query = ctx.get("_query") or {}
+    code, state = str(query.get("code") or ""), str(query.get("state") or "")
+    error = str(query.get("error_description") or query.get("error") or "")
+    matched = supabase_connect.OAUTH.receive_callback(state, code, error)
+    if not matched:
+        message = "This sign-in has expired, was already used, or was not started from this Studio."
+    elif error:
+        message = f"Supabase said: {html.escape(error)}"
+    else:
+        message = "Signed in to Supabase. You can close this tab and return to AgentForge."
+    body = (
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>AgentForge</title></head>"
+        "<body style=\"font:16px system-ui,sans-serif;padding:2.5rem;color:#16181d\">"
+        f"<p>{message}</p></body></html>"
+    ).encode("utf-8")
+    return Raw(body, "text/html; charset=utf-8")
 
 
 @route("GET", r"/srs-status")

@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from server_modules import bus, plugins, prompts, reference_staging, store
+from server_modules import bus, plugins, prompts, reference_staging, store, supabase_connect
+from server_modules.qa_report import summary_counts
 from server_modules.session import session_for
 
 BUILD_DIR = "build"
@@ -87,10 +88,16 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
     record = store.require(project)
     session = session_for(project)
     from . import scaffold
-    stack = str(record.get("stack") or "nextjs-mongo")
+    stack = str(record.get("stack") or "nextjs-supabase")
     session.begin("build", role=bus.DEVELOPER)
 
     try:
+        # Every stack here is Supabase-backed: the one real project this AgentForge project gets
+        # is created now, the first time it actually builds (signing in to the Supabase account
+        # itself already happened from the stack picker - see supabase_connect.py's OAuth flow). A
+        # later build of the same project finds the record already there and does nothing.
+        supabase_connect.ensure_project(project, name=str(record.get("name") or project),
+                                        log=lambda line: bus.agent_msg(project, line, title="Supabase"))
         installed = scaffold.install(session.workspace, stack)
         bus.agent_msg(project,
                       f"{stack} scaffold copied ({len(installed['files'])} files)."
@@ -138,8 +145,11 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
                    "never written (likely an interrupted earlier run) - set it rather than "
                    "fail a build whose testing genuinely finished.")
         gaps = built_report.get("gaps") or []
-        summary = qa_report.get("summary") or {}
-        failed = int(summary.get("fail") or 0)
+        # The report is agent-authored.  A prose ``summary`` remains valid
+        # evidence when its layer rows are structured, so normalize it rather
+        # than crashing after all verification completed.
+        summary = summary_counts(qa_report)
+        failed = summary["fail"]
         store.update(project, spec_only=False, prototype_only=False,
                      build_available=True,
                      status="tested-with-failures" if failed else "tested")

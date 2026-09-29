@@ -12,6 +12,7 @@ import threading
 from typing import Any
 
 from server_modules import bus, prompts, reference_staging, store
+from server_modules.qa_report import summary_counts
 from server_modules.session import ProjectSession, session_for
 
 QA_DIR = "qa"
@@ -38,7 +39,10 @@ def _publish(session: ProjectSession, project: str, previous_rows: int) -> int:
     """Turn whatever the agent has written so far into studio test events."""
     current = report(project)
     # Rows derived from the build's own record are not live test results.
-    rows = [r for r in (current.get("timeline") or []) if not r.get("derived")]
+    # This file is updated live by an agent. Ignore a partial/malformed row
+    # until it becomes a complete object instead of taking down the watcher.
+    rows = [r for r in (current.get("timeline") or [])
+            if isinstance(r, dict) and not r.get("derived")]
     for row in rows[previous_rows:]:
         bus.test_result(project,
                         status=str(row.get("status") or "run"),
@@ -73,7 +77,7 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         bus.phase(project, "qa:verify", "Verifying the application",
                   detail="Build, runtime, units, routes, journeys, accessibility and load.")
         from builder_agent.scaffold import guide_files
-        stack = str(store.require(project).get("stack") or "nextjs-mongo")
+        stack = str(store.require(project).get("stack") or "nextjs-supabase")
         request = prompts.load("testing/run", project=project)
         guide_paths = reference_staging.stage(session.workspace, f"{QA_DIR}/guides", guide_files(stack))
         request += ("\n\n## Selected scaffold and test guides\n\nRead these yourself before planning:\n"
@@ -92,8 +96,8 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         final = report(project)
         if not final.get("complete"):
             raise ValueError("testing ended without a complete QA report")
-        summary = final.get("summary") or {}
-        failed = int(summary.get("fail") or 0)
+        summary = summary_counts(final)
+        failed = summary["fail"]
         store.update(project, status="tested" if not failed else "tested-with-failures")
         store.advance(project, "test")
         bus.phase(project, "qa:verify", "Verifying the application",
@@ -126,7 +130,8 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
 def repair(project: str, request: str = "") -> dict[str, Any]:
     """Fix what the last run found, and prove the fix."""
     current = report(project)
-    open_bugs = [b for b in (current.get("bugs") or []) if b.get("status") != "fixed"]
+    open_bugs = [b for b in (current.get("bugs") or [])
+                 if isinstance(b, dict) and b.get("status") != "fixed"]
     if not open_bugs and not request.strip():
         return current
 

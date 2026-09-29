@@ -22,16 +22,8 @@ _revision = 0
 # A preview is deliberately single-tenant. Each stack has a stable local port;
 # switching projects stops the previous preview rather than silently accepting
 # a framework's random fallback port or an old process's environment.
-PREVIEW_PORT = 3001  # Next.js only
-MERN_PREVIEW_PORT = 5173
-REMIX_PREVIEW_PORT = 5173
-MERN_GATEWAY_PORT = 4000
-
-
-def _is_mern(project: str, package: dict) -> bool:
-    stack = str((store.get(project) or {}).get("stack") or "")
-    return stack == "mern-microservices" or "dev-all.mjs" in str(
-        (package.get("scripts") or {}).get("dev") or "")
+PREVIEW_PORT = 3001  # the two Next.js-based stacks
+VITE_PREVIEW_PORT = 5173  # remix-supabase, vite-supabase, vite-microservices-supabase
 
 
 def _preview_port(project: str, package: dict) -> int:
@@ -39,10 +31,9 @@ def _preview_port(project: str, package: dict) -> int:
     stack = str((store.get(project) or {}).get("stack") or "")
     dependencies = {**(package.get("dependencies") or {}),
                     **(package.get("devDependencies") or {})}
-    if _is_mern(project, package):
-        return MERN_PREVIEW_PORT
-    if stack == "remix-mongo" or "@remix-run/serve" in dependencies:
-        return REMIX_PREVIEW_PORT
+    if stack in {"remix-supabase", "vite-supabase", "vite-microservices-supabase"} or (
+            "next" not in dependencies and ("@remix-run/serve" in dependencies or "vite" in dependencies)):
+        return VITE_PREVIEW_PORT
     return PREVIEW_PORT
 
 # Preloaded into the preview process so a hardened app (X-Frame-Options, `frame-ancestors 'none'`)
@@ -69,22 +60,6 @@ def _write_metadata(project: str, entry: dict) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(payload), encoding="utf-8")
     temporary.replace(path)
-
-
-def _signal_managed_stop(project: str, saved: dict, process=None, timeout: float = 5) -> bool:
-    """Let a managed MERN runner stop its own children, even after backend restart."""
-    runtime_id = str(saved.get("runtimeId") or "")
-    port = int(saved.get("port") or 0)
-    if saved.get("controlMode") != "file" or not runtime_id or not port:
-        return False
-    signal_file = config.record_dir(project) / "preview-stop.json"
-    signal_file.write_text(json.dumps({"runtimeId": runtime_id}), encoding="utf-8")
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not _port_open(port) and (process is None or process.poll() is not None):
-            return True
-        time.sleep(0.1)
-    return False
 
 
 def _port_open(port: int) -> bool:
@@ -210,14 +185,9 @@ def open_preview(project: str) -> dict:
     package = json.loads(manifest.read_text(encoding="utf-8"))
     scripts = package.get("scripts") or {}
     production_ready = (root / ".next" / "BUILD_ID").is_file() and bool(scripts.get("start"))
-    # MERN development starts Vite, the gateway and internal services together;
-    # the gateway alone is not a complete preview.
-    script = "start:all" if production_ready and scripts.get("start:all") else (
-        "start" if production_ready else "dev"
-    )
+    script = "start" if production_ready else "dev"
     if not scripts.get(script):
         return _state(project, detail=f"package.json has no {script} script.")
-    mern = _is_mern(project, package)
     port = _preview_port(project, package)
     with _lock:
         current = status(project)
@@ -247,10 +217,8 @@ def open_preview(project: str) -> dict:
         _revision = max(_revision + 1, int(time.time() * 1000))
         revision = _revision
         # PORT is supplied below.  Do not append a second `--port`: scaffolds
-        # may already run their guard and framework command with the fixed
-        # port, and a microservice runner should not receive stray CLI args.
-        command = (["node", "scripts/dev-all.mjs"] if mern and script == "dev" else
-                   ["npm.cmd" if os.name == "nt" else "npm", "run", script])
+        # may already run their guard and framework command with the fixed port.
+        command = ["npm.cmd" if os.name == "nt" else "npm", "run", script]
         runtime_id = uuid.uuid4().hex
         log_path = config.record_dir(project) / "preview.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -259,11 +227,7 @@ def open_preview(project: str) -> dict:
             enabled_path = config.record_dir(project) / "plugins.json"
             enabled = json.loads(enabled_path.read_text(encoding="utf-8")) if enabled_path.is_file() else []
             environment = {**os.environ, **plugins.environment(enabled),
-                           "PORT": str(MERN_GATEWAY_PORT if mern else port),
-                           "BROWSER": "none"}
-            if mern:
-                environment["VITE_PORT"] = str(port)
-                environment["AGENTFORGE_PREVIEW_RUNTIME_ID"] = runtime_id
+                           "PORT": str(port), "BROWSER": "none"}
             # The Studio frames this app. Let this machine's pages do that, whatever the app's
             # own headers say; only this preview process is affected (see preview_hooks).
             environment["NODE_OPTIONS"] = " ".join(
@@ -277,7 +241,6 @@ def open_preview(project: str) -> dict:
         url = f"http://127.0.0.1:{port}/"
         _processes[project] = {"process": process, "status": "starting", "url": url,
                                "port": port, "runtimeId": runtime_id, "script": script,
-                               "controlMode": "file" if mern and script == "dev" else "",
                                "serverId": f"srv-{project}", "revision": revision}
         _write_metadata(project, _processes[project])
         bus.runtime_state(project, "starting", url, f"srv-{project}", revision)
@@ -326,11 +289,6 @@ def stop(project: str) -> None:
     with _lock:
         entry = _processes.pop(project, None)
     saved = entry or _read_metadata(project)
-    process = entry.get("process") if entry else None
-    if _signal_managed_stop(project, saved, process):
-        bus.runtime_state(project, "stopped", revision=int(saved.get("revision") or 0))
-        _last.pop(project, None)
-        return
     if entry and entry["process"].poll() is None:
         process = entry["process"]
         _terminate_tree(process.pid)
