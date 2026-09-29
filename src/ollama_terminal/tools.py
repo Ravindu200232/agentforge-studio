@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 import httpx
 
+from .browser_inspect import inspect_local_page
 from .guard import SourceGuard
 from .mcp_client import MCPManager
 
@@ -142,6 +143,8 @@ def describe_call(name: str, args: dict[str, Any]) -> str:
         return f'web_search("{args.get("query") or ""}")'
     if name == "web_fetch":
         return f"web_fetch({args.get('url') or ''})"
+    if name == "browser_inspect":
+        return f"browser_inspect({args.get('url') or 'managed preview'}, {args.get('viewport') or 'desktop'})"
     return f"{name}({', '.join(f'{k}={v!r}' for k, v in args.items())})"
 
 
@@ -167,6 +170,9 @@ TOOL_SCHEMAS = [
             {"query": {"type": "string"}, "max_results": {"type": "integer"}}, ["query"]),
     _schema("web_fetch", "Fetch a web page through Ollama. Local Ollama needs no API key.",
             {"url": {"type": "string"}}, ["url"]),
+    _schema("browser_inspect", "Open one local running app page in a real browser. Returns rendered text, layout/accessibility findings (including elements that overflow the viewport) and saves a screenshot for UI review. Use desktop and mobile before declaring a UI complete; it never clicks, types, signs in or navigates away from the local preview.",
+            {"url": {"type": "string", "description": "Optional http://127.0.0.1 or http://localhost preview URL. Studio agents default to their managed preview."},
+             "viewport": {"type": "string", "enum": ["desktop", "mobile"], "description": "desktop (1440px) or mobile (390px)"}}, []),
 ]
 
 
@@ -420,3 +426,11 @@ class WorkspaceTools:
             return self._local_web_request("web_fetch", {"url": url})
         response = self.client.web_fetch(url=url)
         return json.dumps(response.model_dump(), ensure_ascii=False)[:MAX_OUTPUT]
+
+    def tool_browser_inspect(self, url: str = "", viewport: str = "desktop") -> str:
+        """Render a local preview without interacting with it or the outside web."""
+        default_url = getattr(self, "browser_url", lambda: "")()
+        if not url and not default_url:
+            raise ValueError("No managed local preview is running. Start the Studio preview and try again.")
+        result = inspect_local_page(self.root, url or default_url, viewport)
+        return json.dumps(result, ensure_ascii=False)

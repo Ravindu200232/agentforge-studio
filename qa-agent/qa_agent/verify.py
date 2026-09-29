@@ -61,6 +61,12 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
     session = session_for(project)
     session.begin("test", role=bus.DEVELOPER)
     bus.test_start(project)
+    # The optional browser_inspect tool reads this managed preview page by page;
+    # it never owns a second server or sends data outside the local machine.
+    from server_modules import preview_runtime
+    preview = preview_runtime.open_preview(project)
+    if preview.get("status") not in {"starting", "running"}:
+        bus.log(project, "WARN", f"Local preview is unavailable for browser inspection: {preview.get('detail') or 'unknown reason'}")
     started = time.time()
     seen = 0
     published = [0]

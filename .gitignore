@@ -17,6 +17,7 @@ studio/playwright-report/
 # Local AgentForge state and generated customer projects
 .agentforge-server/
 workspaces/
+supabase/.temp/
 
 # Local environment and runtime logs
 .env

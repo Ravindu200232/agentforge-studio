@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 for folder in (".", "src", "builder-agent"):
     sys.path.insert(0, str(ROOT / folder))
 
-from server_modules import bus, live, preview_runtime  # noqa: E402
+from server_modules import bus, live, preview_runtime, supabase_connect  # noqa: E402
 
 
 class FakeProcess:
@@ -159,6 +159,16 @@ class PreviewRuntimeTests(unittest.TestCase):
         self.assertIn("--require", options)
         self.assertIn(preview_runtime.FRAME_HOOK.as_posix(), options)
         self.assertTrue(preview_runtime.FRAME_HOOK.is_file())
+
+    def test_preview_gets_its_own_supabase_environment(self):
+        FakeProcess.environments.clear()
+        with mock.patch.object(supabase_connect, "env_for", return_value={
+                "NEXT_PUBLIC_SUPABASE_URL": "https://example.supabase.co",
+                "NEXT_PUBLIC_SUPABASE_ANON_KEY": "anon-key"}) as env_for:
+            preview_runtime.open_preview("alpha")
+        env_for.assert_called_once_with("alpha")
+        self.assertEqual(FakeProcess.environments[-1]["NEXT_PUBLIC_SUPABASE_URL"],
+                         "https://example.supabase.co")
 
     def test_a_project_with_nothing_built_leaves_the_running_preview_alone(self):
         preview_runtime.open_preview("alpha")

@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import ollama
 
@@ -230,6 +231,7 @@ class WebToolsTests(unittest.TestCase):
         names = {s["function"]["name"] for s in llm_tools.READ_ONLY_SCHEMAS}
         self.assertIn("web_search", names)
         self.assertIn("web_fetch", names)
+        self.assertIn("browser_inspect", names)
         self.assertNotIn("write_file", names)
         self.assertNotIn("run_command", names)
 
@@ -244,6 +246,16 @@ class WebToolsTests(unittest.TestCase):
             result = tools.call("web_search", {"query": "test query"})
             self.assertIn("test query", result)
             self.assertEqual(tools.rounds, 1)
+
+    def test_browser_tool_uses_its_project_managed_preview(self):
+        with tempfile.TemporaryDirectory() as folder:
+            tools = llm_tools.ReadOnlyTools(Path(folder), project="prj", role=bus.DEVELOPER)
+            with mock.patch("server_modules.preview_runtime.status", return_value={
+                    "status": "running", "url": "http://127.0.0.1:3001/"}), \
+                 mock.patch("ollama_terminal.tools.inspect_local_page", return_value={"title": "Preview"}) as inspect:
+                result = tools.call("browser_inspect", {"viewport": "mobile"})
+        self.assertIn("Preview", result)
+        inspect.assert_called_once_with(Path(folder), "http://127.0.0.1:3001/", "mobile")
 
 
 class EffortLevelTests(unittest.TestCase):

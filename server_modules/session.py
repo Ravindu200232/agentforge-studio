@@ -127,6 +127,13 @@ class StudioTools(WorkspaceTools):
         # startup is handled by preview_runtime, which assigns the stack's preview port.
         self.managed_preview = True
 
+    def browser_url(self) -> str:
+        """The local preview this project's browser tool may inspect."""
+        from . import preview_runtime
+
+        state = preview_runtime.status(self.project)
+        return str(state.get("url") or "") if state.get("status") in {"starting", "running"} else ""
+
     def _relative(self, path: str) -> str | None:
         try:
             return self._path(path).relative_to(self.root).as_posix()
@@ -221,6 +228,20 @@ class StudioTools(WorkspaceTools):
         elif name == "web_fetch":
             bus.log(self.project, "INFO",
                     f'Read web page {str(args.get("url") or "")}', agent=role)
+        elif name == "browser_inspect":
+            try:
+                inspected = json.loads(result)
+                layout = inspected.get("layout") or {}
+                bus.agent_msg(self.project,
+                              f"{inspected.get('title') or inspected.get('url') or 'Page'} · "
+                              f"{args.get('viewport') or 'desktop'} · screenshot saved\n"
+                              f"overflow: {bool(layout.get('horizontalOverflow'))}; "
+                              f"broken images: {len(layout.get('brokenImages') or [])}; "
+                              f"pending images: {len(layout.get('pendingImages') or [])}; "
+                              f"clipped labels: {len(layout.get('clippedLabels') or [])}",
+                              title="Browser inspection", kind="browser_inspection", agent=role)
+            except (TypeError, ValueError):
+                bus.log(self.project, "WARN", "Browser inspection returned an unreadable result.", agent=role)
         elif name.startswith(MCP_NAME_PREFIX) and not result.startswith("Tool error"):
             bus.agent_msg(self.project, result[:2000], title=f"MCP · {name[len(MCP_NAME_PREFIX):]}",
                           kind="mcp_result", agent=role)

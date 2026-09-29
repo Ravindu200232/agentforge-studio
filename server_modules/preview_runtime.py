@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from urllib.request import urlopen
 
-from . import bus, config, plugins, store
+from . import bus, config, plugins, store, supabase_connect
 
 _lock = threading.RLock()
 _processes: dict[str, dict] = {}
@@ -227,6 +227,7 @@ def open_preview(project: str) -> dict:
             enabled_path = config.record_dir(project) / "plugins.json"
             enabled = json.loads(enabled_path.read_text(encoding="utf-8")) if enabled_path.is_file() else []
             environment = {**os.environ, **plugins.environment(enabled),
+                           **supabase_connect.env_for(project),
                            "PORT": str(port), "BROWSER": "none"}
             # The Studio frames this app. Let this machine's pages do that, whatever the app's
             # own headers say; only this preview process is affected (see preview_hooks).

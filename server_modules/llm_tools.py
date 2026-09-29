@@ -8,8 +8,8 @@ string, which never shows up in the studio's chat stream the way a real tool
 call does. This gives those calls an opt-in, read-only escape hatch: the same
 Ollama SDK tool-calling mechanism the main agent already uses
 (`src/ollama_terminal/agent.py`), restricted to `list_files`/`read_file`/
-`search_text`/`web_search`/`web_fetch` — nothing that writes to the
-workspace or runs a command — with every call reported the same way
+`search_text`/`web_search`/`web_fetch`/`browser_inspect` — nothing that changes
+application source or runs a command (browser inspection saves QA evidence) — with every call reported the same way
 `StudioTools` already reports the main agent's own.
 
 Kept out of `llm.py` itself so its common no-tools path carries no extra
@@ -28,7 +28,7 @@ from ollama_terminal.tools import MAX_OUTPUT, TOOL_SCHEMAS, WorkspaceTools, desc
 
 from . import bus
 
-READ_ONLY_NAMES = ("list_files", "read_file", "search_text", "web_search", "web_fetch")
+READ_ONLY_NAMES = ("list_files", "read_file", "search_text", "web_search", "web_fetch", "browser_inspect")
 READ_ONLY_SCHEMAS = [schema for schema in TOOL_SCHEMAS
                      if schema["function"]["name"] in READ_ONLY_NAMES]
 MAX_TOOL_ROUNDS = 6
@@ -75,7 +75,8 @@ class ReadOnlyTools:
     """Workspace-rooted, read-only dispatcher.
 
     `call()` only ever invokes `tool_list_files`/`tool_read_file`/
-    `tool_search_text`/`tool_web_search`/`tool_web_fetch` directly — it never
+    `tool_search_text`/`tool_web_search`/`tool_web_fetch`/`tool_browser_inspect`
+    directly — it never
     goes through `WorkspaceTools.execute()`'s generic name-based dispatch, so
     there is no code path to `write_file`/`replace_text`/`run_command` at
     all, even if a model hallucinates one of those names.
@@ -88,6 +89,17 @@ class ReadOnlyTools:
         self.project = project
         self.role = role or bus.DEVELOPER
         self.rounds = 0
+        # Focused LLM calls use WorkspaceTools rather than StudioTools, so
+        # provide the same managed-preview lookup explicitly.
+        self._tools.browser_url = self._browser_url
+
+    def _browser_url(self) -> str:
+        if not self.project:
+            return ""
+        from . import preview_runtime
+
+        state = preview_runtime.status(self.project)
+        return str(state.get("url") or "") if state.get("status") in {"starting", "running"} else ""
 
     def call(self, name: str, args: dict[str, Any]) -> str:
         if name not in READ_ONLY_NAMES:
@@ -125,6 +137,9 @@ class ReadOnlyTools:
             bus.log(self.project, "INFO", f'Searched the web for "{args.get("query", "")}"', agent=self.role)
         elif name == "web_fetch":
             bus.log(self.project, "INFO", f'Fetched {args.get("url", "")}', agent=self.role)
+        elif name == "browser_inspect":
+            bus.log(self.project, "INFO",
+                    f'Inspected local browser page {args.get("url") or "managed preview"}', agent=self.role)
 
 
 def _stream_chat(chat: Callable[..., Any], kwargs: dict[str, Any],
