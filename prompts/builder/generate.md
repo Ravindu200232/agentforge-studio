@@ -23,6 +23,10 @@ The SRS defines data, permissions and business behaviour. The mapped prototype H
 
 If any requirement appears missing, contradictory or unclear while building or checking the app, do not guess and do not create another plan. Keep the current single plan, reopen the approved plan plus the relevant SRS handoff section, mapped prototype HTML/shared asset and current output application file, then correct only the affected work and continue from the current phase. Repeat this targeted read whenever memory is uncertain. Do not restart completed phases or reread unrelated files.
 
+## Confirming an already-finished plan
+
+Resuming this plan after an interruption and finding every phase's evidence already on disk is not the same as finishing it. Before ending the run, always open `.agentforge/qa/report.json` yourself and check that its `complete` field is literally `true` — an earlier run interrupted after the real testing work but before that one field was written leaves every layer's evidence genuinely passing on disk while the file itself still reads incomplete. If it is not `true`, write it now, merging it in the same way as every other write to this file, never replacing what is already there. Describing the work as complete in your own summary is not a substitute for this: the Studio's own gate checks this exact field, not your description of it, and will keep failing the run on every resume until it is actually set.
+
 Create exactly one short execution plan, including the complete Prototype parity map. That one plan must contain the three sequential phases below. Do not create a separate plan for unit tests or final checks, do not run phases in parallel, and do not restart the plan from the beginning after a failure.
 
 Implement every approved page, route, role, business rule, data record and main workflow. Match the prototype at 100% parity, use real validation, persistence, authorization, responsive states and useful errors. Keep the existing scaffold and existing application work.

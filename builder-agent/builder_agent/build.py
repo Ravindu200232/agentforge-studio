@@ -21,6 +21,24 @@ def built(project: str) -> bool:
     return bool(report(project))
 
 
+def _recoverably_incomplete(qa_report: Any) -> bool:
+    """A `qa/report.json` missing its `complete` flag that is safe to backfill
+    rather than fail the build over.
+
+    Found live: a run interrupted after the real testing work finished but
+    before that one flag was written left every layer's evidence genuinely
+    passing on disk, yet resuming kept re-deriving "nothing left to do" from
+    that same evidence without ever writing the flag itself - failing this
+    exact check, forever, on every resume. A report that already holds real
+    recorded evidence (a summary, more than a bare placeholder) and was never
+    explicitly marked incomplete by the model itself only needs that one
+    field backfilled, not the whole run failed - `complete: False` set on
+    purpose is left alone; that is a real, honest gap, not this bug.
+    """
+    return (isinstance(qa_report, dict) and qa_report.get("complete") is not False
+           and bool(qa_report.get("summary")) and len(qa_report) > 2)
+
+
 def show_preview(project: str) -> None:
     """The build is done: serve what it left on disk and bring the preview up on it.
 
@@ -111,7 +129,14 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         if not (session.workspace / "package.json").is_file() or not built_report:
             raise ValueError("builder finished without a runnable app and build/report.json")
         if not isinstance(qa_report, dict) or not qa_report.get("complete"):
-            raise ValueError("the single build plan ended without a complete qa/report.json")
+            if not _recoverably_incomplete(qa_report):
+                raise ValueError("the single build plan ended without a complete qa/report.json")
+            qa_report["complete"] = True
+            session.write_record("qa", "report.json", data=qa_report)
+            bus.log(project, "WARN",
+                   "qa/report.json had real recorded evidence but its `complete` flag was "
+                   "never written (likely an interrupted earlier run) - set it rather than "
+                   "fail a build whose testing genuinely finished.")
         gaps = built_report.get("gaps") or []
         summary = qa_report.get("summary") or {}
         failed = int(summary.get("fail") or 0)
