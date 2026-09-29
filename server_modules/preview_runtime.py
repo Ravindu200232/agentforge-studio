@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import socket
 import signal
 import subprocess
@@ -222,30 +224,25 @@ def open_preview(project: str) -> dict:
         runtime_id = uuid.uuid4().hex
         log_path = config.record_dir(project) / "preview.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        log = log_path.open("ab")
-        try:
-            enabled_path = config.record_dir(project) / "plugins.json"
-            enabled = json.loads(enabled_path.read_text(encoding="utf-8")) if enabled_path.is_file() else []
-            environment = {**os.environ, **plugins.environment(enabled),
-                           **supabase_connect.env_for(project),
-                           "PORT": str(port), "BROWSER": "none"}
-            # The Studio frames this app. Let this machine's pages do that, whatever the app's
-            # own headers say; only this preview process is affected (see preview_hooks).
-            environment["NODE_OPTIONS"] = " ".join(
-                part for part in (environment.get("NODE_OPTIONS", ""), f'--require "{FRAME_HOOK.as_posix()}"') if part)
-            process = subprocess.Popen(command, cwd=root, stdout=log, stderr=subprocess.STDOUT,
-                                       stdin=subprocess.DEVNULL,
-                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                                       env=environment)
-        finally:
-            log.close()
+        enabled_path = config.record_dir(project) / "plugins.json"
+        enabled = json.loads(enabled_path.read_text(encoding="utf-8")) if enabled_path.is_file() else []
+        environment = {**os.environ, **plugins.environment(enabled),
+                       **supabase_connect.env_for(project),
+                       "PORT": str(port), "BROWSER": "none"}
+        # The Studio frames this app. Let this machine's pages do that, whatever the app's
+        # own headers say; only this preview process is affected (see preview_hooks).
+        environment["NODE_OPTIONS"] = " ".join(
+            part for part in (environment.get("NODE_OPTIONS", ""), f'--require "{FRAME_HOOK.as_posix()}"') if part)
+        process = _launch(command, root, environment, log_path)
         url = f"http://127.0.0.1:{port}/"
         _processes[project] = {"process": process, "status": "starting", "url": url,
                                "port": port, "runtimeId": runtime_id, "script": script,
                                "serverId": f"srv-{project}", "revision": revision}
         _write_metadata(project, _processes[project])
         bus.runtime_state(project, "starting", url, f"srv-{project}", revision)
-    threading.Thread(target=_wait_ready, args=(project, process, url), daemon=True).start()
+    threading.Thread(target=_wait_ready,
+                      args=(project, process, url, root, command, environment, log_path, script),
+                      daemon=True).start()
     return status(project)
 
 
@@ -259,9 +256,72 @@ def reopen(project: str) -> dict:
     return open_preview(project)
 
 
-def _wait_ready(project: str, process: subprocess.Popen, url: str) -> None:
+def _launch(command: list[str], root: Path, environment: dict, log_path: Path) -> subprocess.Popen:
+    log = log_path.open("ab")
+    try:
+        return subprocess.Popen(command, cwd=root, stdout=log, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                                env=environment)
+    finally:
+        log.close()
+
+
+# `next dev` writes its webpack cache into `.next` continuously; force-killing it
+# mid-write (switching projects, stopping the preview) can leave a numbered chunk
+# half-written, which then 500s every request for it forever until `.next` is
+# cleared. A genuinely missing package/app import never looks like this - only a
+# webpack-internal, purely numeric chunk id does - so this pattern is specific
+# enough to self-heal on rather than something a real app bug could trigger.
+_CORRUPT_CACHE = re.compile(r"Cannot find module '\.[/\\]\d+\.js'|PackFileCacheStrategy\] Restoring pack failed")
+
+
+def _cache_corrupted(log_path: Path) -> bool:
+    try:
+        with log_path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - 20_000))
+            tail = handle.read()
+    except OSError:
+        return False
+    return bool(_CORRUPT_CACHE.search(tail.decode("utf-8", errors="replace")))
+
+
+def _heal(project: str, process: subprocess.Popen, url: str, root: Path, command: list[str],
+          environment: dict, log_path: Path, script: str) -> None:
+    """One-shot recovery from a `.next` cache an earlier interrupted restart left corrupted."""
+    with _lock:
+        entry = _processes.get(project)
+        if not entry or entry["process"] is not process:
+            return  # a newer preview already replaced this one
+    bus.log(project, "WARN",
+            "The preview's build cache looked corrupted after an earlier interrupted restart "
+            "(a stale numbered chunk) - clearing .next and starting the preview again.")
+    _terminate_tree(process.pid)
+    shutil.rmtree(root / ".next", ignore_errors=True)
+    new_process = _launch(command, root, environment, log_path)
+    with _lock:
+        entry = _processes.get(project)
+        if not entry or entry["process"] is not process:
+            _terminate_tree(new_process.pid)
+            return
+        entry["process"] = new_process
+        _write_metadata(project, entry)
+    _wait_ready(project, new_process, url, root, command, environment, log_path, script, healed=True)
+
+
+def _wait_ready(project: str, process: subprocess.Popen, url: str, root: Path, command: list[str],
+                environment: dict, log_path: Path, script: str, healed: bool = False) -> None:
+    # Self-healing only ever applies to `next dev`: `next start` only ever reads a
+    # `.next` a prior `next build` already finished writing, so it cannot itself
+    # get corrupted this way, and deleting it would just delete the real build.
+    healable = not healed and script == "dev"
     for _ in range(90):
         if process.poll() is not None:
+            if healable and _cache_corrupted(log_path):
+                _heal(project, process, url, root, command, environment, log_path, script)
+                return
             status(project)
             return
         try:
@@ -281,8 +341,12 @@ def _wait_ready(project: str, process: subprocess.Popen, url: str) -> None:
                             bus.runtime_state(project, "running", url,
                                               entry["serverId"], entry["revision"])
                     return
+                if healable and _cache_corrupted(log_path):
+                    _heal(project, process, url, root, command, environment, log_path, script)
+                    return
         except Exception:
-            time.sleep(1)
+            pass
+        time.sleep(1)
     bus.log(project, "WARN", "Preview did not become ready. Check .agentforge/preview.log.")
 
 

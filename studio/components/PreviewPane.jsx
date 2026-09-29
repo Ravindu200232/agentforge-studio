@@ -448,7 +448,11 @@ export default function PreviewPane({ hidden, onBuild }) {
     wasBusy.current = busy
   }, [busy])
 
-  const width = VIEWPORTS.find(x => x.id === vp)?.w
+  // The desktop/tablet/mobile toggle sizes the interactive dev preview. A live test
+  // streams its own browser at its own real viewport, so boxing it into whatever
+  // width the toggle last picked only shrinks the picture into a partial-looking
+  // strip instead of filling the pane it actually has.
+  const width = isE2EActive ? null : VIEWPORTS.find(x => x.id === vp)?.w
   const shownPath = tests.running && e2eLive?.route ? e2eLive.route : path
 
   return (
