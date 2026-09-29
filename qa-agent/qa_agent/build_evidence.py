@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from server_modules import journeys as journey_contracts
+
 BUILD_REPORT = ".agentforge/build/report.json"
 HANDOFF = ".agentforge/srs/handoff.json"
 QA_DIR = ".agentforge/qa"
@@ -388,18 +390,22 @@ def derive(workspace: Path, have: dict) -> dict:
                           "warn": len(gaps) + sum(1 for r in bad if r["kind"] == "audit")}
 
     tests = (runs or {}).get("tests") or []
+    journey_coverage = None
     if runs:
         said = lambda t: f"{t['file']} {t['suite']} {t['title']}"  # noqa: E731
         a11y = [t for t in tests if _A11Y.search(said(t))]
         visual = [t for t in tests if t not in a11y and _VISUAL.search(said(t))]
-        journeys = [t for t in tests if t not in a11y and t not in visual]
-        flows = _group(journeys, lambda t: True)
+        journey_tests = [t for t in tests if t not in a11y and t not in visual]
+        journey_coverage = journey_contracts.e2e_coverage(workspace, journey_tests)
+        flows = _group(journey_tests, lambda t: True)
         total = sum(f["stage_total"] for f in flows)
         e2e = {"ran": True, "flows": flows, "stage_total": total,
                "stage_passed": sum(f["stage_passed"] for f in flows),
                "stage_failed": sum(f["stage_failed"] for f in flows),
                "stage_not_reached": sum(f["stage_not_reached"] for f in flows),
                "failures": [], "source": runs["source"]}
+        if journey_coverage is not None:
+            e2e["journeyCoverage"] = journey_coverage
         if a11y:
             bad = sum(1 for t in a11y if t["status"] == "failed")
             out["accessibility"] = {
@@ -409,6 +415,13 @@ def derive(workspace: Path, have: dict) -> dict:
                            "status": t["status"] if t["status"] in ("passed", "failed") else "recorded"} for t in a11y]}
         out.setdefault("report", {})["e2e"] = e2e
         out["visualRuns"] = {"tests": len(visual), "passed": sum(1 for t in visual if t["status"] == "passed")}
+
+    # Still expose a missing journey run when the SRS contract exists but no
+    # Playwright result was saved. A generic QA `complete: true` cannot hide it.
+    if not runs:
+        journey_coverage = journey_contracts.e2e_coverage(workspace, [])
+    if journey_coverage is not None:
+        out.setdefault("report", {}).setdefault("e2e", {})["journeyCoverage"] = journey_coverage
 
     if lh:
         results = _rows(lh.get("results"))

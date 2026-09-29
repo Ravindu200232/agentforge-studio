@@ -102,6 +102,16 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         final = report(project)
         if not final.get("complete"):
             raise ValueError("testing ended without a complete QA report")
+        journey_coverage = (((final.get("report") or {}).get("e2e") or {})
+                            .get("journeyCoverage") or {})
+        if journey_coverage.get("required") and journey_coverage.get("status") != "passed":
+            missing = [*journey_coverage.get("missing", []), *journey_coverage.get("failed", [])]
+            saved = session.read_record(*REPORT, fallback={})
+            if isinstance(saved, dict):
+                saved["complete"] = False
+                session.write_record(*REPORT, data=saved)
+            raise ValueError("E2E user-journey coverage is incomplete: "
+                             + ", ".join(missing or ["no passing journey tests recorded"]))
         summary = summary_counts(final)
         failed = summary["fail"]
         store.update(project, status="tested" if not failed else "tested-with-failures")

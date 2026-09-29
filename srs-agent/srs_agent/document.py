@@ -34,6 +34,7 @@ from . import wireframe_brief
 SRS_DIR = "srs"
 DOCUMENT = (SRS_DIR, "srs.json")
 HANDOFF = (SRS_DIR, "handoff.json")
+USER_JOURNEYS = (SRS_DIR, "user-journeys.json")
 WIREFRAME_INDEX = (SRS_DIR, "wireframes", "index.json")
 WIREFRAME_SYSTEM = "wireframe-system"          # the web ideas and the shared layout the wireframes start from
 
@@ -194,6 +195,14 @@ def _write_record_visible(session: ProjectSession, project: str, parts: tuple,
     body = path.read_text(encoding="utf-8", errors="replace")
     bus.file_written(project, path.relative_to(session.workspace).as_posix(), body,
                      note="written")
+
+
+def _write_user_journeys(session: ProjectSession, project: str, doc: dict) -> dict[str, Any]:
+    """Save the SRS workflows as the one canonical journey list for E2E coverage."""
+    contract = journeys.journey_contract_for(doc)
+    _write_record_visible(session, project, USER_JOURNEYS, contract)
+    bus.log(project, "SUCCESS", f"{len(contract['journeys'])} user journeys saved for E2E coverage.")
+    return contract
 
 
 def _draw_diagram(session: ProjectSession, project: str, doc: dict,
@@ -608,6 +617,7 @@ def generate(project: str) -> dict[str, Any]:
         doc["approved_plan"] = approved
         _write_record_visible(session, project, DOCUMENT, envelope)
         _write_record_visible(session, project, (SRS_DIR, "SRS.md"), _render_markdown(doc))
+        _write_user_journeys(session, project, doc)
 
         # Draw from the final reviewed specification and handoff, not a draft
         # that a later repair may have changed. Each page appears independently.
@@ -1182,6 +1192,7 @@ def results(project: str) -> dict[str, Any]:
     plan_text = doc.get("approved_plan_markdown") or plan_stage.markdown(project)
     transcript = interview.snapshot(project)
     drawn = wireframes(project)
+    journey_contract = session_for(project).read_record(*USER_JOURNEYS, fallback=None)
     diagram_rows = [d for d in (doc.get("diagrams") or [])
                     if isinstance(d, dict) and d.get("applicable") is not False]
 
@@ -1196,6 +1207,7 @@ def results(project: str) -> dict[str, Any]:
         "interview": transcript,
         "wireframes": drawn["pages"],
         "journeys": drawn["journeys"],
+        "journey_contract": journey_contract if isinstance(journey_contract, dict) else None,
         "versions": plan_stage.current(project).get("versions", []),
         "status": (store.get(project) or {}).get("status", ""),
         "version": doc.get("version", ""),

@@ -144,6 +144,19 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
                    "qa/report.json had real recorded evidence but its `complete` flag was "
                    "never written (likely an interrupted earlier run) - set it rather than "
                    "fail a build whose testing genuinely finished.")
+        # The SRS emits one stable UJ id per business journey. Derive coverage
+        # from Playwright's actual result JSON rather than accepting a generic
+        # E2E count or an agent-authored success sentence.
+        from qa_agent import build_evidence
+        derived = build_evidence.derive(session.workspace, qa_report)
+        journey_coverage = (((derived.get("report") or {}).get("e2e") or {})
+                            .get("journeyCoverage") or {})
+        if journey_coverage.get("required") and journey_coverage.get("status") != "passed":
+            missing = [*journey_coverage.get("missing", []), *journey_coverage.get("failed", [])]
+            qa_report["complete"] = False
+            session.write_record("qa", "report.json", data=qa_report)
+            raise ValueError("E2E user-journey coverage is incomplete: "
+                             + ", ".join(missing or ["no passing journey tests recorded"]))
         gaps = built_report.get("gaps") or []
         # The report is agent-authored.  A prose ``summary`` remains valid
         # evidence when its layer rows are structured, so normalize it rather
