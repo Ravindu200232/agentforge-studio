@@ -49,7 +49,6 @@ _ALLOWED_PROGRAMS = {
 _DANGEROUS_CMDLETS = {"invoke-expression", "invoke-command", "invoke-item",
                       "start-process", "new-object", "add-type"}
 _CMDLET_SHAPE = re.compile(r"^[a-z]+-[a-z]+$")
-_SEGMENT_SPLIT = re.compile(r"&&|\|\||[;\n]|(?<!\|)\|(?!\|)")
 _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _DENY_PATTERNS = (
     (re.compile(r"\bsudo\b|\bsu\s+-"), "sudo/su is not allowed"),
@@ -64,6 +63,56 @@ _DENY_PATTERNS = (
                r"[^\n]*\b(curl|wget|nc\s|ftp\s)"),
      "reading a credential file into a network command is not allowed"),
 )
+
+
+def _split_top_level(command: str) -> list[str]:
+    """`command` split on `&&`/`||`/`;`/`|`-style separators, but never inside a quoted string.
+
+    Found live: `node -p "const r=JSON.parse(...); r.complete"` was cut in two at the JS
+    statement's own semicolon (perfectly ordinary inside a one-liner passed to `node -p`/`python
+    -c`), leaving `r.complete"` to be checked as if it were its own command — which it plainly is
+    not one of. A shell separator inside quotes is not a separator; only a quote-aware split can
+    tell the difference between the two.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    quote = ""  # "" outside any quote, else the quote character currently open
+    i, length = 0, len(command)
+    while i < length:
+        ch = command[i]
+        if quote:
+            current.append(ch)
+            if ch == "\\" and quote == '"' and i + 1 < length:
+                i += 1
+                current.append(command[i])  # an escaped char inside "..." never closes the quote
+            elif ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            current.append(ch)
+            i += 1
+            continue
+        if command[i:i + 2] in ("&&", "||"):
+            segments.append("".join(current))
+            current = []
+            i += 2
+            continue
+        if ch in ";\n":
+            segments.append("".join(current))
+            current = []
+            i += 1
+            continue
+        if ch == "|":  # a lone pipe: a real `||` was already consumed by the check above
+            segments.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    segments.append("".join(current))
+    return segments
 
 
 def _segment_program(segment: str) -> str:
@@ -94,7 +143,7 @@ def _command_problem(command: str) -> str | None:
     for pattern, message in _DENY_PATTERNS:
         if pattern.search(lowered):
             return message
-    for segment in _SEGMENT_SPLIT.split(command):
+    for segment in _split_top_level(command):
         program = _segment_program(segment)
         if not program or program in _ALLOWED_PROGRAMS:
             continue
