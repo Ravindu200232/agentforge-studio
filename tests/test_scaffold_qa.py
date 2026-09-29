@@ -64,6 +64,12 @@ class ScaffoldTests(unittest.TestCase):
                     self.assertIn(script, manifest["scripts"])
                 for runner in ("with-server.mjs", "run-perf.mjs", "zap-scan.mjs"):
                     self.assertTrue((workspace / "scripts" / runner).is_file(), runner)
+                # A fresh machine gets a real ZAP scan by default, not just when
+                # someone remembers the separate --install-zap flag - and a machine
+                # that already failed once is not retried on every single run.
+                zap_scan = (workspace / "scripts/zap-scan.mjs").read_text(encoding="utf-8")
+                self.assertIn("autoInstallFailedAt", zap_scan)
+                self.assertIn("await installZap()", zap_scan)
                 # Every generated app has a database of its own, and tests can only touch `_test`.
                 db = scaffold.database_name(workspace.name)
                 texts = {t: (workspace / t).read_text(encoding="utf-8", errors="ignore") for t in result["files"]}

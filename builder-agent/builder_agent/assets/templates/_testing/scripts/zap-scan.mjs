@@ -340,10 +340,31 @@ async function baseline(target) {
 // --- main ----------------------------------------------------------------------------------
 
 async function main() {
+  const statePath = path.join(HOME, 'install.json')
   if (has('--install-zap')) {
     try { await installZap() } catch (error) {
       console.error(`Could not install ZAP: ${error.message}`)
       if (engineChoice === 'zap') process.exit(3)
+    }
+  } else if (engineChoice !== 'baseline' && !findZap()) {
+    // Nobody asked for --install-zap, and nothing is installed: try it once,
+    // automatically, so a real scan is the default on a fresh machine rather
+    // than something that only happens if whoever runs this remembers the
+    // separate flag. A machine that already tried and failed (no network, a
+    // blocked download, ...) is not retried on every single run after that -
+    // that failure is recorded, not re-discovered the slow way each time.
+    // An explicit --install-zap (above) always retries regardless.
+    const state = readJson(statePath) ?? {}
+    if (!state.autoInstallFailedAt) {
+      console.log('OWASP ZAP is not installed yet - installing it once for this machine...')
+      try {
+        await installZap()
+      } catch (error) {
+        console.error(`Could not auto-install ZAP, falling back to the built-in baseline this run: ${error.message}`)
+        fs.mkdirSync(HOME, { recursive: true })
+        fs.writeFileSync(statePath, `${JSON.stringify(
+          { ...state, autoInstallFailedAt: new Date().toISOString(), autoInstallError: error.message }, null, 2)}\n`)
+      }
     }
   }
   const target = (process.env.BASE_URL || '').replace(/\/$/, '')
