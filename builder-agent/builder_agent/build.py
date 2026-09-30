@@ -7,7 +7,7 @@ from typing import Any
 
 from server_modules import bus, changes, plugins, prompts, reference_staging, store, supabase_connect
 from server_modules.qa_report import summary_counts
-from server_modules.session import session_for
+from server_modules.session import RunCancelled, session_for
 
 BUILD_DIR = "build"
 REPORT = (BUILD_DIR, "report.json")
@@ -90,6 +90,8 @@ def answer(project: str, reply: str) -> dict[str, Any]:
         if settled.get("status") == "asking":
             return settled
         return _finish_run(project, session, settled) if mode == "run" else _finish_update(project, session, settled)
+    except RunCancelled:
+        raise
     except Exception as exc:  # noqa: BLE001
         session.fail(str(exc))
         raise
@@ -124,6 +126,8 @@ def show_preview(project: str) -> None:
 
         preview_runtime.reopen(project)
         bus.transient({"type": "show_preview", "project": project})
+    except RunCancelled:
+        raise
     except Exception as exc:  # noqa: BLE001
         bus.log(project, "WARN", f"The preview could not be started: {exc}")
 
@@ -262,6 +266,8 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         if settled.get("status") == "asking":
             return settled
         return _finish_run(project, session, settled)
+    except RunCancelled:
+        raise
     except Exception as exc:  # noqa: BLE001
         session.fail(str(exc))
         raise
@@ -293,6 +299,8 @@ def update(project: str, request: str) -> dict[str, Any]:
         if settled.get("status") == "asking":
             return settled
         return _finish_update(project, session, settled)
+    except RunCancelled:
+        raise
     except Exception as exc:  # noqa: BLE001
         session.fail(str(exc))
         raise

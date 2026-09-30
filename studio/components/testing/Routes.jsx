@@ -12,7 +12,10 @@ import { Badge, Empty, Table, TR, TH, TD } from '../ui'
 export default function Routes({ qa }) {
   if (qa?.contracts?.length) return (
     <div>
-      <p className="mb-4 text-[11.5px] text-muted">API route inventory and linked unit-test results. A linked test file passing does not by itself prove every HTTP contract.</p>
+      <div className="mb-4 rounded-none border border-line bg-panel px-4 py-3">
+        <p className="text-[12px] font-semibold text-ink">{qa.contracts.length} API handlers found in this project</p>
+        <p className="mt-1 text-[11.5px] text-muted">This inventory is read from the built app’s handler files. Linked passing tests are source-level API evidence; a handler without a linked test is clearly shown as a coverage gap, not hidden as an empty result.</p>
+      </div>
       <Table><thead><TR><TH>Route / methods</TH><TH>Handler</TH><TH>Linked tests</TH></TR></thead>
         <tbody>{qa.contracts.map(row => (
           <TR key={row.handler}>

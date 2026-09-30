@@ -29,6 +29,7 @@ ZAP_SUMMARY = ".agentforge/qa/zap/summary.json"
 INVENTORY = ".agentforge/qa/coverage-inventory.json"
 COVERAGE_SUMMARY = ".agentforge/qa/coverage/coverage-summary.json"
 PLAYWRIGHT_JSON = "test-results/results.json"
+PREVIEW_RUNTIME = ".agentforge/preview-runtime.json"
 
 # What PowerShell and Windows consoles do to UTF-8 on its way into a log file.
 _MOJIBAKE = (("ΓÇ║", "›"), ("ΓÇö", "—"), ("ΓÇô", "–"), ("Â·", "·"),
@@ -225,6 +226,14 @@ def route_probe(workspace: Path) -> dict | None:
     return data if isinstance(data, dict) and _rows(data.get("results")) else None
 
 
+def runtime_status(workspace: Path) -> dict | None:
+    """The Studio-managed preview's current state, never a claimed test result."""
+    data = _json(workspace / PREVIEW_RUNTIME)
+    if not isinstance(data, dict) or not data.get("status"):
+        return None
+    return {key: data[key] for key in ("status", "url", "port", "detail", "revision") if key in data}
+
+
 def unit_inventory(workspace: Path) -> dict | None:
     """`npm run qa:inventory`: every page, route and component, and the unit tests that use it."""
     data = _json(workspace / INVENTORY)
@@ -310,7 +319,8 @@ def _group(tests: list[dict], keep) -> list[dict]:
     return list(flows.values())
 
 
-def _contracts(workspace: Path, build: dict, vitest: Any) -> list[dict]:
+def _test_sources(vitest: Any) -> list[dict]:
+    """The test files that are safe to link to a handler inventory."""
     files = []
     for suite in _rows((vitest or {}).get("testResults") if isinstance(vitest, dict) else []):
         name = str(suite.get("name") or "")
@@ -319,8 +329,38 @@ def _contracts(workspace: Path, build: dict, vitest: Any) -> list[dict]:
             text = path.read_text(encoding="utf-8", errors="ignore") if path.is_file() else ""
         except OSError:
             text = ""
-        files.append({"file": name.replace("\\", "/").split("/")[-1], "status": suite.get("status") or "", "text": text})
+        files.append({"file": name.replace("\\", "/").split("/")[-1],
+                      "status": suite.get("status") or "recorded", "text": text})
+    return files
+
+
+def _api_handlers(workspace: Path) -> list[dict]:
+    """Read the API handlers that actually exist, without guessing an HTTP result."""
+    roots = ((workspace / "app/api", "app/api"), (workspace / "src/app/api", "src/app/api"))
+    rows = []
+    for root, prefix in roots:
+        if not root.is_dir():
+            continue
+        for path in root.rglob("route.*"):
+            if path.suffix.lower() not in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                text = ""
+            relative = path.relative_to(root).parent.as_posix()
+            route = "/api" + ("" if relative == "." else f"/{relative}")
+            methods = sorted(set(re.findall(r"\bexport\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b", text)))
+            rows.append({"route": route, "handler": f"{prefix}/{path.relative_to(root).as_posix()}",
+                         "methods": methods, "tests": []})
+    return rows
+
+
+def _contracts(workspace: Path, build: dict, vitest: Any) -> list[dict]:
+    files = _test_sources(vitest)
     rows: dict[str, dict] = {}
+    for row in _api_handlers(workspace):
+        rows[row["handler"]] = row
     for r in _rows(build.get("routes")):
         route = str(r.get("route") or "")
         if not route.startswith("/api/"):
@@ -332,11 +372,48 @@ def _contracts(workspace: Path, build: dict, vitest: Any) -> list[dict]:
         if r.get("method") and r["method"] not in row["methods"]:
             row["methods"].append(r["method"])
     for row in rows.values():
-        base = re.sub(r"/\{\w+\}$", "", row["route"])
+        handler_root = row["handler"].rsplit("/route.", 1)[0]
         for f in files:
-            if base in f["text"] or row["handler"].rsplit("/route.", 1)[0] in f["text"]:
+            if handler_root in f["text"].replace("\\", "/"):
                 row["tests"].append({"file": f["file"], "status": f["status"] or "recorded"})
-    return list(rows.values())
+    return sorted(rows.values(), key=lambda row: row["route"])
+
+
+def _declared_layer(build: dict, kind: str) -> dict | None:
+    """A build report may retain an aggregate after detailed runner output is overwritten."""
+    phases = [build, build.get("phase_3") if isinstance(build.get("phase_3"), dict) else {}]
+    for phase in phases:
+        for layer in _rows(phase.get("layers")):
+            name = str(layer.get("layer") or "")
+            if kind == "a11y" and not _A11Y.search(name):
+                continue
+            if kind == "visual" and not _VISUAL.search(name):
+                continue
+            detail = str(layer.get("result") or "")
+            match = re.search(r"\b(\d+)\s+(?:[a-z-]+\s+)?passed\b", detail, re.I)
+            count = int(match.group(1)) if match else 0
+            status = "passed" if layer.get("exit_code") == 0 or "passed" in detail.lower() else "recorded"
+            return {"status": status, "count": count, "detail": detail}
+    return None
+
+
+def _build_repairs(build: dict) -> dict | None:
+    """Repairs recorded by the builder, kept distinct from a Testing-stage repair loop."""
+    items = []
+    phases = [build, build.get("phase_2") if isinstance(build.get("phase_2"), dict) else {},
+              build.get("phase_3") if isinstance(build.get("phase_3"), dict) else {}]
+    for phase in phases:
+        for row in _rows(phase.get("defects_found_and_fixed")):
+            where = str(row.get("where") or "Generated application")
+            problem = str(row.get("defect") or row.get("cause") or "A defect was found")
+            fix = str(row.get("fix") or row.get("resolution") or "Repaired and rechecked")
+            items.append({"where": where, "problem": problem, "fix": fix})
+        for row in phase.get("defects_found_by_phase_3_and_repaired", []) if isinstance(phase.get("defects_found_by_phase_3_and_repaired"), list) else []:
+            if isinstance(row, str) and row.strip():
+                items.append({"where": "Browser verification", "problem": row.strip(), "fix": "Repaired during the build"})
+    if not items:
+        return None
+    return {"status": "fixed", "source": "build", "items": items}
 
 
 def derive(workspace: Path, have: dict) -> dict:
@@ -350,7 +427,8 @@ def derive(workspace: Path, have: dict) -> dict:
     zap_summary = zap_summary if isinstance(zap_summary, dict) and zap_summary.get("engine") else None
     inventory = unit_inventory(workspace)
     coverage = code_coverage(workspace)
-    if not (build or runs or lh or probe or zap_summary or inventory or coverage):
+    runtime = runtime_status(workspace)
+    if not (build or runs or lh or probe or zap_summary or inventory or coverage or runtime):
         return {}
 
     out: dict[str, Any] = {}
@@ -358,6 +436,8 @@ def derive(workspace: Path, have: dict) -> dict:
         out["unitInventory"] = inventory
     if coverage:
         out["codeCoverage"] = coverage
+    if runtime:
+        out["runtimeStatus"] = runtime
     if build:
         out["build"] = build
     if runs:
@@ -413,8 +493,23 @@ def derive(workspace: Path, have: dict) -> dict:
                 "audited": len(a11y), "totalRoutes": len(a11y), "passed": len(a11y) - bad, "failed": bad,
                 "pages": [{"route": (f"{t['suite']} › " if t["suite"] else "") + t["title"] + (f" [{t['project']}]" if t["project"] else ""),
                            "status": t["status"] if t["status"] in ("passed", "failed") else "recorded"} for t in a11y]}
+            keyboard = [t for t in a11y if "keyboard" in said(t).lower()]
+            if keyboard:
+                out["accessibility"]["keyboard"] = "passed" if all(t["status"] == "passed" for t in keyboard) else "recorded"
         out.setdefault("report", {})["e2e"] = e2e
         out["visualRuns"] = {"tests": len(visual), "passed": sum(1 for t in visual if t["status"] == "passed")}
+
+    declared_a11y = _declared_layer(build, "a11y")
+    if declared_a11y:
+        accessibility = out.setdefault("accessibility", {"status": declared_a11y["status"], "pages": []})
+        accessibility["declaredAudited"] = declared_a11y["count"]
+        accessibility["declaredPassed"] = declared_a11y["count"] if declared_a11y["status"] == "passed" else 0
+        accessibility["declaredDetail"] = declared_a11y["detail"]
+        accessibility.setdefault("manualReview", "not run")
+
+    visual = _declared_layer(build, "visual")
+    if visual:
+        out["uiQualitySummary"] = visual
 
     # Still expose a missing journey run when the SRS contract exists but no
     # Playwright result was saved. A generic QA `complete: true` cannot hide it.
@@ -447,6 +542,9 @@ def derive(workspace: Path, have: dict) -> dict:
                 "status": str(zap_summary.get("status") or "recorded"), "engine": engine,
                 "reason": (f"[{engine}] " + str(zap_summary.get("reason") or zap_summary.get("note") or "")).strip(),
                 "report": zap_summary.get("report"),
+                "counts": zap_summary.get("counts") if isinstance(zap_summary.get("counts"), dict) else {},
+                "scanMode": "passive baseline" if "passive" in str(zap_summary.get("note") or "").lower() else "baseline",
+                "activeScan": False if "no active" in str(zap_summary.get("note") or "").lower() else None,
                 "findings": [{"severity": a.get("risk"), "name": f"{a.get('id')} {a.get('name')}",
                               "what": a.get("description")} for a in seen]}
         if audit:
@@ -486,6 +584,10 @@ def derive(workspace: Path, have: dict) -> dict:
     contracts = _contracts(workspace, build, have.get("vitest"))
     if contracts:
         out["contracts"] = contracts
+
+    repairs = _build_repairs(build)
+    if repairs:
+        out["buildRepairs"] = repairs
 
     if build:
         out["provenance"] = ("Recorded by the build's own verification — the builder's report and the "

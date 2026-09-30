@@ -23,7 +23,7 @@ import { cn } from '@/lib/utils'
 import ChangePlan from './ChangePlan'
 import EditAttach from './EditAttach'
 import PluginAccounts from './PluginAccounts'
-import { Modal } from './ui'
+import { Dropdown, Modal } from './ui'
 
 const ICONS = {
   read: Search, plan: Search, write: FileCode2, build: FileCode2,
@@ -45,6 +45,10 @@ const EFFORT_TONE = {
   high: 'bg-accent text-ink',
   ultra: 'bg-[#BFB9FF] text-ink',
 }
+
+// Start at the current part of a long conversation. Earlier turns remain
+// available from the top of the stream; they are never removed from history.
+const TURN_PAGE_SIZE = 240
 
 export default function AgentChat({ projectTitle = '' }) {
   const logs = useStore(s => s.logs)
@@ -97,6 +101,7 @@ export default function AgentChat({ projectTitle = '' }) {
   const scrollRef = useRef(null)
   const userScrolledUp = useRef(false)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
+  const [visibleTurnCount, setVisibleTurnCount] = useState(TURN_PAGE_SIZE)
 
   // Designer and Developer are tool permissions, not separate conversations.
   // Merge their persisted UI projections while the backend shares the exact
@@ -134,8 +139,16 @@ export default function AgentChat({ projectTitle = '' }) {
       // plan pasted into the conversation (including older persisted events).
       .filter(turn => turn.role !== 'stage' && turn.kind !== 'plan')
       .sort((a, b) => (a.at || 0) - (b.at || 0))
-      .slice(-220)
   }, [lifecycleStream, lifecycle])
+  const firstVisibleTurn = Math.max(0, turns.length - visibleTurnCount)
+  const visibleTurns = turns.slice(firstVisibleTurn)
+  const hiddenTurnCount = firstVisibleTurn
+
+  // Switching projects starts at that project's newest activity, with older
+  // messages one click away rather than erased or mixed with another project.
+  useEffect(() => {
+    setVisibleTurnCount(TURN_PAGE_SIZE)
+  }, [project])
   // A plan is on screen and waiting: whatever is typed now is about that plan.
   const planWaiting = turns.some(turn => turn.role === 'change' && turn.status === 'proposed')
   const waiting = useStore(s => s.queue)
@@ -312,7 +325,7 @@ export default function AgentChat({ projectTitle = '' }) {
   }
 
   return (
-    <aside className="flex w-[100%] lg:w-[var(--chat-w,460px)] max-w-full shrink-0 flex-col overflow-hidden border-r border-line/60 bg-panel/80">
+    <aside className="flex w-[100%] lg:w-[var(--chat-w,500px)] max-w-full shrink-0 flex-col overflow-hidden border-r border-line/60 bg-panel/80">
       <header className="shrink-0 border-b border-line/60 px-3.5 py-3">
         <div className="flex items-center gap-2">
           <span className="grid size-7 place-items-center rounded-xl bg-accent text-ink">
@@ -338,18 +351,25 @@ export default function AgentChat({ projectTitle = '' }) {
             <ChevronDown className="size-3.5 -rotate-90" />
           </button>
         </div>
-        <ChatModelControls project={project} agentRole={agentRole} busy={lifecycleStream.busy} />
       </header>
 
       {project && <StageProgress lifecycle={lifecycle} />}
 
       <div ref={scrollRef} onScroll={handleScroll} className="relative min-h-0 flex-1 overflow-y-auto px-3.5 py-3">
         <div className="space-y-3">
+          {hiddenTurnCount > 0 && (
+            <button
+              onClick={() => setVisibleTurnCount(count => Math.min(turns.length, count + TURN_PAGE_SIZE))}
+              className="w-full rounded-xl border border-line bg-panel2/70 px-3 py-2 text-[11px] font-semibold text-muted transition-colors hover:border-accent hover:bg-accent hover:text-ink"
+            >
+              Show {Math.min(TURN_PAGE_SIZE, hiddenTurnCount)} older messages · {hiddenTurnCount} saved
+            </button>
+          )}
           {/* The last row is the one happening now, so it is the one that
               spins; the rows behind it have already happened. */}
-          {turns.map((turn, i) => (
-            <Turn key={turn.id || `${turn.at}-${i}`} turn={turn}
-                  live={lifecycleStream.busy && i === turns.length - 1} />
+          {visibleTurns.map(turn => (
+            <Turn key={turn.id || `${turn.at}-${turn.role}-${turn.title || turn.text || ''}`} turn={turn}
+                  live={lifecycleStream.busy && turn.id === turns.at(-1)?.id} />
           ))}
           {lifecycleStream.busy && (reasoning || /plan|draft|revis/i.test(agentState)) && !ask &&
             <Thinking reasoning={reasoning} state={agentState} />}
@@ -425,12 +445,15 @@ export default function AgentChat({ projectTitle = '' }) {
                 )}
               </span>
             ) : <span />}
-            <button onClick={submit}
-                    disabled={!project || reading || !text.trim()}
-                    title={lifecycleStream.busy ? 'Queue this (Enter)' : 'Send (Enter)'}
-                    className="grid size-8 shrink-0 place-items-center rounded-xl bg-accent text-ink shadow-sm transition-all hover:bg-press disabled:opacity-30">
-              {reading ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
-            </button>
+            <div className="flex shrink-0 items-center gap-1">
+              <ChatModelControls project={project} agentRole={agentRole} busy={lifecycleStream.busy} />
+              <button onClick={submit}
+                      disabled={!project || reading || !text.trim()}
+                      title={lifecycleStream.busy ? 'Queue this (Enter)' : 'Send (Enter)'}
+                      className="grid size-8 place-items-center rounded-xl bg-accent text-ink shadow-sm transition-all hover:bg-press disabled:opacity-30">
+                {reading ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+              </button>
+            </div>
           </div>
         </div>
       </footer>
@@ -453,6 +476,7 @@ function ChatModelControls({ project, agentRole, busy }) {
   const addLog = useStore(s => s.addLog)
   const [catalog, setCatalog] = useState(null)
   const [saving, setSaving] = useState(false)
+  const [open, setOpen] = useState(false)
 
   const role = agentRole === 'designer' ? 'design' : 'builder'
   const current = models[role] || models.agent || ''
@@ -461,6 +485,11 @@ function ChatModelControls({ project, agentRole, busy }) {
     ['Cloud', catalog?.cloud || []],
   ]
   const inCatalog = groups.some(([, rows]) => rows.some(row => (row.id || row) === current))
+  const selected = groups.flatMap(([, rows]) => rows).find(row => (row.id || row) === current)
+  const selectedLabel = modelLabel(selected || { id: current }) || current || 'Choose model'
+  const effort = {
+    low: 'Low', high: 'High', xhigh: 'Extra high',
+  }[thinkingLevel] || 'High'
 
   useEffect(() => {
     let alive = true
@@ -481,57 +510,89 @@ function ChatModelControls({ project, agentRole, busy }) {
     }
   }
 
-  function chooseModel(event) {
-    const next = event.target.value
-    if (!next) return
+  function chooseModel(next) {
+    if (!next || next === current) return
     setRoleModel(role, next)
     save(next, thinkingLevel)
   }
 
   function chooseEffort(level) {
+    if (level === thinkingLevel) return
     setThinkingLevel(level)
     save(current, level)
   }
 
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-line/50 pt-2">
-      <label className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-line bg-panel2/70 px-2 py-1">
-        <span className="shrink-0 text-[9.5px] font-semibold uppercase tracking-wide text-muted2">Model</span>
-        <select aria-label="Chat model" value={current} onChange={chooseModel}
-                disabled={!project || saving}
-                className="min-w-0 flex-1 bg-transparent text-[10.5px] font-medium text-ink outline-none disabled:opacity-50">
-          {!current && <option value="">Choose a model</option>}
-          {current && !inCatalog && <option value={current}>{current}</option>}
-          {groups.map(([name, rows]) => rows.length > 0 && (
-            <optgroup key={name} label={name}>
-              {rows.map(row => {
-                const id = row.id || row
-                return <option key={id} value={id}>{modelLabel(row) || id}</option>
-              })}
-            </optgroup>
-          ))}
-        </select>
-      </label>
-      <div aria-label="Reasoning effort" className="flex items-center rounded-lg border border-line bg-panel2/70 p-0.5">
-        {[
-          ['low', 'Low'], ['high', 'High'], ['xhigh', 'Extra high'],
-        ].map(([id, label]) => (
-          <button key={id} type="button" disabled={!project || saving} onClick={() => chooseEffort(id)}
-                  title={id === 'xhigh'
-                    ? 'Reasons and performs a separate final verification pass. Applies to the next turn.'
-                    : `${label} effort. Applies to the next turn without clearing this project history.`}
-                  aria-pressed={thinkingLevel === id}
-                  className={cn('rounded-md px-1.5 py-1 text-[9.5px] font-semibold transition-colors disabled:opacity-45',
-                    thinkingLevel === id ? 'bg-accent text-ink' : 'text-muted2 hover:text-ink')}>
-            {label}
-          </button>
-        ))}
-      </div>
-      <span className="basis-full text-[9.5px] text-muted2">
-        {saving ? 'Saving preference…' : busy
-          ? 'Saved for the next turn; the current run keeps its model.'
-          : 'Model changes keep this project’s conversation and durable memory.'}
-      </span>
+    <div className="relative min-w-0">
+      <button type="button" disabled={!project}
+              onClick={() => setOpen(value => !value)}
+              aria-haspopup="dialog" aria-expanded={open}
+              title="Choose the model and reasoning effort for the next turn"
+              className="flex max-w-[174px] items-center gap-1 rounded-lg px-1.5 py-1 text-[10px] font-medium text-muted2 transition-colors hover:bg-panel hover:text-ink disabled:opacity-45">
+        <Sparkles className="size-3 shrink-0" />
+        <span className="truncate text-ink">{selectedLabel}</span>
+        <span className="shrink-0 text-muted2">{effort}</span>
+        <ChevronDown className={cn('size-3 shrink-0 transition-transform', open && 'rotate-180')} />
+      </button>
+
+      <Dropdown open={open} onClose={() => setOpen(false)}
+                className="bottom-full right-0 mb-2 w-[296px] p-2">
+        <div role="dialog" aria-label="Model and reasoning settings">
+          <p className="px-2 pb-1 text-[10px] font-semibold text-muted2">Select model</p>
+          <div className="max-h-52 space-y-1 overflow-y-auto pr-1">
+            {current && !inCatalog && (
+              <button type="button" onClick={() => chooseModel(current)}
+                      className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-[11px] text-ink hover:bg-panel2">
+                <span className="truncate">{current}</span><span className="text-[9px] text-muted2">Current</span>
+              </button>
+            )}
+            {groups.map(([name, rows]) => rows.length > 0 && (
+              <section key={name} className="pb-1">
+                <p className="px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-muted2">{name}</p>
+                {rows.map(row => {
+                  const id = row.id || row
+                  const picked = id === current
+                  return (
+                    <button key={id} type="button" onClick={() => chooseModel(id)} disabled={saving}
+                            aria-pressed={picked}
+                            className={cn('flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] transition-colors disabled:opacity-45',
+                              picked ? 'bg-accent/55 text-ink' : 'text-ink hover:bg-panel2')}>
+                      <span className="min-w-0 flex-1 truncate">{modelLabel(row) || id}</span>
+                      {picked && <Check className="size-3 shrink-0" />}
+                    </button>
+                  )
+                })}
+              </section>
+            ))}
+            {!catalog && <p className="px-2 py-3 text-[10px] text-muted2">Reading available models…</p>}
+            {catalog && !groups.some(([, rows]) => rows.length) && <p className="px-2 py-3 text-[10px] text-muted2">No models are available yet.</p>}
+          </div>
+
+          <div className="mt-2 border-t border-line pt-2">
+            <p className="px-2 pb-1 text-[10px] font-semibold text-muted2">Reasoning effort</p>
+            <div aria-label="Reasoning effort" className="grid grid-cols-3 rounded-xl bg-panel2 p-1">
+              {[
+                ['low', 'Low'], ['high', 'High'], ['xhigh', 'Extra high'],
+              ].map(([id, label]) => (
+                <button key={id} type="button" disabled={saving} onClick={() => chooseEffort(id)}
+                        title={id === 'xhigh'
+                          ? 'Reasons and performs a separate final verification pass. Applies to the next turn.'
+                          : `${label} effort. Applies to the next turn without clearing this project history.`}
+                        aria-pressed={thinkingLevel === id}
+                        className={cn('rounded-lg px-1 py-1.5 text-[10px] font-semibold transition-colors disabled:opacity-45',
+                          thinkingLevel === id ? 'bg-panel text-ink shadow-sm' : 'text-muted2 hover:text-ink')}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p aria-live="polite" className="px-2 pb-0.5 pt-2 text-[9.5px] text-muted2">
+            {saving ? 'Saving preference…' : busy
+              ? 'Applies to the next turn; this run keeps its current model.'
+              : 'Changes keep this project’s conversation and memory.'}
+          </p>
+        </div>
+      </Dropdown>
     </div>
   )
 }
@@ -662,13 +723,28 @@ function shortLabel(label) {
 function CancelRun() {
   const [asking, setAsking] = useState(false)
   const [sending, setSending] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const addLog = useStore(s => s.addLog)
+  const busy = useStore(s => s.busy)
+
+  useEffect(() => {
+    if (!busy) {
+      setAsking(false)
+      setSending(false)
+      setStopping(false)
+    }
+  }, [busy])
 
   async function stop() {
     setSending(true)
     try {
       const current = useStore.getState()
-      await api.cancelBuild(current.project, current.agentRole)
+      const result = await api.cancelBuild(current.project, current.agentRole)
+      setSending(false)
+      setStopping(result?.status === 'stopping')
+      addLog('INFO', result?.status === 'stopping'
+        ? 'Stop requested — ending the current step now.'
+        : (result?.detail || 'No active run to stop.'))
     } catch (e) {
       addLog('WARN', `could not cancel — ${e.message}`)
       setSending(false)
@@ -681,6 +757,12 @@ function CancelRun() {
             className="grid size-7 place-items-center rounded-lg text-muted transition-colors hover:bg-bad/10 hover:text-bad">
       <Square className="size-3" />
     </button>
+  )
+
+  if (stopping) return (
+    <span role="status" aria-live="polite" className="rounded-full bg-bad/10 px-2 py-0.5 text-[10px] font-semibold text-bad">
+      Stop requested
+    </span>
   )
 
   return (

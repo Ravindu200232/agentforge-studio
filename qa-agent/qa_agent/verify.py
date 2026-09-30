@@ -13,7 +13,7 @@ from typing import Any
 
 from server_modules import bus, prompts, reference_staging, store
 from server_modules.qa_report import summary_counts
-from server_modules.session import ProjectSession, session_for
+from server_modules.session import ProjectSession, RunCancelled, session_for
 
 QA_DIR = "qa"
 REPORT = (QA_DIR, "report.json")
@@ -60,6 +60,10 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
 
     session = session_for(project)
     session.begin("test", role=bus.DEVELOPER)
+    # Runner outputs have fixed filenames. Keep their previous state before a
+    # new test run can replace it, including a run started after a chat repair.
+    from .evidence import archive_results
+    archive_results(session.workspace, "Before this Testing run", "before-test-run")
     bus.test_start(project)
     # The optional browser_inspect tool reads this managed preview page by page;
     # it never owns a second server or sends data outside the local machine.
@@ -133,11 +137,21 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
             + ("" if not failed else " The failures are recorded there and are "
                "the first thing to repair."))
         session.finish(result.get("text", "") or "Verification complete.")
+        archive_results(session.workspace, "Testing run completed", "testing-run")
         return final
+    except RunCancelled:
+        stop_feed.set()
+        watcher.join(timeout=2)
+        archive_results(session.workspace, "Testing run cancelled", "testing-run")
+        bus.test_done(project)
+        session.stage = "idle"
+        session.save_context()
+        raise
     except Exception as exc:  # noqa: BLE001
         stop_feed.set()
         watcher.join(timeout=2)
         _publish(session, project, published[0])
+        archive_results(session.workspace, "Testing run stopped with an error", "testing-run")
         bus.test_done(project)
         session.fail(str(exc))
         raise
@@ -153,6 +167,8 @@ def repair(project: str, request: str = "") -> dict[str, Any]:
 
     session = session_for(project)
     session.begin("test-repair", role=bus.DEVELOPER)
+    from .evidence import archive_results
+    archive_results(session.workspace, "Before this repair run", "before-repair")
     try:
         listed = "\n".join(
             f"- [{b.get('severity', 'medium')}] {b.get('where', '')}: {b.get('what', '')}"
@@ -166,8 +182,16 @@ def repair(project: str, request: str = "") -> dict[str, Any]:
 
         session.run_task(task, audit=False)
         session.finish("Repairs applied.")
-        return report(project)
+        repaired = report(project)
+        archive_results(session.workspace, "Repair run completed", "repair-run")
+        return repaired
+    except RunCancelled:
+        archive_results(session.workspace, "Repair run cancelled", "repair-run")
+        session.stage = "idle"
+        session.save_context()
+        raise
     except Exception as exc:  # noqa: BLE001
+        archive_results(session.workspace, "Repair run stopped with an error", "repair-run")
         session.fail(str(exc))
         raise
 

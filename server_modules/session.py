@@ -67,28 +67,46 @@ class RetryingClient:
     and `web_fetch` behave exactly as the engine expects.
     """
 
-    def __init__(self, inner: Any, announce: Callable[[str], None] | None = None):
+    def __init__(self, inner: Any, announce: Callable[[str], None] | None = None,
+                 cancelled: Callable[[], bool] | None = None,
+                 wait_for_cancel: Callable[[float], bool] | None = None):
         self._inner = inner
         self._announce = announce
+        self._cancelled = cancelled
+        self._wait_for_cancel = wait_for_cancel
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
 
+    def _raise_if_cancelled(self) -> None:
+        if self._cancelled and self._cancelled():
+            raise RunCancelled("The run was stopped.")
+
     def chat(self, **kwargs: Any) -> Any:
         last: Exception | None = None
         for attempt in range(RETRY_ATTEMPTS):
+            self._raise_if_cancelled()
             try:
                 return self._inner.chat(**kwargs)
             except Exception as exc:  # noqa: BLE001 - re-raised below when it is not transient
+                self._raise_if_cancelled()
                 if not _transient(exc) or attempt == RETRY_ATTEMPTS - 1:
                     raise
                 last = exc
                 pause = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
                 if self._announce:
-                    self._announce(f"[retry] the model service returned "
-                                   f"{str(exc)[:120]} — retrying in {pause}s "
-                                   f"({attempt + 1}/{RETRY_ATTEMPTS - 1})")
-                time.sleep(pause)
+                    self._announce(f"[retry] Connection to the model service was interrupted "
+                                   f"({str(exc)[:120]}). Retrying attempt {attempt + 2} of "
+                                   f"{RETRY_ATTEMPTS} in {pause}s.")
+                # ``time.sleep`` made Stop appear broken while a cloud request was
+                # backing off: the longest delay is 30 seconds.  A session supplies
+                # its Event.wait here, which wakes immediately when the customer
+                # presses Stop; simple clients keep the old sleep behaviour.
+                if self._wait_for_cancel:
+                    if self._wait_for_cancel(pause):
+                        raise RunCancelled("The run was stopped.")
+                else:
+                    time.sleep(pause)
         raise last  # pragma: no cover - the loop either returns or raises above
 
 
@@ -275,6 +293,10 @@ class ProjectSession:
         self.role = bus.DEVELOPER
         self.stage = "idle"
         self._cancel = threading.Event()
+        # A deleted project can still have a model request unwinding in a
+        # background thread.  Marking its session disposed makes every later
+        # write a no-op/cancellation instead of quietly recreating its folder.
+        self._discarded = threading.Event()
         self._agent: Agent | None = None
         self._model = ""
         self._thinking_level = ""
@@ -296,11 +318,13 @@ class ProjectSession:
                                   headers={"Authorization": f"Bearer {key}"})
         else:
             inner = ollama.Client(host=saved.get("ollama_host") or "http://localhost:11434")
-        return RetryingClient(inner, announce=self._announce)
+        return RetryingClient(inner, announce=self._announce,
+                              cancelled=lambda: self.cancelled,
+                              wait_for_cancel=self._cancel.wait)
 
     def _announce(self, line: str) -> None:
         """What the engine narrates, as the studio's own log and state."""
-        if self._cancel.is_set():
+        if self.cancelled:
             raise RunCancelled(self.project)
         text = str(line or "")
         if text.startswith("[tool] "):
@@ -368,7 +392,7 @@ class ProjectSession:
                     client=client,
                     model=wanted,
                     workspace=self.workspace,
-                    approve=lambda _question: not self._cancel.is_set(),
+                    approve=lambda _question: not self.cancelled,
                     context=context,
                     cloud=bool(saved.get("cloud")),
                     max_steps=int(saved.get("max_steps") or 40),
@@ -379,7 +403,7 @@ class ProjectSession:
                 )
                 self._agent.tools = StudioTools(
                     self.workspace, client,
-                    lambda _question: not self._cancel.is_set(),
+                    lambda _question: not self.cancelled,
                     web_host=saved.get("ollama_host") or "http://localhost:11434",
                     use_local_web=not bool(saved.get("cloud")),
                     protected_app_root=config.ROOT,
@@ -449,7 +473,7 @@ class ProjectSession:
                 agent=self.role)
 
     def save_context(self) -> None:
-        if self._agent is None:
+        if self._agent is None or self._is_discarded():
             return
         try:
             self._context_file().parent.mkdir(parents=True, exist_ok=True)
@@ -467,6 +491,8 @@ class ProjectSession:
     # --- running ------------------------------------------------------------
 
     def begin(self, stage: str, role: str = bus.DEVELOPER, run_id: str = "") -> None:
+        if self._is_discarded():
+            raise RunCancelled(self.project)
         self._cancel.clear()
         if stage_evidence.was_interrupted(self.project, stage):
             bus.log(self.project, "WARN",
@@ -479,6 +505,9 @@ class ProjectSession:
         bus.phase(self.project, stage, stage.replace("_", " ").title(), status="active")
 
     def finish(self, text: str = "") -> None:
+        if self.cancelled:
+            self.stage = "idle"
+            raise RunCancelled(self.project)
         stage_evidence.finish(self.project, self.stage, text)
         bus.phase(self.project, self.stage, self.stage.replace("_", " ").title(),
                   status="complete")
@@ -487,6 +516,13 @@ class ProjectSession:
         self.stage = "idle"
 
     def fail(self, text: str) -> None:
+        # Cancellation is an expected pause, not a failed build.  The outer
+        # worker turns it into the single durable ``cancelled`` event.
+        if self.cancelled:
+            self.stage = "idle"
+            if not self._is_discarded():
+                self.save_context()
+            return
         stage_evidence.fail(self.project, self.stage, text)
         bus.phase(self.project, self.stage, self.stage.replace("_", " ").title(),
                   status="failed", detail=text[:300])
@@ -497,9 +533,25 @@ class ProjectSession:
     def cancel(self) -> None:
         self._cancel.set()
 
+    def _is_discarded(self) -> bool:
+        """Whether deletion retired this session.
+
+        A few narrow integrations construct a lightweight ``ProjectSession``
+        via ``__new__`` and provide only the fields they exercise. Treating a
+        missing deletion flag as active keeps those non-persistent planning
+        paths compatible while regular sessions still get the deletion guard.
+        """
+        discarded = getattr(self, "_discarded", None)
+        return bool(discarded and discarded.is_set())
+
+    def discard(self) -> None:
+        """Permanently stop this in-memory session after project deletion."""
+        self._discarded.set()
+        self._cancel.set()
+
     @property
     def cancelled(self) -> bool:
-        return self._cancel.is_set()
+        return self._cancel.is_set() or self._is_discarded()
 
     def report_memory(self) -> None:
         agent = self._agent
@@ -523,7 +575,7 @@ class ProjectSession:
         one context span all six stages rather than only the tool-using ones.
         """
         body = str(text or "").strip()
-        if not body:
+        if not body or self._is_discarded():
             return
         agent = self._agent
         if agent is None:
@@ -581,7 +633,7 @@ class ProjectSession:
         message = prompt
         last = ""
         for attempt in range(max(1, attempts)):
-            if self._cancel.is_set():
+            if self.cancelled:
                 raise RunCancelled(self.project)
             with self.lock:
                 last = agent.ask(message) or ""
@@ -621,7 +673,7 @@ class ProjectSession:
         # explicit level; all older stage callers continue to use the saved
         # preference without a compatibility break.
         agent = self.agent(model, thinking_level) if thinking_level else self.agent(model)
-        if self._cancel.is_set():
+        if self.cancelled:
             raise RunCancelled(self.project)
 
         bus.agent_state(self.project, "planning", thinking=True, agent=self.role)
@@ -631,6 +683,8 @@ class ProjectSession:
         with self.lock:
             agent.set_mode("plan")
             plan = agent.ask(request) or ""
+        if self.cancelled:
+            raise RunCancelled(self.project)
         plan_file = ""
         if plan_directory and plan.strip():
             # Keep each run's plan in the output app. A restarted run still plans
@@ -646,7 +700,7 @@ class ProjectSession:
         self.save_context()
         bus.log(self.project, "INFO", "Plan ready — carrying it out.", agent=self.role)
 
-        if self._cancel.is_set():
+        if self.cancelled:
             raise RunCancelled(self.project)
 
         bus.agent_state(self.project, "building", agent=self.role)
@@ -674,7 +728,7 @@ class ProjectSession:
         only the second half runs.
         """
         agent = self.agent(model)
-        if self._cancel.is_set():
+        if self.cancelled:
             raise RunCancelled(self.project)
         bus.agent_state(self.project, "building", agent=self.role)
         try:
@@ -684,6 +738,8 @@ class ProjectSession:
             bus.agent_state(self.project, "", agent=self.role)
             self.report_memory()
             self.save_context()
+        if self.cancelled:
+            raise RunCancelled(self.project)
         return {"status": result.status, "text": result.text, "rounds": result.rounds}
 
     def run_direct(self, request: str, model: str = "") -> dict[str, Any]:
@@ -695,7 +751,7 @@ class ProjectSession:
         to execution.
         """
         agent = self.agent(model)
-        if self._cancel.is_set():
+        if self.cancelled:
             raise RunCancelled(self.project)
         bus.agent_state(self.project, "building", agent=self.role)
         try:
@@ -709,6 +765,8 @@ class ProjectSession:
             bus.agent_state(self.project, "", agent=self.role)
             self.report_memory()
             self.save_context()
+        if self.cancelled:
+            raise RunCancelled(self.project)
         return {"status": "complete", "text": text or "Update applied.", "rounds": 1}
 
     def plan_focused_task(self, request: str, model: str = "") -> str:
@@ -718,7 +776,7 @@ class ProjectSession:
         large multi-page outputs are not constrained by the tool-agent step cap.
         """
         agent = self.agent(model)
-        if self._cancel.is_set():
+        if self.cancelled:
             raise RunCancelled(self.project)
         bus.agent_state(self.project, "planning", thinking=True, agent=self.role)
         bus.log(self.project, "INFO",
@@ -730,9 +788,11 @@ class ProjectSession:
                 plan = agent.ask(request) or ""
             finally:
                 agent.set_mode("act")
+        if self.cancelled:
+            raise RunCancelled(self.project)
         self.report_memory()
         self.save_context()
-        if self._cancel.is_set():
+        if self.cancelled:
             raise RunCancelled(self.project)
         if not plan.strip():
             raise ValueError("the prototype plan was empty")
@@ -743,6 +803,8 @@ class ProjectSession:
     # --- the project's own record ------------------------------------------
 
     def record_path(self, *parts: str) -> Path:
+        if self.cancelled:
+            raise RunCancelled(self.project)
         path = self.record.joinpath(*parts)
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
@@ -773,10 +835,15 @@ class ProjectSession:
 
 _sessions: dict[str, ProjectSession] = {}
 _sessions_lock = threading.RLock()
+_discarded_projects: set[str] = set()
 
 
 def session_for(project: str) -> ProjectSession:
     with _sessions_lock:
+        # A stale worker may call a helper that looks the session up again
+        # after deletion.  Refuse instead of creating a brand-new workspace.
+        if project in _discarded_projects:
+            raise RunCancelled(project)
         found = _sessions.get(project)
         if found is None:
             found = ProjectSession(project)
@@ -786,7 +853,10 @@ def session_for(project: str) -> ProjectSession:
 
 def drop(project: str) -> None:
     with _sessions_lock:
-        _sessions.pop(project, None)
+        found = _sessions.pop(project, None)
+        if found is not None:
+            found.discard()
+        _discarded_projects.add(project)
     bus.forget(project)
 
 

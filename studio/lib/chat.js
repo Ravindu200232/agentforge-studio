@@ -15,8 +15,8 @@
 
 // Every action is its own row. Grouping consecutive reads under one icon
 // saved space and made three separate steps look like one, which is the
-// opposite of what a step-by-step feed is for.
-const MAX_TURNS = 160
+// opposite of what a step-by-step feed is for. Do not cap the list: the chat
+// panel pages older rows in rather than silently dropping them.
 
 const KINDS = [
   // [pattern, kind, how to title it]
@@ -175,10 +175,8 @@ function classify(row) {
  */
 const remembered = new WeakMap()
 
-// A name a row keeps for as long as it exists. The feed shows the last 160
-// turns, so once a run is longer than that every arriving line shifts every
-// position - and a key built from a position would change for every row on
-// screen, which is a remount of the whole history to append one line.
+// A name a row keeps for as long as it exists. A key built from position would
+// change for every row as new lines arrive and remount the history.
 let counted = 0
 
 function turnFor(row) {
@@ -248,7 +246,7 @@ export function chatTurns(logs = [], chat = []) {
     turns.push(remembered.get(entry))
   }
   turns.sort((a, b) => (a.at || 0) - (b.at || 0))
-  return turns.slice(-MAX_TURNS)
+  return turns
 }
 
 /** A one-line verdict for a finished run, from the evidence it produced. */

@@ -142,8 +142,11 @@ export const useStore = create((set, get) => ({
         if (current.lastEventAt > latestEventAt) session = { ...session, ...current,
           runStats: current.runStats || session.runStats }
         const ids = new Set(session.eventIds)
-        session.logs = [...saved.logs, ...current.logs.filter(row => row.at > (saved.logs.at(-1)?.at || 0))].slice(-800)
-        session.chat = [...saved.chat, ...current.chat.filter(row => row.at > (saved.chat.at(-1)?.at || 0))].slice(-300)
+        // Keep every recovered turn. The chat UI reveals older rows in small
+        // batches, so a reload or a late socket event cannot make history go
+        // missing just because the run was long.
+        session.logs = [...saved.logs, ...current.logs.filter(row => row.at > (saved.logs.at(-1)?.at || 0))]
+        session.chat = [...saved.chat, ...current.chat.filter(row => row.at > (saved.chat.at(-1)?.at || 0))]
         session = { ...session, draft: current.draft, selection: current.selection, previewRoute: current.previewRoute,
           files: current.files, eventIds: [...new Set([...ids, ...current.eventIds])].slice(-1200) }
       }
@@ -256,7 +259,7 @@ export const useStore = create((set, get) => ({
 
   logs: [],
   addLog: (level, text) => set(s => ({
-    logs: [...s.logs.slice(-800), { level, text, at: Date.now() }],
+    logs: [...s.logs, { level, text, at: Date.now() }],
   })),
 
   // What the console shows about the run itself: the model, how much of its
@@ -307,7 +310,7 @@ export const useStore = create((set, get) => ({
   // tool activity the chat panel derives from `logs`.
   chat: [],
   pushChat: (entry) => set(s => ({
-    chat: [...s.chat.slice(-200), { at: Date.now(), ...entry }],
+    chat: [...s.chat, { at: Date.now(), ...entry }],
   })),
 
   // Queue messages entered while a run is in progress to be sent automatically once it finishes.

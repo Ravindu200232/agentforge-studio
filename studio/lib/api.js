@@ -21,6 +21,15 @@ export function getAuthToken() {
 
 let onSignedOut = null
 
+const NETWORK_MESSAGE = 'Unable to reach AgentForge right now. Your project is saved; check the connection and try again.'
+
+function networkError(cause) {
+  const error = new Error(NETWORK_MESSAGE)
+  error.code = 'network'
+  error.cause = cause
+  return error
+}
+
 /** Called when the server says this session is over, from wherever it happens. */
 export function whenSignedOut(fn) {
   onSignedOut = fn
@@ -32,7 +41,15 @@ async function req(path, opts = {}) {
   if (token && !headers['Authorization']) {
     headers['Authorization'] = `Bearer ${token}`
   }
-  const r = await fetch(API + path, { ...opts, headers })
+  let r
+  try {
+    r = await fetch(API + path, { ...opts, headers })
+  } catch (cause) {
+    // Browser fetch rejects without a response for offline, proxy and server
+    // restart failures.  Give every screen the same actionable message rather
+    // than exposing an unhelpful browser-specific "Failed to fetch".
+    throw networkError(cause)
+  }
   const text = await r.text()
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
@@ -55,7 +72,8 @@ async function req(path, opts = {}) {
 async function download(path, filename) {
   const token = getAuthToken()
   const headers = token ? { Authorization: `Bearer ${token}` } : {}
-  const r = await fetch(API + path, { headers })
+  let r
+  try { r = await fetch(API + path, { headers }) } catch (cause) { throw networkError(cause) }
   if (!r.ok) {
     const text = await r.text()
     let data = null
@@ -82,6 +100,9 @@ const post = (path, body) => req(path, {
 })
 
 export const api = {
+  // Lightweight Studio API readiness check. It stays available even when
+  // Ollama, previews, or cloud integrations are still starting up.
+  health: () => req('/health'),
   auth: {
     signup: (data) => post('/auth/signup', data),
     login: (data) => post('/auth/login', data),

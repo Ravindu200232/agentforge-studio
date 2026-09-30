@@ -17,6 +17,10 @@ from . import bus, changes, config, plugins, prompts, secrets_guard, store
 from .session import RunCancelled, session_for
 
 
+_active_lock = threading.RLock()
+_active: dict[str, str] = {}
+
+
 def _model_from(message: dict[str, Any]) -> str:
     """Whichever model the studio picked for this kind of work."""
     order = (("design_model", "model", "builder_model", "planner_model", "qa_model")
@@ -47,7 +51,20 @@ def _thinking_from(message: dict[str, Any]) -> str:
     return chosen if chosen in config.THINKING_LEVELS else config.thinking()
 
 
-def _in_background(name: str, fn, *args: Any, **kwargs: Any) -> None:
+def _in_background(name: str, project: str, agent: str, fn, *args: Any, **kwargs: Any) -> None:
+    """Start exactly one mutating run per project.
+
+    Double clicks, an HTTP fallback racing a reconnecting WebSocket, and a
+    quick Resume after Start used to create two agents writing the same files.
+    Claim before the thread starts so the second request gets a useful answer
+    instead of a corrupt workspace.
+    """
+    with _active_lock:
+        current = _active.get(project)
+        if current:
+            raise ValueError("this project is already working — wait for it to finish or stop it first")
+        _active[project] = name
+    bus.run_state(project, "queued", agent=agent)
     threading.Thread(target=_guarded, args=(name, fn, args, kwargs),
                      name=name, daemon=True).start()
 
@@ -62,6 +79,16 @@ def _guarded(name: str, fn, args: tuple, kwargs: dict) -> None:
     except Exception as exc:  # noqa: BLE001 - the studio must see why, not hang
         if project:
             bus.failed(project, str(exc) or exc.__class__.__name__)
+    finally:
+        if project:
+            with _active_lock:
+                if _active.get(project) == name:
+                    _active.pop(project, None)
+
+
+def active_run(project: str) -> str:
+    with _active_lock:
+        return _active.get(project, "")
 
 
 # --- the messages -----------------------------------------------------------
@@ -77,6 +104,11 @@ def agent_build(message: dict[str, Any]) -> dict[str, Any]:
                               language=str(message.get("language") or ""),
                               stack=str(message.get("stack") or ""))
         project = record["id"]
+    else:
+        # A late WebSocket/fallback request can arrive after the customer
+        # deleted an SRS or project.  Do not announce a ghost project (or let
+        # a stale worker revive its workspace) when its record is gone.
+        store.require(project)
 
     if message.get("stack"):
         store.update(project, stack=str(message["stack"]))
@@ -95,12 +127,10 @@ def agent_build(message: dict[str, Any]) -> dict[str, Any]:
     bus.project_created(project)
 
     if message.get("prototype_only"):
-        bus.run_state(project, "queued")
-        _in_background(f"prototype:{project}", prototyper.generate, project, direction,
+        _in_background(f"prototype:{project}", project, bus.DESIGNER, prototyper.generate, project, direction,
                        _project=project)
     else:
-        bus.run_state(project, "queued")
-        _in_background(f"build:{project}", builder.run, project, direction,
+        _in_background(f"build:{project}", project, bus.DEVELOPER, builder.run, project, direction,
                        _project=project)
     return {"ok": True, "project": project}
 
@@ -145,16 +175,13 @@ def agent_update_direct(message: dict[str, Any]) -> dict[str, Any]:
 
     role = str(message.get("agent") or bus.DEVELOPER)
     if role == bus.DESIGNER and prototyper.exists(project):
-        bus.run_state(project, "queued", agent=bus.DESIGNER)
-        _in_background(f"prototype-edit:{project}", prototyper.revise, project, request,
+        _in_background(f"prototype-edit:{project}", project, bus.DESIGNER, prototyper.revise, project, request,
                        _project=project)
     elif builder.built(project):
-        bus.run_state(project, "queued", agent=bus.DEVELOPER)
-        _in_background(f"build-edit:{project}", builder.update, project, request,
+        _in_background(f"build-edit:{project}", project, bus.DEVELOPER, builder.update, project, request,
                        _project=project)
     else:
-        bus.run_state(project, "queued", agent=role)
-        _in_background(f"chat:{project}", _chat, project, request, role,
+        _in_background(f"chat:{project}", project, role, _chat, project, request, role,
                        _model_from(message), _thinking_from(message), _project=project)
     return {"ok": True, "project": project}
 
@@ -176,6 +203,8 @@ def _chat(project: str, request: str, role: str, model: str = "", thinking_level
         if text:
             bus.agent_msg(project, text, agent=role)
         session.finish(text)
+    except RunCancelled:
+        raise
     except Exception:
         session.fail("that message could not be carried out")
         raise
@@ -205,22 +234,18 @@ def agent_resume(message: dict[str, Any]) -> dict[str, Any]:
     stage = record.get("stage", "interview")
 
     if stage in ("build", "test") and builder.built(project):
-        bus.run_state(project, "queued")
-        _in_background(f"test:{project}", qa.run, project, "", _project=project)
+        _in_background(f"test:{project}", project, bus.DEVELOPER, qa.run, project, "", _project=project)
     elif stage in ("prototype", "design") and not prototyper.exists(project):
         # An interrupted prototype is still a design job. Sending it straight
         # to the builder leaves the customer with neither a prototype nor a
         # usable recovery button. Resume the focused HTML generation first;
         # its checkpoint reuses completed kit/pages instead of starting over.
-        bus.run_state(project, "queued", agent=bus.DESIGNER)
-        _in_background(f"prototype:{project}", prototyper.generate_from_wireframes,
+        _in_background(f"prototype:{project}", project, bus.DESIGNER, prototyper.generate_from_wireframes,
                        project, "", _project=project)
     elif stage in ("prototype", "design"):
-        bus.run_state(project, "queued", agent=bus.DEVELOPER)
-        _in_background(f"build:{project}", builder.run, project, "", _project=project)
+        _in_background(f"build:{project}", project, bus.DEVELOPER, builder.run, project, "", _project=project)
     else:
-        bus.run_state(project, "queued")
-        _in_background(f"build:{project}", builder.run, project, "", _project=project)
+        _in_background(f"build:{project}", project, bus.DEVELOPER, builder.run, project, "", _project=project)
     return {"ok": True, "project": project}
 
 
@@ -246,8 +271,7 @@ def run_tests(message: dict[str, Any]) -> dict[str, Any]:
     project = str(message.get("project") or "").strip()
     if not project:
         raise ValueError("that message names no project")
-    bus.run_state(project, "queued")
-    _in_background(f"test:{project}", qa.run, project,
+    _in_background(f"test:{project}", project, bus.DEVELOPER, qa.run, project,
                    str(message.get("prompt") or ""), _project=project)
     return {"ok": True, "project": project}
 
@@ -271,6 +295,14 @@ def handle(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def cancel(project: str, _agent: str = "") -> dict[str, Any]:
-    session_for(project).cancel()
-    bus.log(project, "WARN", "Stopping at the next safe point…")
-    return {"ok": True}
+    if not project:
+        raise ValueError("choose a project to stop")
+    store.require(project)
+    session = session_for(project)
+    active = active_run(project)
+    was_running = bool(active or session.stage != "idle")
+    session.cancel()
+    if was_running:
+        bus.log(project, "WARN", "Stop requested — ending the current step now.")
+        return {"ok": True, "status": "stopping"}
+    return {"ok": True, "status": "idle", "detail": "No active run to stop."}

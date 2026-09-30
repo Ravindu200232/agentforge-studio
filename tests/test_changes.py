@@ -94,6 +94,10 @@ class ChangesTestCase(unittest.TestCase):
         self.session = FakeSession(self.workspace)
         self.events: list[dict] = []
         bus._pending_decisions.clear()
+        # Each test recreates this in-memory project name. `forget()` now
+        # tombstones deleted projects so late worker events cannot revive
+        # them; register the intentional reuse before subscribing to events.
+        bus.project_created(PROJECT)
         changes._threads.clear()
         patches = [
             mock.patch.object(changes, "session_for", lambda project: self.session),
@@ -137,12 +141,11 @@ class PlanFirstTests(ChangesTestCase):
         self.session.replies = [dict(PLAN)]
         self.submit("add a due date to every task")
         prompt = " ".join(self.session.prompts[0].split())          # the file wraps its lines
-        for sentence in ("If this prompt affects the SRS files, update them.",
-                         "If it affects the wireframes, update the wireframes.",
-                         "If it affects the prototype, update the prototype.",
-                         "If it affects the build, update the build."):
+        for sentence in ("Update SRS, wireframes, prototype and build only when the request actually affects them.",
+                         "SRS text, Mermaid diagrams, wireframes and prototype updates are direct artifact edits with no test steps.",
+                         "For build changes, plan focused unit tests only for changed or newly added business logic files; never plan the full unit suite."):
             self.assertIn(sentence, prompt)
-        self.assertIn("For every part that is updated or new, create or edit its test files and run them.", prompt)
+        self.assertIn("Plan E2E and other quality layers only for a new feature or changed user-visible behavior.", prompt)
         self.assertIn("add a due date to every task", prompt)
         self.assertIn("srs.json", prompt)          # the folder listing of this project
         self.assertIn("app/", prompt)
@@ -263,10 +266,10 @@ class ReviseApproveCancelTests(ChangesTestCase):
             self.settle(change_id)
         request, plan = self.session.executed[0]
         flat = " ".join(request.split())
-        self.assertIn("If this prompt affects the SRS files, update them.", flat)
-        self.assertIn("whole `.agentforge` folder", flat)
-        self.assertIn("read, write and edit", flat)
-        self.assertIn("For every part that is updated or new, create or edit its test files and run them.", flat)
+        self.assertIn("Follow the plan in order and change only affected files.", flat)
+        self.assertIn("Keep derived artifacts consistent when their source changes.", flat)
+        self.assertIn("Do not create or run tests for SRS text, Mermaid diagram, wireframe or prototype-only updates.", flat)
+        self.assertIn("For build updates, add or run focused unit tests only for changed or newly added business logic files; never run the full unit suite.", flat)
         self.assertIn("add a due date to every task", request)
         self.assertIn("GUIDES", request)
         self.assertIn("Add the field", plan)
@@ -379,7 +382,7 @@ class RoutingTests(unittest.TestCase):
         for name in ("plan", "execute", "unanswered", "history", "previous-plan", "questions-left", "no-questions"):
             self.assertTrue(prompts.exists(f"changes/{name}"), name)
         plan = prompts.load("changes/plan")
-        for word in ('"kind": "answer"', '"kind": "question"', '"kind": "plan"', "read_file"):
+        for word in ('"kind":"answer"', '"kind":"question"', '"kind":"plan"', "Project artifacts"):
             self.assertIn(word, plan)
 
 

@@ -53,7 +53,7 @@
 
 :root {
   --accent2: var(--accent);
-  --sidebar-w: 280px;
+  --sidebar-w: 260px;
   --radius-panel: 16px;
   --radius-ctl: 12px;
   --card-shadow: 0 0 2px 0 rgba(145, 158, 171, 0.2), 0 12px 24px -4px rgba(145, 158, 171, 0.12);

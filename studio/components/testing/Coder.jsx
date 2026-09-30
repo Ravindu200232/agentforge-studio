@@ -51,18 +51,25 @@ function Journey({ flow }) {
 }
 
 export default function Coder({ qa }) {
-  const tests = qa?.tests || {}
-  const names = Object.keys(tests).sort()
+  const legacyTests = qa?.tests || {}
+  const sources = Array.isArray(qa?.testSources) && qa.testSources.length
+    ? qa.testSources
+    : Object.keys(legacyTests).sort().map(path => ({ path, kind: path.startsWith('e2e/') ? 'e2e' : 'unit', code: legacyTests[path] }))
+  const unitSources = sources.filter(source => source.kind === 'unit')
+  const e2eSources = sources.filter(source => source.kind === 'e2e')
+  const supportSources = sources.filter(source => source.kind === 'support')
   const flows = ((qa?.report?.e2e || {}).flows || []).filter(f => f?.title)
   const [sel, setSel] = useState(null)
 
-  if (!names.length && !flows.length) {
+  if (!sources.length && !flows.length) {
     return <Empty>No test files or recorded journeys for this project.</Empty>
   }
 
   const items = [
-    ...names.map(n => ({ key: `unit:${n}`, kind: 'unit', name: n })),
-    ...flows.map((f, i) => ({ key: `e2e:${f.title}:${i}`, kind: 'e2e', name: f.title, flow: f })),
+    ...unitSources.map(source => ({ key: `source:${source.path}`, kind: 'unit', name: source.path, source })),
+    ...e2eSources.map(source => ({ key: `source:${source.path}`, kind: 'e2e', name: source.path, source })),
+    ...supportSources.map(source => ({ key: `source:${source.path}`, kind: 'support', name: source.path, source })),
+    ...flows.map((flow, index) => ({ key: `journey:${flow.title}:${index}`, kind: 'journey', name: flow.title, flow })),
   ]
   const current = items.find(i => i.key === sel) || items[0]
 
@@ -71,15 +78,17 @@ export default function Coder({ qa }) {
             className={cn('block w-full rounded-none px-2 py-1.5 text-left transition-colors',
               item.key === current.key ? 'bg-accent' : 'hover:bg-panel2')}>
       <span className="block truncate font-mono text-[11px] text-ink">
-        {item.kind === 'unit' ? item.name.split('/').pop() : item.name}
+        {item.kind === 'journey' ? item.name : item.name.split('/').pop()}
       </span>
       <span className="block truncate text-[9px] text-muted2">
-        {item.kind === 'unit'
-          ? item.name.replace(/\/[^/]+$/, '')
-          : `${(item.flow.stages || []).length} steps`}
+        {item.kind === 'journey'
+          ? `${(item.flow.stages || []).length} recorded steps`
+          : item.kind === 'support'
+            ? 'test configuration'
+            : item.name.replace(/\/[^/]+$/, '')}
       </span>
       {item.kind === 'unit' && item.name.includes('/quarantine/') && <Tag tone="bad">set aside</Tag>}
-      {item.kind === 'e2e' && (item.flow.stages || []).some(s => s.status === 'failed') && (
+      {item.kind === 'journey' && (item.flow.stages || []).some(s => s.status === 'failed') && (
         <Tag tone="bad">failed</Tag>
       )}
     </button>
@@ -94,16 +103,20 @@ export default function Coder({ qa }) {
   return (
     <div className="flex h-full min-h-[420px] gap-3">
       <aside className="w-[240px] shrink-0 overflow-y-auto border-r border-line pr-1">
-        {names.length > 0 && <Heading count={names.length}>Unit tests</Heading>}
+        {unitSources.length > 0 && <Heading count={unitSources.length}>Unit test code</Heading>}
         {items.filter(i => i.kind === 'unit').map(item => <Row key={item.key} item={item} />)}
-        {flows.length > 0 && <Heading count={flows.length}>Browser journeys</Heading>}
+        {e2eSources.length > 0 && <Heading count={e2eSources.length}>E2E test code</Heading>}
         {items.filter(i => i.kind === 'e2e').map(item => <Row key={item.key} item={item} />)}
+        {supportSources.length > 0 && <Heading count={supportSources.length}>Test setup</Heading>}
+        {items.filter(i => i.kind === 'support').map(item => <Row key={item.key} item={item} />)}
+        {flows.length > 0 && <Heading count={flows.length}>Recorded journeys</Heading>}
+        {items.filter(i => i.kind === 'journey').map(item => <Row key={item.key} item={item} />)}
       </aside>
 
-      {current.kind === 'e2e' ? <Journey flow={current.flow} /> : (
+      {current.kind === 'journey' ? <Journey flow={current.flow} /> : (
         <pre className="min-w-0 flex-1 overflow-auto rounded-none bg-code p-3.5
                         font-mono text-[11px] leading-[1.7] text-ink">
-          {tests[current.name]}
+          {current.source?.code || legacyTests[current.name]}
         </pre>
       )}
     </div>

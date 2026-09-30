@@ -12,6 +12,7 @@ export default function Performance({ qa }) {
       <div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-semibold text-ink">HTTP load sample</h3>
         <Badge tone={load?.status === 'completed' ? 'ok' : load?.status === 'failed' ? 'bad' : 'mute'}>{load?.status || 'not run'}</Badge></div>
       {load?.reason && <p className="mt-2 text-xs text-muted">{load.reason}</p>}
+      {!load && <p className="mt-2 text-xs text-muted">A separate HTTP load sample was not part of this saved verification. The browser performance audit below did run; it measures page experience, not concurrent-user capacity.</p>}
       {load?.requests != null && <>
         <p className="mt-2 break-all font-mono text-[11px] text-muted">GET {load.url}</p>
         <Table><thead><TR><TH>measurement</TH><TH>result</TH></TR></thead><tbody>

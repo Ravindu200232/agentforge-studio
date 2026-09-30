@@ -24,8 +24,10 @@ export function reduceSession(session, event) {
   const next = { ...s, eventIds: event.event_id ? [...s.eventIds.slice(-1199), event.event_id] : s.eventIds }
   const at = event.at || Date.now()
   next.lastEventAt = Math.max(s.lastEventAt || 0, at)
-  const log = (level, text) => { next.logs = [...s.logs.slice(-799), { level, text, at }] }
-  const chat = entry => { next.chat = [...s.chat.slice(-299), { at, ...entry }] }
+  // The server is the durable source of truth, but an open Studio must not
+  // drop an earlier turn simply because a long run is still arriving.
+  const log = (level, text) => { next.logs = [...s.logs, { level, text, at }] }
+  const chat = entry => { next.chat = [...s.chat, { at, ...entry }] }
   switch (event.type) {
     case 'log': log(event.level, event.text); break
     case 'user_msg': chat({ role: 'user', text: event.text }); break
@@ -124,7 +126,7 @@ export function reduceSession(session, event) {
         && row.revision < card.revision && ['proposed', 'approved'].includes(row.status)
         ? { ...row, status: 'superseded' } : row)
       const at1 = rows.findIndex(row => row.role === 'change' && row.changeId === event.change_id && row.revision === card.revision)
-      next.chat = at1 < 0 ? [...rows.slice(-299), { at, ...card }]
+      next.chat = at1 < 0 ? [...rows, { at, ...card }]
         : rows.map((row, index) => index === at1 ? { ...row, ...card } : row)
       break
     }

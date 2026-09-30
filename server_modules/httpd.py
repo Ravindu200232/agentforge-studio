@@ -11,8 +11,11 @@ import binascii
 import html
 import json
 import re
+import shutil
+import threading
 import traceback
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -74,6 +77,24 @@ def _project(ctx: dict[str, Any]) -> str:
 
 LOCAL_USER = {"id": "local", "username": "local", "name": "You",
               "email": "", "plan": "local"}
+
+
+@route("GET", r"/health")
+@route("GET", r"/healthz")
+def health(_ctx: dict) -> Any:
+    """A dependency-free readiness response for the local Studio API.
+
+    This deliberately does not contact Ollama, a preview, or a cloud service:
+    callers can distinguish a reachable Studio from an unavailable optional
+    dependency and can use it safely while the rest of the application starts.
+    """
+    return {
+        "ok": True,
+        "service": "agentforge-studio",
+        "status": "ready",
+        "feed_url": f"ws://127.0.0.1:{config.WS_PORT}",
+        "timestamp": int(time.time() * 1000),
+    }
 
 
 @route("GET", r"/auth/me")
@@ -507,17 +528,36 @@ def list_projects(_ctx: dict) -> Any:
 
 @route("POST", r"/delete-project")
 def delete_project(ctx: dict) -> Any:
-    import shutil
-
     from .session import drop
 
     project = str(ctx.get("project") or "")
     store.require(project)
+    # Make the project disappear from the studio first.  Deleting a generated
+    # application's node_modules tree can take seconds on Windows; moving the
+    # workspace aside is normally atomic, and physical cleanup can continue
+    # after the response without keeping the Delete button spinning.
     preview_runtime.stop(project)
     drop(project)
     store.delete(project)
-    shutil.rmtree(config.workspace_for(project), ignore_errors=True)
-    return {"ok": True}
+    workspace = config.workspace_for(project)
+    cleanup = workspace
+    moved = False
+    if workspace.exists():
+        retired = config.STATE / "deleted-workspaces"
+        retired.mkdir(parents=True, exist_ok=True)
+        target = retired / f"{project}-{uuid.uuid4().hex}"
+        try:
+            workspace.replace(target)
+            cleanup, moved = target, True
+        except OSError:
+            # An antivirus scanner or an already-ending child process can hold
+            # a Windows file lock.  The project is still deleted immediately;
+            # let cleanup retry independently rather than making the UI wait.
+            cleanup = workspace
+    threading.Thread(target=shutil.rmtree, args=(cleanup,),
+                     kwargs={"ignore_errors": True}, name=f"delete:{project}",
+                     daemon=True).start()
+    return {"ok": True, "cleanup": "moved" if moved else "scheduled"}
 
 
 def _runtime_state(project: str) -> dict[str, Any]:

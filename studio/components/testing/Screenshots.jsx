@@ -7,6 +7,7 @@ import { Badge, Button, Empty, Modal } from '../ui'
 /** Displays UI usability and quality findings recorded during journey execution. */
 function UiQuality({ qa }) {
   const rows = []
+  const recordedSummary = qa?.uiQualitySummary
   for (const flow of (qa?.report?.e2e || {}).flows || []) {
     // Newer runs carry the checks beside the stages; older ones left them
     // inline among the steps, so both are read.
@@ -35,10 +36,14 @@ function UiQuality({ qa }) {
   const flagged = pages.filter(row => row.note !== 'clean')
   if (!pages.length) {
     return (
-      <p className="rounded-none border border-line bg-panel px-4 py-3 text-[11.5px] text-muted">
-        No page was read for usability — no journey recorded a check, and the
-        page sweep found no routes to open.
-      </p>
+      <div className="rounded-none border border-line bg-panel px-4 py-3 text-[11.5px] text-muted">
+        {recordedSummary ? <>
+          <p className="font-semibold text-ink">Visual quality check recorded</p>
+          <p className="mt-1">{recordedSummary.detail || `${recordedSummary.count || 0} public screens were checked.`} Detailed per-page usability notes were not saved by that earlier build, so this view cannot honestly invent them.</p>
+        </> : <>
+          No page-level usability notes were saved. Screenshots are still available below; run the Testing stage to record a fresh page-by-page usability sweep.
+        </>}
+      </div>
     )
   }
   return (

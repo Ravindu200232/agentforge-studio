@@ -19,6 +19,17 @@ PROTOTYPE_DIR = "prototype"
 ROUTES = (PROTOTYPE_DIR, "routes.json")
 
 
+def _read_record(session: Any, *parts: str, fallback=None):
+    """Read optional session state without requiring it from focused callers.
+
+    Production sessions persist incremental prototype state. Older focused
+    callers may only provide a workspace and use the same drawing code for a
+    one-shot render, where an absent checkpoint is simply a fresh run.
+    """
+    reader = getattr(session, "read_record", None)
+    return reader(*parts, fallback=fallback) if callable(reader) else fallback
+
+
 def _uploaded_site_images(session: ProjectSession, root: Any) -> list[dict[str, str]]:
     """Stage customer images next to the static HTML while preserving media originals."""
     uploaded = []
@@ -27,7 +38,7 @@ def _uploaded_site_images(session: ProjectSession, root: Any) -> list[dict[str, 
     media = (session.workspace / "media").resolve()
     if not media.is_relative_to(session.workspace.resolve()):
         return uploaded
-    for image in session.read_record("images.json", fallback=[]) or []:
+    for image in _read_record(session, "images.json", fallback=[]) or []:
         relative = str(image.get("path") or "")
         source = (session.workspace / relative).resolve()
         if not relative.startswith("media/") or not source.is_relative_to(media) or not source.is_file():
@@ -47,7 +58,7 @@ def routes(project: str) -> list[dict[str, Any]]:
 
 def exists(project: str) -> bool:
     session = session_for(project)
-    checkpoint = session.read_record(PROTOTYPE_DIR, "generation.json", fallback=None) or {}
+    checkpoint = _read_record(session, PROTOTYPE_DIR, "generation.json", fallback=None) or {}
     # During an incremental draw routes.json intentionally exposes the pages
     # already ready for review. It is not build-ready until the checkpoint is
     # complete. Projects created before checkpoints remain compatible.
@@ -161,7 +172,7 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
         fingerprint_payload, ensure_ascii=False, sort_keys=True, default=str,
     ).encode("utf-8")).hexdigest()
     checkpoint_path = root / "generation.json"
-    checkpoint = session.read_record(PROTOTYPE_DIR, "generation.json", fallback=None) or {}
+    checkpoint = _read_record(session, PROTOTYPE_DIR, "generation.json", fallback=None) or {}
     kit_paths = {
         "assets/app.css": root / "assets" / "app.css",
         "assets/app.js": root / "assets" / "app.js",
@@ -408,7 +419,7 @@ def _generate(project: str, direction: str,
                                f"{'s' if len(drawn) != 1 else ''} you can click through.",
                       title="Prototype ready", agent=bus.DESIGNER)
         # The demo accounts and what each role can open, at the end, in the chat: this is how the customer enters as each role.
-        saved = session.read_record(PROTOTYPE_DIR, "demo-accounts.json", fallback=None) or {}
+        saved = _read_record(session, PROTOTYPE_DIR, "demo-accounts.json", fallback=None) or {}
         accounts_text = prototype_brief.accounts_message(saved.get("accounts") or [], drawn, str(saved.get("sign_in") or ""))
         if accounts_text:
             bus.agent_msg(project, accounts_text, title="Demo accounts", agent=bus.DESIGNER)
@@ -426,10 +437,8 @@ def _generate(project: str, direction: str,
     except RunCancelled:
         session.stage = "idle"
         session.save_context()
-        bus.cancelled(project, "Prototype generation stopped.", agent=bus.DESIGNER)
         if from_wireframes:
-            bus.sync_state(project, "failed", "Prototype generation stopped.",
-                           source="prototype", error="Prototype generation stopped.")
+            bus.sync_state(project, "paused", "Prototype generation stopped.", source="prototype")
         raise
     except Exception as exc:  # noqa: BLE001
         session.fail(str(exc))
@@ -452,6 +461,8 @@ def revise(project: str, request: str) -> dict[str, Any]:
         bus.prototype_changed(project)
         session.finish("Prototype updated.")
         return {"routes": routes(project)}
+    except RunCancelled:
+        raise
     except Exception as exc:  # noqa: BLE001
         session.fail(str(exc))
         raise

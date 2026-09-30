@@ -4,7 +4,22 @@ import { Badge, Empty, Panel } from '../ui'
 
 export default function AutoRepair({ qa }) {
   const trace = qa?.repairs
-  if (!trace) return <Empty>No tool-driven repair record exists for this run.</Empty>
+  const buildRepairs = qa?.buildRepairs
+  if (!trace && buildRepairs) return <div className="space-y-4">
+    <Panel className="p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-semibold text-ink">Build repairs already completed</h3>
+        <Badge tone="ok">{buildRepairs.status}</Badge>
+      </div>
+      <p className="mt-2 text-xs text-muted">The initial build found and repaired the issues below, then recorded its checks. The separate Testing-stage repair loop did not run, so this is build evidence rather than a new repair attempt.</p>
+    </Panel>
+    {buildRepairs.items.map((item, index) => <Panel key={index} className="p-4">
+      <p className="text-xs font-semibold text-ink">{item.where}</p>
+      <p className="mt-2 text-xs text-muted">{item.problem}</p>
+      <p className="mt-2 text-xs text-emerald-700"><span className="font-semibold">Repaired:</span> {item.fix}</p>
+    </Panel>)}
+  </div>
+  if (!trace) return <Empty>No repair cycle was needed or recorded after testing. Build-time repair evidence will appear here when it exists.</Empty>
   return <div className="space-y-4">
     <Panel className="p-4">
       <div className="flex flex-wrap items-center gap-2">

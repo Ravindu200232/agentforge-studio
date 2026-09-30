@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from server_modules import bus, config, journeys, llm, mermaid, prompts, reference_staging, store
-from server_modules.session import ProjectSession, session_for
+from server_modules.session import ProjectSession, RunCancelled, session_for
 from server_modules.validation import completeness
 from server_modules.validation import corpus as corpus_rules
 from server_modules.validation import review as review_rules
@@ -759,6 +759,11 @@ def generate(project: str) -> dict[str, Any]:
         bus.sync_state(project, "clean", "Specification written",
                        source="srs", srs_status="completed")
         return {"srs": envelope, "summary": summary}
+    except RunCancelled:
+        session.stage = "idle"
+        session.save_context()
+        bus.sync_state(project, "paused", "Specification generation stopped.", source="srs")
+        raise
     except Exception as exc:  # noqa: BLE001
         session.fail(str(exc))
         bus.sync_state(project, "failed", str(exc)[:300], error=str(exc)[:300],
@@ -1242,6 +1247,8 @@ def _generate_wireframes(session: ProjectSession, project: str, doc: dict,
                                 quiet=quiet, stream=stream_this)
             update(page, result=result)
             return result
+        except RunCancelled:
+            raise
         except Exception as exc:  # one failed route must not hide the others
             update(page, error=exc)
             if not quiet:
@@ -1285,6 +1292,11 @@ def redraw(project: str, route: str = "", quiet: bool = False) -> dict[str, Any]
         if not quiet:
             session.finish(f"{count} wireframe(s) drawn.")
         return wireframes(project)
+    except RunCancelled:
+        if not quiet:
+            session.stage = "idle"
+            session.save_context()
+        raise
     except Exception as exc:  # noqa: BLE001
         if not quiet:
             session.fail(str(exc))
@@ -1375,6 +1387,11 @@ def approve(project: str, prompt: str = "") -> dict[str, Any]:
         bus.sync_state(project, "clean", "Wireframes ready", source="wireframe")
         return {"ok": True, "project": project, "drawn": drawn,
                 "ready": ready, "total": len(total)}
+    except RunCancelled:
+        session.stage = "idle"
+        session.save_context()
+        bus.sync_state(project, "paused", "Wireframe generation stopped.", source="wireframe")
+        raise
     except Exception as exc:  # noqa: BLE001
         session.fail(str(exc))
         bus.sync_state(project, "failed", str(exc)[:300], source="wireframe",

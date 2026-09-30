@@ -14,7 +14,7 @@ for folder in ("builder-agent", "qa-agent"):
     sys.path.insert(0, str(ROOT / folder))
 
 from builder_agent import scaffold  # noqa: E402
-from qa_agent.evidence import collect  # noqa: E402
+from qa_agent.evidence import archive_results, collect  # noqa: E402
 
 NEXTJS_STACKS = {"nextjs-supabase", "nextjs-microservices-supabase"}
 MICROSERVICES_STACKS = {"nextjs-microservices-supabase", "vite-microservices-supabase"}
@@ -361,6 +361,70 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(result["unitInventory"]["untested_required"], 1)
             self.assertEqual(result["codeCoverage"]["lines"], 50.0)
             self.assertEqual(result["codeCoverage"]["files"][0]["file"], "app/page.jsx")
+
+    def test_build_artifacts_fill_api_runtime_repair_and_accessibility_panels(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            handler = workspace / "app/api/things/route.js"
+            handler.parent.mkdir(parents=True)
+            handler.write_text("export async function GET() {}\nexport async function POST() {}\n", encoding="utf-8")
+            test = workspace / "test/api.node.test.js"
+            test.parent.mkdir()
+            test.write_text("await import('@/app/api/things/route.js')\n", encoding="utf-8")
+            qa = workspace / ".agentforge/qa"
+            qa.mkdir(parents=True)
+            (qa / "vitest.json").write_text(json.dumps({"testResults": [{"name": str(test), "status": "passed"}]}))
+            (workspace / ".agentforge/preview-runtime.json").write_text(json.dumps({"status": "running", "url": "http://127.0.0.1:3001"}))
+            build = workspace / ".agentforge/build"
+            build.mkdir()
+            (build / "report.json").write_text(json.dumps({
+                "phase_3": {
+                    "layers": [
+                        {"layer": "accessibility (axe-core)", "exit_code": 0, "result": "5 passed — zero violations"},
+                        {"layer": "UI and screenshot check", "exit_code": 0, "result": "5 passed — no horizontal overflow"},
+                    ],
+                    "defects_found_and_fixed": [{"where": "Search", "defect": "missing label", "fix": "added a label"}],
+                },
+            }))
+            result = collect(workspace, {"project": "x"})
+            self.assertEqual(result["contracts"][0]["route"], "/api/things")
+            self.assertEqual(result["contracts"][0]["methods"], ["GET", "POST"])
+            self.assertEqual(result["contracts"][0]["tests"][0]["status"], "passed")
+            self.assertEqual(result["runtimeStatus"]["status"], "running")
+            self.assertEqual(result["accessibility"]["declaredAudited"], 5)
+            self.assertEqual(result["uiQualitySummary"]["count"], 5)
+            self.assertEqual(result["buildRepairs"]["items"][0]["fix"], "added a label")
+
+    def test_coder_gets_unit_e2e_and_test_setup_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            (workspace / "test").mkdir()
+            (workspace / "e2e").mkdir()
+            (workspace / "test" / "money.test.js").write_text("test('money', () => {})", encoding="utf-8")
+            (workspace / "e2e" / "booking.spec.js").write_text("test('booking', async () => {})", encoding="utf-8")
+            (workspace / "playwright.config.js").write_text("export default {}", encoding="utf-8")
+            result = collect(workspace, {"project": "x"})
+            sources = {(row["path"], row["kind"]): row["code"] for row in result["testSources"]}
+            self.assertEqual(sources[("test/money.test.js", "unit")], "test('money', () => {})")
+            self.assertEqual(sources[("e2e/booking.spec.js", "e2e")], "test('booking', async () => {})")
+            self.assertEqual(sources[("playwright.config.js", "support")], "export default {}")
+
+    def test_previous_results_are_preserved_and_visible_after_live_files_change(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            qa = workspace / ".agentforge/qa"
+            qa.mkdir(parents=True)
+            (qa / "vitest.json").write_text(json.dumps({"numTotalTests": 8, "numPassedTests": 8, "numFailedTests": 0}))
+            (workspace / "test-results").mkdir()
+            (workspace / "test-results/results.json").write_text(json.dumps({"stats": {"expected": 4, "unexpected": 0}}))
+            saved = archive_results(workspace, "Before a repair", "before-repair")
+            self.assertIsNotNone(saved)
+            (qa / "vitest.json").write_text(json.dumps({"numTotalTests": 3, "numPassedTests": 2, "numFailedTests": 1}))
+            result = collect(workspace, {"project": "x"})
+            historic = result["resultHistory"][0]
+            self.assertEqual(historic["label"], "Before a repair")
+            self.assertEqual(historic["counts"]["unit"], {"total": 8, "passed": 8, "failed": 0})
+            self.assertEqual(historic["counts"]["browser"], {"total": 4, "passed": 4, "failed": 0})
 
 
 if __name__ == "__main__":

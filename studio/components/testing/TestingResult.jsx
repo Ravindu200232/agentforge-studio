@@ -187,12 +187,22 @@ function badges(qa) {
     else if (r.e2e.recordedOutcomes?.length) out.e2e = { n: `${r.e2e.recordedOutcomes.length} saved`, bad: false }
   }
   if (r?.security) {
-    const sec = (r.security.findings?.length || 0) + Object.values(r.security.audit || {}).reduce((sum, value) => sum + (Number(value) || 0), 0) + Object.values(r.security.headers?.checks || {}).filter(value => !value).length
-    out.security = { n: r.security.audit_status !== 'completed' ? 'n/a' : sec, bad: sec > 0 || r.security.audit_status !== 'completed' }
+    const zapCounts = r.security.zap?.counts || qa?.security?.zap?.counts || {}
+    const high = Number(zapCounts.high || 0)
+    const medium = Number(zapCounts.medium || 0)
+    const low = Number(zapCounts.low || 0)
+    const fallback = r.security.findings?.length || 0
+    out.security = { n: high ? `${high} high` : medium ? `${medium} med` : low ? `${low} low` : fallback,
+                     bad: high > 0 || medium > 0 || low > 0 }
   }
   if (qa?.load) out.perf = { n: qa.load.status === 'completed' ? `${qa.load.latencyMs?.p97_5 ?? '—'}ms p97.5` : qa.load.status, bad: qa.load.status !== 'completed' }
-  if (qa?.accessibility) out.accessibility = { n: `${qa.accessibility.passed || 0}/${qa.accessibility.totalRoutes || 0}`, bad: qa.accessibility.status !== 'passed' }
+  if (qa?.accessibility) {
+    const audited = Math.max(Number(qa.accessibility.audited || 0), Number(qa.accessibility.declaredAudited || 0), Number(qa.accessibility.totalRoutes || 0))
+    const passed = Math.max(Number(qa.accessibility.passed || 0), Number(qa.accessibility.declaredPassed || 0))
+    out.accessibility = { n: `${passed}/${audited}`, bad: qa.accessibility.status !== 'passed' }
+  }
   if (qa?.repairs?.rounds?.length) out.repair = { n: `${qa.repairs.rounds.length} round(s)`, bad: qa.repairs.status !== 'fixed' }
+  else if (qa?.buildRepairs?.items?.length) out.repair = { n: `${qa.buildRepairs.items.length} fixed`, bad: false }
   const timeline = qa?.timeline?.length || qa?.history?.length
   if (timeline) out.timeline = { n: timeline, bad: false }
   if (qa?.screenshots?.length) out.screenshots = { n: qa.screenshots.length, bad: false }

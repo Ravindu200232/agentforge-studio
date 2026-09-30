@@ -1,9 +1,9 @@
 """The event bus the studio listens to.
 
 Every event shape here is one the studio's own reducer already understands
-(`studio/lib/agent-session.js`). The bus keeps a bounded history per project so a
-browser that reloads, or one that connects late, sees the same run the live
-socket was showing.
+(`studio/lib/agent-session.js`). The bus retains a project's durable history so
+a browser that reloads, or one that connects late, sees the same conversation
+the live socket was showing.
 """
 from __future__ import annotations
 
@@ -20,8 +20,6 @@ DESIGNER = "designer"
 DEVELOPER = "developer"
 ROLES = (DESIGNER, DEVELOPER)
 
-HISTORY_LIMIT = 4000
-
 # One conversation per project, shown identically on every tab. Set False to go
 # back to the studio's own split between the designer's chat and the developer's.
 MIRROR_ROLES = True
@@ -33,6 +31,10 @@ _runs: dict[str, dict[str, dict]] = {}
 _listeners: list[Callable[[dict], None]] = []
 _pending_decisions: dict[str, dict] = {}
 _loaded: set[str] = set()
+# A project may be deleted while a model call is still unwinding on a daemon
+# worker.  Ignore every late event so it cannot recreate events.jsonl or make a
+# deleted project reappear in a connected Studio window.
+_discarded: set[str] = set()
 
 # Events a browser needs to rebuild the screen. The rest — every token, every
 # tool result — is live-only: keeping it would make the file enormous and the
@@ -72,7 +74,10 @@ def _load(project: str) -> None:
                 continue
     except OSError:
         return
-    _history.setdefault(project, [])[:0] = rows[-HISTORY_LIMIT:]
+    # `events.jsonl` is the durable conversation record. Loading every
+    # durable row preserves the full chat after a restart instead of retaining
+    # only the latest section of a long-lived project.
+    _history.setdefault(project, [])[:0] = rows
     for row in rows:
         if row.get("type") == "run_state":
             _runs.setdefault(project, {})[row.get("agent") or DEVELOPER] = {
@@ -120,7 +125,7 @@ def _load(project: str) -> None:
 
 def _persist(event: dict) -> None:
     project = event.get("project")
-    if not project or event.get("type") not in DURABLE:
+    if not project or project in _discarded or event.get("type") not in DURABLE:
         return
     try:
         path = _event_log(project)
@@ -158,18 +163,23 @@ def emit(event: dict, mirrored: bool = False) -> dict:
     event.setdefault("event_id", uuid.uuid4().hex)
     project = event.get("project")
 
+    with _lock:
+        if project and project in _discarded:
+            return event
+
     if MIRROR_ROLES and not mirrored and project and event.get("agent") in ROLES:
         emit({**event,
               "agent": DEVELOPER if event["agent"] == DESIGNER else DESIGNER,
               "event_id": event["event_id"] + "-m"}, mirrored=True)
 
     with _lock:
+        # Deletion can happen while the mirrored event above was being emitted.
+        if project and project in _discarded:
+            return event
         if project:
             _load(project)
             rows = _history.setdefault(project, [])
             rows.append(event)
-            if len(rows) > HISTORY_LIMIT:
-                del rows[: len(rows) - HISTORY_LIMIT]
             _persist(event)
         listeners = list(_listeners)
     for listener in listeners:
@@ -231,9 +241,13 @@ def events_by_role(project: str) -> dict[str, list[dict]]:
 
 def forget(project: str) -> None:
     with _lock:
+        _discarded.add(project)
         _history.pop(project, None)
         _runs.pop(project, None)
         _loaded.discard(project)
+        for decision_id, question in list(_pending_decisions.items()):
+            if question.get("project") == project:
+                _pending_decisions.pop(decision_id, None)
 
 
 # --- the shapes the studio reads -------------------------------------------
@@ -426,6 +440,10 @@ def sync_state(project: str, status: str, detail: str = "", **extra: Any) -> Non
 
 
 def project_created(project: str) -> None:
+    with _lock:
+        # Project ids are random, but releasing a tombstone here keeps this
+        # helper correct if an imported project intentionally reuses an id.
+        _discarded.discard(project)
     emit({"type": "project", "project": project})
 
 

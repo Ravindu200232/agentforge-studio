@@ -30,6 +30,7 @@ export default function Overview({ qa, live }) {
   const ran = qa?.stages || []
 
   const perf = qa?.performance?.scores || {}
+  const runtime = qa?.runtimeStatus
   const sec = r?.security?.findings || []
   const unresolved = r?.suite?.unresolved || []
   const e2e = e2eStageSummary(r?.e2e)
@@ -209,7 +210,17 @@ export default function Overview({ qa, live }) {
         </Card>
 
         <Card title="Runtime" hint="what the browser probe saw" icon={Terminal}>
-          {ran.includes('runtime') ? (
+          {runtime ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-[12px] font-medium text-ink">
+                <span className={cn('size-2 rounded-full', runtime.status === 'running' ? 'bg-emerald-400' : runtime.status === 'failed' ? 'bg-rose-400' : 'bg-amber-400')} />
+                <span>Current preview: {runtime.status}</span>
+              </div>
+              {runtime.url && <p className="break-all font-mono text-[10.5px] text-muted">{runtime.url}</p>}
+              {runtime.detail && <p className="text-[11px] text-muted">{runtime.detail}</p>}
+              <p className="text-[10.5px] text-muted2">This is the Studio-managed preview state, not a claim that a runtime-error test ran.</p>
+            </div>
+          ) : ran.includes('runtime') ? (
             (r.runtime || []).length ? (
               <ul className="space-y-1.5 text-[11px] text-rose-400">
                 {r.runtime.slice(0, 6).map((e, i) => (

@@ -9,15 +9,20 @@ flag was written; resuming kept re-deriving "nothing left to do" from that
 same evidence without ever performing the one write that would let the gate
 pass - the exact same failure, forever.
 """
+import json
 import sys
+import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 for folder in (".", "builder-agent"):
     sys.path.insert(0, str(ROOT / folder))
 
 from builder_agent import build  # noqa: E402
+from server_modules import bus  # noqa: E402
 
 
 class RecoverablyIncompleteTests(unittest.TestCase):
@@ -205,8 +210,9 @@ class StartGuardTests(QuestionFlowCase):
     def test_run_refuses_to_start_while_an_earlier_question_is_still_waiting(self):
         self.session.write_record(*build.PENDING, data={
             "mode": "run", "request": "req", "plan": "plan", "question": {"question": "q?"}})
-        with self.assertRaisesRegex(ValueError, "already has a build waiting"):
-            build.run(PROJECT)
+        with mock.patch("srs_agent.document.has_document", return_value=True):
+            with self.assertRaisesRegex(ValueError, "already has a build waiting"):
+                build.run(PROJECT)
 
     def test_update_refuses_to_start_while_an_earlier_question_is_still_waiting(self):
         self.session.write_record(*build.PENDING, data={

@@ -623,6 +623,32 @@ class StructuralRubricTests(unittest.TestCase):
 
 
 class EventStreamTests(unittest.TestCase):
+    def test_a_long_conversation_keeps_older_durable_turns_after_restart(self):
+        """The Studio may page older rows visually, but it must never trim them."""
+        from server_modules import bus, config
+
+        with tempfile.TemporaryDirectory() as directory:
+            original = config.WORKSPACES
+            config.WORKSPACES = Path(directory)
+            project = "prj_long_conversation"
+            try:
+                bus.project_created(project)
+                for index in range(4001):
+                    bus.user_msg(project, f"request {index}")
+
+                # A process restart has no in-memory rows. Reloading must
+                # restore both the first and newest customer message.
+                bus.forget(project)
+                bus.project_created(project)
+                replayed = [event for event in bus.history(project)
+                            if event.get("type") == "user_msg"]
+                text = {event.get("text") for event in replayed}
+                self.assertIn("request 0", text)
+                self.assertIn("request 4000", text)
+            finally:
+                config.WORKSPACES = original
+                bus.forget(project)
+
     def test_the_durable_events_survive_a_restart(self):
         from server_modules import bus, config
 
@@ -631,6 +657,7 @@ class EventStreamTests(unittest.TestCase):
             config.WORKSPACES = Path(directory)
             try:
                 bus.forget("prj_test")
+                bus.project_created("prj_test")
                 bus.log("prj_test", "INFO", "started")
                 bus.agent_msg("prj_test", "the plan is ready")
                 bus.stream("prj_test", "a token")        # live only
@@ -638,6 +665,7 @@ class EventStreamTests(unittest.TestCase):
 
                 # Drop the memory the way a restart does, and read it back.
                 bus.forget("prj_test")
+                bus.project_created("prj_test")
                 replayed = bus.history("prj_test")
                 kinds = [event["type"] for event in replayed]
                 self.assertIn("log", kinds)
@@ -836,7 +864,7 @@ class PlanningStreamTests(unittest.TestCase):
             def ask(self, _request):
                 return "1. Read the contract\n2. Build every route\n3. Verify the app"
 
-            def execute_plan(self, _request, _plan):
+            def execute_plan(self, _request, _plan, **_kwargs):
                 return Result()
 
         session = ProjectSession.__new__(ProjectSession)
@@ -887,7 +915,7 @@ class PlanningStreamTests(unittest.TestCase):
                 def ask(self, _request):
                     return next(plans)
 
-                def execute_plan(self, request, plan):
+                def execute_plan(self, request, plan, **_kwargs):
                     name = "developmentplan1.md" if "first" in plan else "developmentplan2.md"
                     assert (session.workspace / "plan" / name).read_text(encoding="utf-8") == plan
                     assert f"plan/{name}" in request
@@ -1196,6 +1224,7 @@ class PrototypeFromWireframesTests(unittest.TestCase):
             cancelled = False
 
             def __init__(self, root):
+                self.workspace = root
                 self.record = root / ".agentforge"
 
         def complete_html(_system, user, **_kwargs):
