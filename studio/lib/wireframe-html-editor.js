@@ -300,7 +300,15 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
       overlay.setAttribute('data-wf-editor-ui', 'true')
       overlay.innerHTML = `
         <div id="__wf_tag_badge" data-wf-editor-ui="true">
-          <span style="font-size:12px;opacity:0.85;">✥</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.9;flex-shrink:0;">
+            <polyline points="5 9 2 12 5 15"></polyline>
+            <polyline points="9 5 12 2 15 5"></polyline>
+            <polyline points="15 19 12 22 9 19"></polyline>
+            <polyline points="19 9 22 12 19 15"></polyline>
+            <line x1="2" x2="22" y1="12" y2="12"></line>
+            <line x1="12" x2="12" y1="2" y2="22"></line>
+          </svg>
           <span id="__wf_tag_name"></span>
           <span id="__wf_tag_dims" style="opacity:0.75;font-size:9.5px;margin-left:4px;"></span>
         </div>
@@ -414,13 +422,54 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
     if (selected) {
       selected.setAttribute(MARK, '')
       selected.setAttribute('data-wf-tag', label(selected))
-      if (doc.defaultView.getComputedStyle(selected).position === 'static') {
-        selected.style.position = 'relative'
-      }
     }
     updateOverlay()
     onSelect?.(selected ? label(selected) : '')
     notifyMetrics()
+  }
+
+  /**
+   * Take an element out of document flow so a free move actually frees the space it
+   * used to occupy, instead of `position: relative` + `left`/`top`, which only
+   * shifts how the element paints while its old box stays reserved - every sibling
+   * keeps the gap open and the moved element can end up overlapping them.
+   */
+  function liftFree(el) {
+    const computed = doc.defaultView.getComputedStyle(el)
+    if (computed.position === 'absolute' || computed.position === 'fixed') return
+    const parent = el.parentElement
+    if (parent && doc.defaultView.getComputedStyle(parent).position === 'static') {
+      parent.style.position = 'relative'
+    }
+    const elRect = el.getBoundingClientRect()
+    const anchor = (el.offsetParent || parent || doc.body).getBoundingClientRect()
+    const left = Math.round(elRect.left - anchor.left)
+    const top = Math.round(elRect.top - anchor.top)
+    el.style.position = 'absolute'
+    el.style.left = `${left}px`
+    el.style.top = `${top}px`
+    el.style.margin = '0'
+  }
+
+  /**
+   * A flex child sized by a non-`auto` flex-basis (Tailwind's `flex-1` and similar,
+   * common throughout these wireframes) ignores an explicit `width`/`height` entirely
+   * - the flex algorithm sizes it from flex-basis, not from `width`. A flex or grid
+   * child that stretches to fill its row/track (the default `align-items: stretch`)
+   * ignores an explicit `height` the same way. Resizing one by hand must opt it out
+   * of that auto-sizing first, the way a real design tool's resize handle does, or
+   * the drag changes the inline style while the rendered box never moves.
+   */
+  function freeSize(el) {
+    const computed = doc.defaultView.getComputedStyle(el)
+    const parentDisplay = el.parentElement ? doc.defaultView.getComputedStyle(el.parentElement).display : ''
+    if (/flex/.test(parentDisplay) &&
+        (computed.flexBasis !== 'auto' || Number(computed.flexGrow) !== 0 || Number(computed.flexShrink) !== 0)) {
+      el.style.flex = '0 0 auto'
+    }
+    if (/flex|grid/.test(parentDisplay) && computed.alignSelf !== 'flex-start' && computed.alignSelf !== 'start') {
+      el.style.alignSelf = 'flex-start'
+    }
   }
 
   let hovered = null
@@ -471,6 +520,12 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
     if (!isDragging && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) {
       isDragging = true
       selected.classList.add('__wf_dragging')
+      // Exactly once per gesture, before this drag's first mutation (resize, free
+      // move or reorder all still lie below this line) - not on mouseup, by which
+      // point the live preview during mousemove already applied the change, so a
+      // snapshot taken there just re-captures the state already on screen and one
+      // undo click appears to do nothing.
+      snapshot()
     }
 
     if (!isDragging) return
@@ -479,6 +534,10 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
 
     // 1. Resizing
     if (activeResize) {
+      if (!dragStart.freed) {
+        freeSize(selected)
+        dragStart.freed = true
+      }
       let newW = dragStart.initWidth
       let newH = dragStart.initHeight
 
@@ -514,6 +573,17 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
       updateDropLine(null)
       dropCandidate = null
 
+      // Lifted lazily, only once an actual free-move drag is happening: a click that
+      // turns into a flow-reorder (ctrl/meta held) must never have been lifted out of
+      // flow first, or the leftover absolute position would misplace it at its new
+      // flow spot too.
+      if (!dragStart.lifted) {
+        liftFree(selected)
+        dragStart.initLeft = parseFloat(selected.style.left) || 0
+        dragStart.initTop = parseFloat(selected.style.top) || 0
+        dragStart.lifted = true
+      }
+
       let curDx = dx
       let curDy = dy
 
@@ -545,7 +615,8 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
       updateDropLine(null)
 
       if (dropCandidate && dropCandidate.element && selected) {
-        snapshot()
+        // Already snapshotted pre-drag, above, when this gesture first crossed the
+        // move threshold - that one entry covers this reorder too.
         const target = dropCandidate.element
         if (dropCandidate.position === 'before') {
           target.before(selected)
@@ -555,7 +626,6 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
         selected.scrollIntoView({ block: 'nearest' })
         touched()
       } else {
-        snapshot()
         touched()
       }
       updateOverlay()
@@ -683,6 +753,7 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
     nudge(dx, dy) {
       if (!selected) return
       snapshot()
+      liftFree(selected)
       const curLeft = parseFloat(selected.style.left) || 0
       const curTop = parseFloat(selected.style.top) || 0
       selected.style.left = `${Math.round(curLeft + dx)}px`
@@ -694,6 +765,7 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
     setPos(x, y) {
       if (!selected) return
       snapshot()
+      liftFree(selected)
       if (x === null || x === undefined || x === '') selected.style.left = ''
       else selected.style.left = `${Math.round(Number(x))}px`
       if (y === null || y === undefined || y === '') selected.style.top = ''
@@ -707,6 +779,8 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
       snapshot()
       selected.style.left = ''
       selected.style.top = ''
+      selected.style.position = ''
+      selected.style.margin = ''
       touched()
       updateOverlay()
       notifyMetrics()
@@ -828,10 +902,14 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
     },
     undo() {
       const previous = undoStack.pop()
-      if (!previous) return
+      if (!previous) return false
       doc.open(); doc.write(previous); doc.close()
       return true
     },
+    // Whether an earlier state is still on the stack after that pop - the caller
+    // uses this instead of guessing at a "dirty" flag: an empty stack means undo
+    // has walked all the way back to what is actually saved on the server.
+    hasHistory: () => undoStack.length > 0,
     serialize() {
       const clone = doc.documentElement.cloneNode(true)
       clone.querySelectorAll(`[${MARK}]`).forEach(n => {

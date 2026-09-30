@@ -22,7 +22,37 @@ import {
   RotateCcw as ResetIcon,
   Sparkles,
   Check,
+  PanelTop,
+  PanelBottom,
+  Square,
+  Rows3,
+  Minus,
+  Heading1,
+  Heading2,
+  Pilcrow,
+  Image as ImageIcon,
+  Shapes,
+  TextCursorInput,
+  RectangleHorizontal,
+  Search,
+  Table,
+  Rows,
+  LayoutGrid,
+  List,
+  Hash,
+  BarChart3,
+  Star,
 } from 'lucide-react'
+
+/** One small, specific icon per insertable part kind - a premium catalogue reads at
+ * a glance, a wall of identical text labels does not. */
+const PART_ICON = {
+  nav: PanelTop, footer: PanelBottom, panel: Square, tabs: Rows3, divider: Minus,
+  heading: Heading1, title: Heading2, text: Pilcrow, image: ImageIcon, icon: Shapes,
+  field: TextCursorInput, button: RectangleHorizontal, search: Search,
+  table: Table, row: Rows, cards: LayoutGrid, list: List, stat: Hash,
+  chart: BarChart3, rating: Star,
+}
 import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
@@ -196,10 +226,13 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
   }
 
   const act = (name, ...args) => () => {
-    editor.current?.[name]?.(...args)
-    if (name === 'undo') {
-      setStamp(n => n + 1)
-      setDirty(false)
+    const result = editor.current?.[name]?.(...args)
+    if (name === 'undo' && result) {
+      // `stamp` is the iframe's remount key - bumping it here would force a fresh
+      // load from the server (the last *saved* state), discarding the in-place
+      // `doc.write` restore undo() just did and jumping straight to the original
+      // instead of stepping back one change at a time.
+      setDirty(editor.current?.hasHistory?.() ?? false)
       setPicked('')
       setMetrics(null)
     }
@@ -346,8 +379,8 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
 
               {/* Hierarchy */}
               <Tool onClick={act('parent')} title="Select Parent Container"><Layers className="size-3 mr-0.5" /> Parent</Tool>
-              <Tool onClick={act('move', -1)} title="Move Up in DOM">↑</Tool>
-              <Tool onClick={act('move', 1)} title="Move Down in DOM">↓</Tool>
+              <Tool onClick={act('move', -1)} title="Move Up in DOM"><ArrowUp className="size-3" /></Tool>
+              <Tool onClick={act('move', 1)} title="Move Down in DOM"><ArrowDown className="size-3" /></Tool>
 
               {/* Size */}
               <Tool onClick={act('wider', -10)} title="Narrower">-10%</Tool>
@@ -406,13 +439,17 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
                   {group}
                 </p>
                 <div className="grid grid-cols-2 gap-1">
-                  {items.map(([kind, label]) => (
-                    <button key={kind} type="button" onClick={act('insert', kind)}
-                      className="rounded-none bg-black/[.05] px-2 py-1.5 text-left text-[10.5px]
-                                 text-muted transition hover:bg-black/[.12] hover:text-ink">
-                      {label}
-                    </button>
-                  ))}
+                  {items.map(([kind, label]) => {
+                    const Icon = PART_ICON[kind]
+                    return (
+                      <button key={kind} type="button" onClick={act('insert', kind)}
+                        className="flex items-center gap-1.5 rounded-none bg-black/[.05] px-2 py-1.5 text-left text-[10.5px]
+                                   text-muted transition hover:bg-black/[.12] hover:text-ink">
+                        {Icon && <Icon className="size-3 shrink-0 opacity-70" />}
+                        <span className="truncate">{label}</span>
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
             ))}

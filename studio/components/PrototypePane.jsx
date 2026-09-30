@@ -514,9 +514,9 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
   }
 
   const protoAct = (name, ...args) => () => {
-    protoEditorRef.current?.[name]?.(...args)
-    if (name === 'undo') {
-      setFigmaDirty(false)
+    const result = protoEditorRef.current?.[name]?.(...args)
+    if (name === 'undo' && result) {
+      setFigmaDirty(protoEditorRef.current?.hasHistory?.() ?? false)
       setFigmaPicked('')
       setFigmaMetrics(null)
     }
