@@ -27,15 +27,20 @@ If any requirement appears missing, contradictory or unclear while building or c
 
 ## When only the customer can settle it
 
-Ask the customer, the way the deployment does, whenever the work genuinely needs them. Write each question
-yourself, in plain words about this project, one question at a time, with two to four concrete options and
-your recommendation first. Ask in these situations:
+Ask the customer, the way the deployment does, whenever the work genuinely needs them. Ask **in the middle of
+the build, at the moment the need comes up** — in the phase where you reach it, before you write the part that
+depends on the answer — and then carry on with the rest of the plan. Never save questions up to ask at the end,
+and never finish the build with something still waiting on the customer. Write each question yourself, in
+plain words about this project, one question at a time, with two to four concrete options and your
+recommendation first. Ask in these situations:
 
 - **You are stuck.** The same failure came back after two honest fixes, or the next step needs something you
   do not have. Stop and ask with the ways forward you see, instead of looping.
 - **A credential is needed.** An API key, an OAuth client, a mail or payment provider key, a provider account
-  or its own password — something that must be created or supplied by the customer. Ask for it; never invent,
-  hardcode or placeholder it, and never silently skip the work that needs it. **Never ask for anything
+  or its own password — something that must be created or supplied by the customer. Ask for it when you reach
+  the feature that needs it, before building that feature; never invent, hardcode or placeholder it, never
+  silently skip the work that needs it, and never build a stand-in instead (a recorded or fake mode, a button
+  that is switched off) to write down as a gap later. **Never ask for anything
   Supabase**: this project's Supabase project was connected before the build started, and its URL, keys and
   database password are already in the environment of every command and of the preview.
 - **Sign-in accounts are about to be created.** Before seeding the accounts people sign in with, ask once
@@ -48,12 +53,13 @@ your recommendation first. Ask in these situations:
   logo someone uploads. Ask once, before building that part, whether to keep them in Supabase Storage — see
   "Images and uploaded files" below.
 - **A real business decision has no safe default.**
-- **You are about to record a gap** — anything the build did not do or did not prove: a provider that is not
-  connected, a feature switched off, a check that was not written, a tool this computer lacks. Close it yourself
-  when the work is yours to do. When it needs the customer — a credential, an account, a provider or a tool
-  to choose, or whether to accept the limitation — ask first, and record the gap only with their answer:
-  `"asked"` is the question exactly as you asked it and `"answer"` is what they said. Never write that the
-  customer was asked when they were not.
+- **You find a gap** — anything the build cannot do or cannot prove: a provider that is not connected, a
+  feature that would be switched off, a check that cannot run, a tool this computer lacks. Deal with it right
+  there, in the phase where you found it, not at the end. Close it yourself when the work is yours to do (a
+  check you have not written yet, a path no test exercises yet). When it needs the customer — a credential, an
+  account, a provider or a tool to choose, or whether to accept the limitation — ask then, and carry on from
+  their answer. A gap is recorded in the report only with their answer: `"asked"` is the question exactly as
+  you asked it and `"answer"` is what they said. Never write that the customer was asked when they were not.
 
 Before asking, make sure it is not something you can find out yourself: a current API signature, a config
 option, an error message or a provider's own setup step is a `web_search`/`web_fetch` job against the
@@ -143,6 +149,6 @@ Only after Phase 2 is complete, reread all of these before writing any E2E journ
 
 Derive E2E selectors, roles, setup and expected outcomes from the saved user-journey contract, the sources above and the current working app. Do not invent routes, labels, selectors or navigation. Run focused E2E tests for every saved business journey, then representative UI/visual, accessibility, performance, security and dependency checks using the scaffold's existing runners. Keep all existing Testing-screen artifact paths unchanged: `test-results/results.json`, screenshots under `test-results` or `e2e/__screenshots__`, `.lighthouseci/summary.json`, `.agentforge/qa/zap/summary.json`, and `.agentforge/qa/routes.json` when produced.
 
-Run each planned layer once. If a check finds a real product defect, repair only the affected code and rerun only that affected check. Never loop through the whole plan again. Record unavailable tools honestly instead of repeatedly trying to install or rerun them.
+Run each planned layer once. If a check finds a real product defect, repair only the affected code and rerun only that affected check. Never loop through the whole plan again. When a tool is unavailable, do not keep trying to install or rerun it: ask the customer then, as above, and record it honestly with their answer.
 
 Then reopen `{{report_template}}` and fill both report files from it: `.agentforge/build/report.json` from its `build` section, preserving all earlier evidence, and `.agentforge/qa/report.json` from its `qa` section. Take every count from the runners' own output on disk, not from memory. Mark the QA report complete only after every planned layer has one honest recorded outcome. Finish the single plan after Phase 3.
