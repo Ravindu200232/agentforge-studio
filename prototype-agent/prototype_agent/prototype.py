@@ -140,19 +140,22 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
 
     routes_out = [{"route": p["route"], "file": filename(str(p["route"])),
                    "name": p.get("page_name") or p["route"],
-                   "roles": p.get("allowed_roles") or []} for p in pages]
+                   "roles": prototype_brief.page_roles(doc, p)} for p in pages]
     nav = [{"label": r["name"], "href": r["file"]} for r in routes_out]
     root = session.record / PROTOTYPE_DIR
     root.mkdir(parents=True, exist_ok=True)
     uploaded_images = _uploaded_site_images(session, root)
-    context = {key: doc.get(key) for key in ("app_summary", "roles", "main_modules",
+    context = {key: doc.get(key) for key in ("app_summary", "authentication_requirement", "roles", "role_access_matrix", "main_modules",
                "functional_requirements", "business_workflows", "validation_rules",
                "ui_ux_requirements", "database_design") if doc.get(key)}
     handoff = srs_document.handoff_docs(session) if wireframe_source is not None else {}
+    if wireframe_source is not None and not {"app.md", "sitemap.md"} <= set(handoff):
+        raise ValueError("the SRS app.md and sitemap.md handoff files are required before drawing the prototype")
     customization = design_stage.approved_customization(project) if wireframe_source is not None else {}
     customization["uploaded_site_images"] = uploaded_images
     fingerprint_payload = {
         "routes": routes_out,
+        "handoff": handoff,
         "design": spec,
         "customization": customization,
     }
@@ -188,18 +191,6 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
         (root / "routes.json").unlink(missing_ok=True)
         checkpoint_path.unlink(missing_ok=True)
 
-    # The visual rule set is made fresh for this project by the model from the
-    # selected colours, fonts, images and wireframe functionality. It replaces
-    # the former one-size-fits-all frontend skill without changing the
-    # customer's saved design selection.
-    project_skill = prototype_brief.draw_project_skill(
-        doc, spec, customization, structures, routes_out,
-        project=project, workspace=session.workspace,
-    )
-    project_skill_path, = reference_staging.stage(
-        session.workspace, f"{config.RECORD_DIR}/{PROTOTYPE_DIR}/skills/project-design",
-        {"SKILL.md": project_skill})
-
     bus.phase(project, "prototype:kit", "Designing the shared look",
               detail="Reading the approved wireframes, images and flow, then drawing the shared design system.")
     if can_resume:
@@ -217,9 +208,12 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
         say("Resuming the prototype from its saved design kit and completed pages.")
     else:
         bus.progress(project, "Preparing the shared prototype design", 2, agent=bus.DESIGNER)
-        made = prototype_brief.prepare(doc, spec, customization, routes_out, structures, say,
-                                       project=project, workspace=session.workspace,
-                                       project_skill_path=project_skill_path)
+        made = prototype_brief.prepare(
+            doc, spec, customization, routes_out, structures, say,
+            project=project, workspace=session.workspace,
+            app_handoff_path=f"{config.RECORD_DIR}/srs/handoff/app.md",
+            sitemap_handoff_path=f"{config.RECORD_DIR}/srs/handoff/sitemap.md",
+        )
         _write_kit(session, project, root, made, routes_out)
         checkpoint = {
             "fingerprint": fingerprint,
@@ -232,15 +226,12 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
             "seed": made["seed"],
         }
         checkpoint_path.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8")
-    system = (prompts.load("prototype/system")
-              + "\n\n## Project design skill\n\n"
-              + f"After understanding the wireframe blueprint, read `{project_skill_path}` "
-                "and apply its project-specific visual direction.")
+    system = prompts.load("prototype/system")
 
     # What every screen needs and does not change per page: staged once, read
     # by each page's own call, rather than pasted into every one of them.
     context_dir = f"{config.RECORD_DIR}/{PROTOTYPE_DIR}/context"
-    srs_subset_path, uploaded_images_path, kit_reference_path, journeys_path = reference_staging.stage(
+    srs_subset_path, uploaded_images_path, kit_reference_path, journeys_path, access_contract_path = reference_staging.stage(
         session.workspace, context_dir, {
             "srs-subset.json": json.dumps(context, ensure_ascii=False),
             "uploaded-images.json": json.dumps(uploaded_images, ensure_ascii=False),
@@ -248,6 +239,11 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
             # Every approved journey, in full — not just this page's own slice — so a page can see the
             # whole path it sits on and send its primary action to the journey's real next step.
             "journeys.json": json.dumps(made["flow"]["journeys"], ensure_ascii=False),
+            "access-contract.json": json.dumps({
+                "authentication": doc.get("authentication_requirement") or {},
+                "role_access_matrix": doc.get("role_access_matrix") or [],
+                "routes": routes_out,
+            }, ensure_ascii=False),
         })
 
     def draw(item: tuple[dict, dict]) -> dict:
@@ -267,9 +263,9 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
         bus.agent_msg(project, f"Drawing prototype screen {row['name']} ({row['route']}) from the approved wireframe and design.",
                       title="Prototype screen", kind="narration", agent=bus.DESIGNER)
         slug = row["file"].rsplit(".", 1)[0]
+        page_roles = set(prototype_brief.page_roles(doc, page))
         requirements = [fr for fr in doc.get("functional_requirements", [])
-                        if set(fr.get("allowed_roles") or []) &
-                        set(page.get("allowed_roles") or [])][:12]
+                        if page_roles & set(prototype_brief.page_roles(doc, fr))][:12]
         requirements_path, = reference_staging.stage(
             session.workspace, context_dir, {f"requirements-{slug}.json":
                 json.dumps(requirements, ensure_ascii=False)}, fresh=False)
@@ -302,6 +298,7 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
                  "product_context_path": srs_subset_path, "customer_direction": direction,
                  "flow": prototype_brief.page_flow(made["flow"], str(page["route"])),
                  "journeys_path": journeys_path,
+                 "access_contract_path": access_contract_path,
                  "kit_shell_path": f"{config.RECORD_DIR}/{PROTOTYPE_DIR}/kit/shell.html",
                  "kit_reference_path": kit_reference_path,
                  "demo_accounts": made["accounts"],
@@ -434,12 +431,30 @@ def _generate(project: str, direction: str,
         bus.sync_state(project, "running", "Drawing the approved prototype",
                        source="prototype")
     try:
-        execution_plan = ("Read the handoff, route map and each approved wireframe's functional blueprint before drawing its screen. "
-                          "Draw one screen at a time as a high-fidelity, real product UI. Preserve every button destination, "
-                          "page navigation, image and user-flow step; reread the supplied inputs instead of guessing.")
+        customization = design_stage.approved_customization(project)
+        plan_request = prompts.load(
+            "prototype/plan",
+            customer_direction=direction.strip() or "(none beyond the approved design)",
+            customization=json.dumps({
+                "customizer_prompt": customization.get("customizer_prompt") or "",
+                "customizer_spec": customization.get("customizer_spec") or {},
+                "selected_design_path": customization.get("design_md_path") or "",
+            }, ensure_ascii=False, indent=2),
+        )
         if source is not None:
-            if direction.strip():
-                execution_plan += " Customer direction: " + direction.strip()
+            plan_request += ("\n\nThis run is drawing from approved wireframes. Read every available wireframe "
+                             "before finalizing the plan, then generate each page one at a time.")
+        else:
+            plan_request += ("\n\nThis run has no approved HTML wireframe source. Use the approved SRS pages, "
+                             "handoff and design contract as the functional source instead.")
+        if direction.strip():
+            plan_request += "\n\nCustomer direction:\n" + direction.strip()
+        # Match the builder's workflow: plan with the coding agent's read tools,
+        # approve that plan automatically, then execute it in the focused page
+        # calls below. The plan is internal and never becomes a customer approval
+        # step.
+        execution_plan = session.plan_focused_task(plan_request)
+        session.write_record(PROTOTYPE_DIR, "plan.md", data=execution_plan)
         spec = design_stage.approved_spec(project)
         if not spec:
             design_stage.draft(project, direction=direction)

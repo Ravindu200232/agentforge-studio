@@ -70,19 +70,41 @@ def roles_of(doc: dict) -> list[dict]:
             and not (_names(r) & {"visitor", "guest", "anonymous", "public", "anyone", "everyone"})]
 
 
+def _routes(value: Any) -> list[str]:
+    """Normalise SRS route fields, whether the schema gave us a list or a space-separated string."""
+    if isinstance(value, (list, tuple, set)):
+        return [str(route).strip() for route in value if str(route).strip()]
+    return re.findall(r"/(?:[A-Za-z0-9_-]+|\[[^\]]+\])(?:/(?:[A-Za-z0-9_-]+|\[[^\]]+\]))*|/", str(value or ""))
+
+
+def page_roles(doc: dict, page: dict) -> list[str]:
+    """Return role labels for a page without splitting labels such as ``Support staff``."""
+    raw = page.get("allowed_roles") or []
+    if isinstance(raw, (list, tuple, set)):
+        return [str(role).strip() for role in raw if str(role).strip()]
+    text = str(raw).strip()
+    labels = [str(role.get("role_name") or role.get("role_key") or "").strip()
+              for role in (doc.get("roles") or []) if isinstance(role, dict)]
+    matches = [label for label in labels if label and re.search(rf"(?<![\w-]){re.escape(label)}(?![\w-])", text, re.I)]
+    return matches or ([text] if text else [])
+
+
 def can_open(doc: dict, role: dict) -> tuple[list[dict], list[dict]]:
     """The pages a role may open and the ones it may not, from the access matrix when there is one, else from the pages' roles."""
     names = _names(role)
     row = next((r for r in (doc.get("role_access_matrix") or []) if isinstance(r, dict) and str(r.get("role") or "").strip().lower() in names), None)
-    allowed_names = {str(p).strip().lower() for p in (row or {}).get("allowed_pages") or []}
+    allowed_routes = set(_routes((row or {}).get("allowed_pages")))
     yes, no = [], []
     for page in pages_of(doc):
         label = str(page.get("page_name") or page["route"])
-        roles = {str(r).strip().lower() for r in page.get("allowed_roles") or []}
-        if not page.get("login_required") or (row and label.strip().lower() in allowed_names) or (not row and (names & roles or roles & {"anyone", "all", "everyone"})):
-            yes.append({"route": str(page["route"]), "name": label})
+        route = str(page["route"])
+        roles = {name.lower() for name in page_roles(doc, page)}
+        if (not page.get("login_required")
+                or (row and route in allowed_routes)
+                or (not row and (names & roles or roles & {"anyone", "all", "everyone"}))):
+            yes.append({"route": route, "name": label})
         else:
-            no.append({"route": str(page["route"]), "name": label})
+            no.append({"route": route, "name": label})
     return yes, no
 
 
@@ -137,7 +159,22 @@ def draw_accounts(doc: dict, routes_out: list[dict], flow: dict, system: str) ->
         slug = re.sub(r"[^a-z0-9]+", ".", key.lower()).strip(".") or f"user{index}"
         yes, no = can_open(doc, role)
         destinations = [str(page["route"]) for page in yes if str(page.get("route")) != sign_in]
-        lands_on = destinations[0] if destinations else sign_in
+        role_key = re.sub(r"[^a-z0-9]+", "_", str(role.get("role_key") or "").strip().lower()).strip("_")
+        preferred_routes = {
+            "shopper": ("/orders", "/account/orders", "/account"),
+            "customer": ("/orders", "/account/orders", "/account"),
+            "buyer": ("/orders", "/account/orders", "/account"),
+            "seller": ("/seller", "/admin"),
+            "store_owner": ("/seller", "/admin"),
+            "merchant": ("/seller", "/admin"),
+            "staff": ("/staff", "/admin"),
+            "support_staff": ("/staff", "/admin"),
+            "admin": ("/admin", "/staff"),
+            "manager": ("/admin", "/staff"),
+            "super_admin": ("/admin", "/staff"),
+        }.get(role_key, ())
+        preferred = next((route for route in preferred_routes if route in destinations), "")
+        lands_on = preferred if preferred in destinations else (destinations[0] if destinations else sign_in)
         out.append({
             "role": label,
             "role_key": key,
@@ -257,7 +294,12 @@ def seed_script(seed: dict[str, list[dict]]) -> str:
 
 def flow_script(routes_out: list[dict], flow: dict, accounts: list[dict], sign_in: str) -> str:
     """`assets/flow.js`: the route map, the journeys and the demo accounts, as data the kit's script reads."""
-    data = {"routes": route_map(routes_out),
+    routes = route_map(routes_out)
+    data = {"routes": {row["route"]: row["file"] for row in routes},
+            "routeList": routes,
+            "roleRoutes": {str(account["role"]): [str(page["route"]) for page in account["can_open"]]
+                           for account in accounts},
+            "publicRoutes": [row["route"] for row in routes if "Visitor" in (row.get("roles") or [])],
             "signIn": next(({"route": r["route"], "file": r["file"]} for r in routes_out if r["route"] == sign_in), None),
             "accounts": [{"role": a["role"], "roleKey": a["role_key"], "name": a["display_name"], "email": a["email"], "password": a["password"],
                           "landsOn": a["lands_on"], "canOpen": [p["route"] for p in a["can_open"]]} for a in accounts],
@@ -270,7 +312,7 @@ def flow_script(routes_out: list[dict], flow: dict, accounts: list[dict], sign_i
 (function () {
   var P = window.PROTOTYPE || {};
   function entry(path) {
-    var rows = Array.isArray(P.routes) ? P.routes : [];
+    var rows = Array.isArray(P.routeList) ? P.routeList : (Array.isArray(P.routes) ? P.routes : []);
     var exact = rows.filter(function (r) { return r && r.route === path; })[0];
     if (exact) return exact;
     var wanted = String(path || '').split('/').filter(Boolean);
@@ -386,61 +428,22 @@ def kit_problems(blocks: dict[str, str], tokens: dict) -> list[str]:
     return problems
 
 
-def _wireframe_outline(structures: dict[str, str], limit: int = 700) -> str:
-    """Compact functional evidence for the model that writes the project skill."""
-    outlines = []
-    for route, markup in structures.items():
-        text = re.sub(r"<[^>]+>", " ", markup or "")
-        text = re.sub(r"\s+", " ", text).strip()
-        outlines.append(f"{route}: {text[:limit]}")
-    return "\n".join(outlines)
-
-
-def draw_project_skill(doc: dict, spec: dict, customization: dict, structures: dict[str, str],
-                       routes_out: list[dict], project: str, workspace: Path) -> str:
-    """Ask the LLM for the single visual skill this prototype needs right now."""
-    selected = {
-        "app": doc.get("app_summary") or {},
-        "tokens": spec.get("tokens") or {},
-        "theme": spec.get("theme") or {},
-        "customer_direction": customization.get("customizer_prompt") or "",
-        "reference_images": customization.get("uploaded_site_images") or [],
-        "routes": route_map(routes_out),
-    }
-    prompt = prompts.load(
-        "prototype/project-design-skill",
-        selected=json.dumps(selected, ensure_ascii=False, indent=2),
-        wireframes=_wireframe_outline(structures),
-    )
-    # This is intentionally tool-free. The complete wireframe context and the
-    # selected design data are already in the prompt; allowing read tools here
-    # can consume the short focused turn without returning the requested skill.
-    previous = ""
-    for _ in range(2):
-        request = prompt if not previous else (
-            prompt + "\n\nYour previous response was empty or too short. "
-            "Write the complete Markdown skill now; do not call tools or explain it."
-        )
-        skill = llm.complete(
-            system="You create compact, project-specific frontend design skills. Return Markdown only.",
-            user=request, think=False, project=project,
-        ).strip()
-        if len(skill) >= 120:
-            return skill
-        previous = skill
-    raise ValueError("the project design skill was empty")
-
-
 def draw_kit(spec: dict, customization: dict, routes_out: list[dict], flow: dict, sign_in: str, accounts: list[dict], ideas: str,
-             say: Say, project: str, workspace: Path, project_skill_path: str, attempts: int = 1) -> dict[str, str]:
+             say: Say, project: str, workspace: Path,
+             app_handoff_path: str, sitemap_handoff_path: str, attempts: int = 1) -> dict[str, str]:
     """The stylesheet, the script and the shell every page shares, drawn once."""
     sign_in_text = (f"The sign-in page is `{sign_in}`. Demo accounts (role, name, email, password, lands on): "
                     + "; ".join(f"{a['role']}, {a['display_name']}, {a['email']}, {a['password']}, {a['lands_on']}" for a in accounts)) if sign_in else "The product has no sign-in."
+    customizer_parts = []
+    if customization.get("customizer_prompt"):
+        customizer_parts.append("### Customer's design direction\n\n" + str(customization["customizer_prompt"]))
+    if customization.get("customizer_spec"):
+        customizer_parts.append("### Approved customizer selection\n\n" + json.dumps(customization["customizer_spec"], ensure_ascii=False, indent=2))
     user = prompts.load("prototype/kit", design_spec_path=f"{config.RECORD_DIR}/design/design-spec.json",
-                        customizer=(f"### Customer's design direction\n\n{customization['customizer_prompt']}" if customization.get("customizer_prompt") else ""),
+                        customizer="\n\n".join(customizer_parts),
                         routes=_routes_text(routes_out), sign_in=sign_in_text, journeys=_journey_text(flow),
                         ideas=ideas or "(none gathered — rely on the design contract and your own judgement)",
-                        project_design_skill_path=project_skill_path)
+                        app_handoff_path=app_handoff_path, sitemap_handoff_path=sitemap_handoff_path)
     if customization.get("uploaded_site_images"):
         user += ("\n\n## User-uploaded site images\n"
                  "Prefer these for their named uses, including the shared logo or favicon. "
@@ -450,8 +453,8 @@ def draw_kit(spec: dict, customization: dict, routes_out: list[dict], flow: dict
     for attempt in range(max(1, attempts)):
         request = user if not problems else (
             user + "\n\n## Your last attempt\n\n" + (previous[:1500] or "(empty — you returned nothing at all)")
-            + "\n\nIt was rejected: " + "; ".join(problems) + ". Do not call read_file, list_files or "
-              "search_text again — you already read what you need. Return all three blocks now, complete.")
+            + "\n\nIt was rejected: " + "; ".join(problems) + ". Use the supplied project files again if "
+              "needed, then return all three complete blocks now.")
         # This call writes a concrete artifact. Hidden chain-of-thought adds a
         # long wait before the first visible file without improving the CSS/JS
         # contract enforced below.
@@ -557,7 +560,8 @@ def ensure_assets(html: str) -> str:
 # --- everything, once, before any page ------------------------------------------------------------------------------------
 
 def prepare(doc: dict, spec: dict, customization: dict, routes_out: list[dict], structures: dict[str, str], say: Say,
-           project: str, workspace: Path, project_skill_path: str) -> dict[str, Any]:
+           project: str, workspace: Path,
+           app_handoff_path: str, sitemap_handoff_path: str) -> dict[str, Any]:
     """Build the shared flow and kit directly from the approved artifacts.
 
     The wireframes already contain the chosen structure and image references.
@@ -572,7 +576,8 @@ def prepare(doc: dict, spec: dict, customization: dict, routes_out: list[dict], 
     images: list[dict] = []
     seed = seed_database(doc, accounts, say)
     kit = draw_kit(spec, customization, routes_out, flow, sign_in, accounts, ideas, say,
-                   project=project, workspace=workspace, project_skill_path=project_skill_path,
+                   project=project, workspace=workspace,
+                   app_handoff_path=app_handoff_path, sitemap_handoff_path=sitemap_handoff_path,
                    attempts=3)
     return {"ideas": ideas, "flow": flow, "sign_in": sign_in, "accounts": accounts, "images": images, "kit": kit,
             "flow_js": flow_script(routes_out, flow, accounts, sign_in),
