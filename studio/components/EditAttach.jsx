@@ -34,7 +34,7 @@ export default function EditAttach({ attach, disabled, className, project, onSpo
   })
 
   return (
-    <div className={cn('flex flex-wrap items-center gap-1.5', className)}>
+    <div className={cn('flex min-w-0 shrink-0 items-center gap-1.5', className)}>
       <input ref={picker} type="file" multiple hidden accept={ACCEPT_UPLOAD}
              onChange={e => { attach.add(e.target.files); e.target.value = '' }} />
 
@@ -57,29 +57,34 @@ export default function EditAttach({ attach, disabled, className, project, onSpo
         <span className="text-[10px] text-deep">{recorder.error || heard}</span>
       )}
 
-      {attach.items.map(it => {
-        const Icon = PICTURE.test(it.name) ? ImageIcon : SOUND.test(it.name) ? Mic : FileText
-        const failed = it.state === 'failed'
-        return (
-          <span key={it.key}
-                title={it.note || it.read?.slice(0, 300) || it.name}
-                className={cn('inline-flex max-w-[210px] items-center gap-1',
-                              'border px-1.5 py-0.5 text-[10.5px]',
-                              failed ? 'border-accent bg-tint text-deep'
-                                     : 'border-line2 bg-panel2 text-muted')}>
-            {it.state === 'reading'
-              ? <Loader2 className="size-2.5 shrink-0 animate-spin text-accent" />
-              : <Icon className="size-2.5 shrink-0" />}
-            <span className="truncate">{it.name}</span>
-            <button onClick={() => attach.remove(it.key)}
-                    title="Remove from this message; the saved file stays in media"
-                    disabled={it.state === 'reading'}
-                    className="shrink-0 text-muted2 hover:text-ink disabled:opacity-30">
-              <X className="size-2.5" />
-            </button>
-          </span>
-        )
-      })}
+      {attach.items.length > 0 && (
+        <span className="flex min-w-0 items-center gap-1 overflow-x-auto no-scrollbar">
+          {attach.items.map(it => {
+            const Icon = PICTURE.test(it.name) ? ImageIcon : SOUND.test(it.name) ? Mic : FileText
+            const failed = it.state === 'failed'
+            return (
+              <span key={it.key}
+                    title={it.note || it.read?.slice(0, 300) || it.name}
+                    aria-label={`Attached ${it.name}`}
+                    className={cn('group relative grid size-6 shrink-0 place-items-center',
+                                  'border text-[10.5px]',
+                                  failed ? 'border-accent bg-tint text-deep'
+                                         : 'border-line2 bg-panel2 text-muted')}>
+                {it.state === 'reading'
+                  ? <Loader2 className="size-2.5 animate-spin text-accent" />
+                  : <Icon className="size-3" />}
+                <button onClick={() => attach.remove(it.key)}
+                        aria-label={`Remove ${it.name} from this message`}
+                        title="Remove from this message; the saved file stays in media"
+                        disabled={it.state === 'reading'}
+                        className="absolute -right-1 -top-1 hidden size-3.5 place-items-center rounded-full border border-line bg-panel text-muted2 hover:text-ink group-hover:grid focus:grid disabled:opacity-30">
+                  <X className="size-2" />
+                </button>
+              </span>
+            )
+          })}
+        </span>
+      )}
     </div>
   )
 }

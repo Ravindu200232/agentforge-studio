@@ -34,12 +34,12 @@ function Journey({ flow }) {
             <li key={i} className="flex gap-3 font-mono text-[11px] leading-[1.7]">
               <span className="w-6 shrink-0 text-right text-muted2">{step.index ?? i + 1}</span>
               <span className={cn('w-4 shrink-0',
-                step.status === 'failed' ? 'text-[#FF5630]'
-                  : step.status === 'passed' ? 'text-ink' : 'text-muted2')}>
+                step.status === 'failed' ? 'text-bad'
+                  : step.status === 'passed' ? 'text-ok' : 'text-muted2')}>
                 {step.status === 'failed' ? '✕' : step.status === 'passed' ? '✓' : '·'}
               </span>
               <span className={cn('min-w-0 break-all',
-                step.status === 'failed' ? 'text-[#FF5630]' : 'text-ink')}>
+                step.status === 'failed' ? 'text-bad' : 'text-ink')}>
                 {stepLabel(step)}
               </span>
             </li>

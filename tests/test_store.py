@@ -2,6 +2,7 @@
 so a read tool can find its way around before any stage has run."""
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -34,6 +35,9 @@ class ScaffoldTests(unittest.TestCase):
             folder = record_dir / relative
             self.assertTrue(folder.is_dir(), f"{relative} was not created")
             self.assertEqual(list(folder.iterdir()), [])
+        runtime = json.loads((record_dir / "runtime.json").read_text(encoding="utf-8"))
+        self.assertEqual(runtime["template"], "agentforge-project-runtime")
+        self.assertEqual(runtime["node"]["provider"], "studio-bundled")
 
     def test_scaffolding_is_idempotent_and_never_clobbers_existing_content(self):
         record = store.create(idea="A shop")
@@ -45,6 +49,27 @@ class ScaffoldTests(unittest.TestCase):
         self.assertEqual(marker.read_text(encoding="utf-8"), "{}")
         for relative in config.SCAFFOLD_DIRS:
             self.assertTrue((config.record_dir(record["id"]) / relative).is_dir())
+
+    def test_a_new_project_can_use_the_empty_folder_the_customer_selected(self):
+        selected = Path(self.temp.name) / "my-new-project"
+        selected.mkdir()
+
+        record = store.create(idea="A shop", workspace_path=str(selected))
+
+        self.assertEqual(config.workspace_for(record["id"]), selected.resolve())
+        self.assertTrue(config.has_custom_workspace(record["id"]))
+        self.assertEqual(store.require(record["id"])["workspace_path"], str(selected.resolve()))
+        self.assertTrue((selected / config.RECORD_DIR).is_dir())
+
+    def test_a_selected_folder_with_existing_files_is_refused_before_a_project_is_created(self):
+        selected = Path(self.temp.name) / "already-in-use"
+        selected.mkdir()
+        (selected / "important.txt").write_text("keep", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "empty folder"):
+            store.create(idea="A shop", workspace_path=str(selected))
+
+        self.assertEqual((selected / "important.txt").read_text(encoding="utf-8"), "keep")
 
 
 if __name__ == "__main__":

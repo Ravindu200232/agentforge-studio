@@ -203,6 +203,30 @@ class InterviewShapeTests(unittest.TestCase):
             self.assertTrue(entry.get("label"), f"{key} has no label")
             self.assertTrue(entry.get("desc"), f"{key} has no description")
 
+    def test_first_interview_question_is_written_to_the_shared_chat_once(self):
+        from server_modules import config, store
+        from server_modules.session import drop
+        from srs_agent import interview
+
+        with tempfile.TemporaryDirectory() as folder:
+            original_projects, original_workspaces = config.PROJECTS_FILE, config.WORKSPACES
+            config.PROJECTS_FILE = Path(folder) / "projects.json"
+            config.WORKSPACES = Path(folder) / "workspaces"
+            try:
+                project = store.create("a boutique hotel booking site")["id"]
+                with patch.object(interview.bus, "agent_msg") as announced:
+                    first = interview.next_question(project)
+                    again = interview.next_question(project)
+
+                self.assertEqual(first["question"]["id"], interview.APP_TYPE_KEY)
+                self.assertEqual(again["question"]["id"], interview.APP_TYPE_KEY)
+                announced.assert_called_once_with(
+                    project, first["question"]["question"], agent=interview.bus.DEVELOPER,
+                    title="Interview question", kind="interview")
+            finally:
+                drop(project)
+                config.PROJECTS_FILE, config.WORKSPACES = original_projects, original_workspaces
+
 
 class InterviewTurnTests(unittest.TestCase):
     """The per-turn contract: validated, merged as deltas, never a fixed queue."""
@@ -317,6 +341,7 @@ class InterviewTurnTests(unittest.TestCase):
                 question = interview._confirmation_question("Here is what I understood...", 9, 9)
                 data["transcript"].append(question)
                 data["order"].append(question["id"])
+                data["pending"] = question
                 interview.save(session, data)
 
                 with patch.object(interview.llm, "complete_json",
@@ -328,6 +353,172 @@ class InterviewTurnTests(unittest.TestCase):
 
                 self.assertTrue(result["done"])
                 self.assertEqual(store.get(project)["stage"], "plan")
+            finally:
+                drop(project)
+                config.PROJECTS_FILE, config.WORKSPACES = original_projects, original_workspaces
+
+    def test_retrying_an_already_saved_answer_is_idempotent(self):
+        """A lost browser response must not overwrite the next question or 500."""
+        from server_modules import config, store
+        from server_modules.session import session_for, drop
+        from srs_agent import interview
+
+        with tempfile.TemporaryDirectory() as folder:
+            original_projects, original_workspaces = config.PROJECTS_FILE, config.WORKSPACES
+            config.PROJECTS_FILE = Path(folder) / "projects.json"
+            config.WORKSPACES = Path(folder) / "workspaces"
+            try:
+                project = store.create("a boutique hotel booking site")["id"]
+                session = session_for(project)
+                data = interview.state(session)
+                first = interview._app_type_question("hotel booking", 1, 8)
+                next_one = interview._question_from_turn({
+                    "topic": "auth_method", "question": "How should guests sign in?",
+                    "answer_type": "single_choice",
+                    "options": [{"label": "Email", "value": "email"}],
+                }, index=2, total=8)
+                data["transcript"] = [first, next_one]
+                data["answers"][first["id"]] = {
+                    "question_id": first["id"], "value": "booking",
+                    "text": "Booking site", "selected_values": ["booking"],
+                    "custom_text": "", "attachments": [],
+                }
+                data["order"] = [first["id"]]
+                data["pending"] = next_one
+                interview.save(session, data)
+
+                result = interview.record_answer(project, {
+                    "key": first["id"], "value": "booking", "text": "Booking site",
+                    "selected": ["booking"], "custom": "",
+                })
+
+                self.assertEqual(result["question"]["id"], next_one["id"])
+                self.assertEqual(len(result["answers"]), 1)
+            finally:
+                drop(project)
+                config.PROJECTS_FILE, config.WORKSPACES = original_projects, original_workspaces
+
+    def test_stale_answer_is_a_clear_client_error_not_a_state_corruption(self):
+        from server_modules import config, store
+        from server_modules.session import session_for, drop
+        from srs_agent import interview
+
+        with tempfile.TemporaryDirectory() as folder:
+            original_projects, original_workspaces = config.PROJECTS_FILE, config.WORKSPACES
+            config.PROJECTS_FILE = Path(folder) / "projects.json"
+            config.WORKSPACES = Path(folder) / "workspaces"
+            try:
+                project = store.create("a boutique hotel booking site")["id"]
+                session = session_for(project)
+                data = interview.state(session)
+                question = interview._app_type_question("hotel booking", 1, 8)
+                data["transcript"] = [question]
+                data["pending"] = question
+                interview.save(session, data)
+
+                with self.assertRaisesRegex(ValueError, "no longer awaiting"):
+                    interview.record_answer(project, {"key": "old-question", "text": "late"})
+
+                self.assertEqual(interview.snapshot(project)["question"]["id"], question["id"])
+            finally:
+                drop(project)
+                config.PROJECTS_FILE, config.WORKSPACES = original_projects, original_workspaces
+
+    def test_overlapping_answer_retries_share_one_interview_transition(self):
+        """A retry cannot race the first save and create a second mutation."""
+        from server_modules import config, store
+        from server_modules.session import session_for, drop
+        from srs_agent import interview
+
+        with tempfile.TemporaryDirectory() as folder:
+            original_projects, original_workspaces = config.PROJECTS_FILE, config.WORKSPACES
+            config.PROJECTS_FILE = Path(folder) / "projects.json"
+            config.WORKSPACES = Path(folder) / "workspaces"
+            try:
+                project = store.create("a boutique hotel booking site")["id"]
+                session = session_for(project)
+                data = interview.state(session)
+                question = interview._app_type_question("hotel booking", 1, 8)
+                data["transcript"] = [question]
+                data["pending"] = question
+                interview.save(session, data)
+
+                first_at_save = threading.Event()
+                release_first = threading.Event()
+                second_started = threading.Event()
+                second_finished = threading.Event()
+                errors = []
+                saves = [0]
+                original_save = interview.save
+
+                def delayed_save(current_session, current_data):
+                    saves[0] += 1
+                    if saves[0] == 1:
+                        first_at_save.set()
+                        self.assertTrue(release_first.wait(1))
+                    return original_save(current_session, current_data)
+
+                payload = {"key": question["id"], "value": "booking",
+                           "text": "Booking site", "selected": ["booking"], "custom": ""}
+
+                def submit(second=False):
+                    try:
+                        if second:
+                            second_started.set()
+                        interview.record_answer(project, payload)
+                    except Exception as exc:  # pragma: no cover - failure is asserted below
+                        errors.append(exc)
+                    finally:
+                        if second:
+                            second_finished.set()
+
+                with patch.object(interview, "save", side_effect=delayed_save):
+                    first = threading.Thread(target=submit)
+                    first.start()
+                    self.assertTrue(first_at_save.wait(1))
+                    second = threading.Thread(target=lambda: submit(second=True))
+                    second.start()
+                    self.assertTrue(second_started.wait(1))
+                    self.assertFalse(second_finished.wait(0.1))
+                    release_first.set()
+                    first.join(1)
+                    second.join(1)
+
+                self.assertFalse(first.is_alive())
+                self.assertFalse(second.is_alive())
+                self.assertFalse(errors)
+                self.assertEqual(len(interview.snapshot(project)["answers"]), 1)
+            finally:
+                drop(project)
+                config.PROJECTS_FILE, config.WORKSPACES = original_projects, original_workspaces
+
+    def test_malformed_legacy_interview_state_is_normalized_before_answering(self):
+        from server_modules import config, store
+        from server_modules.session import session_for, drop
+        from srs_agent import interview
+
+        with tempfile.TemporaryDirectory() as folder:
+            original_projects, original_workspaces = config.PROJECTS_FILE, config.WORKSPACES
+            config.PROJECTS_FILE = Path(folder) / "projects.json"
+            config.WORKSPACES = Path(folder) / "workspaces"
+            try:
+                project = store.create("a boutique hotel booking site")["id"]
+                session = session_for(project)
+                question = interview._app_type_question("hotel booking", 1, 8)
+                session.write_record("interview.json", data={
+                    "transcript": [question, "broken row"],
+                    "answers": {"broken": "row"}, "order": [None, question["id"]],
+                    "pending": question, "coverage": {"auth": "broken"},
+                    "contradictions": ["broken"], "assumptions": "broken",
+                })
+
+                result = interview.record_answer(project, {
+                    "key": question["id"], "value": "booking", "text": "Booking site",
+                    "selected": ["booking"], "custom": "",
+                })
+
+                self.assertEqual(result["answers"][0]["question_id"], question["id"])
+                self.assertIsNone(result["question"])
             finally:
                 drop(project)
                 config.PROJECTS_FILE, config.WORKSPACES = original_projects, original_workspaces
@@ -845,6 +1036,26 @@ class StreamWriterTests(unittest.TestCase):
         own = self._own_role_events(seen)
         self.assertEqual([e for e in own if e["type"] == "stream"], [])
         self.assertEqual(len([e for e in own if e["type"] == "stream_end"]), 1)
+
+
+class LiveUsageMeterTests(unittest.TestCase):
+    def test_memory_event_carries_exact_current_turn_usage(self):
+        from server_modules import bus
+
+        seen = []
+        cancel = bus.subscribe(seen.append)
+        try:
+            bus.memory("prj_usage", "test", 120, 4096, 2,
+                       turn_started_at=1234, turn_input_tokens=41,
+                       turn_output_tokens=9)
+        finally:
+            cancel()
+            bus.forget("prj_usage")
+        event = next(e for e in seen if e["type"] == "memory" and e["agent"] == "developer")
+        self.assertEqual(event["turn_started_at"], 1234)
+        self.assertEqual(event["sent"], 41)
+        self.assertEqual(event["received"], 9)
+        self.assertEqual(event["turn_tokens"], 9)
 
 
 class PlanningStreamTests(unittest.TestCase):
@@ -1373,6 +1584,24 @@ class PrototypeFromWireframesTests(unittest.TestCase):
 
 
 class RouteTests(unittest.TestCase):
+    def test_session_uses_focused_cloud_usage_when_no_shared_agent_exists(self):
+        from server_modules import httpd
+
+        class DormantSession:
+            stage = "idle"
+            _agent = None
+
+        usage = {"model": "deepseek-v4.1-flash:cloud", "limit": 1_048_576,
+                 "used": 5_261, "tools": 0}
+        with patch.object(httpd, "_project", return_value="prj_context"), \
+             patch.object(httpd, "session_for", return_value=DormantSession()), \
+             patch.object(httpd.bus, "latest_memory", return_value=usage):
+            status = httpd.project_session({"project": "prj_context"})
+
+        self.assertEqual(status["model"], usage["model"])
+        self.assertEqual(status["context"], usage["limit"])
+        self.assertEqual(status["used"], usage["used"])
+
     def test_the_job_endpoints_are_not_shadowed_by_the_catch_alls(self):
         from server_modules import httpd
 

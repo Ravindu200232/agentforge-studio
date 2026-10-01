@@ -38,8 +38,9 @@ def new_id() -> str:
     return f"prj_{uuid.uuid4().hex[:16]}"
 
 
-def create(idea: str, language: str = "", stack: str = "") -> dict:
+def create(idea: str, language: str = "", stack: str = "", workspace_path: str = "") -> dict:
     saved = config.settings()
+    selected_workspace = config.validate_workspace_choice(workspace_path) if workspace_path else None
     record = {
         "id": new_id(),
         "name": "",
@@ -54,6 +55,7 @@ def create(idea: str, language: str = "", stack: str = "") -> dict:
         "prototype_only": False,
         "build_available": False,
         "kept": False,
+        **({"workspace_path": str(selected_workspace)} if selected_workspace else {}),
     }
     record["name"] = record["id"]
     with _lock:

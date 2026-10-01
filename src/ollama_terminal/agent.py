@@ -7,7 +7,10 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
+from types import SimpleNamespace
 from typing import Any, Callable
+
+import ollama
 
 from .mcp_client import MCPManager
 from .tools import TOOL_SCHEMAS, WorkspaceTools, tools_unsupported
@@ -71,6 +74,17 @@ def _approx_tokens(messages: list[dict]) -> int:
     return len(json.dumps(messages, ensure_ascii=False, default=str)) // 4
 
 
+def _usage_count(response: Any, *names: str) -> int:
+    """Read a positive usage counter from either Ollama or hosted responses."""
+    for container in (response, getattr(response, "usage", None)):
+        for name in names:
+            value = (container.get(name) if isinstance(container, dict)
+                     else getattr(container, name, None))
+            if isinstance(value, int) and value > 0:
+                return value
+    return 0
+
+
 # Longest extension first: `ts|tsx` would match `page.tsx` as `page.ts`, which
 # is a path that does not exist.
 _PATHS = re.compile(
@@ -115,19 +129,32 @@ class Agent:
                  announce: Callable[[str], None] = print,
                  web_host: str = "http://localhost:11434",
                  protected_app_root: Path | None = None,
-                 mcp_servers: list[dict[str, Any]] | None = None):
+                 mcp_servers: list[dict[str, Any]] | None = None,
+                 on_summarize: Callable[[list[dict]], None] | None = None):
         self.client = client
         self.model = model
         self.cloud = cloud
         self.mode = "plan"
         self.max_steps = max_steps
         self.announce = announce
+        # Called with the exact turns about to be deleted from `self.messages`,
+        # before they are. Compressing old turns into `memory_summary` keeps the
+        # live conversation inside the active model's window; this is the one
+        # chance for a caller to keep the originals somewhere durable instead of
+        # letting them become unrecoverable the moment this method returns.
+        self.on_summarize = on_summarize
         self.tool_call_count = 0
         self.parallel_write_limit = 1
         self.last_ask_tool_calls = 0
         self.last_terminal_signal = ""
         self.memory_summary = ""
         self.last_prompt_tokens = 0
+        # These come from the provider's completed responses.  They are kept
+        # separately from ``context_usage`` (which is an estimate of the
+        # conversation window) so the Studio can show an honest per-request
+        # meter without pretending that context size is generated output.
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
         # ``think`` is the provider's on/off flag.  The level holds the
         # product-level choice too, so xhigh can ask for a deliberate final
         # verification pass even on providers without a native effort knob.
@@ -171,6 +198,47 @@ class Agent:
 
     def context_usage(self) -> int:
         return _approx_tokens(self.messages)
+
+    def _chat_response(self, kwargs: dict[str, Any]) -> Any:
+        """Run one model request, retaining usage supplied by hosted streams.
+
+        Cloud's non-streaming response can omit `eval_count`, even though the
+        terminal chunk includes it.  Only cloud calls stream here; local calls
+        keep their existing single-response path.  The assembled object has
+        the ordinary response shape used by the tool loop below.
+        """
+        if not self.cloud:
+            return self.client.chat(**kwargs)
+        stream = self.client.chat(**{**kwargs, "stream": True})
+        if not hasattr(stream, "__iter__"):
+            return stream
+        content: list[str] = []
+        thinking: list[str] = []
+        calls: list[Any] = []
+        final = None
+        for chunk in stream:
+            final = chunk
+            message = getattr(chunk, "message", None)
+            if message is None:
+                continue
+            delta = getattr(message, "content", None)
+            if delta:
+                content.append(delta)
+            thought = getattr(message, "thinking", None)
+            if thought:
+                thinking.append(thought)
+            tool_calls = getattr(message, "tool_calls", None)
+            if tool_calls:
+                calls.extend(tool_calls)
+        if final is None:
+            raise RuntimeError("the model stream ended without a response")
+        return SimpleNamespace(
+            message=ollama.Message(role="assistant", content="".join(content),
+                                   thinking="".join(thinking) or None,
+                                   tool_calls=calls or None),
+            prompt_eval_count=_usage_count(final, "prompt_eval_count", "prompt_tokens", "input_tokens"),
+            eval_count=_usage_count(final, "eval_count", "completion_tokens", "output_tokens"),
+        )
 
     def _system_message(self) -> str:
         mode_rule = ("PLAN MODE: Inspect and reason only. Do not edit files or run commands. "
@@ -241,6 +309,11 @@ class Agent:
                 self.announce("[context] The model gave no summary; kept a "
                               "mechanical digest of that stretch instead.")
         self.memory_summary = summary
+        if self.on_summarize:
+            try:
+                self.on_summarize(old)
+            except Exception:  # noqa: BLE001 - losing the archive copy is not a reason to lose the turn
+                pass
         del self.messages[start:end]
         self.messages[0]["content"] = self._system_message()
         self.last_prompt_tokens = 0
@@ -292,8 +365,12 @@ class Agent:
                     self.announce("[progress] Analysing the supplied requirements and deciding what to inspect.")
                 else:
                     self.announce("[progress] Applying the inspected project context and checking for gaps.")
+            # This is an explicit live state, not a made-up progress event.
+            # It stays visible while the provider is considering this model
+            # turn and is replaced by a concrete tool action when one starts.
+            self.announce("[thinking] model is considering the request")
             try:
-                response = self.client.chat(**kwargs)
+                response = self._chat_response(kwargs)
             except Exception as exc:  # noqa: BLE001 - re-raised unless it's the one case handled
                 if tools_unsupported(exc):
                     raise RuntimeError(
@@ -301,11 +378,20 @@ class Agent:
                         f"agent needs to read, write and run commands. Pick a different model "
                         f"in the studio's settings.") from exc
                 raise
-            count = getattr(response, "prompt_eval_count", None)
-            self.last_prompt_tokens = count if isinstance(count, int) and count > 0 else 0
+            count = _usage_count(response, "prompt_eval_count", "prompt_tokens", "input_tokens")
+            self.last_prompt_tokens = count
+            generated = _usage_count(response, "eval_count", "completion_tokens", "output_tokens")
+            if self.last_prompt_tokens:
+                self.prompt_tokens += self.last_prompt_tokens
+            if isinstance(generated, int) and generated > 0:
+                self.completion_tokens += generated
             message = response.message
             calls = message.tool_calls or []
             self.messages.append(message.model_dump(exclude_none=True))
+            # A response is the only point at which Ollama publishes exact
+            # usage.  Tell the host immediately so it can refresh the live
+            # meter; never animate an estimated token number between replies.
+            self.announce("[usage] provider response completed")
             # Show the model's own useful narration while it works. Product
             # plans remain internal because the studio already has its SRS
             # approval surface for those documents.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -21,22 +22,35 @@ _processes: dict[str, dict] = {}
 _last: dict[str, dict] = {}
 _revision = 0
 
-# A preview is deliberately single-tenant. Each stack has a stable local port;
-# switching projects stops the previous preview rather than silently accepting
-# a framework's random fallback port or an old process's environment.
-PREVIEW_PORT = 3001  # the two Next.js-based stacks
-VITE_PREVIEW_PORT = 5173  # remix-supabase, vite-supabase, vite-microservices-supabase
+# Every preview has its own private loopback port.  The old fixed 3001/5173
+# model made unrelated applications collide and forced the studio to stop a
+# preview merely because somebody opened another project.  Ports are stable
+# per project where possible, but are always checked before use.
+PREVIEW_PORT_FIRST = 3100
+PREVIEW_PORT_LAST = 5099
 
 
-def _preview_port(project: str, package: dict) -> int:
-    """Pick the port of the selected stack, not one shared port for every app."""
-    stack = str((store.get(project) or {}).get("stack") or "")
-    dependencies = {**(package.get("dependencies") or {}),
-                    **(package.get("devDependencies") or {})}
-    if stack in {"remix-supabase", "vite-supabase", "vite-microservices-supabase"} or (
-            "next" not in dependencies and ("@remix-run/serve" in dependencies or "vite" in dependencies)):
-        return VITE_PREVIEW_PORT
-    return PREVIEW_PORT
+def _port_candidates(project: str) -> list[int]:
+    """A deterministic full pass through the project-preview port range."""
+    count = PREVIEW_PORT_LAST - PREVIEW_PORT_FIRST + 1
+    digest = hashlib.blake2s(project.encode("utf-8"), digest_size=4).digest()
+    start = int.from_bytes(digest, "big") % count
+    return [PREVIEW_PORT_FIRST + ((start + offset) % count) for offset in range(count)]
+
+
+def _preview_port(project: str, package: dict, exclude: set[int] | None = None) -> int:
+    """Allocate a free loopback port without touching another application's process."""
+    del package  # every supported framework receives the chosen PORT below
+    blocked = set(exclude or set())
+    blocked.update(
+        int(entry.get("port") or 0)
+        for name, entry in _processes.items()
+        if name != project and entry.get("process") and entry["process"].poll() is None
+    )
+    for port in _port_candidates(project):
+        if port not in blocked and not _port_open(port):
+            return port
+    raise RuntimeError("No private preview port is available. Stop one of this Studio's previews and try again.")
 
 # Preloaded into the preview process so a hardened app (X-Frame-Options, `frame-ancestors 'none'`)
 # can still be shown in the Studio's iframe.
@@ -126,17 +140,6 @@ def _terminate_tree(pid: int) -> None:
         pass
 
 
-def _free_port(port: int, timeout: float = 6) -> None:
-    """Replace whichever process currently listens on the selected preview port."""
-    for pid in _listening_pids(port):
-        _terminate_tree(pid)
-    deadline = time.monotonic() + timeout
-    while _port_open(port) and time.monotonic() < deadline:
-        time.sleep(0.1)
-    if _port_open(port):
-        raise RuntimeError(f"Port {port} is still in use. Close the app using it and try again.")
-
-
 def _state(project: str, status: str = "stopped", **extra) -> dict:
     return {"project": project, "status": status, "url": extra.get("url", ""),
             "previewUrl": extra.get("url", ""), "runtimeId": extra.get("runtimeId", ""),
@@ -178,6 +181,45 @@ def status(project: str) -> dict:
                                                   if k not in {"process", "status"}})
 
 
+def _node_program() -> str:
+    """Use the installed Node binary, with the normal name as a safe fallback."""
+    return shutil.which("node") or ("node.exe" if os.name == "nt" else "node")
+
+
+def _node_module(root: Path, relative: str) -> Path | None:
+    """Find a framework CLI inside this project's dependency tree only."""
+    candidate = root / "node_modules" / relative
+    return candidate if candidate.is_file() else None
+
+
+def _preview_command(root: Path, package: dict, script: str, port: int) -> list[str]:
+    """Start known frameworks directly so their checked private port always wins.
+
+    Generated Next projects used to hard-code 3001 in their npm scripts. Vite
+    and Remix receive PORT through their configs, while Next gets its CLI port
+    here. Unknown stacks retain their own start script and receive PORT/HOST.
+    """
+    dependencies = {**(package.get("dependencies") or {}),
+                    **(package.get("devDependencies") or {})}
+    node = _node_program()
+    if "next" in dependencies:
+        cli = _node_module(root, "next/dist/bin/next")
+        if cli:
+            return [node, str(cli), "start" if script == "start" else "dev",
+                    "--port", str(port), "--hostname", "127.0.0.1"]
+    # Remix uses Vite during development but its production server is
+    # `remix-serve`; retain those scripts so SSR continues to work. Its config
+    # already honours the PORT environment variable supplied above.
+    remix = any(name.startswith("@remix-run/") for name in dependencies)
+    if "vite" in dependencies and not remix:
+        cli = _node_module(root, "vite/bin/vite.js")
+        if cli:
+            mode = ["preview"] if script == "start" else []
+            return [node, str(cli), *mode, "--host", "127.0.0.1",
+                    "--port", str(port), "--strictPort"]
+    return ["npm.cmd" if os.name == "nt" else "npm", "run", script]
+
+
 def open_preview(project: str) -> dict:
     global _revision
     root = config.workspace_for(project)
@@ -190,7 +232,6 @@ def open_preview(project: str) -> dict:
     script = "start" if production_ready else "dev"
     if not scripts.get(script):
         return _state(project, detail=f"package.json has no {script} script.")
-    port = _preview_port(project, package)
     with _lock:
         current = status(project)
         if current["status"] in {"running", "starting"}:
@@ -198,18 +239,16 @@ def open_preview(project: str) -> dict:
             # port no longer answers) or it was started before the production build existed
             # and is still the slow dev server.
             saved = _processes.get(project) or _read_metadata(project)
-            stale = int(current.get("port") or 0) != port or \
-                (current["status"] == "running" and not _port_open(int(current.get("port") or port))) \
+            current_port = int(current.get("port") or 0)
+            stale = not current_port or \
+                (current["status"] == "running" and not _port_open(current_port)) \
                 or (saved.get("script") and saved["script"] != script)
             if not stale:
                 return current
             stop(project)
         _last.pop(project, None)
-        # One preview at a time: opening this project ends other managed previews.
-        for other in [name for name in _processes if name != project]:
-            stop(other)
         try:
-            _free_port(port)
+            port = _preview_port(project, package)
         except RuntimeError as exc:
             state = _state(project, "failed", detail=str(exc))
             _last[project] = state
@@ -218,9 +257,7 @@ def open_preview(project: str) -> dict:
             return state
         _revision = max(_revision + 1, int(time.time() * 1000))
         revision = _revision
-        # PORT is supplied below.  Do not append a second `--port`: scaffolds
-        # may already run their guard and framework command with the fixed port.
-        command = ["npm.cmd" if os.name == "nt" else "npm", "run", script]
+        command = _preview_command(root, package, script, port)
         runtime_id = uuid.uuid4().hex
         log_path = config.record_dir(project) / "preview.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -228,7 +265,7 @@ def open_preview(project: str) -> dict:
         enabled = json.loads(enabled_path.read_text(encoding="utf-8")) if enabled_path.is_file() else []
         environment = {**os.environ, **plugins.environment(enabled),
                        **supabase_connect.env_for(project),
-                       "PORT": str(port), "BROWSER": "none"}
+                       "PORT": str(port), "HOST": "127.0.0.1", "BROWSER": "none"}
         # The Studio frames this app. Let this machine's pages do that, whatever the app's
         # own headers say; only this preview process is affected (see preview_hooks).
         environment["NODE_OPTIONS"] = " ".join(
@@ -350,14 +387,17 @@ def _wait_ready(project: str, process: subprocess.Popen, url: str, root: Path, c
     bus.log(project, "WARN", "Preview did not become ready. Check .agentforge/preview.log.")
 
 
-def stop(project: str) -> None:
+def stop(project: str) -> dict:
     with _lock:
         entry = _processes.pop(project, None)
     saved = entry or _read_metadata(project)
+    revision = int(saved.get("revision") or 0)
+    server_id = str(saved.get("serverId") or f"srv-{project}")
+    stopped = _state(project, "stopped", serverId=server_id, revision=revision)
     if entry and entry["process"].poll() is None:
         process = entry["process"]
         _terminate_tree(process.pid)
-        bus.runtime_state(project, "stopped", revision=entry["revision"])
+        bus.runtime_state(project, "stopped", server_id=server_id, revision=revision)
     else:
         port = int(saved.get("port") or 0)
         listener_pid = int(saved.get("listenerPid") or 0)
@@ -365,6 +405,7 @@ def stop(project: str) -> None:
         # terminate only the exact listener that this runtime recorded.
         if port and listener_pid and listener_pid in _listening_pids(port):
             _terminate_tree(listener_pid)
-            bus.runtime_state(project, "stopped", revision=int(saved.get("revision") or 0))
-    _last.pop(project, None)
+            bus.runtime_state(project, "stopped", server_id=server_id, revision=revision)
+    _last[project] = stopped
     _metadata(project).write_text("{}", encoding="utf-8")
+    return stopped

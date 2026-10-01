@@ -1,12 +1,11 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Check, ExternalLink, Loader2, Rocket, Settings2, Terminal, X } from 'lucide-react'
+import { AlertTriangle, Boxes, Check, Cloud, Database, FileCode2, GitBranch, Globe2, HardDrive, KeyRound, Layers, Link2, Loader2, Lock, Network, Package, Plug, Rocket, Server, Settings2, Shield, ShieldCheck, Upload, Users, Workflow, X } from 'lucide-react'
 import { useStore } from '@/lib/store'
 import { api } from '@/lib/api'
-import { groupMonitors } from '@/lib/deploy-nav'
 import { PLAN_STATES, STATE_TEXT, TARGETS, TERMINAL } from '@/lib/deploy-constants'
-import { Button, Empty, SectionLabel, Tag } from '../ui'
+import { Button, Empty, SectionLabel, Tip } from '../ui'
 import { cn } from '@/lib/utils'
 import CommandPage from './cli/CommandPage'
 import DeployProgress from './DeployProgress'
@@ -171,10 +170,11 @@ export default function DeployPanel({ onSettings, accountsRevision = 0 }) {
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto bg-[radial-gradient(circle_at_top_right,rgba(191, 185, 255,.08),transparent_30%)]">
+    <div className="flex min-h-0 flex-1 overflow-hidden bg-[radial-gradient(circle_at_top_right,rgba(191,185,255,.08),transparent_30%)]">
       <DeployNav view={view} setView={setView} items={monitors.items} clis={clis} cliTab={cliTab} setCliTab={setCliTab}
                  last={live || last} running={running} runId={runId} onDone={refresh} />
 
+      <div className="min-w-0 flex-1 overflow-y-auto">
       <div className="mx-auto max-w-[1180px] space-y-4 p-5">
         {view !== 'deploy' && current ? (
           <CommandPage key={`${project}:${current.set}/${current.id}`} project={project} item={current} />
@@ -183,9 +183,9 @@ export default function DeployPanel({ onSettings, accountsRevision = 0 }) {
           {live && !PLAN_STATES.has(live.state) && <DeployProgress run={live} />}
 
           {!running && (
-            <div className="rounded-2xl border border-[rgba(145,158,171,0.16)] bg-[#F2F0EF] p-6 shadow-[0_0_2px_0_rgba(145,158,171,0.2),0_12px_24px_-4px_rgba(0,0,0,0.16)] backdrop-blur-xl">
+            <div className="rounded-2xl border border-line bg-panel p-6 shadow-[0_0_2px_0_rgba(145,158,171,0.2),0_12px_24px_-4px_rgba(0,0,0,0.16)] backdrop-blur-xl">
               <SectionLabel>Where should it go?</SectionLabel>
-              <p className="mt-1 text-[11.5px] text-[#6B7280]">
+              <p className="mt-1 text-[11.5px] text-muted">
                 Choose the cloud destination for this reviewed build.
                 {hidden > 0 && ` ${mine?.stack_name || 'This stack'} ${mine?.refusal || 'is not supported everywhere'}, so only these are offered.`}
               </p>
@@ -194,23 +194,23 @@ export default function DeployPanel({ onSettings, accountsRevision = 0 }) {
                   <button key={t.id} onClick={() => setTarget(t.id)}
                           className={cn('rounded-xl border p-4 text-left shadow-sm transition-all',
                             target === t.id
-                              ? 'border-[#BFB9FF] bg-[#BFB9FF] ring-1 ring-[#BFB9FF]/30'
-                              : 'border-[rgba(145,158,171,0.16)] bg-[#F2F0EF]/50 hover:-translate-y-0.5 hover:border-[rgba(145,158,171,0.28)] hover:bg-[#E3E1E0]/50')}>
+                              ? 'border-accent bg-accent ring-1 ring-accent/30'
+                              : 'border-line bg-panel/50 hover:-translate-y-0.5 hover:border-[rgba(145,158,171,0.28)] hover:bg-raised/50')}>
                     <span className="flex items-center gap-2.5 text-[13px] font-bold text-ink">
                       <span className={cn('grid size-4 place-items-center rounded-full border',
-                        target === t.id ? 'border-[#BFB9FF] bg-[#BFB9FF]' : 'border-[rgba(145,158,171,0.32)] bg-[#F2F0EF]')}>
+                        target === t.id ? 'border-accent bg-accent' : 'border-[rgba(145,158,171,0.32)] bg-panel')}>
                         {target === t.id && <Check className="size-2.5 text-ink" />}
                       </span>
                       {t.label}
                     </span>
-                    <span className="mt-1.5 block text-[11px] leading-relaxed text-[#6B7280]">{t.blurb}</span>
+                    <span className="mt-1.5 block text-[11px] leading-relaxed text-muted">{t.blurb}</span>
                   </button>
                 ))}
               </div>
 
               <SectionLabel className="mt-6"
                             right={onSettings && (
-                              <Button variant="outline" size="sm" className="rounded-xl border-[rgba(145,158,171,0.2)] bg-[#F2F0EF]/60 text-ink hover:bg-[#E3E1E0]" onClick={onSettings}>
+                              <Button variant="outline" size="sm" className="rounded-xl border-line bg-panel/60 text-ink hover:bg-raised" onClick={onSettings}>
                                 <Settings2 className="size-3" /> Settings
                               </Button>
                             )}>
@@ -219,17 +219,17 @@ export default function DeployPanel({ onSettings, accountsRevision = 0 }) {
               <ul className="mt-3 grid gap-2.5 sm:grid-cols-2">
                 {needs.map(n => (
                   <li key={n.id} className={cn('flex items-start gap-2.5 rounded-xl border px-3.5 py-3',
-                    n.unknown || (!n.ok && n.optional) ? 'border-[rgba(145,158,171,0.16)] bg-[#F2F0EF]/30'
-                      : n.ok ? 'border-[#22C55E]/20 bg-[#22C55E]/10' : 'border-[#FF5630]/20 bg-[#FF5630]/10')}>
+                    n.unknown || (!n.ok && n.optional) ? 'border-line bg-panel/30'
+                      : n.ok ? 'border-ok/20 bg-ok/10' : 'border-bad/20 bg-bad/10')}>
                     <span className="mt-[2px] grid size-3.5 shrink-0 place-items-center">
                       {n.unknown
-                        ? <Loader2 className="size-3 animate-spin text-[#6B7280]" />
+                        ? <Loader2 className="size-3 animate-spin text-muted" />
                         : n.ok ? <Check className="size-3.5 text-ink" />
-                               : <X className={cn('size-3.5', n.optional ? 'text-[#6B7280]' : 'text-[#FF5630]')} />}
+                               : <X className={cn('size-3.5', n.optional ? 'text-muted' : 'text-bad')} />}
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="text-[12px] font-semibold text-ink">{n.label}</span>
-                      <span className={cn('ml-2 text-[11px]', n.unknown || n.ok || n.optional ? 'text-[#6B7280]' : 'text-[#FF5630]')}>
+                      <span className={cn('ml-2 text-[11px]', n.unknown || n.ok || n.optional ? 'text-muted' : 'text-bad')}>
                         {n.hint}
                       </span>
                     </span>
@@ -240,8 +240,8 @@ export default function DeployPanel({ onSettings, accountsRevision = 0 }) {
               {!green && (
                 <label className={cn('mt-4 flex cursor-pointer items-start gap-2.5 rounded-xl border px-3.5 py-3 text-[12px]',
                   override ? 'border-accent/30 bg-accent text-ink'
-                           : 'border-[rgba(145,158,171,0.16)] bg-[#F2F0EF]/30 text-[#6B7280]')}>
-                  <input type="checkbox" checked={override} className="mt-0.5 accent-[#BFB9FF]"
+                           : 'border-line bg-panel/30 text-muted')}>
+                  <input type="checkbox" checked={override} className="mt-0.5 accent-[var(--accent)]"
                          onChange={e => setOverride(e.target.checked)} />
                   <span>
                     {!tested
@@ -251,23 +251,23 @@ export default function DeployPanel({ onSettings, accountsRevision = 0 }) {
                 </label>
               )}
               {green && (
-                <p className="mt-4 flex items-center gap-2.5 rounded-xl border border-[#22C55E]/20 bg-[#22C55E]/10 px-3.5 py-3 text-[12px] text-ink">
+                <p className="mt-4 flex items-center gap-2.5 rounded-xl border border-ok/20 bg-ok/10 px-3.5 py-3 text-[12px] text-ink">
                   <Check className="size-3.5 text-ink" />
                   Every unit test passes.
                 </p>
               )}
 
-              <p className="mt-4 text-[11px] text-[#6B7280]">Pressing Deploy starts a plan, not a deployment: the agent reads your project and this target's guide, asks you everything it needs (names, README, domain, scale, database, passwords), and shows the plan for you to approve.</p>
+              <p className="mt-4 text-[11px] text-muted">Pressing Deploy starts a plan, not a deployment: the agent reads your project and this target's guide, asks you everything it needs (names, README, domain, scale, database, passwords), and shows the plan for you to approve.</p>
 
-              <footer className="mt-6 flex items-center gap-3 border-t border-[rgba(145,158,171,0.16)] pt-4">
-                <Button variant="solid" size="lg" className="h-11 rounded-xl bg-[#BFB9FF] px-6 font-display text-[13px] font-bold text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)] hover:bg-[#9B94E8]" disabled={!ready || starting}
+              <footer className="mt-6 flex items-center gap-3 border-t border-line pt-4">
+                <Button variant="solid" size="lg" className="h-11 rounded-xl bg-accent px-6 font-display text-[13px] font-bold text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)] hover:bg-press" disabled={!ready || starting}
                         onClick={deploy}>
                   {starting ? <Loader2 className="size-3.5 animate-spin" />
                             : <Rocket className="size-3.5" />}
                   {redeploy ? 'Redeploy' : 'Deploy'} to {where}
                 </Button>
                 {!ready && !starting && (
-                  <span className="text-[11.5px] text-[#6B7280]">
+                  <span className="text-[11.5px] text-muted">
                     {needs.find(n => !n.ok && !n.optional)
                       ? `${needs.find(n => !n.ok && !n.optional).label} is not connected yet`
                       : 'confirm you want to deploy a failing build'}
@@ -286,70 +286,63 @@ export default function DeployPanel({ onSettings, accountsRevision = 0 }) {
           <DeployResult data={mine} />
         </>)}
       </div>
-    </div>
-  )
-}
-
-/**
- * The navigation: Deploy, then the pages of the deployment's own command line tools. One strip of tabs per tool (Vercel CLI,
- * GitHub CLI), each command its own tab, grouped; opening a tab runs its command and shows the answer live.
- */
-function DeployNav({ view, setView, items, clis, cliTab, setCliTab, last, running, runId, onDone }) {
-  const [label, tone] = last ? (STATE_TEXT[last.state] || [last.state, 'mute']) : ['', 'mute']
-  const mine = items.filter(item => item.cli === cliTab)
-  const groups = groupMonitors(mine)
-  return (
-    <div className="sticky top-0 z-10 border-b border-[rgba(145,158,171,0.16)] bg-[#F2F0EF]/95 backdrop-blur-xl">
-      <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
-        <Chip on={view === 'deploy'} onClick={() => setView('deploy')}><Rocket className="size-3" /> Deploy</Chip>
-        {last && <Tag tone={{ pass: 'ok', fail: 'bad', run: 'accent' }[tone] || 'mute'}>{label}</Tag>}
-        {last?.url && (
-          <a href={last.url} target="_blank" rel="noreferrer"
-             className="inline-flex min-w-0 items-center gap-1 truncate font-mono text-[11px] text-[#BFB9FF] hover:underline">
-            {last.url.replace(/^https:\/\//, '')} <ExternalLink className="size-2.5 shrink-0" />
-          </a>
-        )}
-        <span className="flex-1" />
-        <DeployDanger runId={runId} state={last?.state || ''} running={running} onDone={onDone} />
       </div>
-
-      {clis.length > 0 && (
-        <div className="mt-2.5 flex items-center gap-1 px-4">
-          <Terminal className="mr-1 size-3 shrink-0 text-[#6B7280]" />
-          {clis.map(name => (
-            <button key={name} type="button" onClick={() => { setCliTab(name); const first = items.find(item => item.cli === name); if (first) setView(first.id) }}
-                    className={cn('rounded-t-lg border-b-2 px-3 py-1.5 text-[11.5px] font-semibold transition-colors',
-                      cliTab === name ? 'border-[#BFB9FF] text-ink' : 'border-transparent text-[#6B7280] hover:text-ink')}>
-              {name}
-              <span className="ml-1.5 font-mono text-[10px] text-[#637381]">{items.filter(item => item.cli === name).length}</span>
-            </button>
-          ))}
-        </div>
-      )}
-
-      {groups.length > 0 && (
-        <div className="flex items-center gap-1 overflow-x-auto border-t border-[rgba(145,158,171,0.1)] px-3 py-2">
-          {groups.map((group, index) => (
-            <div key={group.name} className={cn('flex shrink-0 items-center gap-1', index > 0 && 'ml-2 border-l border-[rgba(145,158,171,0.16)] pl-3')}>
-              <span className="mr-1 text-[9.5px] font-semibold uppercase tracking-[.12em] text-[#637381]">{group.name}</span>
-              {group.items.map(item => (
-                <Chip key={item.id} on={view === item.id} onClick={() => setView(item.id)} title={item.display}>{item.label}</Chip>
-              ))}
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   )
 }
 
-function Chip({ on, onClick, title, children }) {
+/** Command monitors can be numerous, so this keeps the shared rail language
+ * while exposing each command's name and CLI group for quick recognition. */
+function DeployNav({ view, setView, items, setCliTab, last, running, runId, onDone }) {
+  const [, tone] = last ? (STATE_TEXT[last.state] || [last.state, 'mute']) : ['', 'mute']
+  const statusDot = tone === 'pass' ? 'bg-ok' : tone === 'fail' ? 'bg-bad' : running ? 'bg-ok' : 'bg-muted2'
+  const usedIcons = new Set()
   return (
-    <button type="button" onClick={onClick} title={title} aria-pressed={on}
-            className={cn('inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11.5px] font-semibold transition-colors',
-              on ? 'border-[#BFB9FF] bg-[#BFB9FF] text-ink'
-                 : 'border-[rgba(145,158,171,0.2)] text-ink hover:bg-black/5 hover:text-ink')}>
-      {children}
-    </button>
+    <aside aria-label="Deployment sections" className="flex w-[52px] shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-line bg-panel px-2 py-3 no-scrollbar">
+      <Tip text="Deployment home" side="right">
+        <button type="button" onClick={() => setView('deploy')} aria-label="Deploy" aria-pressed={view === 'deploy'}
+                className={cn('grid size-9 place-items-center rounded-xl text-muted2 transition-colors hover:bg-raised hover:text-ink',
+                  view === 'deploy' && 'text-deep')}>
+          <Rocket className="size-4" />
+        </button>
+      </Tip>
+      {last && <span className={cn('my-1 size-2 shrink-0 rounded-full', statusDot)} title={last.state} />}
+      {items.length > 0 && <span className="my-1 h-px w-full bg-line" />}
+      {items.map((item, index) => {
+        const label = item.label || item.display || item.id
+        const Icon = monitorIcon(item, index, usedIcons)
+        const newGroup = index === 0 || item.cli !== items[index - 1]?.cli
+        return (
+          <div key={item.id}>
+            {newGroup && index > 0 && <span className="my-1 block h-px w-7 bg-line" />}
+            <Tip text={item.display || label} side="right">
+              <button type="button" onClick={() => { setCliTab(item.cli); setView(item.id) }} aria-label={label} aria-pressed={view === item.id}
+                      className={cn('grid size-9 place-items-center rounded-xl text-muted2 transition-colors hover:bg-raised hover:text-ink',
+                        view === item.id && 'text-deep')}>
+                <Icon className={cn('size-4', view === item.id && 'text-deep')} />
+              </button>
+            </Tip>
+          </div>
+        )
+      })}
+      <span className="flex-1" />
+      <div className="flex justify-end"><DeployDanger compact runId={runId} state={last?.state || ''} running={running} onDone={onDone} /></div>
+    </aside>
   )
+}
+
+function monitorIcon(item, index, used) {
+  const text = `${item?.cli || ''} ${item?.label || ''} ${item?.display || ''} ${item?.id || ''}`.toLowerCase()
+  const preferred = /git|repo|branch|commit|pull request/.test(text) ? GitBranch
+    : /domain|dns|url|route|alias|redirect/.test(text) ? Globe2
+    : /secret|token|key|environment|variable|credential/.test(text) ? KeyRound
+    : /security|protect|firewall|access|permission/.test(text) ? ShieldCheck
+    : /database|storage|cache|blob|bucket/.test(text) ? Database
+    : /team|account|member|user|owner/.test(text) ? Users
+    : /network|function|runtime|edge|log/.test(text) ? Network
+    : /deploy|build|release|project/.test(text) ? Cloud : null
+  const choices = [preferred, Boxes, FileCode2, HardDrive, Layers, Link2, Lock, Package, Plug, Server, Shield, Upload, Workflow].filter(Boolean)
+  const Icon = choices.find(candidate => !used.has(candidate)) || choices[index % choices.length]
+  used.add(Icon)
+  return Icon
 }

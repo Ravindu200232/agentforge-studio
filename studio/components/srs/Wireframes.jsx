@@ -57,6 +57,7 @@ import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
 import { Button, Empty, Modal } from '../ui'
+import WireframeInspector from './WireframeInspector'
 
 /** The `prj_…` id the drawings live under, whichever way the owner is named. */
 function useSrsId(owner) {
@@ -80,8 +81,8 @@ function Thumbnail({ srsId, page, waiting }) {
   const isGenerating = page.drawing || (waiting && !page.has_html)
   if (!srsId || !page.has_html) {
     return (
-      <div className="relative flex h-full w-full flex-col items-center justify-center overflow-hidden bg-[#F2F0EF]">
-        <div className="absolute inset-0 opacity-15 bg-[radial-gradient(#BFB9FF_1px,transparent_1px)] [background-size:12px_12px]" />
+      <div className="relative flex h-full w-full flex-col items-center justify-center overflow-hidden bg-panel">
+        <div className="absolute inset-0 opacity-15 bg-[radial-gradient(var(--accent)_1px,transparent_1px)] [background-size:12px_12px]" />
         {isGenerating ? (
           <div className="relative z-10 flex flex-col items-center gap-2 text-center p-3">
             <div className="relative flex size-9 items-center justify-center rounded-none bg-accent border border-accent/40 shadow-[0_0_20px_rgba(191, 185, 255,0.3)]">
@@ -114,7 +115,7 @@ function Thumbnail({ srsId, page, waiting }) {
         style={{ width: '1280px', height: '1000px', transform: 'scale(0.23)' }}
       />
       {isGenerating && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#F2F0EF]/75 backdrop-blur-[2px] z-10 transition-all">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-panel/75 backdrop-blur-[2px] z-10 transition-all">
           <div className="relative flex size-9 items-center justify-center rounded-none bg-accent border border-accent/50 shadow-[0_0_20px_rgba(191, 185, 255,0.4)]">
             <Sparkles className="size-4 text-ink animate-spin" style={{ animationDuration: '6s' }} />
             <div className="absolute inset-0 rounded-none border border-accent/40 animate-ping opacity-30" />
@@ -143,8 +144,14 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
   const [typing, setTyping] = useState(false)
   const [metrics, setMetrics] = useState(null)
   const [dragMode, setDragMode] = useState('free')
+  const [selectionKey, setSelectionKey] = useState(0)
+  const [aiOpen, setAiOpen] = useState(false)
+  const [aiPrompt, setAiPrompt] = useState('')
+  const [aiUpdating, setAiUpdating] = useState(false)
+  const [selectionMode, setSelectionMode] = useState(false)
   const frame = useRef(null)
   const editor = useRef(null)
+  const selectionModeRef = useRef(false)
   const editorUrl = useMemo(
     () => (srsId ? api.wireframeHtmlUrl(srsId, page.route) : 'about:blank'),
     [srsId, page.route],
@@ -161,6 +168,8 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
   }, [srsId, page.route])
 
   const [parts, setParts] = useState([])
+
+  useEffect(() => { selectionModeRef.current = selectionMode }, [selectionMode])
 
   const attach = useCallback(() => {
     editor.current?.detach?.()
@@ -186,7 +195,19 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
 
     import('@/lib/wireframe-html-editor').then(({ attachEditor, PARTS }) => {
       editor.current = attachEditor(iframe, {
-        onSelect: setPicked,
+        onSelect: node => {
+          setPicked(node)
+          setSelectionKey(key => key + 1)
+        },
+        onSelection: details => {
+          if (!selectionModeRef.current || !details) return
+          const preview = details.text ? ` — “${details.text}”` : ''
+          const attachment = `Selected element <${details.tag}>${preview}`
+          setAiPrompt(previous => previous.includes(attachment)
+            ? previous
+            : previous.trim() ? `${previous.trim()}\n\n${attachment}` : attachment)
+          setAiOpen(true)
+        },
         onDirty: setDirty,
         onMetrics: setMetrics,
       })
@@ -215,13 +236,43 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
     setSaving(true); setProblem('')
     try {
       if (typing) { editor.current.editText(false); setTyping(false) }
+      const edits = editor.current.changes?.() || []
       await api.saveWireframeHtml(srsId, page.route, editor.current.serialize())
       editor.current.saved()
+      setAiUpdating(true)
+      const list = edits.length ? edits.map(item => `- ${item}`).join('\n') : '- Reviewed the current page edits'
+      await api.aiEditWireframeHtml(srsId, page.route,
+        `The user directly edited this wireframe page. Review the saved page and faithfully apply these changes in the source. Keep the result low-fidelity and preserve all unaffected content.\n\nEdit list:\n${list}`)
+      setStamp(n => n + 1)
       onSaved?.(null)
     } catch (failure) {
-      setProblem(failure?.message || 'That layout could not be saved.')
+      setProblem(failure?.message || 'That layout could not be updated.')
     } finally {
+      setAiUpdating(false)
       setSaving(false)
+    }
+  }
+
+  async function updateWithAi() {
+    const request = aiPrompt.trim()
+    if (!request || !srsId || aiUpdating) return
+    setAiUpdating(true); setProblem('')
+    try {
+      if (typing) { editor.current?.editText(false); setTyping(false) }
+      // Keep the AI's source buffer in sync with any direct edits the user has
+      // made in the canvas. The AI endpoint intentionally reads only this page.
+      if (dirty && editor.current) {
+        await api.saveWireframeHtml(srsId, page.route, editor.current.serialize())
+        editor.current.saved()
+      }
+      await api.aiEditWireframeHtml(srsId, page.route, request)
+      setStamp(n => n + 1)
+      setDirty(false); setPicked(''); setTyping(false); setMetrics(null)
+      setAiPrompt(''); setAiOpen(false)
+    } catch (failure) {
+      setProblem(failure?.message || 'The AI could not update this page.')
+    } finally {
+      setAiUpdating(false)
     }
   }
 
@@ -254,39 +305,34 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
   )
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-none border border-black/10 bg-[#F2F0EF]/90 shadow-2xl backdrop-blur-xl">
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-black/10 bg-black/30 px-5 py-3 backdrop-blur-md">
-        <div className="flex min-w-0 items-center gap-3">
-          <Button variant="outline" size="sm" onClick={onClose}
-            className="h-8 rounded-none border-black/10 bg-black/[.05] text-ink text-[11.5px]">
-            ← Wireframes
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-none border border-black/10 bg-panel/90 shadow-2xl backdrop-blur-xl">
+      <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-black/10 bg-black/30 px-3 backdrop-blur-md">
+        <div className="flex min-w-0 items-center gap-2">
+          <Button variant="outline" size="icon-sm" onClick={onClose} title="Back to wireframes" aria-label="Back to wireframes"
+            className="rounded-lg border-black/10 bg-black/[.05] text-ink">
+            <ArrowLeft className="size-3.5" />
           </Button>
           <span className="min-w-0">
-            <span className="block truncate text-[13px] font-semibold text-ink">
+            <span className="block truncate text-[12px] font-semibold text-ink">
               {page.page_name || page.route}
             </span>
-            <span className="block truncate font-mono text-[10.5px] text-muted2">
+            <span className="block truncate font-mono text-[9.5px] text-muted2">
               {page.route}{page.roles?.length ? ` · ${page.roles.join(', ')}` : ''}
             </span>
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           {dirty && (
             <Button variant="solid" size="sm" onClick={save} disabled={saving}
-              className="h-8 rounded-none bg-accent hover:bg-accent text-[11.5px] text-ink">
-              {saving ? <><Loader2 className="mr-1 size-3 animate-spin" /> Saving…</> : 'Save page'}
+              className="h-7 rounded-lg bg-accent hover:bg-accent text-[10.5px] text-ink">
+              {saving ? <><Loader2 className="mr-1 size-3 animate-spin" /> {aiUpdating ? 'Editing…' : 'Saving…'}</> : 'Save page'}
             </Button>
           )}
-          <Button variant="outline" size="sm" onClick={draw} disabled={drawing || !srsId}
-            className="h-8 rounded-none border-black/10 bg-black/[.05] text-ink text-[11.5px]">
-            {drawing ? <><Loader2 className="mr-1 size-3 animate-spin" /> Drawing…</>
-                     : stamp ? 'Draw again' : 'Draw this page'}
-          </Button>
         </div>
       </div>
 
       {stamp ? (
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-black/10 bg-black/[.03] px-3.5 py-2 select-none">
+        <div className="hidden shrink-0 flex-wrap items-center gap-1.5 border-b border-black/10 bg-black/[.03] px-3.5 py-2 select-none">
           {/* Tool Mode: Free Move (Figma Canvas) vs Flow Reorder */}
           <div className="flex items-center rounded-none bg-black/40 p-0.5 border border-black/10">
             <button
@@ -294,7 +340,7 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
               onClick={() => setMode('free')}
               title="Move Tool (V): Drag with cursor to freely position anywhere"
               className={cn('flex items-center gap-1 rounded-none px-2 py-1 text-[10.5px] font-medium transition cursor-pointer',
-                dragMode === 'free' ? 'bg-[#BFB9FF] text-ink font-semibold shadow-sm' : 'text-muted hover:text-ink')}
+                dragMode === 'free' ? 'bg-accent text-ink font-semibold shadow-sm' : 'text-muted hover:text-ink')}
             >
               <Move className="size-3" />
               <span>Move</span>
@@ -304,7 +350,7 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
               onClick={() => setMode('flow')}
               title="Reorder Tool: Drag with cursor to drop between elements"
               className={cn('flex items-center gap-1 rounded-none px-2 py-1 text-[10.5px] font-medium transition cursor-pointer',
-                dragMode === 'flow' ? 'bg-[#BFB9FF] text-ink font-semibold shadow-sm' : 'text-muted hover:text-ink')}
+                dragMode === 'flow' ? 'bg-accent text-ink font-semibold shadow-sm' : 'text-muted hover:text-ink')}
             >
               <ArrowUpDown className="size-3" />
               <span>Reorder</span>
@@ -317,7 +363,7 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
             <>
               {/* Selected Tag & Dimensions */}
               <span className="flex items-center gap-1 rounded-none bg-black/[.07] px-2 py-1 font-mono text-[10.5px] text-ink border border-black/10">
-                <span className="text-[#BFB9FF] font-semibold">&lt;{picked}&gt;</span>
+                <span className="text-accent font-semibold">&lt;{picked}&gt;</span>
                 {metrics && (
                   <span className="text-muted2 text-[10px] ml-1">
                     {metrics.w}×{metrics.h}px
@@ -398,7 +444,7 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
             </>
           ) : (
             <span className="flex items-center gap-1.5 font-mono text-[11px] text-muted2">
-              <Move className="size-3 text-[#BFB9FF]" />
+              <Move className="size-3 text-accent" />
               <span>Click any element to drag with cursor · Drag corner handles to resize · Arrow keys to nudge</span>
             </span>
           )}
@@ -426,7 +472,7 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
         <div className="flex min-h-0 flex-1">
           {/* The catalogue. A part is inserted after whatever is picked, so
               building a page is: pick the thing it goes under, then add it. */}
-          <aside className="w-[188px] shrink-0 overflow-y-auto border-r border-black/10 bg-[#F2F0EF] p-3">
+          <aside className="hidden w-[188px] shrink-0 overflow-y-auto border-r border-black/10 bg-panel p-3">
             <p className="mb-2 font-display text-[10.5px] font-bold uppercase tracking-wider text-muted">
               Add components
             </p>
@@ -455,22 +501,81 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
             ))}
           </aside>
           <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-white">
-            {drawing && (
-              <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-[#F2F0EF]/85 backdrop-blur-md transition-all duration-300">
-                <div className="absolute inset-0 opacity-15 bg-[radial-gradient(#BFB9FF_1px,transparent_1px)] [background-size:20px_20px]" />
-                <div className="absolute inset-x-0 h-1 bg-gradient-to-r from-transparent via-[#BFB9FF] to-transparent animate-pulse shadow-[0_0_20px_#BFB9FF]" />
+            <WireframeInspector
+              editor={editor.current}
+              selectionKey={selectionKey}
+              onRedraw={draw}
+              redrawing={drawing || !srsId}
+              onOpenAi={() => setAiOpen(true)}
+              selectionMode={selectionMode}
+              onSelectionMode={setSelectionMode}
+              typing={typing}
+              onEditText={enabled => {
+                const selected = editor.current?.selected?.()
+                if (!selected?.textContent?.trim()) return
+                editor.current.editText(enabled)
+                setTyping(enabled)
+                setSelectionKey(key => key + 1)
+              }}
+              onChange={() => {
+                setDirty(true)
+                setPicked(editor.current?.selected?.()?.tagName?.toLowerCase() || '')
+                setSelectionKey(key => key + 1)
+              }}
+              onUndo={() => {
+                if (!editor.current?.undo?.()) return
+                setDirty(editor.current?.hasHistory?.() ?? false)
+                setPicked('')
+                setMetrics(null)
+                setSelectionKey(key => key + 1)
+              }}
+            />
+            {aiOpen && (
+              <form
+                onSubmit={event => { event.preventDefault(); updateWithAi() }}
+                className="absolute bottom-4 left-1/2 z-40 w-[min(680px,calc(100%-6rem))] -translate-x-1/2 rounded-xl border border-line bg-panel p-3 shadow-2xl"
+              >
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Sparkles className="size-4 shrink-0 text-accent" />
+                    <div>
+                      <p className="text-[11px] font-semibold text-ink">Update this wireframe with AI</p>
+                      <p className="text-[10px] text-muted">Only {page.route} changes. No plan or other page is touched.</p>
+                    </div>
+                  </div>
+                  <button type="button" onClick={() => setAiOpen(false)} className="text-[11px] text-muted hover:text-ink">Close</button>
+                </div>
+                <div className="flex items-end gap-2">
+                  <textarea
+                    autoFocus
+                    value={aiPrompt}
+                    onChange={event => setAiPrompt(event.target.value)}
+                    placeholder="Describe any page change or redesign…"
+                    rows={2}
+                    className="min-h-[48px] flex-1 resize-none rounded-lg border border-line bg-white px-3 py-2 text-[11px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+                  />
+                  <Button variant="solid" size="sm" disabled={!aiPrompt.trim() || aiUpdating} className="h-9 rounded-lg text-[11px]">
+                    {aiUpdating ? <><Loader2 className="size-3 animate-spin" /> Sending</> : <><Sparkles className="size-3" /> Send</>}
+                  </Button>
+                </div>
+              </form>
+            )}
+            {(drawing || aiUpdating) && (
+              <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-panel/85 backdrop-blur-md transition-all duration-300">
+                <div className="absolute inset-0 opacity-15 bg-[radial-gradient(var(--accent)_1px,transparent_1px)] [background-size:20px_20px]" />
+                <div className="absolute inset-x-0 h-1 bg-gradient-to-r from-transparent via-[var(--accent)] to-transparent animate-pulse shadow-[0_0_20px_var(--accent)]" />
                 <div className="relative z-10 flex flex-col items-center rounded-none border border-black/15 bg-black/[0.04] p-8 shadow-2xl backdrop-blur-2xl text-center max-w-sm">
                   <div className="relative flex size-14 items-center justify-center rounded-none bg-accent border border-accent/40 shadow-[0_0_35px_rgba(191, 185, 255,0.4)]">
                     <Sparkles className="size-7 text-ink animate-spin" style={{ animationDuration: '7s' }} />
-                    <div className="absolute inset-0 rounded-none border-2 border-[#BFB9FF] animate-ping opacity-30" />
+                    <div className="absolute inset-0 rounded-none border-2 border-accent animate-ping opacity-30" />
                   </div>
-                  <h3 className="mt-4 text-[15px] font-bold tracking-tight text-ink">Updating Wireframe…</h3>
+                  <h3 className="mt-4 text-[15px] font-bold tracking-tight text-ink">{aiUpdating ? 'AI is updating this page…' : 'Updating Wireframe…'}</h3>
                   <p className="mt-1 text-[12px] leading-relaxed text-ink">
-                    Generating updated layout structure and blueprint components for <span className="font-mono text-accent font-semibold">{page.route}</span>.
+                    {aiUpdating ? 'Reading the current page and writing the requested wireframe update for ' : 'Generating updated layout structure and blueprint components for '}<span className="font-mono text-accent font-semibold">{page.route}</span>.
                   </p>
                   <div className="mt-4 flex items-center gap-2 rounded-full border border-accent/30 bg-accent px-3 py-1 font-mono text-[10.5px] text-ink">
                     <Loader2 className="size-3 animate-spin text-ink" />
-                    <span>Drawing wireframe…</span>
+                    <span>{aiUpdating ? 'Updating this page…' : 'Drawing wireframe…'}</span>
                   </div>
                 </div>
               </div>
@@ -484,13 +589,13 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
               sandbox="allow-same-origin"
               className={cn(
                 "min-h-0 min-w-0 flex-1 border-0 bg-white transition-all duration-500",
-                drawing && "filter blur-[6px] scale-[0.99] opacity-40 pointer-events-none"
+                (drawing || aiUpdating) && "filter blur-[6px] scale-[0.99] opacity-40 pointer-events-none"
               )}
             />
           </div>
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1 items-center justify-center bg-[#F2F0EF] text-[12px] text-muted">
+        <div className="flex min-h-0 flex-1 items-center justify-center bg-panel text-[12px] text-muted">
           {srsId ? `Nothing drawn for ${page.route} yet.`
                  : 'This project has no specification to draw from.'}
         </div>
@@ -508,7 +613,7 @@ function PageEditor({ owner, page, onClose, onSaved, srsId = '' }) {
       style={{ maxWidth: 'none', width: '100%', height: '100%', maxHeight: '100%' }}
       className="overflow-hidden rounded-none border-0 p-0"
     >
-      <div className="flex h-full min-h-0 gap-4 bg-[#F2F0EF] p-5">
+      <div className="flex h-full min-h-0 gap-4 bg-panel p-5">
         <WireframeEditor owner={owner} srsId={srsId} page={page}
           onClose={onClose} onSaved={onSaved} />
       </div>

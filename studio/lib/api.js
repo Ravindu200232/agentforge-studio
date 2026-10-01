@@ -112,6 +112,7 @@ export const api = {
   // A project belongs to whoever built it, from the moment it is created;
   // there is nothing for the studio to assign.
   projects: () => req('/projects'),
+  chooseWorkspace: () => post('/workspace/pick', {}),
   models: () => req('/models'),
   mongo: () => req('/mongo'),
   settings: () => req('/settings'),
@@ -127,6 +128,7 @@ export const api = {
   saveFile: (project, path, content, changeSummary = '') => post('/save-file', { project, path, content, change_summary: changeSummary }),
   open: (project) => post(`/open/${encodeURIComponent(project)}`, {}),
   runtime: (project) => req(`/runtime/${encodeURIComponent(project)}`),
+  stopPreview: (project) => post(`/runtime/${encodeURIComponent(project)}/stop`, {}),
 
   // An address for this project's app that works away from this machine.
   previewLink: (project) => post('/preview-link', { project }),
@@ -196,6 +198,10 @@ export const api = {
   // What the tools editor rearranged, as the page itself.
   saveWireframeHtml: (srsId, route, html) =>
     api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/html/edit`, { route, html }),
+  // A direct, page-scoped request: it skips planning and replaces only this
+  // wireframe's saved HTML with the AI's revised low-fidelity page.
+  aiEditWireframeHtml: (srsId, route, prompt) =>
+    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/html/ai-edit`, { route, prompt }),
   // Read straight from the agent rather than through a job: it is one page of
   // HTML and it is what the <iframe> loads.
   wireframeHtmlUrl: (srsId, route) =>

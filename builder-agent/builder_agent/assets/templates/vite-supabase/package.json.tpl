@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "start": "vite preview --host 127.0.0.1 --port 5173 --strictPort",
+    "start": "vite preview",
     "seed": "node scripts/seed.mjs",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",

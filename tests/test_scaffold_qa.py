@@ -16,9 +16,16 @@ for folder in ("builder-agent", "qa-agent"):
 from builder_agent import scaffold  # noqa: E402
 from qa_agent.evidence import archive_results, collect  # noqa: E402
 
-NEXTJS_STACKS = {"nextjs-supabase", "nextjs-microservices-supabase"}
-MICROSERVICES_STACKS = {"nextjs-microservices-supabase", "vite-microservices-supabase"}
-SPA_STACKS = {"vite-supabase", "vite-microservices-supabase"}
+SUPABASE_STACKS = {"nextjs-supabase", "vite-supabase", "remix-supabase"}
+MONGO_STACKS = {"nextjs-mongo", "vite-mongo", "mern-microservices"}
+NEXTJS_STACKS = {"nextjs-supabase", "nextjs-mongo"}
+# These two have their own long-running server on a fixed local port (not a single Studio-assigned
+# one) and their own aggressive, port-freeing port-guard - a deliberate, different convention from
+# the single-app Next.js stacks, not an oversight.
+WORKSPACE_STACKS = {"vite-mongo", "mern-microservices"}
+AGGRESSIVE_PORT_GUARD_STACKS = WORKSPACE_STACKS
+MICROSERVICES_STACKS = {"mern-microservices"}
+SPA_STACKS = {"vite-supabase"}  # no server, no secret store - the Supabase-only SPA pattern
 
 
 class ScaffoldTests(unittest.TestCase):
@@ -44,7 +51,7 @@ class ScaffoldTests(unittest.TestCase):
                 self.assertTrue((workspace / "playwright.config.js").is_file())
                 self.assertTrue((workspace / "e2e/a11y.spec.js").is_file())
                 self.assertTrue((workspace / ".agentforge/build/scaffold.json").is_file())
-                if stack in NEXTJS_STACKS:
+                if stack in NEXTJS_STACKS or stack in AGGRESSIVE_PORT_GUARD_STACKS:
                     self.assertTrue((workspace / "scripts/port-guard.mjs").is_file())
                 manifest = json.loads((workspace / "package.json").read_text(encoding="utf-8"))
                 for script in ("build", "test", "test:e2e", "test:visual", "test:a11y", "test:perf"):
@@ -52,7 +59,15 @@ class ScaffoldTests(unittest.TestCase):
                 self.assertIn("@axe-core/playwright", manifest["devDependencies"])
                 self.assertIn("@lhci/cli", manifest["devDependencies"])
                 if stack in NEXTJS_STACKS:
-                    self.assertIn("port-guard.mjs 3001", manifest["scripts"]["dev"])
+                    self.assertNotIn("3001", manifest["scripts"]["dev"])
+                    self.assertNotIn("3001", manifest["scripts"]["start"])
+                # Preview ownership belongs to Studio, which assigns a single-app stack an isolated
+                # port of its own. The fixed-local-port workspace stacks (vite-mongo,
+                # mern-microservices) are a different, deliberate convention and are exempt.
+                if stack not in WORKSPACE_STACKS:
+                    for script in ("dev", "start"):
+                        self.assertNotIn("3001", manifest["scripts"][script])
+                        self.assertNotIn("5173", manifest["scripts"][script])
                 self.assertNotIn(".slice(0, 8)", (workspace / "lighthouserc.cjs").read_text())
                 # One command per layer that needs a running app, and the runners behind them.
                 for script in ("qa:e2e", "qa:visual", "qa:a11y", "qa:perf", "qa:security"):
@@ -65,21 +80,34 @@ class ScaffoldTests(unittest.TestCase):
                 zap_scan = (workspace / "scripts/zap-scan.mjs").read_text(encoding="utf-8")
                 self.assertIn("autoInstallFailedAt", zap_scan)
                 self.assertIn("await installZap()", zap_scan)
-                # Every generated app has a Supabase project of its own; nothing here still names
-                # the shared placeholder once install() has substituted the real project slug.
                 slug = scaffold.project_slug(workspace.name)
                 texts = {t: (workspace / t).read_text(encoding="utf-8", errors="ignore") for t in result["files"]}
                 self.assertEqual([t for t, body in texts.items() if scaffold.DB_PLACEHOLDER in body], [])
-                self.assertIn(f'project_id = "{slug}"', texts["supabase/config.toml"])
-                helper = texts["test/helpers/db.js"]
-                self.assertIn("must be local", helper)
-                self.assertNotIn("SUPABASE_SERVICE_ROLE_KEY", helper)  # talks to local Postgres directly, no key at all
                 self.assertTrue(scaffold.guide_context(stack).lstrip().startswith("### pitfalls.md"))
-                if stack in MICROSERVICES_STACKS:
-                    self.assertIn("supabase/functions/example/index.ts", result["files"])
-                    self.assertIn("[functions.example]", texts["supabase/config.toml"])
+
+                if stack in SUPABASE_STACKS:
+                    # Every generated app has a Supabase project of its own; nothing here still
+                    # names the shared placeholder once install() has substituted the real slug.
+                    self.assertIn(f'project_id = "{slug}"', texts["supabase/config.toml"])
+                    helper = texts["test/helpers/db.js"]
+                    self.assertIn("must be local", helper)
+                    self.assertNotIn("SUPABASE_SERVICE_ROLE_KEY", helper)  # talks to local Postgres directly, no key at all
                 else:
-                    self.assertFalse((workspace / "supabase/functions").exists())
+                    self.assertFalse((workspace / "supabase").exists())
+                    # Every generated Mongo app gets its own `_test`-suffixed database name; tests
+                    # can never touch anything else.
+                    helper_path = "packages/testing/index.js" if stack == "mern-microservices" else "test/helpers/db.js"
+                    helper = texts[helper_path]
+                    self.assertIn(f"{slug}_test", helper)
+                    self.assertIn("must end in", helper)
+
+                if stack in MICROSERVICES_STACKS:
+                    self.assertTrue((workspace / "scaffold/service/package.json.tpl").is_file())
+                    self.assertFalse((workspace / "scaffold/service/package.json").exists())
+                    # The one Dockerfile every package (gateway or a service) is built from, in the
+                    # cloud - built with a different --build-arg SERVICE per package, never per-stack.
+                    self.assertIn("ARG SERVICE=packages/gateway", texts["Dockerfile"])
+
                 if stack in SPA_STACKS:
                     # This app has no server and no secret store: the service-role key must never
                     # be *read* anywhere a browser bundle could include it (mentioning it in a
@@ -89,12 +117,42 @@ class ScaffoldTests(unittest.TestCase):
                             self.assertNotIn("env.SUPABASE_SERVICE_ROLE_KEY", texts[path], path)
                 self.assertIn(scaffold.STACK_GUIDES[stack], scaffold.guide_context(stack))
 
-    def test_port_guard_runs_when_invoked_directly_on_windows_paths(self):
-        # `file://${process.argv[1]}` never equals import.meta.url on Windows, so the guard did nothing.
+    def test_port_guard_never_terminates_an_unrelated_application(self):
         for stack in NEXTJS_STACKS:
             guard = (scaffold.ROOT / stack / "scripts" / "port-guard.mjs").read_text(encoding="utf-8")
+            self.assertIn("Let Studio allocate", guard)
+            self.assertNotIn("taskkill", guard)
+            self.assertNotIn("process.kill", guard)
+
+    def test_workspace_stacks_port_guard_frees_only_its_own_fixed_port(self):
+        # Unlike the single-app Next.js stacks above, these run a fixed local port every project
+        # shares, so a stale listener on it is freed rather than left to block the next run.
+        for stack in AGGRESSIVE_PORT_GUARD_STACKS:
+            guard = (scaffold.ROOT / stack / "scripts" / "port-guard.mjs").read_text(encoding="utf-8")
             self.assertIn("pathToFileURL(process.argv[1]).href", guard)
-            self.assertNotIn("`file://${process.argv[1]}`", guard.split("pathToFileURL(process.argv[1])")[1])
+            self.assertIn("Free only the process which is listening on this exact application port", guard)
+
+    def test_nextjs_mongo_tests_get_their_own_database_and_connection_reuse(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            scaffold.install(workspace, "nextjs-mongo")
+            slug = scaffold.project_slug(workspace.name)
+            env = (workspace / "vitest.env.js").read_text(encoding="utf-8")
+            self.assertIn(f"{slug}_test", env)
+            self.assertIn("process.env.MONGODB_URI = process.env.TEST_MONGODB_URI", env)
+            self.assertIn("vitest.env.js", (workspace / "vitest.config.js").read_text(encoding="utf-8"))
+            self.assertIn("readyState === 1", (workspace / "lib/db.js").read_text(encoding="utf-8"))
+
+    def test_qa_server_wrapper_never_touches_the_projects_real_database(self):
+        runner = (scaffold.ROOT / "_testing/scripts/with-server.mjs").read_text(encoding="utf-8")
+        self.assertIn("never read or write the project's real data", runner)
+        self.assertNotIn("truncate table", runner)
+        # A Mongo stack's own isolated, uniquely-named QA database is reset and (if the app defines
+        # one) seeded for the run, then dropped - never the project's real database, which this
+        # wrapper never names or connects to directly.
+        self.assertIn("resetQaDatabase", runner)
+        self.assertIn("npm', 'run', 'seed", runner)
+        self.assertIn("_e2e", runner)
 
     def test_smoke_a11y_and_visual_only_cover_public_pages(self):
         routes = (scaffold.ROOT / "_testing" / "e2e" / "routes.js").read_text(encoding="utf-8")
@@ -190,9 +248,10 @@ class ScaffoldTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("node"), "node is needed to run the inventory script")
     def test_inventory_matches_express_routes_by_method_and_path(self):
-        # Not one of our own scaffolds (the microservices stacks are Supabase Edge Functions, not
-        # Express) - this is the inventory script's general-purpose Express support, exercised
-        # against a synthetic fixture so it keeps working for a hand-written Express service.
+        # Not one of our own scaffolds's single-app stacks - this is the inventory script's
+        # general-purpose Express support, exercised against a synthetic fixture so it keeps
+        # working for a hand-written Express service (which is exactly what vite-mongo's server
+        # and every mern-microservices package are).
         script = scaffold.ROOT / "_testing" / "scripts" / "test-inventory.mjs"
         files = {
             "package.json": '{"name":"m"}',

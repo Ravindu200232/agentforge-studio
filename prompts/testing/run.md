@@ -23,6 +23,18 @@ Do not require a test for every page, component or file. Do not target or claim 
 
 Use the project's existing commands and isolated local server. Fix product failures and rerun only the affected check. Never weaken or skip a meaningful assertion to improve results. Mark an unavailable tool honestly with the exact reason.
 
+## Persistent data safety and empty-data diagnosis
+
+The connected Supabase project is persistent project data, not a disposable test database. The QA
+server wrapper may start and stop a temporary local server, but it must never truncate, delete,
+reset or run a destructive seed against the connected project. If a journey needs records, use
+records already in the project or create uniquely named test records and remove only those records
+in that journey's own cleanup. Never accept a newly empty list as an ordinary empty state when the
+same project previously showed records: compare the route's query, the preview logs and the latest
+QA run, then record the persistence/runtime failure and repair the actual cause. If a rerun made
+data disappear, call that out explicitly in the QA report so the build conversation sees the bug
+instead of silently passing an empty screen.
+
 Preserve the Testing screen contract. Update `.agentforge/qa/report.json` after each layer by merging into the existing object; never rename or delete existing fields. Keep `project`, `complete`, `provenance`, `summary`, `timeline`, `commands`, `unit`, `journeys`, `e2e`, `accessibility`, `performance`, `load`, `security`, `bugs`, `repairs`, `resolvedBugs` and `screenshots` when present. Preserve the runner files `.agentforge/qa/vitest.json`, `test-results/results.json`, `.lighthouseci/summary.json`, `.agentforge/qa/routes.json`, `.agentforge/qa/zap/summary.json` and `.agentforge/qa/coverage/coverage-summary.json`; write them only through their existing runners.
 
 Set `complete` true when every planned layer has an honest recorded or reused-current outcome. Never invent a pass from a missing artifact.

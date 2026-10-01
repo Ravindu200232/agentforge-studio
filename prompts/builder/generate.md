@@ -39,6 +39,16 @@ and end your reply with the blocked marker. The customer is asked in the chat an
 
 Read `.agentforge/srs/user-journeys.json` before writing the journey tests. It is the complete, product-only list of required user journeys: it contains actors, actions and routes, not instructions for HTML, prototype, build or QA phases. Every `journeys[].id` is mandatory E2E coverage. Give at least one real Playwright business-journey test the corresponding ID in its title, for example `[UJ-001] Visitor places an order`; follow the saved steps and assert the journey's real business outcome. Route smoke, visual and accessibility checks do not count as journey coverage. Before marking QA complete, confirm that every saved UJ id appears in a passing journey-test result; a missing or failed ID must remain an honest failure, never be replaced by a generic E2E count.
 
+## Persistence regression check
+
+The project's connected Supabase data persists across preview restarts and QA reruns. The test
+wrapper may own a temporary server port, but it must never truncate, delete, reset or destructively
+seed the connected project. When a route showed records earlier in the build and shows an empty
+list after a rerun, treat that as a real persistence/runtime regression: inspect the route query,
+the preview logs and the runner commands, identify what removed or hid the data, record it in the
+QA report and repair it. Do not silently accept that empty list as a normal empty state, and do not
+let an external test wrapper hide the finding from the build report.
+
 ## Confirming an already-finished plan
 
 Resuming this plan after an interruption and finding every phase's evidence already on disk is not the same as finishing it. Before ending the run, always open `.agentforge/qa/report.json` yourself and check that its `complete` field is literally `true` — an earlier run interrupted after the real testing work but before that one field was written leaves every layer's evidence genuinely passing on disk while the file itself still reads incomplete. If it is not `true`, write it now, merging it in the same way as every other write to this file, never replacing what is already there. Describing the work as complete in your own summary is not a substitute for this: the Studio's own gate checks this exact field, not your description of it, and will keep failing the run on every resume until it is actually set.

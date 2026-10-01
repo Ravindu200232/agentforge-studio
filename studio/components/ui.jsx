@@ -34,10 +34,10 @@ export function Tag({ tone = 'mute', className, children }) {
     <span className={cn(
       'inline-flex items-center rounded-full px-2.5 py-[2px]',
       'text-[10.5px] font-bold uppercase tracking-[.06em]',
-      { mute: 'bg-panel2 text-muted', ok: 'bg-black/5 text-ink',
-        bad: 'bg-rose-500/15 text-rose-400', warn: 'bg-amber-500/15 text-amber-400',
-        accent: 'bg-accent text-ink',
-        solid: 'bg-accent text-ink shadow-sm' }[tone],
+      { mute: 'bg-panel2 text-muted', ok: 'border border-ok/35 bg-transparent text-ok',
+        bad: 'border border-bad/35 bg-transparent text-bad', warn: 'border border-warn/35 bg-transparent text-warn',
+        accent: 'border border-accent/35 bg-transparent text-deep',
+        solid: 'border border-accent/35 bg-transparent text-deep' }[tone],
       className)}>
       {children}
     </span>
@@ -49,9 +49,9 @@ export function Badge({ tone = 'mute', className, children }) {
   return (
     <span className={cn(
       'inline-flex items-center rounded-full font-mono text-[10.5px] px-2 py-0.5 font-semibold',
-      { mute: 'bg-panel2 text-muted2', ok: 'bg-black/5 text-ink',
-        bad: 'bg-rose-500/15 text-rose-400', warn: 'bg-amber-500/15 text-amber-400',
-        accent: 'bg-accent text-ink shadow-sm' }[tone],
+      { mute: 'bg-panel2 text-muted2', ok: 'border border-ok/35 bg-transparent text-ok',
+        bad: 'border border-bad/35 bg-transparent text-bad', warn: 'border border-warn/35 bg-transparent text-warn',
+        accent: 'border border-accent/35 bg-transparent text-deep' }[tone],
       className)}>
       {children}
     </span>

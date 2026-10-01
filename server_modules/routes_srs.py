@@ -55,7 +55,8 @@ def create_project(_project: str, body: dict) -> Any:
         raise ValueError("describe what you want built")
     record = store.create(idea=idea,
                           language=str(body.get("language") or ""),
-                          stack=str(body.get("stack") or ""))
+                          stack=str(body.get("stack") or ""),
+                          workspace_path=str(body.get("workspace_path") or ""))
     return {"project": {"id": record["id"], "name": record["name"],
                         "stack": record["stack"], "language": record["language"],
                         "status": record["status"]}}
@@ -119,6 +120,13 @@ def approve_srs(project: str, body: dict) -> Any:
 @route("GET", rf"/projects/{P}/diagrams")
 def diagrams(project: str, _body: dict) -> Any:
     return document.diagrams(project)
+
+
+@route("POST", rf"/projects/{P}/diagrams/redraw")
+def redraw_diagrams(project: str, body: dict) -> Any:
+    kinds = body.get("kinds")
+    chosen = [str(kind) for kind in kinds] if isinstance(kinds, list) else None
+    return document.redraw_diagrams(project, deep=bool(body.get("deep")), kinds=chosen)
 
 
 @route("GET", rf"/projects/{P}/builder-handoff")
@@ -194,6 +202,13 @@ def draw_wireframe(project: str, body: dict) -> Any:
 def edit_wireframe(project: str, body: dict) -> Any:
     return document.save_wireframe_html(project, str(body.get("route") or ""),
                                         str(body.get("html") or ""))
+
+
+@route("POST", rf"/projects/{P}/wireframes/html/ai-edit")
+def ai_edit_wireframe(project: str, body: dict) -> Any:
+    """Make one direct, page-scoped AI change without entering plan mode."""
+    return document.ai_edit_wireframe(project, str(body.get("route") or ""),
+                                      str(body.get("prompt") or ""))
 
 
 @route("POST", rf"/projects/{P}/wireframes/approve")

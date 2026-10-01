@@ -9,7 +9,12 @@ export default defineConfig({
   },
   server: {
     host: '127.0.0.1',
-    port: Number(process.env.PORT ?? 5173),
+    port: Number(process.env.PORT ?? 0),
+    strictPort: true,
+  },
+  preview: {
+    host: '127.0.0.1',
+    port: Number(process.env.PORT ?? 0),
     strictPort: true,
   },
 });

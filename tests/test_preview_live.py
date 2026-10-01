@@ -1,4 +1,4 @@
-"""One preview at a time, and the live browser that shows a test run in it."""
+"""Parallel project previews and the live browser that shows a test run in them."""
 from __future__ import annotations
 
 import json
@@ -20,10 +20,12 @@ from server_modules import bus, live, preview_runtime, supabase_connect  # noqa:
 class FakeProcess:
     _next = 1000
     environments: list[dict] = []
+    commands: list[list[str]] = []
 
     def __init__(self, *args, **kwargs):
         FakeProcess._next += 1
         FakeProcess.environments.append(kwargs.get("env") or {})
+        FakeProcess.commands.append(args[0])
         self.pid = FakeProcess._next
         self.returncode = None
 
@@ -53,7 +55,6 @@ class PreviewRuntimeTests(unittest.TestCase):
             mock.patch.object(preview_runtime.config, "workspace_for", lambda project: self.root / project),
             mock.patch.object(preview_runtime.config, "record_dir", lambda project: self.root / project / ".agentforge"),
             mock.patch.object(preview_runtime.subprocess, "Popen", FakeProcess),
-            mock.patch.object(preview_runtime, "_free_port", lambda port, timeout=6: None),
             mock.patch.object(preview_runtime, "_terminate_tree", terminate),
             mock.patch.object(preview_runtime, "_wait_ready", lambda *a, **k: None),
             mock.patch.object(preview_runtime, "_listening_pids", lambda port: []),
@@ -64,37 +65,53 @@ class PreviewRuntimeTests(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def test_opening_another_project_ends_the_first_ones_preview(self):
+    def test_opening_another_project_keeps_the_first_preview_running(self):
         first = preview_runtime.open_preview("alpha")
         self.assertEqual(first["status"], "starting")
         alpha_pid = preview_runtime._processes["alpha"]["process"].pid
 
-        preview_runtime.open_preview("beta")
-        self.assertIn(alpha_pid, self.terminated)                      # its process was killed
-        self.assertEqual(list(preview_runtime._processes), ["beta"])   # only the project on screen is served
-        self.assertEqual(preview_runtime.status("alpha")["status"], "stopped")
-        self.assertIn(("alpha", "stopped"), [(e[0], e[1]) for e in self.events])
+        second = preview_runtime.open_preview("beta")
+        self.assertEqual(second["status"], "starting")
+        self.assertNotEqual(first["port"], second["port"])
+        self.assertEqual(preview_runtime._processes["alpha"]["process"].pid, alpha_pid)
+        self.assertEqual(set(preview_runtime._processes), {"alpha", "beta"})
+        self.assertEqual(self.terminated, [])
+
+    def test_stopping_one_project_leaves_the_other_preview_running(self):
+        first = preview_runtime.open_preview("alpha")
+        second = preview_runtime.open_preview("beta")
+        alpha_pid = preview_runtime._processes["alpha"]["process"].pid
+        beta_pid = preview_runtime._processes["beta"]["process"].pid
+
+        stopped = preview_runtime.stop("beta")
+
+        self.assertEqual(stopped["status"], "stopped")
+        self.assertEqual(stopped["project"], "beta")
+        self.assertEqual(first["port"], preview_runtime._processes["alpha"]["port"])
+        self.assertNotIn("beta", preview_runtime._processes)
+        self.assertIn(beta_pid, self.terminated)
+        self.assertNotIn(alpha_pid, self.terminated)
 
     def test_reopening_the_project_on_screen_keeps_its_running_preview(self):
         preview_runtime.open_preview("alpha")
         preview_runtime._processes["alpha"]["status"] = "running"
-        self.open_ports.add(preview_runtime.PREVIEW_PORT)
+        self.open_ports.add(preview_runtime._processes["alpha"]["port"])
         pid = preview_runtime._processes["alpha"]["process"].pid
         again = preview_runtime.open_preview("alpha")
         self.assertEqual(again["status"], "running")
         self.assertEqual(preview_runtime._processes["alpha"]["process"].pid, pid)   # not restarted
         self.assertEqual(self.terminated, [])
 
-    def test_vite_stack_preview_uses_port_5173(self):
-        # vite-supabase / vite-microservices-supabase: a plain Vite dev server, one process, no
-        # separate gateway port to split PORT/VITE_PORT across the way the old MERN stack needed.
+    def test_vite_stack_preview_uses_a_private_dynamic_port(self):
         manifest = self.root / "alpha" / "package.json"
         manifest.write_text(json.dumps({"scripts": {"dev": "vite"}, "devDependencies": {"vite": "6.0.0"}}))
         FakeProcess.environments.clear()
         state = preview_runtime.open_preview("alpha")
-        self.assertEqual(state["port"], 5173)
-        self.assertEqual(state["url"], "http://127.0.0.1:5173/")
-        self.assertEqual(FakeProcess.environments[-1]["PORT"], "5173")
+        self.assertGreaterEqual(state["port"], preview_runtime.PREVIEW_PORT_FIRST)
+        self.assertLessEqual(state["port"], preview_runtime.PREVIEW_PORT_LAST)
+        self.assertEqual(state["url"], f"http://127.0.0.1:{state['port']}/")
+        self.assertEqual(FakeProcess.environments[-1]["PORT"], str(state["port"]))
+        self.assertEqual(FakeProcess.environments[-1]["HOST"], "127.0.0.1")
         self.assertNotIn("VITE_PORT", FakeProcess.environments[-1])
 
     def test_remix_preview_does_not_take_nextjs_port(self):
@@ -102,28 +119,28 @@ class PreviewRuntimeTests(unittest.TestCase):
         manifest.write_text(json.dumps({"scripts": {"dev": "remix vite:dev"},
                                         "dependencies": {"@remix-run/serve": "2"}}))
         state = preview_runtime.open_preview("alpha")
-        self.assertEqual(state["port"], 5173)
-        self.assertEqual(FakeProcess.environments[-1]["PORT"], "5173")
+        self.assertGreaterEqual(state["port"], preview_runtime.PREVIEW_PORT_FIRST)
+        self.assertEqual(FakeProcess.environments[-1]["PORT"], str(state["port"]))
         self.assertNotIn("VITE_PORT", FakeProcess.environments[-1])
 
-    def test_old_vite_preview_on_5173_is_replaced_by_a_nextjs_one_on_3001(self):
+    def test_a_project_restarts_its_own_preview_when_its_framework_changes(self):
         manifest = self.root / "alpha" / "package.json"
         manifest.write_text(json.dumps({"scripts": {"dev": "vite"}, "devDependencies": {"vite": "6.0.0"}}))
-        preview_runtime.open_preview("alpha")
+        first = preview_runtime.open_preview("alpha")
         preview_runtime._processes["alpha"]["status"] = "running"
         old = preview_runtime._processes["alpha"]["process"].pid
-        self.open_ports.add(5173)
+        self.open_ports.add(first["port"])
         manifest.write_text(json.dumps({"scripts": {"dev": "next dev"}, "dependencies": {"next": "15.0.0"}}))
         state = preview_runtime.open_preview("alpha")
         self.assertIn(old, self.terminated)
-        self.assertEqual(state["port"], 3001)
+        self.assertNotEqual(state["port"], first["port"])
 
     def test_unavailable_port_returns_failed_state_instead_of_http_error(self):
-        with mock.patch.object(preview_runtime, "_free_port", side_effect=RuntimeError("Port 5173 is still in use")), \
+        with mock.patch.object(preview_runtime, "_port_open", return_value=True), \
              mock.patch.object(preview_runtime.bus, "log"):
             state = preview_runtime.open_preview("alpha")
         self.assertEqual(state["status"], "failed")
-        self.assertIn("5173", state["detail"])
+        self.assertIn("No private preview port", state["detail"])
 
     def test_a_preview_whose_port_stopped_answering_is_started_again(self):
         preview_runtime.open_preview("alpha")
@@ -137,7 +154,7 @@ class PreviewRuntimeTests(unittest.TestCase):
         preview_runtime.open_preview("alpha")
         self.assertEqual(preview_runtime._processes["alpha"]["script"], "dev")
         preview_runtime._processes["alpha"]["status"] = "running"
-        self.open_ports.add(preview_runtime.PREVIEW_PORT)
+        self.open_ports.add(preview_runtime._processes["alpha"]["port"])
         (self.root / "alpha" / ".next").mkdir()
         (self.root / "alpha" / ".next" / "BUILD_ID").write_text("x")
         preview_runtime.open_preview("alpha")
@@ -146,7 +163,7 @@ class PreviewRuntimeTests(unittest.TestCase):
     def test_a_finished_build_is_served_by_a_fresh_process(self):
         preview_runtime.open_preview("alpha")
         preview_runtime._processes["alpha"]["status"] = "running"
-        self.open_ports.add(preview_runtime.PREVIEW_PORT)
+        self.open_ports.add(preview_runtime._processes["alpha"]["port"])
         old = preview_runtime._processes["alpha"]["process"].pid
         preview_runtime.reopen("alpha")
         self.assertIn(old, self.terminated)

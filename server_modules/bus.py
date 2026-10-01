@@ -234,6 +234,22 @@ def history(project: str) -> list[dict]:
         return list(_history.get(project, []))
 
 
+def latest_memory(project: str) -> dict:
+    """The newest durable usage report for a project.
+
+    Focused cloud tasks deliberately do not open the shared tool-agent chat.
+    Their token accounting still arrives as durable ``memory`` events, so the
+    session status endpoint can show the real context window after a restart
+    instead of a misleading ``0 / 0``.
+    """
+    with _lock:
+        _load(project)
+        for event in reversed(_history.get(project, [])):
+            if event.get("type") == "memory":
+                return dict(event)
+    return {}
+
+
 def events_by_role(project: str) -> dict[str, list[dict]]:
     rows = history(project)
     return {role: [e for e in rows if (e.get("agent") or DEVELOPER) == role] for role in ROLES}
@@ -287,7 +303,9 @@ def agent_state(project: str, state: str, thinking: bool = False, agent: str = D
 
 
 def memory(project: str, model: str, used: int, context: int, tools: int,
-           agent: str = DEVELOPER) -> None:
+           agent: str = DEVELOPER, turn_started_at: int = 0,
+           turn_input_tokens: int = 0, turn_output_tokens: int = 0,
+           context_scope: str = "conversation") -> None:
     rows = history(project)
     files = len({e.get("name") for e in rows if e.get("type") == "file"})
     emit({"type": "memory", "project": project, "agent": agent, "model": model,
@@ -295,7 +313,13 @@ def memory(project: str, model: str, used: int, context: int, tools: int,
           "percent": round(100 * used / context) if context else 0,
           "tools": tools, "files": files,
           "requests": len([e for e in rows if e.get("type") == "agent_state" and e.get("state") == "thinking"]),
-          "iterations": tools, "sent": 0, "received": 0})
+          "iterations": tools, "sent": max(0, turn_input_tokens),
+          "received": max(0, turn_output_tokens),
+          # The bottom-of-chat meter intentionally uses only exact provider
+          # counts.  Context-window usage above remains its own metric.
+          "turn_started_at": max(0, turn_started_at),
+          "turn_tokens": max(0, turn_output_tokens),
+          "context_scope": context_scope})
 
 
 def step(project: str, name: str, status: str, agent: str = DEVELOPER) -> None:

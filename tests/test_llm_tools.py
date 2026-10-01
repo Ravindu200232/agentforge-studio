@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 for folder in (".", "src"):
     sys.path.insert(0, str(ROOT / folder))
 
-from server_modules import bus, llm_tools  # noqa: E402
+from server_modules import bus, llm, llm_tools  # noqa: E402
 
 
 class FakeMessage:
@@ -167,6 +167,44 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(tokens, ["I'll check that."])
         self.assertEqual(message.content, "I'll check that.")
         self.assertEqual(message.tool_calls, [call])
+
+    def test_stream_chat_reports_the_terminal_provider_usage(self):
+        final = FakeChunk("done")
+        final.prompt_eval_count = 23
+        final.eval_count = 5
+
+        def chat(**_kwargs):
+            return iter([FakeChunk("part "), final])
+
+        usage = []
+        message = llm_tools._stream_chat(chat, {"model": "m", "messages": []},
+                                         lambda _token: None, usage.append)
+        self.assertEqual(message.content, "part done")
+        self.assertEqual(usage, [final])
+
+
+class FocusedUsageTests(unittest.TestCase):
+    def setUp(self):
+        llm_tools._UNSUPPORTED_MODELS.clear()
+
+    def test_focused_call_usage_reaches_the_same_memory_meter(self):
+        project = "prj_focused_usage"
+        seen = []
+        cancel = bus.subscribe(seen.append)
+        try:
+            bus.run_state(project, "running")
+            report = llm._focused_usage(project, "test:cloud", 8192, bus.DEVELOPER)
+            assert report is not None
+            report(SimpleNamespace(prompt_eval_count=123, eval_count=17))
+        finally:
+            cancel()
+            bus.forget(project)
+        event = next(row for row in seen if row.get("type") == "memory" and row.get("agent") == bus.DEVELOPER)
+        self.assertEqual(event["used"], 123)
+        self.assertEqual(event["limit"], 8192)
+        self.assertEqual(event["sent"], 123)
+        self.assertEqual(event["received"], 17)
+        self.assertEqual(event["context_scope"], "focused")
 
     def test_run_chat_streams_the_no_tools_path(self):
         def chat(**kwargs):

@@ -40,6 +40,16 @@ const TABS = [
   { id: 'versions', label: 'Version', Icon: History },
 ]
 
+// Lifecycle names and workspace tab ids differ for a few stages.  This lets
+// the navigation show the stage the project is currently in.
+const STAGE_TAB = {
+  interview: 'srs', plan: 'srs', srs: 'srs',
+  design: 'wireframe', wireframe: 'wireframe',
+  prototype: 'prototype', build: 'preview', builder: 'preview',
+  test: 'testing', qa: 'testing',
+  deploy: 'deploy', deployment: 'deploy', done: 'versions',
+}
+
 const WIREFRAME_APPROVAL_PROMPT =
   'Use the approved /plan as the scope. Read the site map and the application spec at ' +
   '.agentforge/srs/handoff/ (sitemap.md, app.md). Before drawing anything, search the web ' +
@@ -265,6 +275,7 @@ export default function Studio() {
   const unitStatus = projectUnitTestStatus(qa, project)
 
   const currentProjectObj = projects.find(p => p.name === project)
+  const currentStageTab = STAGE_TAB[String(currentProjectObj?.stage || '').toLowerCase()] || null
   const specOnly = Boolean(currentProjectObj?.spec_only) && busyProject !== project
   const prototypeOnly = Boolean(currentProjectObj?.prototype_only) && busyProject !== project
 
@@ -397,6 +408,8 @@ export default function Studio() {
   }
 
   function approveWireframesAndBuildPrototype() {
+    const name = useStore.getState().project
+    if (!name) return
     setView('design')
     setMobileView('view')
   }
@@ -477,6 +490,23 @@ export default function Studio() {
     }
   }
 
+  async function openPreviewInNewTab() {
+    const name = useStore.getState().project
+    if (!name) return
+    const tab = window.open('about:blank', '_blank')
+    try {
+      const runtime = await api.open(name)
+      useStore.getState().setRuntime(runtime)
+      if (tab) {
+        tab.opener = null
+        tab.location.href = runtime.previewUrl
+      }
+    } catch (error) {
+      tab?.close()
+      useStore.getState().addLog('WARN', `Could not open preview: ${error.message}`)
+    }
+  }
+
   return (
     <div className="flex h-full w-full overflow-hidden bg-bg text-ink">
       {user && (
@@ -491,11 +521,12 @@ export default function Studio() {
             setMobileNavOpen(false)
             setSettingsOpen(true)
           }}
+          workspaceTabs={TABS}
+          currentView={view}
+          currentStageTab={currentStageTab}
+          buildAllowed={buildAllowed}
+          onViewChange={setView}
           onZip={downloadZip}
-          onResume={() => {
-            setMobileNavOpen(false)
-            resumeBuild()
-          }}
           screen={screen}
           onScreenChange={(s) => {
             setMobileNavOpen(false)
@@ -517,7 +548,11 @@ export default function Studio() {
       {settingsOpen && (
         <SettingsModal onClose={() => setSettingsOpen(false)}
                        onSaved={() => api.models().then(r => setCat(catalogue(r)))
-                                         .catch(() => { })} />
+                                         .catch(() => { })}
+                       onImport={importFolder}
+                       onZip={downloadZip}
+                       onOpenInNewTab={openPreviewInNewTab}
+                       onLogout={signOut} />
       )}
 
       <AuthModal
@@ -566,7 +601,7 @@ export default function Studio() {
 
         {/* Workspace Top Navbar */}
         {screen === 'workspace' && (
-          <div className="flex h-[48px] shrink-0 items-center gap-2 border-b border-line bg-panel/95 px-2 sm:px-4 backdrop-blur-md">
+          <div className="md:hidden flex h-[48px] shrink-0 items-center gap-2 border-b border-line bg-panel/95 px-2 sm:px-4 backdrop-blur-md">
             {/* Mobile Sidebar Hamburger Button */}
             <button
               onClick={() => setMobileNavOpen(true)}
@@ -577,22 +612,26 @@ export default function Studio() {
             </button>
 
             <div className="flex items-center gap-1 rounded-full bg-panel2/80 p-0.5 border border-line overflow-x-auto no-scrollbar max-w-[calc(100vw-190px)] sm:max-w-none">
-              {tabs.map(({ id, label, Icon }) => (
+              {tabs.map(({ id, label, Icon }) => {
+                const isCurrentStage = id === currentStageTab
+                const isSelected = view === id
+                return (
                 <button key={id} onClick={() => setView(id)}
                         disabled={!buildAllowed && ['preview', 'testing', 'deploy'].includes(id)}
                         title={!buildAllowed && ['preview', 'testing', 'deploy'].includes(id) ? 'Complete the prototype first' : label}
                         className={cn('inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full px-3',
                           'font-display text-[11px] font-semibold transition-all disabled:opacity-35 disabled:cursor-not-allowed',
-                          view === id ? 'bg-[#BFB9FF] text-ink shadow-sm ring-1 ring-[#BFB9FF]/30'
+                          isSelected ? 'text-deep'
                                       : 'text-muted hover:bg-black/[.03] hover:text-ink dark:hover:bg-black/5')}>
-                  <Icon className="size-3.5 shrink-0" />
+                  <Icon className={cn('size-3.5 shrink-0', isCurrentStage ? 'text-ok' : isSelected ? 'text-deep' : 'text-muted2')} />
                   {label}
                   {id === 'testing' && unitStatus?.failed > 0
                     && !(busy && (!busyProject || busyProject === project)) && (
                     <Badge tone="bad">{unitStatus.failed}</Badge>
                   )}
                 </button>
-              ))}
+                )
+              })}
             </div>
 
             <span className="flex-1" />
@@ -605,7 +644,7 @@ export default function Studio() {
                 className={cn(
                   'h-7 px-2.5 rounded-full text-[11px] font-semibold transition-all flex items-center gap-1.5',
                   mobileView === 'chat'
-                    ? 'bg-[#BFB9FF] text-ink shadow-sm'
+                    ? 'text-deep'
                     : 'text-muted hover:text-ink'
                 )}
               >
@@ -618,7 +657,7 @@ export default function Studio() {
                 className={cn(
                   'h-7 px-2.5 rounded-full text-[11px] font-semibold transition-all',
                   mobileView === 'view'
-                    ? 'bg-[#BFB9FF] text-ink shadow-sm'
+                    ? 'text-deep'
                     : 'text-muted hover:text-ink'
                 )}
               >
@@ -631,7 +670,7 @@ export default function Studio() {
               <button
                 onClick={resumeBuild}
                 title="Build this application from the approved SRS"
-                className="inline-flex h-9 items-center gap-2 rounded-full bg-[#BFB9FF] hover:bg-[#9B94E8] px-4 text-[11.5px] font-semibold text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)] transition-all mr-2"
+                className="inline-flex h-9 items-center gap-2 rounded-full bg-accent hover:bg-press px-4 text-[11.5px] font-semibold text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)] transition-all mr-2"
               >
                 <Rocket className="size-[13px]" /> Build Now
               </button>
@@ -642,7 +681,7 @@ export default function Studio() {
               <button
                 onClick={resumeBuild}
                 title="Build full application from this prototype"
-                className="inline-flex h-9 items-center gap-2 rounded-full bg-[#BFB9FF] hover:bg-[#9B94E8] px-4 text-[11.5px] font-semibold text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)] transition-all mr-2"
+                className="inline-flex h-9 items-center gap-2 rounded-full bg-accent hover:bg-press px-4 text-[11.5px] font-semibold text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)] transition-all mr-2"
               >
                 <Rocket className="size-[13px]" /> Build App Now
               </button>

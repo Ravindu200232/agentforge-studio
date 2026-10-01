@@ -327,7 +327,7 @@ def env_for(project: str) -> dict[str, str]:
     }
     if ref and password:
         # The direct Postgres connection (`supabase db push`, and this project's own QA-run
-        # database reset in _testing/scripts/with-server.mjs) - not something a client ever reads,
+        # database connection used by migrations or commands) - not something a client ever reads,
         # so it carries no NEXT_PUBLIC_/VITE_ alias.
         env["SUPABASE_DB_URL"] = f"postgresql://postgres:{password}@db.{ref}.supabase.co:5432/postgres"
     return env

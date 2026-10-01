@@ -102,7 +102,8 @@ def agent_build(message: dict[str, Any]) -> dict[str, Any]:
     if not project:
         record = store.create(idea=direction or "See the attached files.",
                               language=str(message.get("language") or ""),
-                              stack=str(message.get("stack") or ""))
+                              stack=str(message.get("stack") or ""),
+                              workspace_path=str(message.get("workspace_path") or ""))
         project = record["id"]
     else:
         # A late WebSocket/fallback request can arrive after the customer

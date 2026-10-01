@@ -1,4 +1,4 @@
-"""Ownership rules for the Studio's fixed local preview port."""
+"""Ownership rules for isolated, project-local Studio preview ports."""
 from __future__ import annotations
 
 import json
@@ -22,21 +22,27 @@ class PreviewRuntimeTests(unittest.TestCase):
         preview_runtime._processes.clear()  # noqa: SLF001 - reset module state
         preview_runtime._last.clear()  # noqa: SLF001 - reset module state
 
-    def test_preview_address_is_stable(self):
-        self.assertEqual(preview_runtime.PREVIEW_PORT, 3001)
+    def test_project_port_order_is_stable_and_in_the_private_preview_range(self):
+        first = preview_runtime._port_candidates("demo")
+        self.assertEqual(first, preview_runtime._port_candidates("demo"))
+        self.assertEqual(len(first), preview_runtime.PREVIEW_PORT_LAST - preview_runtime.PREVIEW_PORT_FIRST + 1)
+        self.assertEqual(len(set(first)), len(first))
+        self.assertTrue(all(preview_runtime.PREVIEW_PORT_FIRST <= port <= preview_runtime.PREVIEW_PORT_LAST
+                            for port in first))
 
-    def test_occupied_preview_port_terminates_its_listener(self):
-        with patch.object(preview_runtime, "_port_open", return_value=True), \
-             patch.object(preview_runtime, "_listening_pids", return_value=[7777]), \
+    def test_busy_port_is_skipped_without_touching_the_unrelated_listener(self):
+        candidates = preview_runtime._port_candidates("demo")
+        with patch.object(preview_runtime, "_port_open", side_effect=lambda port: port == candidates[0]), \
              patch.object(preview_runtime, "_terminate_tree") as terminate:
-            with self.assertRaisesRegex(RuntimeError, "still in use"):
-                preview_runtime._free_port(5173, timeout=0)
-            terminate.assert_called_once_with(7777)
+            selected = preview_runtime._preview_port("demo", {})
+        self.assertEqual(selected, candidates[1])
+        terminate.assert_not_called()
 
     def test_status_rejects_stale_metadata_without_listener_ownership(self):
         with tempfile.TemporaryDirectory() as directory:
             record = Path(directory)
-            (record / "preview-runtime.json").write_text(json.dumps({"port": 3001}), encoding="utf-8")
+            (record / "preview-runtime.json").write_text(
+                json.dumps({"port": preview_runtime.PREVIEW_PORT_FIRST}), encoding="utf-8")
             with patch.object(preview_runtime, "_metadata", return_value=record / "preview-runtime.json"), \
                  patch.object(preview_runtime, "_port_open", return_value=True), \
                  patch.object(preview_runtime, "_listening_pids", return_value=[8888]):
@@ -46,7 +52,8 @@ class PreviewRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             record = Path(directory)
             (record / "preview-runtime.json").write_text(
-                json.dumps({"port": 3001, "listenerPid": 8888, "url": "http://127.0.0.1:3001/"}),
+                json.dumps({"port": preview_runtime.PREVIEW_PORT_FIRST, "listenerPid": 8888,
+                            "url": f"http://127.0.0.1:{preview_runtime.PREVIEW_PORT_FIRST}/"}),
                 encoding="utf-8",
             )
             with patch.object(preview_runtime, "_metadata", return_value=record / "preview-runtime.json"), \

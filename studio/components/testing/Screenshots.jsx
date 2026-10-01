@@ -63,7 +63,7 @@ function UiQuality({ qa }) {
             </Badge>
             <code className="font-mono text-[11px] text-ink">{row.page}</code>
             <span className="text-[10px] text-muted2">{row.journey}</span>
-            {row.note !== 'clean' && <span className="text-[11.5px] text-[#FFAB00]">{row.note}</span>}
+            {row.note !== 'clean' && <span className="text-[11.5px] text-warn">{row.note}</span>}
           </div>
         ))}
       </div>

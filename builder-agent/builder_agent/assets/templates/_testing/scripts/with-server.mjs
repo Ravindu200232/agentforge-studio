@@ -11,8 +11,14 @@
  * stops only the server it started. Nothing else is touched, and no port is left
  * bound. The command's exit code is this script's exit code.
  *
- * Servers, by stack: Next.js (`next start`), Remix (`remix-serve`), and a plain Vite build
- * (`vite preview`, for the two Vite-only stacks that have no server of their own).
+ * Servers, by stack: Next.js (`next start`), Remix (`remix-serve`), the MERN gateway
+ * with its services (`scripts/start-all.mjs`), a single Express server that serves its
+ * own built client (`server/src/server.js`, the vite-mongo layout), and a plain Vite
+ * build (`vite preview`, for the Vite-only stacks that have no server of their own).
+ *
+ * A stack whose server talks to MongoDB gets an isolated, uniquely-named `_e2e`
+ * database for this run only, seeded (if the app defines `npm run seed`) and dropped
+ * when the run ends — a QA run must never read or write the project's real data.
  */
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -37,8 +43,8 @@ const logFile = option('--log', process.env.WITH_SERVER_LOG || path.join('.agent
 const readyPath = option('--ready', '/')
 const windows = process.platform === 'win32'
 
-function manifest() {
-  return JSON.parse(fs.readFileSync('package.json', 'utf8'))
+function manifest(file = 'package.json') {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return {} }
 }
 
 function localEnv(name) {
@@ -51,17 +57,49 @@ function localEnv(name) {
   return undefined
 }
 
+function databaseName(uri) {
+  return decodeURIComponent(new URL(uri).pathname.replace(/^\/+|\/+$/g, ''))
+}
+
+/** Every manifest this project actually runs code from - wherever `mongoose`/`mongodb` might be declared. */
+function allManifests() {
+  const found = [manifest()]
+  if (fs.existsSync(path.join('server', 'package.json'))) found.push(manifest(path.join('server', 'package.json')))
+  if (fs.existsSync('packages')) {
+    for (const entry of fs.readdirSync('packages', { withFileTypes: true })) {
+      if (entry.isDirectory()) found.push(manifest(path.join('packages', entry.name, 'package.json')))
+    }
+  }
+  return found
+}
+
+function usesMongo() {
+  return allManifests().some((m) => (m.dependencies && (m.dependencies.mongoose || m.dependencies.mongodb)))
+}
+
 /**
- * Every browser-QA run truncates this project's own Supabase project's tables first, then seeds
- * fresh. Unlike the old per-run disposable MongoDB database, there is nothing to create or drop:
- * this Supabase project already belongs to this app alone (see supabase_connect.py), so truncating
- * in place is the equivalent safety - an interrupted run leaves stale rows, not a stale server.
+ * Every browser-QA run owns a Mongo database. The server, seed script and test
+ * command all receive this exact URI, so cleanup can never point at a different
+ * database from the app under test. A unique name also makes an interrupted run
+ * harmless to the next run.
  */
-function qaSupabaseDbUrl() {
-  const project = manifest()
-  const deps = { ...project.dependencies, ...project.devDependencies }
-  if (!deps['@supabase/supabase-js']) return null
-  return process.env.SUPABASE_DB_URL || localEnv('SUPABASE_DB_URL') || null
+function qaMongoUri() {
+  if (!usesMongo()) return null
+
+  const explicit = process.env.E2E_MONGODB_URI
+  const source = explicit || process.env.MONGODB_URI || localEnv('MONGODB_URI')
+    || 'mongodb://127.0.0.1:27017/' + (manifest().name || 'app')
+  const parsed = new URL(source)
+
+  if (explicit) {
+    const name = databaseName(source)
+    if (!name.endsWith('_e2e')) throw new Error('E2E_MONGODB_URI database "' + name + '" must end in "_e2e"')
+    return source
+  }
+
+  const base = (databaseName(source) || manifest().name || 'app').replace(/[^a-zA-Z0-9_-]/g, '_')
+  parsed.pathname = '/' + base + '_' + Date.now() + '_' + process.pid + '_e2e'
+  return parsed.toString()
 }
 
 /** A file under node_modules, looked up from here upwards (npm workspaces hoist). */
@@ -74,6 +112,13 @@ function inNodeModules(relative) {
 }
 
 function serverCommand(port) {
+  if (fs.existsSync(path.join('scripts', 'start-all.mjs'))) {
+    return { file: process.execPath, args: [path.join('scripts', 'start-all.mjs')], why: 'MERN gateway and services' }
+  }
+  if (fs.existsSync(path.join('server', 'src', 'server.js'))) {
+    if (!fs.existsSync(path.join('client', 'dist', 'index.html'))) throw new Error('there is no production client build: run npm run build first')
+    return { file: process.execPath, args: [path.join('server', 'src', 'server.js')], why: 'server (serving the built client)' }
+  }
   const project = manifest()
   const deps = { ...project.dependencies, ...project.devDependencies }
   if (deps.next) {
@@ -94,7 +139,7 @@ function serverCommand(port) {
     if (!fs.existsSync('dist')) throw new Error('there is no production build: run npm run build first')
     return { file: process.execPath, args: [bin, 'preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], why: 'vite preview' }
   }
-  throw new Error('cannot tell how to start this app for a test run (no Next.js, Remix or Vite build found)')
+  throw new Error('cannot tell how to start this app for a test run (no Next.js, Remix, MERN, server/ or Vite build found)')
 }
 
 function freePort() {
@@ -148,39 +193,30 @@ function run(commandParts, env) {
   })
 }
 
-async function resetQaDatabase(dbUrl) {
-  if (!dbUrl) return
-  const hostname = new URL(dbUrl.replace(/^postgres(ql)?:/, 'http:')).hostname
-  if (['127.0.0.1', 'localhost', '::1'].includes(hostname)) {
-    throw new Error(`Refusing to reset "${hostname}": SUPABASE_DB_URL must be this project's real `
-      + 'Supabase project, not a local one - that project already belongs to this app alone.')
-  }
-  const { default: pg } = await import('pg')
-  const client = new pg.Client({ connectionString: dbUrl })
-  await client.connect()
-  try {
-    const { rows } = await client.query("select tablename from pg_tables where schemaname = 'public'")
-    if (rows.length) {
-      const names = rows.map((row) => `"${row.tablename}"`).join(', ')
-      await client.query(`truncate table ${names} restart identity cascade`)
-    }
-  } finally {
-    await client.end()
-  }
+async function resetQaDatabase(uri) {
+  if (!uri) return
+  const { default: mongoose } = await import('mongoose')
+  const connection = await mongoose.createConnection(uri, { serverSelectionTimeoutMS: 10_000 }).asPromise()
+  try { await connection.dropDatabase() } finally { await connection.close() }
 }
 
 async function main() {
   const port = await freePort()
   const base = `http://127.0.0.1:${port}`
   const server = serverCommand(port)
-  const supabaseDbUrl = qaSupabaseDbUrl()
-  const qaEnv = { ...process.env, PORT: String(port), BASE_URL: base }
+  const mongoUri = qaMongoUri()
+  const qaEnv = {
+    ...process.env,
+    PORT: String(port),
+    BASE_URL: base,
+    ...(mongoUri ? { MONGODB_URI: mongoUri, E2E_MONGODB_URI: mongoUri } : {}),
+  }
 
-  if (supabaseDbUrl) {
-    await resetQaDatabase(supabaseDbUrl)
+  if (mongoUri) {
+    await resetQaDatabase(mongoUri)
     if (manifest().scripts?.seed) {
       const seeded = await run(['npm', 'run', 'seed'], qaEnv)
-      if (seeded !== 0) throw new Error('could not seed the QA run (exit ' + seeded + ')')
+      if (seeded !== 0) throw new Error('could not seed isolated QA database (exit ' + seeded + ')')
     }
   }
 
@@ -189,7 +225,11 @@ async function main() {
   const child = spawn(server.file, server.args, {
     stdio: ['ignore', log, log],
     detached: !windows,
-    env: { ...qaEnv, NODE_ENV: 'production' },
+    env: { ...qaEnv, NODE_ENV: 'production',
+      // QA owns a temporary app port. Keep its service ports away from the
+      // long-lived MERN preview's 4001–4020 range so tests cannot stop it.
+      ...(server.why === 'MERN gateway and services'
+        ? { INTERNAL_PORT_BASE: process.env.INTERNAL_PORT_BASE ?? '4102' } : {}) },
   })
   fs.closeSync(log)
   let exited = false
@@ -217,7 +257,7 @@ async function main() {
     test.on('exit', (exitCode) => resolve(exitCode ?? 1))
   })
   stop(child)
-  await resetQaDatabase(supabaseDbUrl)
+  await resetQaDatabase(mongoUri)
   process.exit(code)
 }
 

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, ExternalLink, Loader2, X } from 'lucide-react'
 import { api } from '@/lib/api'
-import { Button, Input, SectionLabel } from '../ui'
+import { Button, Input } from '../ui'
 import CliSignIn from '../CliSignIn'
 import SupabaseConnect from '../SupabaseConnect'
 import { cn } from '@/lib/utils'
@@ -18,16 +18,15 @@ const AWS_REGIONS = ['ap-south-1', 'us-east-1', 'us-east-2', 'us-west-2',
 const AWS_CONSOLE_PROFILE = 'agentforge-console'
 
 export default function DeployAccounts({ deploy, onSaved }) {
-  const [open, setOpen] = useState(false)
   const [probe, setProbe] = useState(null)
   const [note, setNote] = useState('')
 
   useEffect(() => {
-    if (!open || probe) return
+    if (probe) return
     api.deployRead('/onboarding/status')
       .then(setProbe)
       .catch(e => setNote(`could not read the deployment agent — ${e.message}`))
-  }, [open, probe])
+  }, [probe])
 
   const save = async (patch) => {
     await api.saveSettings(patch)
@@ -35,61 +34,166 @@ export default function DeployAccounts({ deploy, onSaved }) {
   }
 
   return (
-    <section className="mt-5 border-t-2 border-line2 pt-3">
-      <button onClick={() => setOpen(o => !o)} className="w-full text-left">
-        <SectionLabel className="border-b-2 border-line2 pb-1.5" right={<span className="text-[10px] text-muted2">
-                               {open ? 'hide' : 'show'}
-                             </span>}>
-          Deployment accounts
-        </SectionLabel>
-      </button>
-      {!open && (
-        <p className="mt-1.5 text-[10.5px] text-muted2">
-          {summarise(deploy)}
+    <section className="space-y-4">
+      {note && (
+        <p className="border-l-[3px] border-accent bg-tint px-2.5 py-1.5 text-[11px] text-deep">
+          {note}
         </p>
       )}
-
-      {open && (
-        <div className="mt-3 space-y-4">
-          {note && (
-            <p className="border-l-[3px] border-accent bg-tint px-2.5 py-1.5
-                          text-[11px] text-deep">
-              {note}
-            </p>
-          )}
-          <Github deploy={deploy} onSave={save} probe={probe}
-                  onRecheck={() => setProbe(null)} />
-          <Aws deploy={deploy} onSave={save} probe={probe}
-               onRecheck={() => setProbe(null)} />
-          <Vercel deploy={deploy} onSave={save} />
-          <HostedCredential title="Netlify" provider="netlify" setting="netlify_token" saved={deploy?.netlify_token_set} onSave={save}
-            label="Personal access token" href="https://app.netlify.com/user/applications#personal-access-tokens"
-            hint="Create a token in your Netlify account. The deployment uses it to provision your site and as an encrypted GitHub Actions secret." />
-          <HostedCredential title="Azure" provider="azure" setting="azure_credentials" saved={Boolean(deploy?.azure_credentials_set || deploy?.azure_account)} onSave={save}
-            label="Service principal credentials (JSON)" href="https://learn.microsoft.com/en-us/azure/app-service/deploy-github-actions"
-            hint="Enter JSON containing clientId, clientSecret, tenantId and subscriptionId for your deployment service principal. Give it access to the selected resource group." />
-          <Row title="Supabase" ok={Boolean(deploy?.supabase_org)} unknown={false}
-               detail={deploy?.supabase_org ? `signed in as ${deploy.supabase_org}` : 'every Supabase-stack project gets its own real project'}>
-            <div className="mt-2 w-full">
-              <SupabaseConnect onDone={onSaved} />
-            </div>
-          </Row>
+      <Github deploy={deploy} onSave={save} probe={probe}
+              onRecheck={() => setProbe(null)} />
+      <Aws deploy={deploy} onSave={save} probe={probe}
+           onRecheck={() => setProbe(null)} />
+      <Vercel deploy={deploy} onSave={save} />
+      <HostedCredential title="Netlify" provider="netlify" setting="netlify_token" saved={deploy?.netlify_token_set} onSave={save}
+        label="Personal access token" href="https://app.netlify.com/user/applications#personal-access-tokens"
+        hint="Create a token in your Netlify account. The deployment uses it to provision your site and as an encrypted GitHub Actions secret." />
+      <HostedCredential title="Azure" provider="azure" setting="azure_credentials" saved={Boolean(deploy?.azure_credentials_set || deploy?.azure_account)} onSave={save}
+        label="Service principal credentials (JSON)" href="https://learn.microsoft.com/en-us/azure/app-service/deploy-github-actions"
+        hint="Enter JSON containing clientId, clientSecret, tenantId and subscriptionId for your deployment service principal. Give it access to the selected resource group." />
+      <Row title="Supabase" ok={Boolean(deploy?.supabase_org)} unknown={false}
+           detail={deploy?.supabase_org ? `signed in as ${deploy.supabase_org}` : 'every Supabase-stack project gets its own real project'}>
+        <div className="mt-2 w-full">
+          <SupabaseConnect onDone={onSaved} />
         </div>
-      )}
+      </Row>
+      <Mongodb deploy={deploy} onSave={save} />
     </section>
   )
 }
 
-function summarise(d) {
-  if (!d) return 'GitHub, AWS, Vercel, Netlify and Azure.'
-  const bits = []
-  bits.push(d.github_token_set
-    ? `GitHub ${d.github_login || 'connected'}` : 'GitHub not connected')
-  bits.push(d.aws_profile ? `AWS ${d.aws_profile}` : 'AWS not connected')
-  bits.push(d.vercel_token_set ? 'Vercel connected' : 'Vercel not connected')
-  bits.push(d.netlify_token_set ? 'Netlify connected' : 'Netlify not connected')
-  bits.push(d.azure_credentials_set || d.azure_account ? 'Azure connected' : 'Azure not connected')
-  return bits.join(' · ')
+function Mongodb({ deploy, onSave }) {
+  const [value, setValue] = useState('')
+  const [busy, setBusy] = useState('')
+  const [status, setStatus] = useState(null)
+  const [error, setError] = useState('')
+  const saved = Boolean(deploy?.deploy_mongodb_uri_set)
+
+  const [account, setAccount] = useState(null)
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [accountBusy, setAccountBusy] = useState('')
+  const [accountError, setAccountError] = useState('')
+
+  const loadAccount = () => api.deploy('/mongodb/account/status').then(setAccount).catch(() => {})
+  useEffect(() => { loadAccount() }, [])
+
+  useEffect(() => {
+    let live = true
+    if (!saved) { setStatus(null); return undefined }
+    api.deploy('/mongodb/status', { uri: '' }).then(a => { if (live) setStatus(a) }).catch(() => {})
+    return () => { live = false }
+  }, [saved])
+
+  async function test(uri) {
+    setBusy('check'); setError(''); setStatus(null)
+    try { setStatus(await api.deploy('/mongodb/status', { uri })) }
+    catch (failure) { setError(failure.message) } finally { setBusy('') }
+  }
+
+  async function save() {
+    setBusy('save'); setError('')
+    try {
+      const uri = value.trim()
+      await onSave({ deploy_mongodb_uri: uri })
+      setValue('')
+      if (uri && uri !== '-') await test('')
+    } catch (failure) { setError(failure.message) } finally { setBusy('') }
+  }
+
+  async function connectAccount() {
+    setAccountBusy('connect'); setAccountError('')
+    try {
+      await api.deploy('/mongodb/account/save', { client_id: clientId.trim(), client_secret: clientSecret.trim() })
+      setClientId(''); setClientSecret('')
+      await loadAccount()
+    } catch (failure) { setAccountError(failure.message) } finally { setAccountBusy('') }
+  }
+
+  async function disconnectAccount() {
+    setAccountBusy('disconnect'); setAccountError('')
+    try { await api.deploy('/mongodb/account/forget', {}); await loadAccount() }
+    catch (failure) { setAccountError(failure.message) } finally { setAccountBusy('') }
+  }
+
+  async function provision() {
+    setAccountBusy('provision'); setAccountError('')
+    try {
+      await api.deploy('/mongodb/provision', {})
+      await loadAccount()
+      await onSave({})   // the server already wrote deploy_mongodb_uri; this just refreshes the saved/hint props
+      await test('')
+    } catch (failure) { setAccountError(failure.message) } finally { setAccountBusy('') }
+  }
+
+  const connected = Boolean(status?.connected)
+  const detail = status
+    ? (connected ? 'connected — ready for a MongoDB-stack deployment' : status.message || 'connection refused')
+    : saved ? 'connection string saved' : 'every MongoDB-stack deployment uses this, never a local database'
+
+  return (
+    <Row title="MongoDB" ok={saved ? connected : false} unknown={Boolean(saved) && !status} detail={detail}>
+      <div className="mt-2 w-full space-y-3">
+        <div className="space-y-2 border-b border-line pb-3">
+          <p className="text-[11px] text-muted">
+            {!account ? 'Checking MongoDB Atlas…'
+              : account.connected
+                ? <>Atlas account connected{account.org ? <> — <b className="text-ink">{account.org}</b></> : ''}</>
+                : 'Connect a MongoDB Atlas Service Account to auto-provision a real cluster, instead of pasting one below.'}
+          </p>
+          {account && !account.connected && (
+            <div className="space-y-2">
+              <Field label="Atlas Service Account"
+                     hint={<>One-time setup: in Atlas, go to Organization Access Manager &rarr; Service Accounts &rarr;
+                             Create, give it a role that can manage projects and clusters, then paste its Client ID
+                             and Secret here. (Atlas has no one-click browser sign-in yet for third-party apps like
+                             this one — MongoDB requires a partner approval for that — so this is the closest
+                             self-service equivalent.){' '}
+                             <a className="text-accent hover:underline" target="_blank" rel="noreferrer"
+                                href="https://cloud.mongodb.com/v2#/access/serviceAccounts">Open Atlas</a></>}>
+                <Input value={clientId} onChange={e => setClientId(e.target.value)} placeholder="Client ID" />
+              </Field>
+              <Input type="password" autoComplete="off" value={clientSecret}
+                     onChange={e => setClientSecret(e.target.value)} placeholder="Client Secret" />
+              <Button size="sm" disabled={!clientId.trim() || !clientSecret.trim() || Boolean(accountBusy)} onClick={connectAccount}>
+                {accountBusy === 'connect' && <Loader2 className="size-3 animate-spin" />}Connect account
+              </Button>
+            </div>
+          )}
+          {account?.connected && (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" disabled={Boolean(accountBusy) || account.cluster_ready} onClick={provision}>
+                {accountBusy === 'provision' && <Loader2 className="size-3 animate-spin" />}
+                {account.cluster_ready ? 'Cluster ready' : 'Create / use a cluster'}
+              </Button>
+              <Button size="sm" variant="ghost" disabled={Boolean(accountBusy)} onClick={disconnectAccount}>
+                {accountBusy === 'disconnect' && <Loader2 className="size-3 animate-spin" />}Disconnect
+              </Button>
+              {accountBusy === 'provision' && <span className="text-[10.5px] text-muted2">this can take a few minutes…</span>}
+            </div>
+          )}
+          {accountError && <p className="text-[10.5px] text-bad">{accountError}</p>}
+        </div>
+        <Field label="Or paste a production connection string directly"
+               hint="A real, internet-reachable cluster — MongoDB Atlas or any host you run. A loopback address (localhost, 127.0.0.1) is refused: a deployed application cannot reach this computer. Stored encrypted with your account. Type a single - to clear it.">
+          <Input type="password" autoComplete="off" value={value} onChange={e => setValue(e.target.value)}
+                 placeholder={saved ? `saved (…${deploy?.deploy_mongodb_uri_hint || ''})` : 'mongodb+srv://user:pass@cluster.mongodb.net/app'} />
+        </Field>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" disabled={Boolean(busy) || !value.trim()} onClick={save}>
+            {busy === 'save' && <Loader2 className="size-3 animate-spin" />}Save
+          </Button>
+          <Button size="sm" variant="ghost" disabled={Boolean(busy) || (!saved && !value.trim())}
+                  onClick={() => test(value.trim())}>
+            {busy === 'check' && <Loader2 className="size-3 animate-spin" />}Test connection
+          </Button>
+        </div>
+        {status && !connected && <p className="text-[10.5px] text-bad">{status.message}</p>}
+        {status?.warnings?.map(w => <p key={w} className="text-[10.5px] text-muted">{w}</p>)}
+        {error && <p className="text-[10.5px] text-bad">{error}</p>}
+      </div>
+    </Row>
+  )
 }
 
 
@@ -625,16 +729,16 @@ function HostedCredential({ title, provider, setting, saved, label, hint, href, 
 
 function Row({ title, ok, unknown, detail, actions, children }) {
   return (
-    <div className={cn('rounded-xl border border-[rgba(145,158,171,0.16)] border-l-[3px] bg-[#F2F0EF] p-3 shadow-sm transition-all',
-      unknown ? 'border-l-white/20' : ok ? 'border-l-[#22C55E]' : 'border-l-[#FF5630]')}>
+    <div className={cn('rounded-xl border border-line border-l-[3px] bg-panel p-3 shadow-sm transition-all',
+      unknown ? 'border-l-white/20' : ok ? 'border-l-[var(--green)]' : 'border-l-[var(--red)]')}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="grid size-3.5 shrink-0 place-items-center">
-          {unknown ? <Loader2 className="size-3 animate-spin text-[#6B7280]" />
+          {unknown ? <Loader2 className="size-3 animate-spin text-muted" />
                    : ok ? <Check className="size-3.5 text-ink" />
-                        : <X className="size-3.5 text-[#FF5630]" />}
+                        : <X className="size-3.5 text-bad" />}
         </span>
         <span className="text-[12.5px] font-bold text-ink">{title}</span>
-        <span className="min-w-0 flex-1 truncate text-[11px] text-[#6B7280]">{detail}</span>
+        <span className="min-w-0 flex-1 truncate text-[11px] text-muted">{detail}</span>
         {actions}
       </div>
       {children}
@@ -654,13 +758,13 @@ const Field = ({ label, hint, children }) => (
 
 const Select = ({ value, onChange, options, placeholder }) => (
   <select value={value} onChange={e => onChange(e.target.value)}
-          className="h-[32px] w-full rounded-xl border border-[rgba(145,158,171,0.2)] bg-[#F2F0EF] px-2.5
-                     text-[12px] text-ink outline-none focus:border-[#BFB9FF]/60 transition-colors">
-    {placeholder && <option value="" className="bg-[#F2F0EF] text-ink">{placeholder}</option>}
+          className="h-[32px] w-full rounded-xl border border-line bg-panel px-2.5
+                     text-[12px] text-ink outline-none focus:border-accent/60 transition-colors">
+    {placeholder && <option value="" className="bg-panel text-ink">{placeholder}</option>}
     {options.map(o => {
       const v = typeof o === 'string' ? o : o.value
       const l = typeof o === 'string' ? o : o.label
-      return <option key={v} value={v} className="bg-[#F2F0EF] text-ink">{l}</option>
+      return <option key={v} value={v} className="bg-panel text-ink">{l}</option>
     })}
   </select>
 )

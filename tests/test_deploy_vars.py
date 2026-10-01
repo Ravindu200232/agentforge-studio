@@ -99,6 +99,88 @@ class RunEnvironmentTests(SettingsCase):
         self.assertEqual(env["SUPABASE_URL"], "https://a-different-project.supabase.co")
 
 
+class MongoDatabaseUriTests(SettingsCase):
+    """The production MongoDB connection string: never a loopback address, tried for real before a question
+    accepts it, and exposed (as a set/hint, never the value) wherever the other saved credentials are."""
+
+    def test_a_loopback_address_is_refused_a_real_one_is_not(self):
+        for bad in ("mongodb://127.0.0.1:27017/app", "mongodb://localhost/app", "mongodb+srv://u:p@MyBox.local/app",
+                    "mongodb://0.0.0.0:27017/app"):
+            with self.assertRaises(ValueError, msg=bad):
+                deploy_vars.check_database_uri(bad)
+        self.assertEqual(deploy_vars.check_database_uri(""), "")
+        real = "mongodb+srv://user:pass@cluster0.ab1cd.mongodb.net/app"
+        self.assertEqual(deploy_vars.check_database_uri(real), real)
+        with self.assertRaises(ValueError):
+            deploy_vars.check_database_uri("postgres://user:pass@db.example.com/app")
+
+    def test_allow_local_is_only_for_a_short_lived_build_test_database(self):
+        self.assertEqual(deploy_vars.check_database_uri("mongodb://127.0.0.1:27017/app_test", allow_local=True),
+                         "mongodb://127.0.0.1:27017/app_test")
+
+    def test_mongodb_is_a_live_checked_variable(self):
+        self.assertIn("mongodb", deploy_vars.CHECKS)
+
+    def test_a_question_with_the_mongodb_check_tries_it_for_real_before_saving(self):
+        from server_modules import mongo_check
+        question = {"variable": "MONGODB_URI", "secret": True, "check": "mongodb"}
+        with mock.patch.object(mongo_check, "check", return_value={"ok": False, "message": "the cluster refused the password"}):
+            refusal = deploy_vars.accept(question, "mongodb+srv://u:wrong@cluster0.ab1cd.mongodb.net/app")
+        self.assertIn("refused the password", refusal)
+        self.assertEqual(deploy_vars.names(), [])
+        with mock.patch.object(mongo_check, "check", return_value={"ok": True, "message": "Connected and signed in."}):
+            ok = deploy_vars.accept(question, "mongodb+srv://u:right@cluster0.ab1cd.mongodb.net/app")
+        self.assertEqual(ok, "")
+        self.assertEqual(deploy_vars.names(), [{"name": "MONGODB_URI", "hint": "/app"}])
+
+    def test_the_saved_production_uri_reaches_a_deployment_as_mongodb_uri(self):
+        config.save_settings({"deploy_mongodb_uri": "mongodb+srv://u:p@cluster0.ab1cd.mongodb.net/app"})
+        env = deploy_vars.environment()
+        self.assertEqual(env["MONGODB_URI"], "mongodb+srv://u:p@cluster0.ab1cd.mongodb.net/app")
+
+    def test_a_saved_deploy_env_variable_of_the_same_name_is_not_overridden(self):
+        config.save_settings({"deploy_mongodb_uri": "mongodb+srv://u:p@cluster0.ab1cd.mongodb.net/app"})
+        deploy_vars.save("MONGODB_URI", "mongodb+srv://u:p@a-different-cluster.ab1cd.mongodb.net/app", secret=True)
+        self.assertEqual(deploy_vars.environment()["MONGODB_URI"],
+                         "mongodb+srv://u:p@a-different-cluster.ab1cd.mongodb.net/app")
+
+    def test_settings_refuses_a_loopback_production_uri_and_keeps_a_real_one(self):
+        with self.assertRaises(ValueError):
+            httpd.write_settings({"deploy_mongodb_uri": "mongodb://127.0.0.1:27017/app"})
+        self.assertEqual(config.setting("deploy_mongodb_uri", ""), "")
+        httpd.write_settings({"deploy_mongodb_uri": "mongodb+srv://u:p@cluster0.ab1cd.mongodb.net/app"})
+        self.assertEqual(config.setting("deploy_mongodb_uri", ""), "mongodb+srv://u:p@cluster0.ab1cd.mongodb.net/app")
+
+    def test_settings_expose_only_whether_it_is_set_and_a_hint_never_the_value(self):
+        httpd.write_settings({"deploy_mongodb_uri": "mongodb+srv://u:p@cluster0.ab1cd.mongodb.net/app"})
+        shown = httpd.read_settings({})
+        self.assertTrue(shown["deploy"]["deploy_mongodb_uri_set"])
+        self.assertEqual(shown["deploy"]["deploy_mongodb_uri_hint"], "/app")
+        self.assertNotIn("cluster0", json.dumps(shown))
+
+    def test_the_test_connection_route_tries_a_typed_value_without_saving_it(self):
+        from server_modules import mongo_check, routes_deploy
+        with mock.patch.object(mongo_check, "check", return_value={"ok": True, "message": "Connected and signed in."}) as checked:
+            answer = routes_deploy.mongodb_status({"uri": "mongodb+srv://u:p@cluster0.ab1cd.mongodb.net/app"})
+        self.assertEqual((answer["connected"], answer["using_saved"]), (True, False))
+        checked.assert_called_once_with("mongodb+srv://u:p@cluster0.ab1cd.mongodb.net/app")
+        self.assertEqual(config.setting("deploy_mongodb_uri", ""), "")        # testing never saves
+
+    def test_the_test_connection_route_with_no_uri_tries_the_saved_one(self):
+        from server_modules import mongo_check, routes_deploy
+        httpd.write_settings({"deploy_mongodb_uri": "mongodb+srv://u:p@cluster0.ab1cd.mongodb.net/app"})
+        with mock.patch.object(mongo_check, "check", return_value={"ok": False, "message": "refused"}):
+            answer = routes_deploy.mongodb_status({"uri": ""})
+        self.assertEqual((answer["connected"], answer["using_saved"], answer["message"]), (False, True, "refused"))
+
+    def test_a_check_that_cannot_run_is_reported_not_raised(self):
+        from server_modules import mongo_check, routes_deploy
+        with mock.patch.object(mongo_check, "check", side_effect=RuntimeError("node is not installed")):
+            answer = routes_deploy.mongodb_status({"uri": "mongodb+srv://u:p@cluster0.ab1cd.mongodb.net/app"})
+        self.assertFalse(answer["connected"])
+        self.assertIn("node is not installed", answer["message"])
+
+
 class ValueQuestionTests(SettingsCase):
     """A question can ask for a value: it goes to a private box, is saved by name, and the model is only told it is saved."""
 

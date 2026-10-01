@@ -86,6 +86,50 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(client.calls[1]["messages"][-1]["role"], "tool")
             self.assertIn("hello", client.calls[1]["messages"][-1]["content"])
 
+    def test_provider_usage_is_counted_and_announced_without_estimating(self):
+        """The UI meter must receive the model's counts, never a text-length guess."""
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeClient()
+
+            def respond(**kwargs):
+                client.calls.append(copy.deepcopy(kwargs))
+                return SimpleNamespace(message=FakeMessage("Done."),
+                                       prompt_eval_count=41, eval_count=9)
+
+            client.chat = respond
+            announced = []
+            agent = Agent(client, "test", Path(directory), lambda _: False,
+                          announce=announced.append)
+            self.assertEqual(agent.ask("Do it"), "Done.")
+            self.assertEqual(agent.prompt_tokens, 41)
+            self.assertEqual(agent.completion_tokens, 9)
+            self.assertIn("[usage] provider response completed", announced)
+            self.assertIn("[thinking] model is considering the request", announced)
+
+    def test_cloud_stream_keeps_the_final_provider_usage(self):
+        """Hosted models can expose usage only on a stream's terminal chunk."""
+        with tempfile.TemporaryDirectory() as directory:
+            class CloudClient(FakeClient):
+                def chat(self, **kwargs):
+                    self.calls.append(copy.deepcopy(kwargs))
+                    self.assertTrue(kwargs["stream"])
+                    return iter((
+                        SimpleNamespace(message=FakeMessage("All ")),
+                        SimpleNamespace(message=FakeMessage("done."),
+                                        prompt_eval_count=31, eval_count=7),
+                    ))
+
+                def assertTrue(self, value):
+                    if not value:
+                        raise AssertionError("cloud call did not stream")
+
+            client = CloudClient()
+            agent = Agent(client, "test:cloud", Path(directory), lambda _: False,
+                          cloud=True, announce=lambda _: None)
+            self.assertEqual(agent.ask("Do it"), "All done.")
+            self.assertEqual(agent.prompt_tokens, 31)
+            self.assertEqual(agent.completion_tokens, 7)
+
     def test_path_escape_and_mutation_approval(self):
         with tempfile.TemporaryDirectory() as directory:
             tools = WorkspaceTools(Path(directory), FakeClient(), lambda _: False)
@@ -241,6 +285,59 @@ class AgentTests(unittest.TestCase):
             self.assertIn("Keep the old decision.", agent.messages[0]["content"])
             self.assertNotIn("old output", str(agent.messages))
             self.assertIn("new request", str(agent.messages))
+
+    def test_context_summarization_hands_the_deleted_turns_to_on_summarize_before_deleting_them(self):
+        """Compression keeps the live conversation inside the model's window, but the project's
+        own history — interview answers, SRS wording, an earlier decision — must not become
+        unrecoverable the moment this runs. A caller that wants to keep it gets the exact turns,
+        verbatim, before they are gone."""
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeClient()
+
+            def respond(**kwargs):
+                if "tools" not in kwargs:
+                    return SimpleNamespace(message=FakeMessage("Keep the old decision."))
+                return SimpleNamespace(message=FakeMessage("New answer."))
+
+            client.chat = respond
+            archived: list[list[dict]] = []
+            agent = Agent(client, "test", Path(directory), lambda _: False,
+                          context=4096, announce=lambda _: None,
+                          on_summarize=lambda old: archived.append(old))
+            agent.messages.extend([
+                {"role": "user", "content": "old request"},
+                {"role": "assistant", "content": "old output " * 2200},
+            ])
+            self.assertEqual(agent.ask("new request"), "New answer.")
+            self.assertTrue(archived)
+            kept = archived[0]
+            self.assertEqual(kept[0], {"role": "user", "content": "old request"})
+            self.assertTrue(any("old output" in str(m.get("content", "")) for m in kept))
+            # The archive is the one copy left — it is deleted from the live window by this point.
+            self.assertNotIn("old output", str(agent.messages))
+
+    def test_a_failing_on_summarize_does_not_break_the_turn_it_was_archiving(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeClient()
+
+            def respond(**kwargs):
+                if "tools" not in kwargs:
+                    return SimpleNamespace(message=FakeMessage("Keep the old decision."))
+                return SimpleNamespace(message=FakeMessage("New answer."))
+
+            client.chat = respond
+
+            def broken(_old):
+                raise OSError("disk full")
+
+            agent = Agent(client, "test", Path(directory), lambda _: False,
+                          context=4096, announce=lambda _: None, on_summarize=broken)
+            agent.messages.extend([
+                {"role": "user", "content": "old request"},
+                {"role": "assistant", "content": "old output " * 2200},
+            ])
+            self.assertEqual(agent.ask("new request"), "New answer.")
+            self.assertNotIn("old output", str(agent.messages))
 
     def test_context_summary_falls_back_to_thinking_field(self):
         """A reasoning model can leave `content` empty and answer in `thinking`."""

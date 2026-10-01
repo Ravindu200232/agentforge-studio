@@ -18,9 +18,9 @@ export default defineConfig({
     }),
   ],
   server: {
-    // Next.js alone uses Studio port 3001; Remix keeps its own Vite port.
+    // Studio supplies an isolated port for every project preview.
     host: '127.0.0.1',
-    port: Number(process.env.PORT ?? 5173),
+    port: Number(process.env.PORT ?? 0),
     strictPort: true,
   },
 });

@@ -16,7 +16,7 @@ export default function GithubRepository({ project, item }) {
               <h3 className="text-[16px] font-semibold text-ink">{json.nameWithOwner || json.name}</h3>
               <Pill tone={json.isPrivate ? 'warn' : 'ok'}>{json.visibility || (json.isPrivate ? 'PRIVATE' : 'PUBLIC')}</Pill>
             </div>
-            <p className="mt-1 text-[12px] text-[#6B7280]">{json.description || 'No description.'}</p>
+            <p className="mt-1 text-[12px] text-muted">{json.description || 'No description.'}</p>
             <div className="mt-2"><Link href={json.url}>{json.url}</Link></div>
           </Card>
           <Stats items={[

@@ -9,7 +9,7 @@ export function emptySession() {
     browserFrame: null, browserConsole: [], question: null, undo: null, previewRoute: '/', draft: '',
     tests: { running: false, attempt: 0, rows: [], fixing: [], pass: 0, fail: 0, warn: 0 },
     e2eLive: null, qaReport: null, e2eParallel: { active: false, lanes: [] },
-    prototypeStamp: 0, lastEventAt: 0, eventIds: [], runId: '', workKind: '', workflowStatus: 'idle' }
+    prototypeStamp: 0, lastEventAt: 0, eventIds: [], runId: '', runStartedAt: 0, workKind: '', workflowStatus: 'idle' }
 }
 
 export const SESSION_FIELDS = Object.keys(emptySession())
@@ -36,6 +36,13 @@ export function reduceSession(session, event) {
       next.runId = event.run_id || s.runId
       next.busy = ['running', 'queued'].includes(event.status)
       next.workflowStatus = event.status
+      next.runStartedAt = next.busy ? at : 0
+      if (next.busy) {
+        // A new request must not inherit the previous request's generated
+        // total while it is waiting for the first provider usage report.
+        next.runStats = { ...(s.runStats || {}), at, turn_started_at: at,
+          turn_tokens: 0, sent: 0, received: 0 }
+      }
       break
     case 'agent_state': next.agentState = event.state || ''; next.reasoning = Boolean(event.thinking); break
     case 'memory': next.runStats = event; break

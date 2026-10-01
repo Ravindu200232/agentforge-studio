@@ -28,7 +28,7 @@ export default function Performance({ qa }) {
     </section>
     {hasBrowser && <section className="rounded-none border border-line bg-panel p-4">
       <h3 className="mb-2 text-sm font-semibold text-ink">Browser performance</h3>
-      {browser.runtimeError && <p className="text-xs text-[#FF5630]">{browser.runtimeError}</p>}
+      {browser.runtimeError && <p className="text-xs text-bad">{browser.runtimeError}</p>}
       <Table><thead><TR><TH>metric</TH><TH>value</TH></TR></thead><tbody>
         {Object.entries(browser.scores).map(([key, value]) => <TR key={key}><TD>{key}</TD><TD>{value}</TD></TR>)}
         {Object.entries(browser.metrics || {}).map(([key, value]) => <TR key={key}><TD>{key}</TD><TD>{String(value)}</TD></TR>)}

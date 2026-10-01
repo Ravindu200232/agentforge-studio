@@ -25,7 +25,7 @@ export default function DeployPlanStage({ live, plan, card }) {
           <Icon className={cn('size-4 text-ink', live.state === 'PLANNING' && 'animate-spin')} />
           {label}
         </p>
-        <p className="mt-1.5 text-[11.5px] leading-relaxed text-[#6B7280]">{WHAT[live.state]}</p>
+        <p className="mt-1.5 text-[11.5px] leading-relaxed text-muted">{WHAT[live.state]}</p>
       </div>
       {card && <ChangePlan turn={card} />}
       {!card && plan?.title && (

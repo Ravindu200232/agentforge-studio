@@ -134,16 +134,58 @@ def state(session: ProjectSession) -> dict[str, Any]:
     saved = session.read_record(*RECORD, fallback=None)
     data = saved if isinstance(saved, dict) else _blank()
     # Defensive backfill for a record saved before these fields existed —
-    # never a reason to lose an interview already in progress.
+    # never a reason to lose an interview already in progress.  In particular,
+    # do not let one partial/old record turn an ordinary retry into a KeyError
+    # (and therefore an HTTP 500) while the customer is answering a question.
+    transcript = data.get("transcript")
+    data["transcript"] = [row for row in transcript if isinstance(row, dict)] \
+                         if isinstance(transcript, list) else []
+    answers = data.get("answers")
+    data["answers"] = {str(key): entry for key, entry in answers.items()
+                       if isinstance(entry, dict)} if isinstance(answers, dict) else {}
+    order = data.get("order")
+    data["order"] = [str(key) for key in order if str(key).strip()] \
+                    if isinstance(order, list) else []
+    if data.get("pending") is not None and not isinstance(data.get("pending"), dict):
+        data["pending"] = None
+    data.setdefault("pending", None)
+    data.setdefault("done", False)
     data.setdefault("stage", "gathering")
-    data.setdefault("coverage", coverage.blank_coverage())
-    data.setdefault("contradictions", [])
-    data.setdefault("assumptions", [])
+    baseline_coverage = coverage.blank_coverage()
+    if not isinstance(data.get("coverage"), dict):
+        data["coverage"] = baseline_coverage
+    else:
+        for key, fallback in baseline_coverage.items():
+            if not isinstance(data["coverage"].get(key), dict):
+                data["coverage"][key] = fallback
+    contradictions = data.get("contradictions")
+    data["contradictions"] = [row for row in contradictions if isinstance(row, dict)] \
+                             if isinstance(contradictions, list) else []
+    if not isinstance(data.get("assumptions"), list):
+        data["assumptions"] = []
     return data
 
 
 def save(session: ProjectSession, data: dict[str, Any]) -> None:
     session.write_record(*RECORD, data=data)
+
+
+def _announce_question(project: str, session: ProjectSession, data: dict[str, Any],
+                       question: dict[str, Any]) -> None:
+    """Put each interview question in the project's one durable chat stream.
+
+    The interview used to keep its questions only inside its own screen, so
+    the shared SRS → wireframe → prototype → build → deploy conversation had
+    the customer's answers but not the questions they answered. Marking the
+    question before publishing makes refreshes safe: a reload can show the
+    same pending question without inserting it into the stream again.
+    """
+    if question.get("announced"):
+        return
+    question["announced"] = True
+    save(session, data)
+    bus.agent_msg(project, question.get("question") or "Interview question",
+                  agent=bus.DEVELOPER, title="Interview question", kind="interview")
 
 
 def _chosen_app_type(data: dict[str, Any]) -> str:
@@ -163,9 +205,19 @@ def _attachment_digest(session: ProjectSession) -> str:
     rows = session.read_record("attachments.json", fallback=[]) or []
     if not rows:
         return "(nothing attached)"
-    return "\n".join(
-        f"- {row.get('filename', 'attachment')} ({row.get('mode', 'file')}): "
-        f"{str(row.get('text') or '')[:1500]}" for row in rows)
+    lines = [
+        "The customer attached source files. Before asking follow-up questions, use your "
+        "read, line, and search tools on the workspace-relative locations below; do not "
+        "guess from their filenames or only the extraction preview."
+    ]
+    for row in rows:
+        path = str(row.get("path") or "").strip() or "(saved attachment path unavailable)"
+        preview = str(row.get("text") or "").strip()[:1500]
+        lines.append(
+            f"- {row.get('filename', 'attachment')} ({row.get('mode', 'file')}) at {path}"
+            + (f": extracted preview: {preview}" if preview else "")
+        )
+    return "\n".join(lines)
 
 
 def transcript_text(data: dict[str, Any]) -> str:
@@ -333,20 +385,21 @@ def _apply_turn(data: dict[str, Any], turn: dict[str, Any], source: str) -> None
     data["stage"] = turn["stage"]
 
 
-_asking: dict[str, threading.Lock] = {}
+_asking: dict[str, threading.RLock] = {}
 _asking_guard = threading.Lock()
 
 
-def _ask_lock(project: str) -> threading.Lock:
-    """One question at a time per project.
+def _ask_lock(project: str) -> threading.RLock:
+    """One interview transition at a time per project.
 
     The studio's interview screen can fire its refresh more than once — a
-    reload, a double effect, an impatient click — and without this each of those
-    runs its own model call and writes its own `interview.json`, so two answers
-    race and one is lost.
+    reload, a double effect, an impatient click, or a retry after a lost
+    response.  Questions *and* answers must use the same lock: otherwise a
+    duplicate answer can overwrite the next question while the browser is
+    refreshing, which used to leave an invalid transient state and an HTTP 500.
     """
     with _asking_guard:
-        return _asking.setdefault(project, threading.Lock())
+        return _asking.setdefault(project, threading.RLock())
 
 
 def next_question(project: str) -> dict[str, Any]:
@@ -366,6 +419,7 @@ def _next_question(project: str) -> dict[str, Any]:
     # A question already on screen is asked again rather than replaced, so a
     # browser reload does not cost the customer an answer.
     if data.get("pending"):
+        _announce_question(project, session, data, data["pending"])
         return view(session, data)
 
     session.role = bus.DEVELOPER
@@ -379,6 +433,7 @@ def _next_question(project: str) -> dict[str, Any]:
         data["pending"] = question
         data["transcript"] = [question]
         save(session, data)
+        _announce_question(project, session, data, question)
         return view(session, data)
 
     # A safety ceiling, not a target: past it, stop gathering and ask for
@@ -423,69 +478,84 @@ def _next_question(project: str) -> dict[str, Any]:
     data["transcript"] = [q for q in data["transcript"] if q.get("id") != question["id"]]
     data["transcript"].append(question)
     save(session, data)
+    _announce_question(project, session, data, question)
     bus.agent_state(project, "", agent=bus.DEVELOPER)
     return view(session, data)
 
 
 def record_answer(project: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Store one answer and let the conversation see it."""
-    session = session_for(project)
-    data = state(session)
-    key = str(payload.get("key") or "").strip()
-    if not key:
-        raise ValueError("an answer needs the key of the question it answers")
+    with _ask_lock(project):
+        session = session_for(project)
+        data = state(session)
+        key = str(payload.get("key") or "").strip()
+        if not key:
+            raise ValueError("an answer needs the key of the question it answers")
 
-    asked = next((q for q in data["transcript"] if q.get("id") == key), None)
-    selected = [str(v) for v in (payload.get("selected") or [])]
-    custom = str(payload.get("custom") or "").strip()
-    text = str(payload.get("text") or "").strip()
-    attachments = [str(a) for a in (payload.get("attachments") or [])]
+        # A browser may retry a POST after its response was interrupted.  The
+        # first request already owns the answer, so replay its current view
+        # instead of treating that retry as a fresh mutation.
+        if key in data["answers"]:
+            return view(session, data)
 
-    entry = {
-        "question_id": key,
-        "topic": key.split(":", 1)[0],
-        "value": payload.get("value"),
-        "text": text or custom or ", ".join(selected),
-        "selected_values": selected,
-        "custom_text": custom,
-        "attachments": attachments,
-        "at": time.time(),
-    }
-    data["answers"][key] = entry
-    if key not in data["order"]:
-        data["order"].append(key)
-    data["pending"] = None
-    save(session, data)
+        pending = data.get("pending") or {}
+        if pending.get("id") != key:
+            raise ValueError("that question is no longer awaiting an answer; refresh and answer the current question")
 
-    said = entry["text"] or str(entry["value"] or "")
-    bus.user_msg(project, said, agent=bus.DEVELOPER)
+        asked = next((q for q in data["transcript"] if q.get("id") == key), None)
+        if not asked:
+            raise ValueError("that interview question is unavailable; refresh and try again")
 
-    # A plain "yes, that's right" to the confirmation question ends the
-    # interview outright — no model call needed just to agree with itself.
-    # `text` always carries the picked option's own label (see Interview.jsx's
-    # submitAnswer — `text: combined || customText || selectedText`), so it is
-    # never empty for a plain click; only `custom` (what the customer typed
-    # themselves) tells a bare acceptance apart from an actual correction.
-    if data["stage"] == "confirming" and "confirmed" in selected and not custom:
-        data["done"] = True
+        selected = [str(v) for v in (payload.get("selected") or [])]
+        custom = str(payload.get("custom") or "").strip()
+        text = str(payload.get("text") or "").strip()
+        attachments = [str(a) for a in (payload.get("attachments") or [])]
+
+        entry = {
+            "question_id": key,
+            "topic": key.split(":", 1)[0],
+            "value": payload.get("value"),
+            "text": text or custom or ", ".join(selected),
+            "selected_values": selected,
+            "custom_text": custom,
+            "attachments": attachments,
+            "at": time.time(),
+        }
+        data["answers"][key] = entry
+        if key not in data["order"]:
+            data["order"].append(key)
+        data["pending"] = None
         save(session, data)
-        bus.log(project, "SUCCESS", "The customer confirmed the summary — writing the plan next.")
-        bus.agent_state(project, "", agent=bus.DEVELOPER)
-        store.advance(project, "plan")
-        session.note("Interview confirmed. The customer signed off on the requirements summary.")
-        return view(session, data)
 
-    # Into the project's one memory, so the prototype, the build and the
-    # deployment all know what the customer actually said — without a model call
-    # and without re-reading the transcript at every stage.
-    asked_text = (asked or {}).get("question") or key
-    session.note(f"Interview — {asked_text}\nThe customer answered: {said}")
-    # No acknowledgement call. It cost a whole model round per answer and said
-    # nothing the customer needed; the transcript on disk is what every later
-    # stage reads, and it already has this answer. A correction to the
-    # confirmation summary re-enters the same turn loop on the next call,
-    # through the ordinary path above — no special case needed here.
-    return view(session, data)
+        said = entry["text"] or str(entry["value"] or "")
+        bus.user_msg(project, said, agent=bus.DEVELOPER)
+
+        # A plain "yes, that's right" to the confirmation question ends the
+        # interview outright — no model call needed just to agree with itself.
+        # `text` always carries the picked option's own label (see Interview.jsx's
+        # submitAnswer — `text: combined || customText || selectedText`), so it is
+        # never empty for a plain click; only `custom` (what the customer typed
+        # themselves) tells a bare acceptance apart from an actual correction.
+        if data["stage"] == "confirming" and "confirmed" in selected and not custom:
+            data["done"] = True
+            save(session, data)
+            bus.log(project, "SUCCESS", "The customer confirmed the summary — writing the plan next.")
+            bus.agent_state(project, "", agent=bus.DEVELOPER)
+            store.advance(project, "plan")
+            session.note("Interview confirmed. The customer signed off on the requirements summary.")
+            return view(session, data)
+
+        # Into the project's one memory, so the prototype, the build and the
+        # deployment all know what the customer actually said — without a model call
+        # and without re-reading the transcript at every stage.
+        asked_text = asked.get("question") or key
+        session.note(f"Interview — {asked_text}\nThe customer answered: {said}")
+        # No acknowledgement call. It cost a whole model round per answer and said
+        # nothing the customer needed; the transcript on disk is what every later
+        # stage reads, and it already has this answer. A correction to the
+        # confirmation summary re-enters the same turn loop on the next call,
+        # through the ordinary path above — no special case needed here.
+        return view(session, data)
 
 
 def view(session: ProjectSession, data: dict[str, Any] | None = None) -> dict[str, Any]:

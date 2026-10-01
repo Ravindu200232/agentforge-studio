@@ -22,7 +22,7 @@ export default function LiveE2EOverlay({ event }) {
              style={{ width: `${pct}%` }} />
       </div>
       <div className="pointer-events-none absolute inset-x-0 bottom-4 z-[25] flex justify-center px-4">
-        <div className="flex max-w-full items-center gap-2.5 rounded-full border border-black/15 bg-[#F2F0EF]/90 py-1.5 pl-2.5 pr-4 shadow-[0_10px_30px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+        <div className="flex max-w-full items-center gap-2.5 rounded-full border border-black/15 bg-panel/90 py-1.5 pl-2.5 pr-4 shadow-[0_10px_30px_rgba(0,0,0,0.45)] backdrop-blur-xl">
           <span className={cn('grid size-6 shrink-0 place-items-center rounded-full',
             failed ? 'bg-rose-500/25 text-rose-300' : done ? 'bg-emerald-500/25 text-ink' : 'bg-blue-500/25 text-blue-300')}>
             {failed ? <MousePointer2 className="size-3" />

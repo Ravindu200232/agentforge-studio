@@ -262,7 +262,7 @@ export default function SrsReview({ projectId, onApproved, onKept, onBack, onNew
                 return load()
               }} />
 
-            <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-none border border-black/10 bg-[#F2F0EF]/90 shadow-2xl backdrop-blur-xl">
+            <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-none border border-black/10 bg-panel/90 shadow-2xl backdrop-blur-xl">
               <SubTabs>
                 {VIEWS.map(v => {
                   const badge = badgeFor(v.id, shown)

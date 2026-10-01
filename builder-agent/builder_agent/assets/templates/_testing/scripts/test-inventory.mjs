@@ -50,7 +50,10 @@ function walk(dir, found = []) {
 const manifest = (() => { try { return JSON.parse(read(path.join(ROOT, 'package.json'))) } catch { return {} } })()
 const deps = { ...manifest.dependencies, ...manifest.devDependencies }
 const stack = deps.next ? 'next' : deps['@remix-run/react'] || deps['@remix-run/node'] ? 'remix'
-  : fs.existsSync(path.join(ROOT, 'packages')) ? 'mern' : 'generic'
+  : fs.existsSync(path.join(ROOT, 'packages')) ? 'mern'
+  // vite-mongo: one Express server workspace plus one Vite client workspace, no packages/*.
+  : fs.existsSync(path.join(ROOT, 'server')) && fs.existsSync(path.join(ROOT, 'client')) ? 'server-client'
+  : 'generic'
 
 const all = walk(ROOT).filter((file) => CODE.test(file)).map((file) => posix(path.relative(ROOT, file)))
 const inE2e = (rel) => /(^|\/)e2e\//.test(rel)
@@ -126,6 +129,11 @@ function classify(rel) {
   if (stack === 'mern') {
     if (/^client\/src\//.test(rel)) return isJsx ? { kind: /(^|\/)pages\/|Page\.[jt]sx$/.test(rel) ? 'page' : 'component' } : { kind: 'module' }
     if (/^packages\/[^/]+\/src\//.test(rel)) return /(^|\/)routes\/|\.routes\.[jt]s$/.test(rel) ? { kind: 'route' } : { kind: 'module' }
+    return null
+  }
+  if (stack === 'server-client') {
+    if (/^client\/src\//.test(rel)) return isJsx ? { kind: /(^|\/)pages\/|Page\.[jt]sx$/.test(rel) ? 'page' : 'component' } : { kind: 'module' }
+    if (/^server\/src\//.test(rel)) return /(^|\/)routes\/|\.routes\.[jt]s$/.test(rel) ? { kind: 'route' } : { kind: 'module' }
     return null
   }
   if (/^(?:src|lib|app)\//.test(rel)) return isJsx ? { kind: 'component' } : { kind: 'module' }

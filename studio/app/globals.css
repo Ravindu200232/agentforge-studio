@@ -2,38 +2,46 @@
 
 :root,
 [data-theme="dark"] {
-  /* Cream / Ink Theme Tokens */
-  --bg: #F2F0EF;
-  --bg2: #F2F0EF;          /* Cards / Panels */
-  --bg3: #F2F0EF;          /* Neutral raised surface */
-  --bg4: #E3E1E0;          /* Active / Hover items */
-  --line: rgba(0, 0, 0, 0.12);          /* Divider / border */
-  --line2: rgba(0, 0, 0, 0.22);         /* Stronger border */
-  --ink: #1A1A1A;          /* Primary text */
-  --muted: #57534E;        /* Secondary text */
-  --muted2: #78716C;       /* Disabled / caption */
-  --faint: #A8A29E;
-  --label: #57534E;
-  --shadow: rgba(0, 0, 0, 0.14);
-  --code-bg: #F2F0EF;
-  --canvas: #F2F0EF;
+  /* Codex light theme — the shared source of truth for Studio surfaces. */
+  --palette-lilac: #e8f0fe;
+  --palette-blush: #f7f7f8;
+  --palette-cream: #fafafa;
+  --palette-butter: #f3f3f4;
+  --palette-spring: #ffffff;
 
-  /* Secondary / Brand Accent */
-  --accent: #BFB9FF;
-  --press: #9B94E8;
-  --deep: #7B73C9;
-  --tint: rgba(191, 185, 255, 0.08);
+  --bg: var(--palette-butter);
+  --bg2: var(--palette-spring);             /* Cards / panels */
+  --bg3: var(--palette-cream);              /* Raised controls */
+  --bg4: #e9e9eb;                           /* Selected / hover */
+  --line: rgba(32, 33, 35, 0.12);
+  --line2: rgba(32, 33, 35, 0.22);
+  --ink: #202123;
+  --muted: #6b6f76;
+  --muted2: #8b8e95;
+  --faint: #aaadb4;
+  --label: #5e6269;
+  --shadow: rgba(32, 33, 35, 0.12);
+  --code-bg: #f5f5f6;
+  --canvas: var(--palette-cream);
 
-  /* Secondary & Status Colors */
-  --secondary: #BFB9FF;
-  --green: #22C55E;        /* Success Main */
-  --ok-tint: rgba(34, 197, 94, 0.14);
-  --red: #FF5630;          /* Error Main */
-  --bad-tint: rgba(255, 86, 48, 0.14);
-  --yellow: #FFAB00;       /* Warning Main */
-  --warn-tint: rgba(255, 171, 0, 0.14);
-  --info: #00B8D9;         /* Info Main */
-  --info-tint: rgba(0, 184, 217, 0.14);
+  /* Codex's restrained blue is reserved for actions, selection, and focus. */
+  --accent: #3b82f6;
+  --press: #2563eb;
+  --deep: #1d4ed8;
+  --tint: rgba(59, 130, 246, 0.13);
+  --secondary: var(--accent);
+
+  /* Semantic status is deliberately only green or red. */
+  --green: #16803c;
+  --ok-tint: rgba(22, 128, 60, 0.12);
+  --red: #d04f5e;
+  --bad-tint: rgba(208, 79, 94, 0.12);
+  /* A state is either healthy/current or needs attention.  There are no
+     separate blue/yellow/orange status families in the Studio. */
+  --yellow: var(--red);
+  --warn-tint: var(--bad-tint);
+  --info: var(--green);
+  --info-tint: var(--ok-tint);
 
   /* Syntax Highlighting — VS Code Light+ palette */
   --tk-plain: #1A1A1A;
@@ -54,10 +62,10 @@
 :root {
   --accent2: var(--accent);
   --sidebar-w: 260px;
-  --radius-panel: 16px;
+  --radius-panel: 18px;
   --radius-ctl: 12px;
-  --card-shadow: 0 0 2px 0 rgba(145, 158, 171, 0.2), 0 12px 24px -4px rgba(145, 158, 171, 0.12);
-  --primary-shadow: 0 8px 16px 0 rgba(191, 185, 255, 0.24);
+  --card-shadow: 0 1px 2px rgba(32, 33, 35, 0.04), 0 12px 28px -16px rgba(32, 33, 35, 0.2);
+  --primary-shadow: 0 10px 22px -10px rgba(37, 99, 235, 0.34);
 }
 
 @theme inline {
@@ -90,7 +98,7 @@
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --font-display: "Barlow", "Public Sans", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-body: "Public Sans", "DM Sans", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-  --radius-panel: 16px;
+  --radius-panel: 18px;
   --radius-ctl: 12px;
 }
 
@@ -108,6 +116,182 @@
   ::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
   :focus { outline: none; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* Inputs and controls use the same soft, rounded language everywhere. */
+  button:not([class~="rounded-full"]), input:not([type="checkbox"]):not([type="radio"]),
+  textarea, select {
+    border-radius: var(--radius-ctl);
+  }
+
+  /* Keep each component's original sizing, border and radius. Only the
+     interaction colors are shared: quiet gray hover and blue selection. */
+  button:not(:disabled):hover {
+    background-color: var(--bg4) !important;
+    color: var(--ink) !important;
+  }
+  button:not(:disabled):active,
+  button[aria-pressed="true"] {
+    background-color: transparent !important;
+    color: var(--deep) !important;
+  }
+  button[aria-pressed="true"] {
+    background-color: transparent !important;
+    box-shadow: none !important;
+  }
+}
+
+@layer utilities {
+  /* Rails and tab rows keep their scroll behavior without a visual browser
+     scrollbar competing with their small controls. */
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+
+  /* Testing reads like a report, not a dashboard full of colored boxes.
+     Color is kept on the status text, its thin border, and tiny progress
+     dots only. This also turns old solid test actions into text actions. */
+  .testing-workspace :is([class*="bg-ok/"], [class*="bg-bad/"], [class*="bg-warn/"],
+                           [class*="bg-green-"], [class*="bg-emerald-"],
+                           [class*="bg-red-"], [class*="bg-rose-"],
+                           [class*="bg-amber-"], [class*="bg-yellow-"],
+                           [class*="bg-orange-"], [class*="bg-blue-"],
+                           [class*="bg-sky-"], [class*="bg-indigo-"]):not([class*="size-"][class*="rounded-full"]) {
+    background-color: transparent !important;
+  }
+  .testing-workspace :is([class*="text-ok"], [class*="text-green-"], [class*="text-emerald-"]) {
+    color: var(--green) !important;
+    font-weight: 650;
+  }
+  .testing-workspace :is([class*="text-bad"], [class*="text-red-"], [class*="text-rose-"],
+                           [class*="text-warn"], [class*="text-amber-"], [class*="text-yellow-"], [class*="text-orange-"]) {
+    color: var(--red) !important;
+    font-weight: 650;
+  }
+  .testing-workspace button:is([class*="bg-accent"], [class*="bg-ok"], [class*="bg-bad"],
+                                 [class*="bg-warn"], [class*="bg-green"], [class*="bg-red"],
+                                 [class*="bg-amber"], [class*="bg-blue"]) {
+    background-color: transparent !important;
+    border-color: var(--line) !important;
+    box-shadow: none !important;
+    color: var(--deep) !important;
+  }
+
+  /* Older stage pages were authored with square `rounded-none` surfaces.
+     Keep their markup, but let the shared Studio design system round them. */
+  [class~="rounded-none"] {
+    border-radius: var(--radius-panel) !important;
+  }
+
+  /* Existing white utility cards remain the Codex panel white. */
+  body [class~="bg-white"] {
+    background-color: var(--palette-spring) !important;
+  }
+
+  /* Legacy stage pages used Tailwind's many status hues.  Keep the markup
+     readable while enforcing the Studio's two-state language globally:
+     green is passing/current; red is failed, wrong, or needs attention. */
+  body :is([class*="text-amber-"], [class*="text-yellow-"], [class*="text-orange-"],
+           [class*="text-rose-"], [class*="text-red-"], [class*="text-bad"],
+           [class*="text-warn"]) {
+    color: var(--red) !important;
+  }
+  /* Errors and warnings match the success-card treatment: no colored fill,
+     just a white surface, red copy and a clear red edge. */
+  body :is([class*="bg-amber-"], [class*="bg-yellow-"], [class*="bg-orange-"],
+           [class*="bg-rose-"], [class*="bg-red-"], [class*="bg-bad"],
+           [class*="bg-warn"]):not([class*="rounded-full"][class*="size-"]) {
+    background-color: var(--palette-spring) !important;
+    border-color: color-mix(in srgb, var(--red) 48%, transparent) !important;
+    color: var(--red) !important;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 14%, transparent) !important;
+  }
+  body :is([class*="bg-amber-"], [class*="bg-yellow-"], [class*="bg-orange-"],
+           [class*="bg-rose-"], [class*="bg-red-"], [class*="bg-bad"],
+           [class*="bg-warn"]):not([class*="rounded-full"][class*="size-"]) :is(svg, [class*="text-"]) {
+    color: var(--red) !important;
+  }
+  body :is([class*="border-amber-"], [class*="border-yellow-"], [class*="border-orange-"],
+           [class*="border-rose-"], [class*="border-red-"], [class*="border-bad"],
+           [class*="border-warn"]) {
+    border-color: color-mix(in srgb, var(--red) 48%, transparent) !important;
+  }
+  body :is([class*="ring-amber-"], [class*="ring-yellow-"], [class*="ring-orange-"],
+           [class*="ring-rose-"], [class*="ring-red-"]) {
+    --tw-ring-color: color-mix(in srgb, var(--red) 38%, transparent) !important;
+  }
+
+  body :is([class*="text-blue-"], [class*="text-sky-"], [class*="text-indigo-"],
+           [class*="text-cyan-"]) {
+    color: var(--deep) !important;
+  }
+
+  /* Blue is an affordance, never a filled surface.  Older views still use
+     `bg-accent` and Tailwind blue classes for primary buttons, selected cards
+     and prompt banners.  Normalize every one to the same white, outlined
+     pattern used by the question cards: the blue stays in the label/icon and
+     focus ring, while the component itself stays quiet and readable. */
+  body :is([class*="bg-accent"], [class*="bg-blue-"], [class*="bg-sky-"],
+           [class*="bg-indigo-"], [class*="bg-cyan-"]) {
+    background-color: var(--palette-spring) !important;
+    color: var(--deep) !important;
+    box-shadow: inset 0 0 0 1px var(--line) !important;
+  }
+  body :is([class*="bg-accent"], [class*="bg-blue-"], [class*="bg-sky-"],
+           [class*="bg-indigo-"], [class*="bg-cyan-"]):is(button, [role="button"]) {
+    border-color: var(--line2) !important;
+  }
+  body :is([class*="border-blue-"], [class*="border-sky-"], [class*="border-indigo-"],
+           [class*="border-cyan-"]) {
+    border-color: color-mix(in srgb, var(--deep) 38%, transparent) !important;
+  }
+  body :is([class*="ring-blue-"], [class*="ring-sky-"], [class*="ring-indigo-"],
+           [class*="ring-cyan-"]) {
+    --tw-ring-color: color-mix(in srgb, var(--deep) 38%, transparent) !important;
+  }
+
+  /* Small status dots must stay visibly green/red instead of using a tint. */
+  body :is([class*="rounded-full"][class*="bg-amber-"], [class*="rounded-full"][class*="bg-yellow-"],
+           [class*="rounded-full"][class*="bg-orange-"], [class*="rounded-full"][class*="bg-rose-"],
+           [class*="rounded-full"][class*="bg-red-"], [class*="rounded-full"][class*="bg-bad"],
+           [class*="rounded-full"][class*="bg-warn"]) {
+    background-color: var(--red) !important;
+  }
+  body :is([class*="text-emerald-"], [class*="text-green-"], [class*="text-ok"]) { color: var(--green) !important; }
+
+  /* Passing/success cards use the same outlined treatment as the rest of the
+     Studio: green communicates the state through text and a clear border, not
+     a pale green fill behind the content. Small status lights stay filled so
+     they are still recognizable at a glance. */
+  body :is([class*="bg-emerald-"], [class*="bg-green-"], [class*="bg-ok"]):not([class*="rounded-full"][class*="size-"]) {
+    background-color: var(--palette-spring) !important;
+    border-color: color-mix(in srgb, var(--green) 48%, transparent) !important;
+    color: var(--green) !important;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 14%, transparent) !important;
+  }
+  body :is([class*="bg-emerald-"], [class*="bg-green-"], [class*="bg-ok"]):not([class*="rounded-full"][class*="size-"]) :is(svg, [class*="text-"]) {
+    color: var(--green) !important;
+  }
+  body :is([class*="border-emerald-"], [class*="border-green-"], [class*="border-ok"]) { border-color: color-mix(in srgb, var(--green) 48%, transparent) !important; }
+  body :is([class*="ring-emerald-"], [class*="ring-green-"]) { --tw-ring-color: color-mix(in srgb, var(--green) 38%, transparent) !important; }
+  body :is([class*="rounded-full"][class*="bg-emerald-"], [class*="rounded-full"][class*="bg-green-"], [class*="rounded-full"][class*="bg-ok"]) {
+    background-color: var(--green) !important;
+  }
+}
+
+/* Context is the one usage meter that intentionally keeps a blue fill: it is
+   a quantitative reading, not an action button or selectable card. */
+.context-window-card {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line)) !important;
+}
+.context-window-title,
+.context-window-value {
+  color: var(--deep);
+}
+.context-window-track {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg4));
+}
+body .context-window-progress {
+  background-color: var(--accent) !important;
+  box-shadow: none !important;
 }
 
 .label-xs {

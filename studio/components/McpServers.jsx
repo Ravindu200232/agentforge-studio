@@ -159,13 +159,13 @@ export default function McpServers({ meta, onSaved }) {
           </label>
 
           {tested?.ok && (
-            <div className="rounded-xl border border-[#22C55E]/25 bg-[#22C55E]/10 px-3 py-2 text-[11.5px] text-ink">
+            <div className="rounded-xl border border-ok/25 bg-ok/10 px-3 py-2 text-[11.5px] text-ink">
               Connected — {tested.tools.length} tool{tested.tools.length === 1 ? '' : 's'}:{' '}
               {tested.tools.map(t => t.name).join(', ') || 'none'}
             </div>
           )}
           {error && (
-            <div className="rounded-xl border border-[#FF5630]/25 bg-[#FF5630]/10 px-3 py-2 text-[11.5px] text-ink">
+            <div className="rounded-xl border border-bad/25 bg-bad/10 px-3 py-2 text-[11.5px] text-ink">
               {error}
             </div>
           )}

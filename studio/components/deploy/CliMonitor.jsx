@@ -16,13 +16,13 @@ const POLL_MS = 600
 const REFRESH_MS = 15000
 
 const STATUS = {
-  starting: { label: 'Starting', tone: 'text-[#6B7280]' },
-  running: { label: 'Running', tone: 'text-[#BFB9FF]' },
+  starting: { label: 'Starting', tone: 'text-muted' },
+  running: { label: 'Running', tone: 'text-accent' },
   done: { label: 'Finished', tone: 'text-ink' },
-  failed: { label: 'Failed', tone: 'text-[#FF5630]' },
-  stopped: { label: 'Stopped', tone: 'text-[#6B7280]' },
-  timeout: { label: 'Timed out', tone: 'text-[#FFAB00]' },
-  gone: { label: 'Gone', tone: 'text-[#6B7280]' },
+  failed: { label: 'Failed', tone: 'text-bad' },
+  stopped: { label: 'Stopped', tone: 'text-muted' },
+  timeout: { label: 'Timed out', tone: 'text-warn' },
+  gone: { label: 'Gone', tone: 'text-muted' },
 }
 
 export default function CliMonitor({ project, item }) {
@@ -123,50 +123,50 @@ export default function CliMonitor({ project, item }) {
   }
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-[rgba(145,158,171,0.16)] bg-[#F2F0EF] shadow-[0_0_2px_0_rgba(145,158,171,0.2),0_12px_24px_-4px_rgba(0,0,0,0.16)]">
-      <div className="flex flex-wrap items-center gap-2 border-b border-[rgba(145,158,171,0.14)] bg-[#F2F0EF] px-3.5 py-2.5">
-        <Terminal className="size-3.5 shrink-0 text-[#6B7280]" />
+    <div className="overflow-hidden rounded-2xl border border-line bg-panel shadow-[0_0_2px_0_rgba(145,158,171,0.2),0_12px_24px_-4px_rgba(0,0,0,0.16)]">
+      <div className="flex flex-wrap items-center gap-2 border-b border-[rgba(145,158,171,0.14)] bg-panel px-3.5 py-2.5">
+        <Terminal className="size-3.5 shrink-0 text-muted" />
         <code className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink" title={display}>$ {display}</code>
         <span className={cn('flex shrink-0 items-center gap-1.5 text-[11px] font-semibold', status.tone)}>
           {running || refreshing ? <Loader2 className="size-3 animate-spin" /> : state.status === 'done' ? <Check className="size-3" /> : null}
           {status.label}
           {state.status === 'failed' && state.exit != null ? ` · exit ${state.exit}` : ''}
-          {state.seconds ? <span className="font-mono font-normal text-[#6B7280]">{state.seconds}s</span> : null}
+          {state.seconds ? <span className="font-mono font-normal text-muted">{state.seconds}s</span> : null}
         </span>
       </div>
 
       <div ref={view} onScroll={e => { const el = e.currentTarget; atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40 }}
            className="max-h-[62vh] min-h-[220px] overflow-auto px-3.5 py-3">
-        {error && <p className="mb-2 text-[12px] text-[#FF5630]">{error}</p>}
+        {error && <p className="mb-2 text-[12px] text-bad">{error}</p>}
         <pre className="whitespace-pre-wrap break-words font-mono text-[11.5px] leading-[1.55] text-ink">
           {lines.length ? lines.join('\n') : (running ? 'Waiting for the first line…' : error ? '' : '(no output)')}
         </pre>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-[rgba(145,158,171,0.14)] bg-[#F2F0EF] px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-t border-[rgba(145,158,171,0.14)] bg-panel px-3 py-2">
         {running ? (
           <button type="button" onClick={() => { stopJob(); setState(s => ({ ...s, status: 'stopped' })); setRefreshing(false) }}
-                  className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-[rgba(145,158,171,0.2)] px-2.5 text-[11px] font-semibold text-ink hover:bg-black/5">
+                  className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-line px-2.5 text-[11px] font-semibold text-ink hover:bg-black/5">
             <Square className="size-3" /> Stop
           </button>
         ) : (
           <button type="button" onClick={() => run(false)}
-                  className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-[#BFB9FF] px-2.5 text-[11px] font-semibold text-ink hover:bg-[#9B94E8]">
+                  className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-accent px-2.5 text-[11px] font-semibold text-ink hover:bg-press">
             <Play className="size-3" /> Run again
           </button>
         )}
         <button type="button" onClick={copy} disabled={!lines.length}
-                className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-[rgba(145,158,171,0.2)] px-2.5 text-[11px] font-semibold text-ink hover:bg-black/5 disabled:opacity-40">
+                className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-line px-2.5 text-[11px] font-semibold text-ink hover:bg-black/5 disabled:opacity-40">
           {copied ? <Check className="size-3 text-ink" /> : <Copy className="size-3" />} {copied ? 'Copied' : 'Copy'}
         </button>
         {!item.follow && (
-          <label className="ml-1 flex cursor-pointer items-center gap-1.5 text-[11px] text-[#6B7280]">
-            <input type="checkbox" checked={auto} onChange={e => setAuto(e.target.checked)} className="accent-[#BFB9FF]" />
+          <label className="ml-1 flex cursor-pointer items-center gap-1.5 text-[11px] text-muted">
+            <input type="checkbox" checked={auto} onChange={e => setAuto(e.target.checked)} className="accent-[var(--accent)]" />
             Refresh every {REFRESH_MS / 1000} s
           </label>
         )}
-        {item.follow && <span className="ml-1 text-[11px] text-[#6B7280]">Streams until you stop it or leave this page.</span>}
-        <span className="ml-auto font-mono text-[10.5px] text-[#6B7280]">{lines.length} line{lines.length === 1 ? '' : 's'}</span>
+        {item.follow && <span className="ml-1 text-[11px] text-muted">Streams until you stop it or leave this page.</span>}
+        <span className="ml-auto font-mono text-[10.5px] text-muted">{lines.length} line{lines.length === 1 ? '' : 's'}</span>
       </div>
     </div>
   )

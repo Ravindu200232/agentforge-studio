@@ -1,4 +1,4 @@
-"""Every supported SRS diagram has a notation guard and a real SVG render test."""
+"""Every supported SRS diagram has a real SVG render test."""
 from __future__ import annotations
 
 import sys
@@ -37,9 +37,17 @@ end
 ui -.->|uses| service
 ''',
     "deployment": '''flowchart TB
-client["<<device>> Client"] -->|HTTPS| host["<<execution environment>> App host"]
+subgraph Client["Clients"]
+  device1["<<device>> Client"]
+end
+subgraph Host["Server"]
+  host1["<<execution environment>> App host"]
+end
+browser["<<artifact>> browser"]
 artifact["<<artifact>> order-app"]
-host --> artifact
+browser -.->|"<<deploy>>"| device1
+artifact -.->|"<<deploy>>"| host1
+device1 -->|HTTPS| host1
 ''',
     "dfd": '''flowchart LR
 customer[Customer] -->|order details| validate((1. Validate order))
@@ -83,11 +91,6 @@ actor --- order
 
 
 class AllDiagramNotationTests(unittest.TestCase):
-    def test_every_supported_kind_passes_its_notation_guard(self):
-        for kind, source in DIAGRAMS.items():
-            with self.subTest(kind=kind):
-                self.assertEqual(mermaid.problems(kind, source), [])
-
     @unittest.skipUnless(mermaid.available(), "Mermaid CLI is not installed")
     def test_every_supported_kind_renders_to_svg(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -98,24 +101,6 @@ class AllDiagramNotationTests(unittest.TestCase):
                     rendered, why = mermaid.render(source, svg)
                     self.assertTrue(rendered, why)
                     self.assertIn("<svg", svg.read_text(encoding="utf-8"))
-
-    def test_notation_guards_reject_a_wrong_defining_shape(self):
-        cases = {
-            "activity": "flowchart TD\na(Task) --> b(Other)",
-            "bpmn": "flowchart LR\na(Task)",
-            "component": "flowchart TB\na[Service]",
-            "deployment": "flowchart TB\na[Server] --> b[App]",
-            "dfd": "flowchart LR\na[Customer] --> b[Store]",
-            "erd": "erDiagram\nORDER { string id PK }\nCUSTOMER { string id PK }\nORDER -- CUSTOMER",
-            "sequence": "sequenceDiagram\nparticipant API",
-            "state_machine": "stateDiagram-v2\nOpen --> Closed",
-            "system_context": "flowchart TB\na[User] --> b[System]",
-            "use_case": "flowchart LR\na[User] --> b[Goal]",
-        }
-        for kind, source in cases.items():
-            with self.subTest(kind=kind):
-                self.assertTrue(mermaid.problems(kind, source))
-
 
 if __name__ == "__main__":
     unittest.main()

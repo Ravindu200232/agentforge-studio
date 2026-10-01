@@ -14,6 +14,10 @@ const CSS = `
     box-shadow: 0 8px 24px rgba(13, 153, 255, 0.25) !important;
     z-index: 2147483640 !important;
   }
+  [${MARK}][data-wf-secondary] {
+    outline-style: dashed !important;
+    outline-color: #7C3AED !important;
+  }
   .__wf_hover {
     outline: 1.5px dashed #0D99FF !important;
     outline-offset: 1px !important;
@@ -152,6 +156,22 @@ export const PARTS = [
     ['icon', 'Icon', `<span class="${BOX} inline-flex items-center justify-center rounded-full"
       style="width:44px;height:44px">ICON</span>`],
   ]],
+  ['Wireframe notes & flow', [
+    ['note', 'Annotation', `<aside class="border-2 border-dashed border-black bg-[#F3F4F6] px-3 py-2 text-xs mb-4" data-wf-note>
+      <strong>NOTE</strong> — explain the interaction, data or behaviour here.
+    </aside>`],
+    ['flow', 'Flow arrow', `<div class="flex items-center gap-2 text-xs font-bold mb-4" data-wf-flow>
+      <span class="border border-black px-2 py-1">Next action</span><span aria-hidden="true">→</span><span class="border border-dashed border-black px-2 py-1">Next screen</span>
+    </div>`],
+    ['placeholder', 'Placeholder', `<div class="border-2 border-dashed border-black px-4 py-8 text-center text-xs text-black mb-4" data-wf-placeholder>
+      [ Content placeholder ]
+    </div>`],
+    ['modal', 'Modal sketch', `<section class="border-2 border-black bg-white p-5 mb-4" data-wf-modal>
+      <div class="mb-3 flex items-center justify-between border-b-2 border-black pb-2 font-bold">Modal title <span>×</span></div>
+      <p class="mb-4 text-sm">Explain the short decision or confirmation here.</p>
+      <div class="flex gap-2"><button class="border-2 border-black px-3 py-1.5 text-sm font-bold">Confirm</button><button class="border-2 border-black px-3 py-1.5 text-sm">Cancel</button></div>
+    </section>`],
+  ]],
   ['Inputs & actions', [
     ['field', 'Field', `<label class="block mb-4 max-w-md">
       <span class="block text-xs font-bold uppercase tracking-wide mb-1">Field label</span>
@@ -204,6 +224,7 @@ const SNIPPETS = Object.fromEntries(
 function selectable(node, doc) {
   if (!node || node === doc.documentElement || node === doc.body) return null
   if (node.hasAttribute?.('data-wf-editor-ui')) return null
+  if (node.hasAttribute?.('data-wf-flow-slot')) return null
   return node
 }
 
@@ -217,7 +238,7 @@ function label(node) {
 /**
  * Attach the Figma-style interactive wireframe editor to a loaded frame.
  */
-export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
+export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics } = {}) {
   let doc
   try {
     doc = iframe.contentDocument
@@ -227,24 +248,56 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
   }
 
   let selected = null
+  let selectedNodes = new Set()
   let dirty = false
   let dragMode = 'free' // 'free' (Figma Canvas Free Move) | 'flow' (DOM Flow Reorder)
   const undoStack = []
+  const redoStack = []
+  const editLog = []
 
-  if (!doc.getElementById(STYLE_ID)) {
+  function ensureEditorStyle() {
+    if (doc.getElementById(STYLE_ID)) return
     const style = doc.createElement('style')
     style.id = STYLE_ID
     style.textContent = CSS
     doc.head.appendChild(style)
   }
+  ensureEditorStyle()
 
   function touched() {
     if (!dirty) { dirty = true; onDirty?.(true) }
   }
 
-  function snapshot() {
-    undoStack.push(doc.documentElement.outerHTML)
+  function historyMarkup() {
+    const clone = doc.documentElement.cloneNode(true)
+    clone.querySelectorAll(`[${MARK}]`).forEach(node => {
+      node.removeAttribute(MARK)
+      node.removeAttribute('data-wf-tag')
+      node.removeAttribute('data-wf-secondary')
+      node.classList.remove('__wf_dragging')
+    })
+    clone.querySelectorAll('.__wf_hover, .__wf_dragging').forEach(node => node.classList.remove('__wf_hover', '__wf_dragging'))
+    clone.querySelectorAll('[data-wf-editor-ui]').forEach(node => node.remove())
+    clone.querySelector(`#${STYLE_ID}`)?.remove()
+    clone.querySelector('body')?.removeAttribute('data-wf-editing')
+    return clone.outerHTML
+  }
+
+  function snapshot(change = selected ? `Edited <${label(selected)}>` : 'Edited wireframe') {
+    undoStack.push(historyMarkup())
     if (undoStack.length > 50) undoStack.shift()
+    redoStack.length = 0
+    editLog.push(change)
+    if (editLog.length > 50) editLog.shift()
+  }
+
+  function restore(markup) {
+    doc.open(); doc.write(markup); doc.close()
+    selected = null
+    selectedNodes = new Set()
+    ensureEditorStyle()
+    onSelect?.('')
+    onMetrics?.(null)
   }
 
   function getMetrics() {
@@ -412,43 +465,102 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
     return { element: el, rect, position, isVertical }
   }
 
-  function select(node) {
-    if (selected) {
-      selected.removeAttribute(MARK)
-      selected.removeAttribute('data-wf-tag')
-      selected.classList.remove('__wf_dragging')
-    }
-    selected = selectable(node, doc)
-    if (selected) {
-      selected.setAttribute(MARK, '')
-      selected.setAttribute('data-wf-tag', label(selected))
+  function clearSelection() {
+    selectedNodes.forEach(item => {
+      item.removeAttribute(MARK)
+      item.removeAttribute('data-wf-tag')
+      item.removeAttribute('data-wf-secondary')
+      item.classList.remove('__wf_dragging')
+    })
+    selectedNodes.clear()
+    selected = null
+  }
+
+  function select(node, { additive = false } = {}) {
+    const next = selectable(node, doc)
+    if (!additive) clearSelection()
+    if (next) {
+      if (additive && selectedNodes.has(next)) {
+        next.removeAttribute(MARK)
+        next.removeAttribute('data-wf-tag')
+        next.removeAttribute('data-wf-secondary')
+        selectedNodes.delete(next)
+        if (selected === next) selected = Array.from(selectedNodes).at(-1) || null
+      } else {
+        if (selected && selectedNodes.has(selected)) {
+          selected.removeAttribute('data-wf-tag')
+          selected.setAttribute('data-wf-secondary', '')
+        }
+        selected = next
+        selectedNodes.add(next)
+        next.setAttribute(MARK, '')
+        next.removeAttribute('data-wf-secondary')
+        next.setAttribute('data-wf-tag', label(next))
+      }
     }
     updateOverlay()
-    onSelect?.(selected ? label(selected) : '')
+    const details = selected ? {
+      label: label(selected),
+      tag: selected.tagName.toLowerCase(),
+      text: String(selected.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 180),
+    } : null
+    // Keep the original string callback for existing prototype consumers, while
+    // exposing safe selection context for the wireframe AI prompt tool.
+    onSelect?.(details?.label || '')
+    onSelection?.(details, Array.from(selectedNodes).map(item => ({
+      label: label(item),
+      tag: item.tagName.toLowerCase(),
+      text: String(item.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 180),
+    })))
     notifyMetrics()
   }
 
   /**
-   * Take an element out of document flow so a free move actually frees the space it
-   * used to occupy, instead of `position: relative` + `left`/`top`, which only
-   * shifts how the element paints while its old box stays reserved - every sibling
-   * keeps the gap open and the moved element can end up overlapping them.
+   * Figma's "ignore auto layout" keeps the surrounding frame stable while the
+   * chosen layer moves freely. In HTML an absolute child would normally make all
+   * following flex/grid siblings reflow. Keep an invisible, size-locked slot in
+   * the old flow position, then make the visible layer absolute over the canvas.
+   * This prevents the common wireframe-editor failure where a heading collapses
+   * into a skinny column and every card/button below it jumps upward.
    */
   function liftFree(el) {
     const computed = doc.defaultView.getComputedStyle(el)
-    if (computed.position === 'absolute' || computed.position === 'fixed') return
     const parent = el.parentElement
+    if (!parent || el.hasAttribute('data-wf-free')) return
+    const elRect = el.getBoundingClientRect()
     if (parent && doc.defaultView.getComputedStyle(parent).position === 'static') {
       parent.style.position = 'relative'
     }
-    const elRect = el.getBoundingClientRect()
     const anchor = (el.offsetParent || parent || doc.body).getBoundingClientRect()
     const left = Math.round(elRect.left - anchor.left)
     const top = Math.round(elRect.top - anchor.top)
+
+    const slot = doc.createElement('div')
+    slot.setAttribute('data-wf-flow-slot', '')
+    slot.setAttribute('aria-hidden', 'true')
+    slot.style.width = `${Math.round(elRect.width)}px`
+    slot.style.height = `${Math.round(elRect.height)}px`
+    slot.style.minWidth = `${Math.round(elRect.width)}px`
+    slot.style.minHeight = `${Math.round(elRect.height)}px`
+    slot.style.maxWidth = `${Math.round(elRect.width)}px`
+    slot.style.boxSizing = 'border-box'
+    slot.style.flex = `0 0 ${Math.round(elRect.width)}px`
+    slot.style.marginTop = computed.marginTop
+    slot.style.marginRight = computed.marginRight
+    slot.style.marginBottom = computed.marginBottom
+    slot.style.marginLeft = computed.marginLeft
+    el.before(slot)
+
+    el.setAttribute('data-wf-free', '')
     el.style.position = 'absolute'
     el.style.left = `${left}px`
     el.style.top = `${top}px`
+    el.style.width = `${Math.round(elRect.width)}px`
+    el.style.height = `${Math.round(elRect.height)}px`
+    el.style.boxSizing = 'border-box'
+    el.style.flex = '0 0 auto'
     el.style.margin = '0'
+    el.style.zIndex = '1'
   }
 
   /**
@@ -525,7 +637,7 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
       // point the live preview during mousemove already applied the change, so a
       // snapshot taken there just re-captures the state already on screen and one
       // undo click appears to do nothing.
-      snapshot()
+      snapshot(activeResize ? `Resized <${label(selected)}>` : `Moved <${label(selected)}>`)
     }
 
     if (!isDragging) return
@@ -535,6 +647,7 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
     // 1. Resizing
     if (activeResize) {
       if (!dragStart.freed) {
+        liftFree(selected)
         freeSize(selected)
         dragStart.freed = true
       }
@@ -644,6 +757,13 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
 
     if (target.hasAttribute?.('data-wf-editor-ui')) return
 
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault()
+      event.stopPropagation()
+      select(target, { additive: true })
+      return
+    }
+
     if (selected && (target === selected || selected.contains(target))) {
       event.preventDefault()
       startDrag(event, null)
@@ -687,8 +807,43 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
   }
 
   const onKeyDown = event => {
+    const editingText = doc.body.getAttribute('data-wf-editing') === 'text'
+    const field = event.target?.closest?.('input, textarea, select, [contenteditable="true"]')
+    const modifier = event.ctrlKey || event.metaKey
+    const key = event.key.toLowerCase()
+
+    if (editingText) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        api.editText(false)
+      }
+      return
+    }
+    if (field) return
+
+    if (modifier && key === 'z') {
+      event.preventDefault()
+      if (event.shiftKey) api.redo()
+      else api.undo()
+      return
+    }
+    if (modifier && key === 'y') {
+      event.preventDefault()
+      api.redo()
+      return
+    }
     if (!selected) return
-    if (doc.body.getAttribute('data-wf-editing') === 'text') return
+
+    if (modifier && key === 'd') {
+      event.preventDefault()
+      api.duplicate()
+      return
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      api.editText(true)
+      return
+    }
 
     const shift = event.shiftKey
     const step = shift ? 10 : 1
@@ -733,16 +888,22 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
 
   const api = {
     selected: () => selected,
+    selections: () => Array.from(selectedNodes),
     parent() {
       if (selected?.parentElement) select(selected.parentElement)
     },
     move(delta) {
       if (!selected?.parentElement) return
-      const sibling = delta < 0
+      let sibling = delta < 0
         ? selected.previousElementSibling
         : selected.nextElementSibling
+      // A free-positioned item owns the invisible slot immediately before it.
+      // Never treat that editor-only slot as a real drawing-layer sibling.
+      while (sibling?.hasAttribute('data-wf-flow-slot')) {
+        sibling = delta < 0 ? sibling.previousElementSibling : sibling.nextElementSibling
+      }
       if (!sibling) return
-      snapshot()
+      snapshot(`Reordered <${label(selected)}>`)
       if (delta < 0) sibling.before(selected)
       else sibling.after(selected)
       selected.scrollIntoView({ block: 'nearest' })
@@ -752,7 +913,7 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
     },
     nudge(dx, dy) {
       if (!selected) return
-      snapshot()
+      snapshot(`Nudged <${label(selected)}>`)
       liftFree(selected)
       const curLeft = parseFloat(selected.style.left) || 0
       const curTop = parseFloat(selected.style.top) || 0
@@ -764,7 +925,7 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
     },
     setPos(x, y) {
       if (!selected) return
-      snapshot()
+      snapshot(`Set position for <${label(selected)}>`)
       liftFree(selected)
       if (x === null || x === undefined || x === '') selected.style.left = ''
       else selected.style.left = `${Math.round(Number(x))}px`
@@ -776,10 +937,21 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
     },
     resetPos() {
       if (!selected) return
-      snapshot()
+      snapshot(`Reset position for <${label(selected)}>`)
+      const slot = selected.previousElementSibling
+      if (slot?.hasAttribute('data-wf-flow-slot')) slot.replaceWith(selected)
+      selected.removeAttribute('data-wf-free')
       selected.style.left = ''
       selected.style.top = ''
       selected.style.position = ''
+      selected.style.width = ''
+      selected.style.height = ''
+      selected.style.minWidth = ''
+      selected.style.minHeight = ''
+      selected.style.maxWidth = ''
+      selected.style.flex = ''
+      selected.style.zIndex = ''
+      selected.style.boxSizing = ''
       selected.style.margin = ''
       touched()
       updateOverlay()
@@ -795,30 +967,48 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
     getMetrics,
     duplicate() {
       if (!selected?.parentElement) return
-      snapshot()
+      snapshot(`Duplicated <${label(selected)}>`)
       const copy = selected.cloneNode(true)
       copy.removeAttribute(MARK)
       copy.removeAttribute('data-wf-tag')
+      // A copied layer starts in normal document flow.  Retaining free-mode
+      // attributes would make it share no protected flow slot and create a
+      // second, unexpectedly absolute layer.
       copy.classList.remove('__wf_dragging')
-      const curLeft = parseFloat(selected.style.left) || 0
-      const curTop = parseFloat(selected.style.top) || 0
-      copy.style.left = `${curLeft + 16}px`
-      copy.style.top = `${curTop + 16}px`
+      if (selected.hasAttribute('data-wf-free')) {
+        copy.removeAttribute('data-wf-free')
+        copy.style.left = ''
+        copy.style.top = ''
+        copy.style.position = ''
+        copy.style.width = ''
+        copy.style.height = ''
+        copy.style.minWidth = ''
+        copy.style.minHeight = ''
+        copy.style.maxWidth = ''
+        copy.style.flex = ''
+        copy.style.zIndex = ''
+        copy.style.boxSizing = ''
+        copy.style.margin = ''
+      }
       selected.after(copy)
       select(copy)
       touched()
     },
     remove() {
       if (!selected?.parentElement) return
-      snapshot()
+      snapshot(`Deleted <${label(selected)}>`)
+      const slot = selected.previousElementSibling?.hasAttribute('data-wf-flow-slot')
+        ? selected.previousElementSibling
+        : null
       const next = selected.nextElementSibling || selected.parentElement
       selected.remove()
+      slot?.remove()
       select(next)
       touched()
     },
     wider(step) {
       if (!selected) return
-      snapshot()
+      snapshot(`Resized <${label(selected)}>`)
       const now = parseFloat(selected.style.width) || 100
       selected.style.width = `${Math.max(10, Math.min(100, now + step))}%`
       touched()
@@ -827,7 +1017,7 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
     },
     align(how) {
       if (!selected) return
-      snapshot()
+      snapshot(`Aligned <${label(selected)}> ${how}`)
       selected.style.marginLeft = how === 'center' || how === 'right' ? 'auto' : ''
       selected.style.marginRight = how === 'center' || how === 'left' ? 'auto' : ''
       if (how === 'left') selected.style.marginLeft = ''
@@ -843,10 +1033,26 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
       updateOverlay()
       notifyMetrics()
     },
+    style(property, value) {
+      if (!selected || !property) return
+      snapshot(`Updated ${property} on <${label(selected)}>`)
+      selected.style.setProperty(String(property).trim(), String(value ?? '').trim())
+      touched()
+      updateOverlay()
+      notifyMetrics()
+    },
+    text(value) {
+      if (!selected) return
+      snapshot(`Changed text in <${label(selected)}>`)
+      selected.textContent = String(value ?? '')
+      touched()
+      updateOverlay()
+      notifyMetrics()
+    },
     insert(kind) {
       const markup = SNIPPETS[kind]
       if (!markup) return
-      snapshot()
+      snapshot(`Inserted ${kind}`)
       const host = doc.createElement(kind === 'row' ? 'tbody' : 'div')
       if (kind === 'row') {
         const table = doc.createElement('table')
@@ -887,13 +1093,14 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
       select(node)
       node.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
       touched()
+      return node
     },
     editText(on) {
       if (!selected) return
       selected.contentEditable = on ? 'true' : 'false'
       doc.body.setAttribute('data-wf-editing', on ? 'text' : '')
       if (on) {
-        snapshot()
+        snapshot(`Typed in <${label(selected)}>`)
         selected.focus()
       } else {
         touched()
@@ -903,18 +1110,33 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
     undo() {
       const previous = undoStack.pop()
       if (!previous) return false
-      doc.open(); doc.write(previous); doc.close()
+      editLog.pop()
+      redoStack.push(historyMarkup())
+      restore(previous)
+      onDirty?.(undoStack.length > 0)
+      return true
+    },
+    redo() {
+      const next = redoStack.pop()
+      if (!next) return false
+      undoStack.push(historyMarkup())
+      restore(next)
+      onDirty?.(true)
       return true
     },
     // Whether an earlier state is still on the stack after that pop - the caller
     // uses this instead of guessing at a "dirty" flag: an empty stack means undo
     // has walked all the way back to what is actually saved on the server.
     hasHistory: () => undoStack.length > 0,
+    changes: () => [...editLog],
+    canRedo: () => redoStack.length > 0,
+    deselect: () => select(null),
     serialize() {
       const clone = doc.documentElement.cloneNode(true)
       clone.querySelectorAll(`[${MARK}]`).forEach(n => {
         n.removeAttribute(MARK)
         n.removeAttribute('data-wf-tag')
+        n.removeAttribute('data-wf-secondary')
         n.classList.remove('__wf_dragging')
       })
       clone.querySelectorAll('.__wf_hover').forEach(n => n.classList.remove('__wf_hover'))
@@ -925,7 +1147,7 @@ export function attachEditor(iframe, { onSelect, onDirty, onMetrics } = {}) {
       clone.querySelector('body')?.removeAttribute('data-wf-editing')
       return `<!DOCTYPE html>\n${clone.outerHTML}`
     },
-    saved() { dirty = false; onDirty?.(false) },
+    saved() { dirty = false; editLog.length = 0; onDirty?.(false) },
     detach() {
       doc.removeEventListener('mousedown', onMouseDown, true)
       doc.removeEventListener('mousemove', onMouseMove, true)

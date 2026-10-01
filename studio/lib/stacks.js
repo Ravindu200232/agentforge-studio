@@ -13,9 +13,9 @@ export const STACKS = [
     blurb: 'One Next.js app on Postgres, with Supabase Auth, Storage and RLS. The usual choice.',
   },
   {
-    id: 'nextjs-microservices-supabase',
-    name: 'Next.js + microservices + Supabase',
-    blurb: 'Next.js frontend; independent Supabase Edge Functions behind it, one Postgres project.',
+    id: 'nextjs-mongo',
+    name: 'Next.js + MongoDB',
+    blurb: 'One Next.js app on MongoDB, with session-based auth and a real Atlas database.',
   },
   {
     id: 'vite-supabase',
@@ -23,14 +23,19 @@ export const STACKS = [
     blurb: 'A Vite + React SPA talking to Postgres directly through Supabase, RLS instead of a server.',
   },
   {
-    id: 'vite-microservices-supabase',
-    name: 'Vite + microservices + Supabase',
-    blurb: 'Vite + React SPA; independent Supabase Edge Functions behind it, one Postgres project.',
+    id: 'vite-mongo',
+    name: 'Vite + MongoDB',
+    blurb: 'A Vite + React SPA with its own Express + MongoDB API server behind it.',
   },
   {
     id: 'remix-supabase',
     name: 'Remix + Supabase',
     blurb: 'Remix v2 on Vite, on Postgres. Data in loaders and actions, rendered on the server.',
+  },
+  {
+    id: 'mern-microservices',
+    name: 'MERN microservices',
+    blurb: 'A Vite React client behind an API gateway, independent MongoDB-backed services behind that.',
   },
 ]
 
