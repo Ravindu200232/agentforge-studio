@@ -38,7 +38,7 @@ class Base(unittest.TestCase):
             self.addCleanup(patch.stop)
 
     def use(self, commands, target="vercel"):
-        patch = mock.patch.object(cli_monitor, "_catalogue", lambda: stand_in(commands, target))
+        patch = mock.patch.object(cli_monitor, "_catalogue", lambda scope="deploy": stand_in(commands, target))
         patch.start()
         self.addCleanup(patch.stop)
 

@@ -3,7 +3,7 @@ import { advance, emptyProgress } from './progress-model'
 export const ROLES = ['designer', 'developer']
 
 export function emptySession() {
-  return { logs: [], chat: [], runStats: null, agentState: '', reasoning: false, busy: false,
+  return { logs: [], chat: [], runStats: null, agentState: '', agentDetail: '', reasoning: false, busy: false,
     steps: {}, phases: [], files: {}, fileHistory: {}, readFiles: {}, activeFile: null, liveFile: null, liveBuf: '',
     progress: emptyProgress(), selection: [], approval: null, ask: null, drawing: null,
     browserFrame: null, browserConsole: [], question: null, undo: null, previewRoute: '/', draft: '',
@@ -44,7 +44,8 @@ export function reduceSession(session, event) {
           turn_tokens: 0, sent: 0, received: 0 }
       }
       break
-    case 'agent_state': next.agentState = event.state || ''; next.reasoning = Boolean(event.thinking); break
+    case 'agent_state':
+      next.agentState = event.state || ''; next.agentDetail = event.detail || ''; next.reasoning = Boolean(event.thinking); break
     case 'memory': next.runStats = event; break
     case 'step': next.steps = { ...s.steps, [event.step]: event.status }; break
     case 'progress': next.progress = advance(s.progress, event.step, event.pct, at); break

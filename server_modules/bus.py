@@ -297,9 +297,13 @@ def run_state(project: str, status: str, run_id: str = "", agent: str = DEVELOPE
           "status": status, "run_id": run_id})
 
 
-def agent_state(project: str, state: str, thinking: bool = False, agent: str = DEVELOPER) -> None:
-    emit({"type": "agent_state", "project": project, "agent": agent,
-          "state": state, "thinking": thinking})
+def agent_state(project: str, state: str, thinking: bool = False, agent: str = DEVELOPER,
+                detail: str = "") -> None:
+    """What the agent is doing right now; `detail` says how far along (`12/35` while compacting)."""
+    event = {"type": "agent_state", "project": project, "agent": agent, "state": state, "thinking": thinking}
+    if detail:
+        event["detail"] = detail
+    emit(event)
 
 
 def memory(project: str, model: str, used: int, context: int, tools: int,

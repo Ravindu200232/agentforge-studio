@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -32,6 +32,17 @@ VERIFIED = "<PLAN_VERIFIED>"
 INCOMPLETE = "<PLAN_INCOMPLETE>"
 MAX_EXECUTION_ROUNDS = 8
 MAX_AUDIT_ROUNDS = 3
+# How many stretches of an over-full history are summarized at the same time. One after another,
+# a long project's history (dozens of stretches at half a minute each) kept the session silent for
+# a quarter of an hour.
+COMPACT_WORKERS = 4
+_COMPRESS = ("Compress coding-agent history into durable memory. Keep exact file paths, user requirements, "
+             "approvals, decisions, commands, test outcomes, errors, and unfinished plan items. Do not claim "
+             "incomplete work is done. Be concise and factual.")
+_MERGE = ("Merge these partial memories of one coding-agent history, given oldest first, into one durable "
+          "memory. Keep exact file paths, user requirements, approvals, decisions, commands, test outcomes, "
+          "errors, and unfinished plan items; drop repetition; where a later part changes an earlier "
+          "decision, keep the later one. Do not claim incomplete work is done. Be concise and factual.")
 
 _NATURAL_COMPLETION = re.compile(
     r"(?im)^\s*(?:(?:the|this)\s+)?"
@@ -278,37 +289,39 @@ class Agent:
         old_text = json.dumps(old, ensure_ascii=False, default=str)
         chunk_chars = max(1_000, min(100_000, self.context * 2))
         summary_chars = min(12_000, max(500, int(self.context * 0.4)))
-        summary = self.memory_summary
-        for index in range(0, len(old_text), chunk_chars):
-            chunk = old_text[index:index + chunk_chars]
-            kwargs: dict[str, Any] = {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": "Compress coding-agent history into durable memory. "
-                     "Keep exact file paths, user requirements, approvals, decisions, commands, "
-                     "test outcomes, errors, and unfinished plan items. Do not claim incomplete "
-                     "work is done. Be concise and factual."},
-                    {"role": "user", "content": f"Existing memory:\n{summary}\n\nHistory chunk:\n{chunk}"},
-                ],
-                "stream": False,
-            }
-            if self.options:
-                kwargs["options"] = self.options
-            written = self._summary_chunk(kwargs, summary_chars)
-            if written:
-                summary = written
-            else:
-                # Raising here used to end the session, which is the one outcome
-                # worse than a thinner memory: the conversation is over the
-                # window either way, and the work in it is lost with it. A
-                # mechanical digest keeps the load-bearing facts - the paths, the
-                # commands, the requests - without needing the model to cooperate.
-                digest = _mechanical_digest(chunk)
-                if digest and digest not in summary:
-                    summary = (summary + "\n" + digest).strip()[:summary_chars]
-                self.announce("[context] The model gave no summary; kept a "
-                              "mechanical digest of that stretch instead.")
-        self.memory_summary = summary
+        chunks = [old_text[index:index + chunk_chars] for index in range(0, len(old_text), chunk_chars)]
+        total = len(chunks)
+        self.announce(f"[context] Compacting {end - start} earlier messages into memory: {total} "
+                      f"part{'s' if total != 1 else ''}, up to {COMPACT_WORKERS} at a time.")
+        self.announce(f"[compacting] 0/{total}")
+        # Each stretch is summarized on its own, several at once; the pieces are merged in order after.
+        parts: list[str] = [""] * total
+        missed = 0
+        pool = ThreadPoolExecutor(max_workers=max(1, min(COMPACT_WORKERS, total)))
+        try:
+            futures = {pool.submit(self._summary_chunk, self._compact_request(
+                _COMPRESS, f"History part {index + 1} of {total}:\n{chunk}"), summary_chars): index
+                for index, chunk in enumerate(chunks)}
+            for done, future in enumerate(as_completed(futures), start=1):
+                index = futures[future]
+                written = future.result()
+                if not written:
+                    # Raising here used to end the session, which is the one outcome
+                    # worse than a thinner memory: the conversation is over the
+                    # window either way, and the work in it is lost with it. A
+                    # mechanical digest keeps the load-bearing facts - the paths, the
+                    # commands, the requests - without needing the model to cooperate.
+                    written = _mechanical_digest(chunks[index])
+                    missed += 1
+                parts[index] = written
+                self.announce(f"[compacting] {done}/{total}")
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+        if missed:
+            self.announce(f"[context] The model gave no summary for {missed} of {total} part"
+                          f"{'s' if total != 1 else ''}; kept a mechanical digest of "
+                          f"{'it' if missed == 1 else 'those'} instead.")
+        self.memory_summary = self._merge_memories([self.memory_summary, *parts], chunk_chars, summary_chars)
         if self.on_summarize:
             try:
                 self.on_summarize(old)
@@ -318,6 +331,50 @@ class Agent:
         self.messages[0]["content"] = self._system_message()
         self.last_prompt_tokens = 0
         self.announce("[context] Earlier work summarized into memory.")
+
+    def _compact_request(self, instruction: str, content: str) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"model": self.model, "stream": False, "messages": [
+            {"role": "system", "content": instruction}, {"role": "user", "content": content}]}
+        if self.options:
+            kwargs["options"] = self.options
+        return kwargs
+
+    def _merge_memories(self, parts: list[str], chunk_chars: int, summary_chars: int) -> str:
+        """Memories, oldest first, merged into one: in groups that fit one request, until one is left.
+
+        Every part is at most `summary_chars`, far below `chunk_chars`, so each round at least
+        halves the list. A group the model will not merge keeps its parts, joined and trimmed.
+        """
+        level = [part.strip()[:summary_chars] for part in parts if part and part.strip()]
+        while len(level) > 1:
+            groups: list[list[str]] = []
+            size = 0
+            for part in level:
+                if groups and size + len(part) <= chunk_chars:
+                    groups[-1].append(part)
+                    size += len(part)
+                else:
+                    groups.append([part])
+                    size = len(part)
+            if len(groups) == len(level):
+                # Nothing fits beside anything else (a window too small to merge in): keep what fits.
+                return "\n".join(level)[:summary_chars]
+            self.announce(f"[compacting] merging {len(level)}")
+
+            def merge(group: list[str]) -> str:
+                if len(group) == 1:
+                    return group[0]
+                text = "\n\n".join(f"Part {number} of {len(group)}:\n{part}"
+                                   for number, part in enumerate(group, start=1))
+                written = self._summary_chunk(self._compact_request(_MERGE, text), summary_chars)
+                return written or "\n".join(group)[:summary_chars]
+
+            pool = ThreadPoolExecutor(max_workers=max(1, min(COMPACT_WORKERS, len(groups))))
+            try:
+                level = list(pool.map(merge, groups))
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
+        return level[0][:summary_chars] if level else ""
 
     def _summary_chunk(self, kwargs: dict[str, Any], limit: int, attempts: int = 3) -> str:
         """One chunk summarized, allowing for a model that answers oddly.

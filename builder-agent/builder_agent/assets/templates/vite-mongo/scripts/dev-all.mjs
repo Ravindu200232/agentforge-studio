@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
+import path from 'node:path';
 import process from 'node:process';
 
 /**
@@ -77,6 +78,24 @@ function spawnPart(name, file, env) {
     stopAll(code ?? 1);
   });
   children.push(child);
+}
+
+// The Studio shows which parts are listening and can start one that is not, so it is told where each part should be
+// and how it is run. Only when it asks (AGENTFORGE_PORTS_FILE); nothing secret goes in.
+const portsFile = process.env.AGENTFORGE_PORTS_FILE;
+if (portsFile) {
+  try {
+    mkdirSync(path.dirname(portsFile), { recursive: true });
+    writeFileSync(portsFile, JSON.stringify({
+      written_at: new Date().toISOString(), runtime: process.env.AGENTFORGE_PREVIEW_RUNTIME_ID || '',
+      ports: [
+        { name: 'client', kind: 'client', port: clientPort, cwd: 'client', command: 'node vite-dev.mjs',
+          env: { VITE_PORT: String(clientPort), PORT: String(serverPort) } },
+        { name: 'server', kind: 'server', port: serverPort, cwd: '.', command: 'node server/src/server.js',
+          env: { PORT: String(serverPort) } },
+      ],
+    }, null, 2));
+  } catch { /* the Studio's view only: the app runs without it */ }
 }
 
 spawnPart('server', 'server/src/server.js', { PORT: String(serverPort) });

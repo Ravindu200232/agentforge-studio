@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { readdirSync, existsSync, readFileSync } from 'node:fs';
+import { readdirSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import process from 'node:process';
@@ -93,6 +93,28 @@ const addressEnv = { GATEWAY_PORT: String(gatewayPort), GATEWAY_URL: 'http://127
 for (const [name, port] of Object.entries(addresses)) {
   addressEnv[envName(name) + '_PORT'] = String(port);
   addressEnv[envName(name) + '_URL'] = 'http://127.0.0.1:' + port;
+}
+
+// The Studio shows which parts are listening and can start one that is not, so it is told where each part should be
+// and how it is run. Only when it asks (AGENTFORGE_PORTS_FILE); the address map is all it gets, nothing secret.
+const portsFile = process.env.AGENTFORGE_PORTS_FILE;
+if (portsFile) {
+  const folder = (cwd) => cwd.split(path.sep).join('/');
+  const ports = [
+    { name: 'client', kind: 'client', port: frontendPort, cwd: 'client', command: 'node vite-dev.mjs',
+      env: { VITE_PORT: String(frontendPort), PORT: String(gatewayPort) } },
+    ...(gatewayService ? [{ name: gatewayService.name, kind: 'gateway', port: gatewayPort, cwd: folder(gatewayService.cwd),
+                            command: 'node src/server.js', env: { ...addressEnv, PORT: String(gatewayPort) } }] : []),
+    ...internalServices.map((service) => ({
+      name: service.name, kind: 'service', port: addresses[service.name], cwd: folder(service.cwd), command: 'node src/server.js',
+      env: { ...addressEnv, SERVICE_PORT: String(addresses[service.name]), PORT: String(addresses[service.name]) },
+    })),
+  ];
+  try {
+    mkdirSync(path.dirname(portsFile), { recursive: true });
+    writeFileSync(portsFile, JSON.stringify({ written_at: new Date().toISOString(),
+      runtime: process.env.AGENTFORGE_PREVIEW_RUNTIME_ID || '', ports }, null, 2));
+  } catch { /* the Studio's view only: the app runs without it */ }
 }
 
 const children = [];

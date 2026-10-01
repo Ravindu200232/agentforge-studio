@@ -365,7 +365,7 @@ export default function Sidebar({
     return (
       <>
         {renderMobileDrawer()}
-        <aside className="hidden md:flex w-[56px] shrink-0 flex-col items-center gap-1.5 overflow-hidden h-full border-r border-line bg-panel px-2 py-3">
+        <aside className="hidden md:flex w-[56px] shrink-0 flex-col items-center gap-1.5 overflow-y-auto overflow-x-hidden no-scrollbar h-full border-r border-line bg-panel px-2 py-3">
           <Tip text="Expand navigation" side="right">
             <button onClick={() => setCollapsed(false)}
                     className="grid size-9 place-items-center overflow-hidden rounded-xl bg-panel2 text-muted transition-colors hover:bg-raised hover:text-ink">
@@ -400,19 +400,24 @@ export default function Sidebar({
           {screen === 'workspace' && project && workspaceTabs.length > 0 && (
             <>
               <span className="my-1 h-px w-7 bg-line" />
-              {workspaceTabs.map(({ id, label, Icon }) => {
+              {workspaceTabs.map(({ id, label, Icon, group }, index) => {
                 const selected = currentView === id
                 const current = currentStageTab === id
                 const unavailable = !buildAllowed && ['preview', 'testing', 'deploy'].includes(id)
+                // A new group (the project's tools after its stages) starts under a divider of its own.
+                const newGroup = index > 0 && (group || '') !== (workspaceTabs[index - 1].group || '')
                 return (
-                  <Tip key={id} text={unavailable ? 'Complete the prototype first' : label} side="right">
-                    <button type="button" onClick={() => onViewChange?.(id)} disabled={unavailable}
-                            aria-label={label} aria-pressed={selected}
-                            className={cn('grid size-9 place-items-center rounded-xl transition-colors disabled:cursor-not-allowed disabled:opacity-30',
-                              selected ? 'text-deep' : 'text-muted hover:bg-raised hover:text-ink')}>
-                      <Icon className={cn('size-4', current ? 'text-ok' : selected ? 'text-deep' : 'text-muted2')} />
-                    </button>
-                  </Tip>
+                  <div key={id} className="flex flex-col items-center gap-1.5">
+                    {newGroup && <span className="my-1 h-px w-7 bg-line" />}
+                    <Tip text={unavailable ? 'Complete the prototype first' : label} side="right">
+                      <button type="button" onClick={() => onViewChange?.(id)} disabled={unavailable}
+                              aria-label={label} aria-pressed={selected}
+                              className={cn('grid size-9 place-items-center rounded-xl transition-colors disabled:cursor-not-allowed disabled:opacity-30',
+                                selected ? 'text-deep' : 'text-muted hover:bg-raised hover:text-ink')}>
+                        <Icon className={cn('size-4', current ? 'text-ok' : selected ? 'text-deep' : 'text-muted2')} />
+                      </button>
+                    </Tip>
+                  </div>
                 )
               })}
             </>

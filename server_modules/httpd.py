@@ -32,9 +32,10 @@ from qa_agent import verify as qa
 from srs_agent import document as srs_document
 
 from . import bus, changes, cli_monitor, cli_signin, config, deploy_vars, github_device, jobs, live, pdf, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, workspace_picker
+from . import database_rows as database_rows_module
 from .session import session_for
 
-Handler = Callable[[dict[str, Any]], Any]
+Handler =Callable[[dict[str, Any]], Any]
 
 _ROUTES: list[tuple[str, re.Pattern[str], Handler]] = []
 
@@ -294,10 +295,11 @@ def _keep_signin(result: dict) -> dict:
 
 @route("POST", r"/cli-monitor/list")
 def cli_monitor_list(ctx: dict) -> Any:
-    """The read-only commands of this project's deployment type that can be run now, from its own record."""
+    """The read-only commands of this project's deployment type (or, with `scope: database`, of its databases)
+    that can be run now, from its own record."""
     project = str(ctx.get("project") or "")
     store.require(project)
-    return cli_monitor.catalogue(project)
+    return cli_monitor.catalogue(project, scope=str(ctx.get("scope") or "deploy"))
 
 
 @route("POST", r"/cli-monitor/start")
@@ -305,7 +307,45 @@ def cli_monitor_start(ctx: dict) -> Any:
     """Run one of them in the project's folder; its output is read back with `/cli-monitor/poll`."""
     project = str(ctx.get("project") or "")
     store.require(project)
-    return cli_monitor.MONITORS.start(project, str(ctx.get("command") or ""))
+    return cli_monitor.MONITORS.start(project, str(ctx.get("command") or ""), scope=str(ctx.get("scope") or "deploy"))
+
+
+@route("POST", r"/terminal/run")
+def terminal_run(ctx: dict) -> Any:
+    """A command typed in the terminal, run in the project's folder; read back with `/cli-monitor/poll`."""
+    project = str(ctx.get("project") or "")
+    store.require(project)
+    return cli_monitor.MONITORS.start_shell(project, str(ctx.get("command") or ""))
+
+
+@route("POST", r"/preview/log")
+def preview_log(ctx: dict) -> Any:
+    """What the running app has printed since `since` (a byte offset; -1 for its current run)."""
+    project = str(ctx.get("project") or "")
+    store.require(project)
+    return preview_runtime.read_log(project, int(ctx.get("since") if ctx.get("since") is not None else -1))
+
+
+@route("POST", r"/preview/ports")
+def preview_ports(ctx: dict) -> Any:
+    """Every part of the running app (client, gateway, services), its port, and whether it listens now."""
+    project = str(ctx.get("project") or "")
+    store.require(project)
+    return preview_runtime.ports(project)
+
+
+@route("POST", r"/database/rows")
+def database_rows(ctx: dict) -> Any:
+    """A few rows of one table or documents of one collection, with credential-like fields masked."""
+    project = str(ctx.get("project") or "")
+    store.require(project)
+    return database_rows_module.sample(project, ctx)
+
+
+@route("POST", r"/database/atlas")
+def database_atlas(ctx: dict) -> Any:
+    """The Atlas cluster behind the MongoDB connection, when an Atlas account is connected."""
+    return database_rows_module.atlas()
 
 
 @route("POST", r"/cli-monitor/poll")

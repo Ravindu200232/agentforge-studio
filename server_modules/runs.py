@@ -7,6 +7,7 @@ feed stays live while the work happens, and every run reports through the bus.
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
 
 from builder_agent import build as builder
@@ -272,7 +273,8 @@ def element_edit(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def preview_start(message: dict[str, Any]) -> dict[str, Any]:
-    """The preview did not start and the customer asked the agent to start it."""
+    """The preview did not start, or one part of it (`part`: a service, the gateway) is not listening, and the
+    customer asked the agent to start it."""
     _remember_model(message)
     project = str(message.get("project") or "").strip()
     if not project:
@@ -280,14 +282,21 @@ def preview_start(message: dict[str, Any]) -> dict[str, Any]:
     store.require(project)
     if not builder.built(project):
         raise ValueError("there is no built app to start yet")
+    part = str(message.get("part") or "").strip()
+    if part:
+        row = next((row for row in preview_runtime.ports(project)["ports"] if row["name"] == part), None)
+        if not row:
+            raise ValueError(f"this app has no part called {part!r}")
+        # The part a browser opens is the whole app's preview: starting it is starting the app.
+        part = "" if row["main"] else part
     _in_background(f"{PREVIEW_START}:{project}", project, bus.DEVELOPER, _start_preview, project,
-                   _model_from(message), _project=project)
-    return {"ok": True, "project": project}
+                   _model_from(message), part, _project=project)
+    return {"ok": True, "project": project, "part": part}
 
 
-def _start_preview(project: str, model: str = "") -> None:
-    """The agent starts the app the way the Studio does, fixes what stops it, then the Studio
-    starts its own preview again.
+def _start_preview(project: str, model: str = "", part: str = "") -> None:
+    """The agent starts the app (or one `part` of it) the way the Studio does, fixes what stops it,
+    then the Studio starts its own preview again.
 
     The request is sent silently: the customer pressed a button, so nothing is posted as their
     message, and it is not planned first - the prompt already says exactly what to do.
@@ -299,22 +308,30 @@ def _start_preview(project: str, model: str = "") -> None:
         said = ""
         for _ in range(PREVIEW_START_ROUNDS):
             seen = str(preview_runtime.status(project).get("detail") or "")
-            # A preview shown as failed may still be alive, holding the ports the agent needs.
-            preview_runtime.stop(project)
-            brief = preview_runtime.start_brief(project, seen)
-            result = session.run_unplanned(prompts.load("preview/start", **brief), model=model)
+            if not part:
+                # A preview shown as failed may still be alive, holding the ports the agent needs. One
+                # part that is down leaves the rest of the app running while the agent works on it.
+                preview_runtime.stop(project)
+            brief = preview_runtime.start_brief(project, seen, part)
+            result = session.run_unplanned(prompts.load("preview/start-part" if part else "preview/start", **brief),
+                                           model=model)
             said = result.get("text", "").strip() or said
-            preview_runtime.open_preview(project)
+            since = time.time()
+            if part:
+                preview_runtime.reopen(project)
+            else:
+                preview_runtime.open_preview(project)
             state = preview_runtime.wait_settled(project)
-            if state.get("status") == "running":
-                text = said or "The app is running in the preview."
+            if state.get("status") == "running" and (not part or preview_runtime.wait_part(project, part, since)):
+                text = said or (f"{part} is listening again." if part else "The app is running in the preview.")
                 bus.agent_msg(project, text, agent=bus.DEVELOPER)
                 session.finish(text)
                 return
-        reason = state.get("detail") or "The preview still did not answer."
+        reason = (f"{part} still does not listen." if part and state.get("status") == "running"
+                  else state.get("detail") or "The preview still did not answer.")
         if said:
             bus.agent_msg(project, said, agent=bus.DEVELOPER)
-        session.fail(f"The app still does not start. {reason}")
+        session.fail(f"{'That part of the app' if part else 'The app'} still does not start. {reason}")
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001 - shown as the run's failure, then re-raised

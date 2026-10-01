@@ -304,10 +304,24 @@ export const api = {
   // the server runs its login, shows what it prints, and reads what it leaves behind. `available` also says
   // whether the tool is installed and who it is signed in as; `useExisting` keeps that account with no browser.
   // What a deployment's own command line tools can show, run when opened and read back as it is written.
-  cliMonitorList: (project) => post('/cli-monitor/list', { project }),
-  cliMonitorStart: (project, command) => post('/cli-monitor/start', { project, command }),
+  // `scope: 'database'` is the same thing for the project's databases: the Supabase CLI and the MongoDB driver.
+  cliMonitorList: (project, scope = 'deploy') => post('/cli-monitor/list', { project, scope }),
+  cliMonitorStart: (project, command, scope = 'deploy') => post('/cli-monitor/start', { project, command, scope }),
   cliMonitorPoll: (job, since) => post('/cli-monitor/poll', { job, since }),
   cliMonitorStop: (job) => post('/cli-monitor/stop', { job }),
+
+  // A few rows of one table (`{source: 'supabase', schema, table}`) or collection (`{source: 'mongodb', collection}`),
+  // credential-like fields masked; and the Atlas cluster behind the MongoDB connection.
+  databaseRows: (project, body, opts) => localJob('/database/rows', { project, ...body }, opts),
+  databaseAtlas: () => post('/database/atlas', {}),
+
+  // The terminal: what the running app printed (from byte `since`; -1 = its current run), and a command typed in the
+  // project folder, read back with cliMonitorPoll / stopped with cliMonitorStop.
+  previewLog: (project, since = -1) => post('/preview/log', { project, since }),
+  // Every part of the running app and whether it listens; a part that does not is started with
+  // send({ type: 'preview_start', project, part }).
+  previewPorts: (project) => post('/preview/ports', { project }),
+  terminalRun: (project, command) => post('/terminal/run', { project, command }),
 
   cliSigninAvailable: (provider = '', fresh = false) => post('/cli-signin/available', { provider, fresh }),
   cliSigninStart: (provider, region = '') => post('/cli-signin/start', { provider, region }),

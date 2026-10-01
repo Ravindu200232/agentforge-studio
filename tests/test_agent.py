@@ -385,6 +385,59 @@ class AgentTests(unittest.TestCase):
             self.assertIn("app/order/page.tsx", agent.memory_summary)
             self.assertIn("keep the pickup date rule", agent.memory_summary)
 
+    def test_compaction_summarizes_parts_at_the_same_time_says_how_far_it_is_and_merges_in_order(self):
+        """A long project's history used to be summarized one stretch after another, silently, for
+        minutes. The stretches now go out together, each one finished is announced, and the merge
+        keeps them oldest first."""
+        import threading
+        import time as clock
+
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeClient()
+            lock = threading.Lock()
+            live = {"now": 0, "most": 0}
+            merges = []
+
+            def respond(**kwargs):
+                if "tools" in kwargs:
+                    return SimpleNamespace(message=FakeMessage("New answer."))
+                text = kwargs["messages"][1]["content"]
+                if kwargs["messages"][0]["content"].startswith("Merge"):
+                    merges.append(text)
+                    return SimpleNamespace(message=FakeMessage("MERGED: " + " | ".join(
+                        line for line in text.splitlines() if line.startswith("memory of part"))))
+                with lock:
+                    live["now"] += 1
+                    live["most"] = max(live["most"], live["now"])
+                clock.sleep(0.05)
+                with lock:
+                    live["now"] -= 1
+                number = text.split(" of ", 1)[0].removeprefix("History part ")
+                return SimpleNamespace(message=FakeMessage(f"memory of part {number}"))
+
+            client.chat = respond
+            said: list[str] = []
+            agent = Agent(client, "test", Path(directory), lambda _: False, context=4096, announce=said.append)
+            agent.messages.extend([
+                {"role": "user", "content": "old request"},
+                {"role": "assistant", "content": "old output " * 6000},
+            ])
+            self.assertEqual(agent.ask("new request"), "New answer.")
+
+            progress = [line for line in said if line.startswith("[compacting] ") and "/" in line]
+            total = int(progress[0].split("/")[1])
+            self.assertGreater(total, 4)
+            self.assertEqual(progress, [f"[compacting] {done}/{total}" for done in range(total + 1)])
+            self.assertTrue(any(line.startswith("[compacting] merging") for line in said))
+            self.assertTrue(any(line.startswith("[context] Compacting") for line in said))
+            self.assertGreater(live["most"], 1)                        # parts really went out together
+            self.assertLessEqual(live["most"], 4)
+            self.assertTrue(merges)
+            # Oldest first, whatever order the parts finished in.
+            order = [int(piece.rsplit(" ", 1)[1]) for piece in agent.memory_summary.removeprefix("MERGED: ").split(" | ")]
+            self.assertEqual(order, sorted(order))
+            self.assertNotIn("old output", str(agent.messages))
+
 
 if __name__ == "__main__":
     unittest.main()

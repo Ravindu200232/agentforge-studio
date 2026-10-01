@@ -237,8 +237,11 @@ function label(node) {
 
 /**
  * Attach the Figma-style interactive wireframe editor to a loaded frame.
+ *
+ * `textOnly` keeps just the typing: text is edited where it is clicked and undone with Ctrl+Z, and nothing else
+ * (selecting a box, moving, deleting or duplicating it from the keyboard) happens.
  */
-export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics } = {}) {
+export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics, textOnly = false } = {}) {
   let doc
   try {
     doc = iframe.contentDocument
@@ -460,6 +463,7 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
   const onOver = event => {
     if (hovered) hovered.classList.remove('__wf_hover')
     hovered = selectable(event.target, doc)
+    if (textOnly && hovered && !ownText(hovered)) hovered = null
     if (hovered && hovered !== selected) {
       hovered.classList.add('__wf_hover')
     }
@@ -483,6 +487,20 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
     // Inside the text being typed: let the browser place the caret and select words as usual.
     if (editing && selected && (target === selected || selected.contains(target))) return
     if (editing) api.editText(false)
+
+    if (textOnly) {
+      // Only words are edited: a press on text starts typing there, a press anywhere else just stops it.
+      select(target)
+      if (selected && ownText(selected)) {
+        event.stopPropagation()
+        api.editText(true)
+        return
+      }
+      select(null)
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
 
     if (event.ctrlKey || event.metaKey) {
       event.preventDefault()
@@ -558,7 +576,7 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
       api.redo()
       return
     }
-    if (!selected) return
+    if (!selected || textOnly) return
 
     if (modifier && key === 'd') {
       event.preventDefault()

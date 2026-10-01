@@ -1,22 +1,19 @@
 'use client'
 
-/** HTML Prototype viewer with element selection, pencil annotations and direct text editing. */
+/** HTML Prototype viewer with element selection, pencil annotations and the wireframe's text tool: click text, type, save. */
 
 import { useAgentPreview } from '@/lib/agent-preview'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Monitor, Tablet, Smartphone, MousePointerClick, Pencil, RotateCw,
-  ExternalLink, Globe, Layers, Eraser, Undo2, ChevronLeft, ChevronRight,
-  Sparkles, Rocket, Loader2, SlidersHorizontal,
-  AlignLeft, AlignCenter, AlignRight,
-  Copy, Trash2, Type,
+  ExternalLink, Layers, Eraser, Undo2, ChevronLeft, ChevronRight,
+  Rocket, Loader2, Type,
   RotateCcw as UndoIcon, Save, Check,
 } from 'lucide-react'
 import { useStore } from '@/lib/store'
 import { api, API } from '@/lib/api'
 import { watchFrame } from '@/lib/console-log'
-import { attachPicker, pickedFrom, pickLabel, frameDoc } from '@/lib/picker'
-import VisualInspector from './VisualInspector'
+import { attachPicker, pickedFrom, pickLabel } from '@/lib/picker'
 import { Tip } from './ui'
 import { cn } from '@/lib/utils'
 
@@ -58,19 +55,13 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
   const [vp, setVp] = useState('desktop')
   const [pickOn, setPickOn] = useState(false)
   const [pencilOn, setPencilOn] = useState(false)
-  const [visualEditOn, setVisualEditOn] = useState(false)
-  const [inspectedElement, setInspectedElement] = useState(null)
-  const [inspectedDoc, setInspectedDoc] = useState(null)
-  const visualDetachRef = useRef(null)
   const [currentFile, setCurrentFile] = useState('index.html')
   const [protoReady, setProtoReady] = useState(false)
   const [iframeLoading, setIframeLoading] = useState(true)
 
-  // Direct text editing on the prototype page: click text, type, save
-  const [figmaMoveOn, setFigmaMoveOn] = useState(false)
-  const [figmaPicked, setFigmaPicked] = useState('')
-  const [figmaMetrics, setFigmaMetrics] = useState(null)
-  const [figmaDirty, setFigmaDirty] = useState(false)
+  // The wireframe's text tool, on the prototype page: click text, type, save. Nothing else is edited here.
+  const [textOn, setTextOn] = useState(false)
+  const [textDirty, setTextDirty] = useState(false)
   const [savingProto, setSavingProto] = useState(false)
   const [saveProtoSuccess, setSaveProtoSuccess] = useState(false)
   const protoEditorRef = useRef(null)
@@ -243,95 +234,14 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     return () => { detachRef.current?.(); detachRef.current = null }
   }, [pickOn, attach])
 
-  const attachVisualInspector = useCallback(() => {
-    visualDetachRef.current?.()
-    visualDetachRef.current = null
-    const f = frameRef.current
-    if (!f) return
-    const d = frameDoc(f)
-    if (!d) return
-
-    const STYLE_ID = '__vf_style'
-    if (!d.getElementById(STYLE_ID)) {
-      const st = d.createElement('style')
-      st.id = STYLE_ID
-      st.textContent = `
-        .__vf_hi {
-          outline: 2px dashed #10b981 !important;
-          outline-offset: -2px !important;
-          cursor: pointer !important;
-        }
-        .__vf_selected {
-          outline: 2px solid #10b981 !important;
-          outline-offset: -1px !important;
-        }
-      `
-      d.head.appendChild(st)
-    }
-
-    const hover = (e) => {
-      if (e.target && e.target.classList) {
-        e.target.classList.add('__vf_hi')
-      }
-    }
-    const leave = (e) => {
-      if (e.target && e.target.classList) {
-        e.target.classList.remove('__vf_hi')
-      }
-    }
-    const click = (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      e.stopImmediatePropagation()
-      const prev = d.querySelector('.__vf_selected')
-      if (prev) prev.classList.remove('__vf_selected')
-      if (e.target && e.target.classList) {
-        e.target.classList.add('__vf_selected')
-      }
-      setInspectedElement(e.target)
-      setInspectedDoc(d)
-    }
-
-    d.addEventListener('mouseover', hover, true)
-    d.addEventListener('mouseout', leave, true)
-    d.addEventListener('click', click, true)
-
-    visualDetachRef.current = () => {
-      d.removeEventListener('mouseover', hover, true)
-      d.removeEventListener('mouseout', leave, true)
-      d.removeEventListener('click', click, true)
-      const hi = d.querySelectorAll('.__vf_hi, .__vf_selected')
-      hi.forEach(el => el.classList.remove('__vf_hi', '__vf_selected'))
-      const st = d.getElementById(STYLE_ID)
-      if (st) st.remove()
-    }
-  }, [])
-
-  useEffect(() => {
-    if (visualEditOn) attachVisualInspector()
-    else {
-      visualDetachRef.current?.()
-      visualDetachRef.current = null
-      setInspectedElement(null)
-      setInspectedDoc(null)
-    }
-    return () => {
-      visualDetachRef.current?.()
-      visualDetachRef.current = null
-    }
-  }, [visualEditOn, attachVisualInspector])
-
-  const attachFigmaEditor = useCallback(() => {
+  // The same editor the wireframe pages use, in its text-only form.
+  const attachTextEditor = useCallback(() => {
     protoEditorRef.current?.detach?.()
     protoEditorRef.current = null
     const f = frameRef.current
     if (!f) return
     import('@/lib/wireframe-html-editor').then(({ attachEditor }) => {
-      protoEditorRef.current = attachEditor(f, {
-        onSelect: setFigmaPicked,
-        onDirty: setFigmaDirty,
-        onMetrics: setFigmaMetrics,
-      })
+      protoEditorRef.current = attachEditor(f, { onDirty: setTextDirty, textOnly: true })
     })
   }, [])
 
@@ -341,15 +251,12 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     const onLoad = () => {
       watchFrame(f, project, 'designer')
       syncPath()
-      setInspectedElement(null)
-      setInspectedDoc(null)
       if (pickOn) attach()
-      if (visualEditOn) attachVisualInspector()
-      if (figmaMoveOn) attachFigmaEditor()
+      if (textOn) attachTextEditor()
     }
     f.addEventListener('load', onLoad)
     return () => f.removeEventListener('load', onLoad)
-  }, [pickOn, attach, visualEditOn, attachVisualInspector, figmaMoveOn, attachFigmaEditor, syncPath])
+  }, [pickOn, attach, textOn, attachTextEditor, syncPath])
 
   useEffect(() => {
     const id = setInterval(syncPath, 500)
@@ -456,25 +363,23 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
 
   useEffect(() => () => { protoEditorRef.current?.detach?.() }, [])
 
-  function toggleFigmaMove() {
-    if (!project) return addLog('WARN', 'Open a project first')
-    if (!figmaMoveOn) {
-      setPickOn(false)
-      setPencilOn(false)
-      setVisualEditOn(false)
-      setInspectedElement(null)
-      attachFigmaEditor()
-    } else {
-      protoEditorRef.current?.detach?.()
-      protoEditorRef.current = null
-      setFigmaPicked('')
-      setFigmaMetrics(null)
-      setFigmaDirty(false)
-    }
-    setFigmaMoveOn(v => !v)
+  function stopTextEdit() {
+    protoEditorRef.current?.detach?.()
+    protoEditorRef.current = null
+    setTextDirty(false)
+    setTextOn(false)
   }
 
-  async function savePrototypeFigma() {
+  function toggleTextEdit() {
+    if (!project) return addLog('WARN', 'Open a project first')
+    if (textOn) return stopTextEdit()
+    setPickOn(false)
+    setPencilOn(false)
+    attachTextEditor()
+    setTextOn(true)
+  }
+
+  async function saveTextEdits() {
     if (!protoEditorRef.current || !project) return
     setSavingProto(true)
     setSaveProtoSuccess(false)
@@ -489,7 +394,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
         `Text edit in ${base || 'index.html'}`
       )
       protoEditorRef.current.saved()
-      setFigmaDirty(false)
+      setTextDirty(false)
       setSaveProtoSuccess(true)
       addLog?.('SUCCESS', `Saved ${base || 'index.html'} directly to prototype HTML`)
       setTimeout(() => setSaveProtoSuccess(false), 3000)
@@ -500,26 +405,15 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     }
   }
 
-  const protoAct = (name, ...args) => () => {
-    const result = protoEditorRef.current?.[name]?.(...args)
-    if (name === 'undo' && result) {
-      setFigmaDirty(protoEditorRef.current?.hasHistory?.() ?? false)
-      setFigmaPicked('')
-      setFigmaMetrics(null)
-    }
+  function undoText() {
+    if (protoEditorRef.current?.undo?.()) setTextDirty(protoEditorRef.current?.hasHistory?.() ?? false)
   }
 
   function togglePick() {
     if (!project) return addLog('WARN', 'Open a project first')
     if (!pickOn) {
       setPencilOn(false)
-      setVisualEditOn(false)
-      setInspectedElement(null)
-      if (figmaMoveOn) {
-        protoEditorRef.current?.detach?.()
-        protoEditorRef.current = null
-        setFigmaMoveOn(false)
-      }
+      if (textOn) stopTextEdit()
     }
     setPickOn(v => !v)
   }
@@ -528,31 +422,9 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     if (!project) return addLog('WARN', 'Open a project first')
     if (!pencilOn) {
       setPickOn(false)
-      setVisualEditOn(false)
-      setInspectedElement(null)
-      if (figmaMoveOn) {
-        protoEditorRef.current?.detach?.()
-        protoEditorRef.current = null
-        setFigmaMoveOn(false)
-      }
+      if (textOn) stopTextEdit()
     }
     setPencilOn(v => { if (v) clearStrokes(); return !v })
-  }
-
-  function toggleVisualEdit() {
-    if (!project) return addLog('WARN', 'Open a project first')
-    if (!visualEditOn) {
-      setPickOn(false)
-      setPencilOn(false)
-      if (figmaMoveOn) {
-        protoEditorRef.current?.detach?.()
-        protoEditorRef.current = null
-        setFigmaMoveOn(false)
-      }
-    } else {
-      setInspectedElement(null)
-    }
-    setVisualEditOn(v => !v)
   }
 
   async function undoLast() {
@@ -681,87 +553,42 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
           </Cell>
         </div>
 
-        {/* Visual Quick Inspector (Zero-LLM Direct Editor) */}
-        <div className="flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/[.08] p-1 shadow-sm">
-          <Cell tip="Visual Inspector: click any element to live-edit text, colors, layout & move without LLM"
-                side="left" on={visualEditOn} onClick={toggleVisualEdit} className={cn("rounded-full", visualEditOn && "!bg-emerald-600 !text-ink shadow-sm")}>
-            <SlidersHorizontal className={cn("size-3.5", visualEditOn ? "text-ink" : "text-ink")} />
-          </Cell>
-        </div>
-
-        {/* Edit text: click any text on the page and type, then save */}
-        <div className="flex items-center gap-1 rounded-full border border-[#BFB9FF]/40 bg-[#BFB9FF] p-1 shadow-sm">
+        {/* The wireframe's text tool: click any text on the page and type, then save */}
+        <div className="flex items-center gap-1 rounded-full border border-line/80 bg-panel/80 p-1 shadow-sm">
           <Cell
             tip="Edit text: click any text on the page and type, then save"
             side="left"
-            on={figmaMoveOn}
-            onClick={toggleFigmaMove}
+            on={textOn}
+            onClick={toggleTextEdit}
             disabled={!protoReady || isBusy}
-            className={cn("rounded-full", figmaMoveOn && "!bg-[#BFB9FF] !text-ink shadow-sm")}
+            className="rounded-full"
           >
-            <Type className={cn("size-3.5", figmaMoveOn ? "text-ink" : "text-[#BFB9FF]")} />
+            <Type className="size-3.5" />
           </Cell>
         </div>
       </div>
 
-      {/* Text editing toolbar */}
-      {figmaMoveOn && (
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-black/10 bg-[#F2F0EF]/95 px-3.5 py-2 select-none z-30 shadow-md backdrop-blur-md">
-          {figmaPicked ? (
-            <>
-              <span className="flex items-center gap-1 rounded-md bg-black/[.07] px-2 py-1 font-mono text-[10.5px] text-ink border border-black/10">
-                <span className="text-[#BFB9FF] font-semibold">&lt;{figmaPicked}&gt;</span>
-              </span>
-
-              <span className="mx-1 h-4 w-px bg-black/10" />
-
-              {/* Alignments */}
-              <button type="button" onClick={protoAct('align', 'left')} title="Align Left" className="p-1 hover:bg-black/10 rounded text-ink hover:text-ink cursor-pointer"><AlignLeft className="size-3" /></button>
-              <button type="button" onClick={protoAct('align', 'center')} title="Align Centre" className="p-1 hover:bg-black/10 rounded text-ink hover:text-ink cursor-pointer"><AlignCenter className="size-3" /></button>
-              <button type="button" onClick={protoAct('align', 'right')} title="Align Right" className="p-1 hover:bg-black/10 rounded text-ink hover:text-ink cursor-pointer"><AlignRight className="size-3" /></button>
-
-              <span className="mx-1 h-4 w-px bg-black/10" />
-
-              <button type="button" onClick={protoAct('parent')} title="Select Parent Container" className="px-1.5 py-1 text-[10px] hover:bg-black/10 rounded text-ink hover:text-ink font-medium cursor-pointer">Parent</button>
-              <button type="button" onClick={protoAct('duplicate')} title="Duplicate Element" className="p-1 hover:bg-black/10 rounded text-ink hover:text-ink cursor-pointer"><Copy className="size-3" /></button>
-              <button type="button" onClick={protoAct('remove')} title="Delete Element" className="p-1 hover:bg-black/10 rounded text-rose-300 hover:text-rose-200 cursor-pointer"><Trash2 className="size-3" /></button>
-            </>
-          ) : (
-            <span className="flex items-center gap-1.5 font-mono text-[11px] text-muted2">
-              <Type className="size-3 text-[#BFB9FF]" />
-              <span>Click any text on the page and type · Click an element to select it</span>
-            </span>
-          )}
-
+      {/* While the text tool is on: what to do, and Save / Undo once something was typed. */}
+      {textOn && (
+        <div className="z-30 flex shrink-0 items-center gap-2 border-b border-black/10 bg-[#F2F0EF]/95 px-3.5 py-2 select-none backdrop-blur-md">
+          <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted">
+            <Type className="size-3 shrink-0" />
+            <span className="truncate">Click any text on the page and type · Esc stops typing</span>
+          </span>
           <span className="flex-1" />
-
-          {/* Save Button */}
-          {figmaDirty && (
-            <button
-              type="button"
-              onClick={savePrototypeFigma}
-              disabled={savingProto}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-ink shadow-sm hover:bg-emerald-500 disabled:opacity-50 transition cursor-pointer"
-            >
-              {savingProto ? <><Loader2 className="size-3 animate-spin" /> Saving…</> : <><Save className="size-3" /> Save to HTML</>}
+          {saveProtoSuccess && (
+            <span className="flex items-center gap-1 text-[11px] text-ink"><Check className="size-3" /> Saved</span>
+          )}
+          <button type="button" onClick={undoText} disabled={!textDirty} title="Undo the last change (Ctrl+Z)"
+                  className="inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-[11px] font-medium text-ink ring-1 ring-inset ring-black/10 hover:bg-black/[.06] disabled:opacity-40">
+            <UndoIcon className="size-3" /> Undo
+          </button>
+          {textDirty && (
+            <button type="button" onClick={saveTextEdits} disabled={savingProto}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-accent px-3 text-[11px] font-semibold text-ink shadow-sm hover:bg-press disabled:opacity-50">
+              {savingProto ? <><Loader2 className="size-3 animate-spin" /> Saving…</> : <><Save className="size-3" /> Save page</>}
             </button>
           )}
-
-          {saveProtoSuccess && (
-            <span className="flex items-center gap-1 font-mono text-[11px] text-ink">
-              <Check className="size-3" /> Saved!
-            </span>
-          )}
-
-          <button
-            type="button"
-            onClick={protoAct('undo')}
-            title="Undo last change (Ctrl+Z)"
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition cursor-pointer bg-black/[.06] text-ink hover:bg-black/[.12] hover:text-ink"
-          >
-            <UndoIcon className="size-3" />
-            <span>Undo</span>
-          </button>
         </div>
       )}
 
@@ -777,27 +604,6 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
             {pencilOn ? 'Draw around what you mean — it attaches to the chat'
                       : 'Click anything on the prototype — it attaches to the chat'}
           </p>
-        )}
-
-        {visualEditOn && !inspectedElement && (
-          <p className="pointer-events-none absolute inset-x-0 bottom-7 z-[9] mx-auto w-fit rounded-full bg-emerald-700/90 px-3.5 py-1.5 text-[11px] font-medium text-ink shadow-lg backdrop-blur-md">
-            Visual Inspector active: click any element to live-edit text, colors, layout and move without LLM
-          </p>
-        )}
-
-        {visualEditOn && inspectedElement && inspectedDoc && (
-          <VisualInspector
-            element={inspectedElement}
-            doc={inspectedDoc}
-            project={project}
-            currentFile={baseFileName(currentFile)}
-            onClose={() => {
-              const prev = inspectedDoc?.querySelector('.__vf_selected')
-              if (prev) prev.classList.remove('__vf_selected')
-              setInspectedElement(null)
-            }}
-            onLog={(lvl, msg) => addLog(lvl, msg)}
-          />
         )}
 
 

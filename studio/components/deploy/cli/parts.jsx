@@ -33,9 +33,19 @@ export function parseJson(text) {
   return null
 }
 
-/** Rows from a plain-text table: the first line names the columns, and two or more spaces separate them. */
+/** Rows from a plain-text table: the first line names the columns, and two or more spaces (or `|`) separate them. */
 export function parseTable(text) {
-  const lines = String(text || '').split('\n').filter(line => line.trim() && !/claude-code-hint|^Vercel CLI|^>|^Retrieving|^Fetching/.test(line))
+  const all = String(text || '').split('\n')
+  // A `Name | Size` table ruled with `-----|-----` under its header.
+  const rule = all.findIndex(line => /^\s*-{2,}(\|-{2,})+\s*$/.test(line.replace(/\s/g, '')) || /^\s*-+(\s*\|\s*-+)+\s*$/.test(line))
+  if (rule > 0 && all[rule - 1].includes('|')) {
+    const split = line => line.split('|').map(cell => cell.trim())
+    const columns = split(all[rule - 1])
+    const rows = all.slice(rule + 1).filter(line => line.includes('|')).map(split)
+      .map(cells => Object.fromEntries(columns.map((name, i) => [name, cells[i] ?? ''])))
+    return { columns, rows }
+  }
+  const lines = all.filter(line => line.trim() && !/claude-code-hint|^Vercel CLI|^>|^Retrieving|^Fetching/.test(line))
   const head = lines.findIndex(line => /\S+\s{2,}\S+/.test(line))
   if (head < 0) return { columns: [], rows: [] }
   const columns = lines[head].trim().split(/\s{2,}/)
@@ -140,7 +150,7 @@ export function useCommand(project, item) {
     else { setLines([]); fresh.current = []; setState({ status: 'starting', exit: null, seconds: 0 }) }
     let started
     try {
-      started = await api.cliMonitorStart(project, item.id)
+      started = await api.cliMonitorStart(project, item.id, item.scope)
     } catch (e) {
       if (!alive.current) return
       setRefreshing(false)
@@ -175,7 +185,7 @@ export function useCommand(project, item) {
       if (autoRef.current && !item.follow) again.current = setTimeout(() => run(true), REFRESH_MS)
     }
     tick()
-  }, [project, item.id, item.follow, stop])
+  }, [project, item.id, item.scope, item.follow, stop])
 
   useEffect(() => {
     alive.current = true
@@ -406,8 +416,9 @@ export function Facts({ items, all, columns = 2 }) {
   )
 }
 
-/** Rows and columns, with a filter box when there are many. A column is `{ label, key | get, kind, mono }`. */
-export function Table({ rows, columns, empty = 'Nothing here.', filter, limit = 200 }) {
+/** Rows and columns, with a filter box when there are many. A column is `{ label, key | get, kind, mono }`.
+ *  `onRow`, when given, makes each row a button (`rowTitle` says what clicking it does). */
+export function Table({ rows, columns, empty = 'Nothing here.', filter, limit = 200, onRow, rowTitle }) {
   const [query, setQuery] = useState('')
   const list = Array.isArray(rows) ? rows : []
   const cell = (row, col) => (col.get ? col.get(row) : row?.[col.key])
@@ -436,7 +447,11 @@ export function Table({ rows, columns, empty = 'Nothing here.', filter, limit = 
           </thead>
           <tbody>
             {shown.map((row, i) => (
-              <tr key={i} className="border-b border-black/[.04] last:border-0 hover:bg-black/[.025]">
+              <tr key={i} onClick={onRow ? () => onRow(row) : undefined} title={onRow ? rowTitle : undefined}
+                  tabIndex={onRow ? 0 : undefined}
+                  onKeyDown={onRow ? e => { if (e.key === 'Enter') onRow(row) } : undefined}
+                  className={cn('border-b border-black/[.04] last:border-0 hover:bg-black/[.025]',
+                    onRow && 'cursor-pointer focus:bg-accent/10 focus:outline-none')}>
                 {columns.map(col => (
                   <td key={col.label} className={cn('max-w-[340px] px-3.5 py-2 align-top text-ink', col.mono && 'font-mono text-[11px]')}>
                     <Value v={cell(row, col)} kind={col.mono ? 'mono' : col.kind} />

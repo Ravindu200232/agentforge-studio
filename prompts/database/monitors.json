@@ -1,0 +1,73 @@
+{
+  "targets": {
+    "supabase": ["supabase"],
+    "mongodb": ["mongodb"]
+  },
+  "sets": {
+    "supabase": {
+      "tool": "supabase",
+      "title": "Supabase",
+      "env": "supabase",
+      "commands": [
+        {"id": "project", "group": "Project", "label": "Project",
+         "argv": ["projects", "list", "-o", "json"]},
+        {"id": "api-keys", "group": "Project", "label": "API keys",
+         "argv": ["projects", "api-keys", "--project-ref", "{{supabase.ref}}", "-o", "json"]},
+        {"id": "tables", "group": "Data", "label": "Tables",
+         "argv": ["db", "query", "--linked", "--project-ref", "{{supabase.ref}}", "-o", "json", "-f", "{{file.tables}}"],
+         "display": "supabase db query --linked -f tables.sql"},
+        {"id": "storage", "group": "Data", "label": "Storage buckets",
+         "argv": ["db", "query", "--linked", "--project-ref", "{{supabase.ref}}", "-o", "json", "-f", "{{file.storage-buckets}}"],
+         "display": "supabase db query --linked -f storage-buckets.sql"},
+        {"id": "auth-users", "group": "Data", "label": "Auth users",
+         "argv": ["db", "query", "--linked", "--project-ref", "{{supabase.ref}}", "-o", "json", "-f", "{{file.auth-users}}"],
+         "display": "supabase db query --linked -f auth-users.sql"},
+        {"id": "policies", "group": "Data", "label": "Row level security",
+         "argv": ["db", "query", "--linked", "--project-ref", "{{supabase.ref}}", "-o", "json", "-f", "{{file.policies}}"],
+         "display": "supabase db query --linked -f policies.sql"},
+        {"id": "db-functions", "group": "Data", "label": "Database functions",
+         "argv": ["db", "query", "--linked", "--project-ref", "{{supabase.ref}}", "-o", "json", "-f", "{{file.functions}}"],
+         "display": "supabase db query --linked -f functions.sql"},
+        {"id": "extensions", "group": "Data", "label": "Extensions",
+         "argv": ["db", "query", "--linked", "--project-ref", "{{supabase.ref}}", "-o", "json", "-f", "{{file.extensions}}"],
+         "display": "supabase db query --linked -f extensions.sql"},
+        {"id": "edge-functions", "group": "Platform", "label": "Edge functions",
+         "argv": ["functions", "list", "--project-ref", "{{supabase.ref}}", "-o", "json"]},
+        {"id": "secrets", "group": "Platform", "label": "Secrets",
+         "argv": ["secrets", "list", "--project-ref", "{{supabase.ref}}", "-o", "json"]},
+        {"id": "migrations", "group": "Platform", "label": "Migrations",
+         "argv": ["migration", "list", "--linked", "--project-ref", "{{supabase.ref}}"]},
+        {"id": "backups", "group": "Platform", "label": "Backups",
+         "argv": ["backups", "list", "--project-ref", "{{supabase.ref}}", "-o", "json"]},
+        {"id": "database-stats", "group": "Performance", "label": "Database health",
+         "argv": ["db", "query", "--linked", "--project-ref", "{{supabase.ref}}", "-o", "json", "-f", "{{file.database-stats}}"],
+         "display": "supabase db query --linked -f database-stats.sql"},
+        {"id": "index-stats", "group": "Performance", "label": "Index use",
+         "argv": ["inspect", "db", "index-stats", "--linked", "--project-ref", "{{supabase.ref}}"]},
+        {"id": "outliers", "group": "Performance", "label": "Slowest queries",
+         "argv": ["inspect", "db", "outliers", "--linked", "--project-ref", "{{supabase.ref}}"]},
+        {"id": "postgres-config", "group": "Settings", "label": "Postgres settings",
+         "argv": ["postgres-config", "get", "--project-ref", "{{supabase.ref}}", "-o", "json", "--experimental"]},
+        {"id": "ssl", "group": "Settings", "label": "SSL enforcement",
+         "argv": ["ssl-enforcement", "get", "--project-ref", "{{supabase.ref}}", "-o", "json", "--experimental"]},
+        {"id": "network", "group": "Settings", "label": "Network restrictions",
+         "argv": ["network-restrictions", "get", "--project-ref", "{{supabase.ref}}", "-o", "json", "--experimental"]}
+      ]
+    },
+    "mongodb": {
+      "tool": "node",
+      "title": "MongoDB",
+      "env": "mongodb",
+      "commands": [
+        {"id": "mongo-overview", "group": "Database", "label": "Overview",
+         "argv": ["{{script.mongo-inspect}}", "overview"], "display": "mongodb · databases and server", "timeout": 60},
+        {"id": "mongo-collections", "group": "Database", "label": "Collections",
+         "argv": ["{{script.mongo-inspect}}", "collections"], "display": "mongodb · collections", "timeout": 90},
+        {"id": "mongo-indexes", "group": "Database", "label": "Indexes",
+         "argv": ["{{script.mongo-inspect}}", "indexes"], "display": "mongodb · indexes", "timeout": 90},
+        {"id": "mongo-gridfs", "group": "Database", "label": "GridFS buckets",
+         "argv": ["{{script.mongo-inspect}}", "gridfs"], "display": "mongodb · GridFS buckets", "timeout": 60}
+      ]
+    }
+  }
+}

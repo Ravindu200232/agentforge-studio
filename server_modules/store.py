@@ -130,6 +130,7 @@ def listing() -> list[dict]:
         "title": row.get("name") or row["id"],
         "idea": row.get("idea", "")[:300],
         "stage": row.get("stage", "interview"),
+        "stack": row.get("stack", ""),
         "status": row.get("status", "planning"),
         "created_at": row.get("created_at", 0),
         "updated_at": row.get("updated_at", 0),

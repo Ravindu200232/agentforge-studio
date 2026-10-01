@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { Eye, Code2, FileText, FlaskConical, History, Plus, Rocket, Layers, Menu, LayoutGrid } from 'lucide-react'
+import { Eye, Code2, Database, EthernetPort, FileText, FlaskConical, History, Plus, Rocket, Layers, Menu, LayoutGrid, SquareTerminal } from 'lucide-react'
 import { useStore } from '@/lib/store'
 import { answerQuestion, connect, send } from '@/lib/ws'
 import { forgetConsole } from '@/lib/console-log'
@@ -21,6 +21,9 @@ import SrsResult from '@/components/srs/SrsResult'
 import { Wireframes } from '@/components/srs/Wireframes'
 import DeployPanel from '@/components/deploy/DeployPanel'
 import VersionsPanel from '@/components/VersionsPanel'
+import DatabasePanel from '@/components/database/DatabasePanel'
+import TerminalPane from '@/components/TerminalPane'
+import PortsPane from '@/components/PortsPane'
 import AgentChat from '@/components/AgentChat'
 import AgentDecision from '@/components/AgentDecision'
 import { useAuthStore } from '@/lib/auth'
@@ -38,6 +41,10 @@ const TABS = [
   { id: 'testing', label: 'Testing', Icon: FlaskConical },
   { id: 'deploy', label: 'Deploy', Icon: Rocket },
   { id: 'versions', label: 'Version', Icon: History },
+  // The project's tools rather than its stages: what its databases hold, and its terminal.
+  { id: 'database', label: 'Database', Icon: Database, group: 'tools' },
+  { id: 'terminal', label: 'Terminal', Icon: SquareTerminal, group: 'tools' },
+  { id: 'ports', label: 'Ports', Icon: EthernetPort, group: 'tools' },
 ]
 
 // Lifecycle names and workspace tab ids differ for a few stages.  This lets
@@ -829,6 +836,13 @@ export default function Studio() {
                              onSettings={() => setSettingsOpen(true)} />
               )}
               {view === 'versions' && <VersionsPanel key={`versions-${project}`} />}
+              {view === 'database' && (
+                <DatabasePanel key={`database-${project}`} stack={currentProjectObj?.stack || ''}
+                               onSettings={tab => { setSettingsTab(tab || ''); setSettingsOpen(true) }}
+                               connectionsVersion={settingsClosed} />
+              )}
+              <TerminalPane key={`terminal-${project}`} hidden={view !== 'terminal'} />
+              {view === 'ports' && <PortsPane key={`ports-${project}`} />}
             </div>
           </div>
         )}

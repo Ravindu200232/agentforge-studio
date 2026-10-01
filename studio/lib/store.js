@@ -270,6 +270,8 @@ export const useStore = create((set, get) => ({
   // Composing the next move, or carrying one out. The gap between the two is
   // where a feed looks stalled, so it is shown rather than left blank.
   agentState: '',
+  // How far along that is, when the engine says (`12/35` while it compacts its memory).
+  agentDetail: '',
   setAgentState: (agentState) => set({ agentState }),
 
   // The one question a run is waiting on, if any. It carries its own deadline
@@ -459,7 +461,7 @@ export const useStore = create((set, get) => ({
     const evictable = Object.keys(sessions).filter(name => name !== project && !ROLES.some(role => sessions[name]?.[role]?.busy))
     for (const name of evictable.slice(0, Math.max(0, Object.keys(sessions).length - 8))) delete sessions[name]
     return {
-    project, agentState: '', approval: null, drawing: null,
+    project, agentState: '', agentDetail: '', approval: null, drawing: null,
     browserFrame: null, selection: [],
     steps: {}, phases: [], files: {},
     activeFile: null, liveFile: null, liveBuf: '', follow: true,

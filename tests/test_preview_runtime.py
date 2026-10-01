@@ -251,7 +251,7 @@ class StartWithAgentTests(unittest.TestCase):
         self.assertIn("PORT=4000 npm run dev", prompt)
         self.assertIn("Do not write a plan", prompt)
         stop.assert_called_once_with("demo")
-        start_brief.assert_called_once_with("demo", "Preview exited with code 1.")
+        start_brief.assert_called_once_with("demo", "Preview exited with code 1.", "")
         reopen.assert_called_once_with("demo")
         user_msg.assert_not_called()
         self.assertIn("now uses PORT", said.call_args.args[1])
@@ -270,6 +270,103 @@ class StartWithAgentTests(unittest.TestCase):
              patch.object(runs.builder, "built", return_value=False), \
              self.assertRaises(ValueError):
             runs.preview_start({"type": "preview_start", "project": "demo"})
+
+    def test_one_part_that_is_down_is_started_while_the_rest_keeps_running_then_checked(self):
+        session = Mock()
+        session.run_unplanned.return_value = {"text": "orders waited for a database that never answered; it now times out."}
+        brief = {"command": "npm run dev", "run": "npm run dev", "port": 4900, "url": "u", "script": "dev", "detail": "d",
+                 "log": "l", "part": "orders", "part_kind": "service", "part_port": 4003, "part_cwd": "packages/orders",
+                 "part_command": "node src/server.js", "part_run": "Set-Location 'packages/orders'; node src/server.js",
+                 "part_log": "[orders] connecting…"}
+        with patch.object(runs, "session_for", return_value=session), \
+             patch.object(runs.preview_runtime, "status", return_value={"detail": ""}), \
+             patch.object(runs.preview_runtime, "stop") as stop, \
+             patch.object(runs.preview_runtime, "start_brief", return_value=brief) as start_brief, \
+             patch.object(runs.preview_runtime, "reopen") as reopen, \
+             patch.object(runs.preview_runtime, "wait_settled", return_value={"status": "running"}), \
+             patch.object(runs.preview_runtime, "wait_part", return_value=True) as wait_part, \
+             patch.object(runs.bus, "agent_msg") as said:
+            runs._start_preview("demo", "", "orders")
+        stop.assert_not_called()                                   # the other parts keep running meanwhile
+        start_brief.assert_called_once_with("demo", "", "orders")
+        prompt = session.run_unplanned.call_args.args[0]
+        self.assertIn("**orders** (service) should answer on port 4003", prompt)
+        self.assertIn("Set-Location 'packages/orders'; node src/server.js", prompt)
+        self.assertNotIn("{{", prompt)
+        reopen.assert_called_once_with("demo")
+        self.assertEqual(wait_part.call_args.args[:2], ("demo", "orders"))
+        self.assertIn("now times out", said.call_args.args[1])
+        session.finish.assert_called_once()
+
+    def test_the_part_a_browser_opens_is_started_as_the_whole_app(self):
+        ports = {"ports": [{"name": "client", "main": True}, {"name": "orders", "main": False}]}
+        with patch.object(runs.store, "require"), patch.object(runs.builder, "built", return_value=True), \
+             patch.object(runs.preview_runtime, "ports", return_value=ports), \
+             patch.object(runs, "_in_background") as background:
+            self.assertEqual(runs.preview_start({"project": "demo", "part": "client"})["part"], "")
+            self.assertEqual(runs.preview_start({"project": "demo", "part": "orders"})["part"], "orders")
+            with self.assertRaisesRegex(ValueError, "no part called"):
+                runs.preview_start({"project": "demo", "part": "nope"})
+        self.assertEqual(background.call_args.args[-1], "orders")
+
+
+class PortsTests(unittest.TestCase):
+    """What the Ports view shows: each part the app's runner listed, and whether it listens."""
+
+    def setUp(self):
+        preview_runtime._processes.clear()  # noqa: SLF001
+        preview_runtime._last.clear()  # noqa: SLF001
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.record = Path(self.temp.name)
+        for item in (patch.object(preview_runtime.config, "record_dir", return_value=self.record),
+                     patch.object(preview_runtime.config, "workspace_for", return_value=self.record)):
+            item.start()
+            self.addCleanup(item.stop)
+
+    def _declare(self, runtime="r1"):
+        (self.record / "ports.json").write_text(json.dumps({"written_at": "2026-10-02T10:00:00Z", "runtime": runtime, "ports": [
+            {"name": "client", "kind": "client", "port": 4900, "cwd": "client", "command": "node vite-dev.mjs"},
+            {"name": "gateway", "kind": "gateway", "port": 4000, "cwd": "packages/gateway", "command": "node src/server.js",
+             "env": {"PORT": "4000"}},
+            {"name": "orders", "kind": "service", "port": 4003, "cwd": "packages/orders", "command": "node src/server.js",
+             "env": {"PORT": "4003", "GATEWAY_URL": "http://127.0.0.1:4000"}},
+        ]}), encoding="utf-8")
+
+    def test_each_listed_part_says_whether_it_listens_and_the_browser_port_is_marked(self):
+        self._declare()
+        with patch.object(preview_runtime, "status", return_value={"status": "running", "url": "http://127.0.0.1:4900/",
+                                                                     "port": 4900, "detail": ""}), \
+             patch.object(preview_runtime, "_read_metadata", return_value={"runtimeId": "r1"}), \
+             patch.object(preview_runtime, "_listeners", return_value={4900: 11, 4000: 12}):
+            view = preview_runtime.ports("demo")
+        rows = {row["name"]: row for row in view["ports"]}
+        self.assertEqual(list(rows), ["client", "gateway", "orders"])
+        self.assertTrue(rows["client"]["main"] and rows["client"]["listening"])
+        self.assertEqual((rows["gateway"]["listening"], rows["gateway"]["pid"]), (True, 12))
+        self.assertEqual((rows["orders"]["listening"], rows["orders"]["url"]), (False, "http://127.0.0.1:4003/"))
+        self.assertTrue(view["current"])
+
+    def test_a_single_server_app_is_its_own_preview_port(self):
+        with patch.object(preview_runtime, "status", return_value={"status": "stopped", "url": "", "port": 0, "detail": ""}), \
+             patch.object(preview_runtime, "_listeners", return_value={}):
+            view = preview_runtime.ports("demo")
+        self.assertEqual([(row["name"], row["main"], row["listening"]) for row in view["ports"]], [("app", True, False)])
+
+    def test_the_agent_is_told_how_that_one_part_is_run_alone(self):
+        self._declare()
+        (self.record / "package.json").write_text(json.dumps({"scripts": {"dev": "node scripts/dev-all.mjs"}}), encoding="utf-8")
+        (self.record / "preview.log").write_text("[gateway] listening\n[orders] connecting to the database…\n", encoding="utf-8")
+        with patch.object(preview_runtime, "status", return_value={"status": "running", "url": "", "port": 4900, "detail": ""}):
+            brief = preview_runtime.start_brief("demo", "", "orders")
+        self.assertEqual((brief["part_port"], brief["part_cwd"]), (4003, "packages/orders"))
+        self.assertIn("node src/server.js", brief["part_run"])
+        self.assertIn("4003", brief["part_run"])
+        self.assertIn("packages/orders", brief["part_run"])
+        self.assertEqual(brief["part_log"], "[orders] connecting to the database…")
+        self.assertNotIn("{{", prompts.load("preview/start-part", **brief))
+        with self.assertRaisesRegex(ValueError, "no part called"):
+            preview_runtime.start_brief("demo", "", "billing")
 
 
 if __name__ == "__main__":

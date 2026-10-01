@@ -15,7 +15,7 @@ import uuid
 from pathlib import Path
 from urllib.request import urlopen
 
-from . import bus, config, deploy_vars, plugins, store, supabase_connect
+from . import bus, config, deploy_vars, plugins, secrets_guard, store, supabase_connect
 
 _lock = threading.RLock()
 _processes: dict[str, dict] = {}
@@ -33,6 +33,10 @@ PREVIEW_PORT_LAST = 5099
 # longer after that, so a slow first compile still turns into a running preview on its own.
 READY_SECONDS = 90
 LATE_READY_SECONDS = 300
+
+# The line each start writes into preview.log, and how much of the log one read hands the terminal.
+RUN_MARK = "── preview: "
+LOG_WINDOW = 200_000
 
 
 def _port_candidates(project: str) -> list[int]:
@@ -259,6 +263,55 @@ def log_tail(project: str, limit: int = 6000) -> str:
     return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text).strip()
 
 
+def _log_secrets(project: str) -> list[str]:
+    """Credentials the app was started with: an app that prints its configuration must not show them."""
+    hidden = list(deploy_vars.secret_values())
+    supabase = supabase_connect.env_for(project)
+    hidden += [value for key, value in supabase.items() if "KEY" in key or "DB_URL" in key]
+    uri = deploy_vars.environment().get("MONGODB_URI", "")
+    if uri:
+        from urllib.parse import unquote, urlparse
+
+        hidden += [uri, unquote(urlparse(uri).password or "")]
+    return [value for value in hidden if value and len(value) >= 6]
+
+
+def read_log(project: str, since: int = -1) -> dict:
+    """What the running app printed from byte `since` on, for the terminal; -1 starts at the current run.
+
+    Colour codes are kept (the terminal draws them); credentials are not. A read stops at the last whole line, so
+    a character or a line is never split between two reads.
+    """
+    state = status(project)
+    answer = {"status": state["status"], "url": state["url"], "port": state["port"], "detail": state["detail"],
+              "cwd": str(config.workspace_for(project)), "text": "", "start": 0, "next": 0}
+    path = config.record_dir(project) / "preview.log"
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return answer
+    with path.open("rb") as handle:
+        if since < 0 or since > size:
+            # The current run: from the last start's line, within the window. A log that shrank was replaced.
+            base = max(0, size - LOG_WINDOW)
+            handle.seek(base)
+            window = handle.read()
+            mark = window.rfind(RUN_MARK.encode("utf-8"))
+            since = base + (window.rfind(b"\n", 0, mark) + 1 if mark >= 0 else 0)
+            answer["start"] = since
+        else:
+            answer["start"] = since
+        handle.seek(since)
+        chunk = handle.read(LOG_WINDOW)
+    # Half a line so far is read whole next time, unless that one line fills the window by itself.
+    end = chunk.rfind(b"\n") + 1 or (len(chunk) if len(chunk) >= LOG_WINDOW else 0)
+    text = chunk[:end].decode("utf-8", errors="replace")
+    for value in _log_secrets(project):
+        text = text.replace(value, "<hidden>")
+    answer.update(text=secrets_guard.mask(text), next=since + end)
+    return answer
+
+
 def _last_error(project: str) -> str:
     """The last line of the preview's output that names an error, if one does."""
     for line in reversed(log_tail(project, 4000).splitlines()):
@@ -268,12 +321,23 @@ def _last_error(project: str) -> str:
     return ""
 
 
-def start_brief(project: str, seen: str = "") -> dict:
+def _run_line(variables: dict, command: str, folder: str = ".") -> str:
+    """One shell line that runs `command` in `folder` with `variables`, in the agent's own shell."""
+    if os.name == "nt":
+        move = "" if folder in ("", ".") else f"Set-Location '{folder}'; "
+        return move + "".join(f"$env:{name}='{value}'; " for name, value in variables.items()) + command
+    move = "" if folder in ("", ".") else f"cd '{folder}' && "
+    return move + "".join(f"{name}='{value}' " for name, value in variables.items()) + command
+
+
+def start_brief(project: str, seen: str = "", part: str = "") -> dict:
     """How the Studio starts this app's preview, for an agent asked to make it start.
 
     The same command, port and variables `open_preview` uses, so what the agent proves on its
     own run is what the Studio's next start does. `seen` is what the failed preview reported,
-    read before it was stopped to free its ports.
+    read before it was stopped to free its ports. `part` narrows it to one part of the app (a
+    service, the gateway, the client) the Ports view showed as not listening: how that part alone
+    is started, and what it printed.
     """
     root = config.workspace_for(project)
     manifest = root / "package.json"
@@ -281,20 +345,119 @@ def start_brief(project: str, seen: str = "") -> dict:
         raise ValueError("this project has no package.json to start yet")
     package = json.loads(manifest.read_text(encoding="utf-8"))
     script = _script_for(root, package)
-    with _lock:
-        port = _preview_port(project, package)
+    state = status(project)
+    if state["status"] in {"running", "starting"} and state.get("port"):
+        port = int(state["port"])
+    else:
+        with _lock:
+            port = _preview_port(project, package)
     command = _shown(root, _preview_command(root, package, script, port))
     variables = {"PORT": str(port), "HOST": "127.0.0.1", "BROWSER": "none"}
-    if os.name == "nt":
-        prefix = "".join(f"$env:{name}='{value}'; " for name, value in variables.items())
-    else:
-        prefix = "".join(f"{name}={value} " for name, value in variables.items())
     missing = "" if (package.get("scripts") or {}).get(script) else f"package.json has no `{script}` script."
-    return {"command": command, "run": prefix + command, "port": port,
-            "url": f"http://127.0.0.1:{port}/", "script": script,
-            "detail": missing or seen or str(status(project).get("detail") or "")
-                      or "nothing beyond its output below.",
-            "log": log_tail(project) or "(the preview wrote nothing)"}
+    brief = {"command": command, "run": _run_line(variables, command), "port": port,
+             "url": f"http://127.0.0.1:{port}/", "script": script,
+             "detail": missing or seen or str(state.get("detail") or "")
+                       or "nothing beyond its output below.",
+             "log": log_tail(project) or "(the preview wrote nothing)"}
+    if not part:
+        return brief
+    entry = next((row for row in _declared(project)["ports"] if row.get("name") == part), None)
+    if not entry:
+        raise ValueError(f"this app has no part called {part!r}")
+    own = [line for line in log_tail(project, 40_000).splitlines() if line.startswith(f"[{part}]")]
+    part_env = {str(k): str(v) for k, v in (entry.get("env") or {}).items()}
+    brief.update(part=part, part_kind=str(entry.get("kind") or "part"), part_port=int(entry.get("port") or 0),
+                 part_cwd=str(entry.get("cwd") or "."), part_command=str(entry.get("command") or ""),
+                 part_run=_run_line(part_env, str(entry.get("command") or ""), str(entry.get("cwd") or ".")),
+                 part_log="\n".join(own[-80:]) or f"({part} printed nothing in the current run)")
+    return brief
+
+
+# --- the parts of a running app and their ports (the Ports view) ---------------------------------
+
+PORTS_FILE = "ports.json"
+
+
+def _ports_file(project: str) -> Path:
+    return config.record_dir(project) / PORTS_FILE
+
+
+def _declared(project: str) -> dict:
+    """What the app's own runner wrote about its parts (`AGENTFORGE_PORTS_FILE`), or nothing."""
+    try:
+        data = json.loads(_ports_file(project).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"ports": [], "runtime": "", "written_at": ""}
+    rows = [row for row in data.get("ports") or [] if isinstance(row, dict) and row.get("name")]
+    return {"ports": rows, "runtime": str(data.get("runtime") or ""), "written_at": str(data.get("written_at") or "")}
+
+
+def _listeners() -> dict[int, int]:
+    """Every local TCP port something listens on, and the process that does, from one look."""
+    found: dict[int, int] = {}
+    try:
+        if os.name == "nt":
+            completed = subprocess.run(["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True, check=False,
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=10)
+            for line in completed.stdout.splitlines():
+                bits = line.split()
+                if len(bits) >= 5 and bits[3].upper() == "LISTENING" and bits[1].rsplit(":", 1)[-1].isdigit():
+                    found.setdefault(int(bits[1].rsplit(":", 1)[-1]), int(bits[4]) if bits[4].isdigit() else 0)
+        else:
+            completed = subprocess.run(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"], capture_output=True, text=True,
+                                       check=False, timeout=10)
+            for line in completed.stdout.splitlines()[1:]:
+                bits = line.split()
+                match = re.search(r":(\d+)$", bits[8]) if len(bits) > 8 else None
+                if match and bits[1].isdigit():
+                    found.setdefault(int(match.group(1)), int(bits[1]))
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return found
+
+
+def ports(project: str) -> dict:
+    """Every part of the app the preview starts, its port, and whether something listens there now.
+
+    A runner that starts several parts (a gateway, services, a client) lists them itself; an app that is one server is
+    the preview's own port. Parts listed by an earlier run are still shown when the app is stopped, as not started.
+    """
+    state = status(project)
+    declared = _declared(project)
+    listening = _listeners()
+    main = int(state.get("port") or 0)
+    current_runtime = str((_processes.get(project) or _read_metadata(project)).get("runtimeId") or "")
+    rows = []
+    for entry in declared["ports"]:
+        port = int(entry.get("port") or 0)
+        rows.append({"name": str(entry["name"]), "kind": str(entry.get("kind") or "part"), "port": port,
+                     "cwd": str(entry.get("cwd") or "."), "command": str(entry.get("command") or ""),
+                     "main": bool(port and port == main)})
+    if not any(row["main"] for row in rows):
+        rows.insert(0, {"name": "app", "kind": "app", "port": main, "cwd": ".", "command": "", "main": True})
+    for row in rows:
+        row["listening"] = bool(row["port"] and row["port"] in listening)
+        row["pid"] = listening.get(row["port"]) if row["listening"] else None
+        row["url"] = f"http://127.0.0.1:{row['port']}/" if row["port"] else ""
+    return {"status": state["status"], "url": state["url"], "detail": state["detail"], "ports": rows,
+            "written_at": declared["written_at"],
+            "current": bool(declared["runtime"] and declared["runtime"] == current_runtime)}
+
+
+def wait_part(project: str, part: str, since: float, seconds: float = 60) -> bool:
+    """Whether `part`, as the run started after `since` lists it, comes to listen within `seconds`."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            fresh = _ports_file(project).stat().st_mtime >= since
+        except OSError:
+            fresh = False
+        if fresh and any(row["name"] == part and row["listening"] for row in ports(project)["ports"]):
+            return True
+        if status(project)["status"] in {"failed", "stopped"}:
+            return False
+        time.sleep(1.5)
+    return False
 
 
 def wait_settled(project: str, seconds: float = READY_SECONDS + 15) -> dict:
@@ -359,7 +522,10 @@ def open_preview(project: str) -> dict:
         # MongoDB-stack preview reads the database the build seeded, not a local fallback.
         environment = {**os.environ, **plugins.environment(enabled),
                        **supabase_connect.env_for(project), **deploy_vars.environment(),
-                       "PORT": str(port), "HOST": "127.0.0.1", "BROWSER": "none"}
+                       "PORT": str(port), "HOST": "127.0.0.1", "BROWSER": "none",
+                       # A runner that starts several parts says where each one is (the Ports view).
+                       "AGENTFORGE_PORTS_FILE": str(_ports_file(project)),
+                       "AGENTFORGE_PREVIEW_RUNTIME_ID": runtime_id}
         # The Studio frames this app. Let this machine's pages do that, whatever the app's
         # own headers say; only this preview process is affected (see preview_hooks).
         environment["NODE_OPTIONS"] = " ".join(
@@ -390,6 +556,10 @@ def reopen(project: str) -> dict:
 def _launch(command: list[str], root: Path, environment: dict, log_path: Path) -> subprocess.Popen:
     log = log_path.open("ab")
     try:
+        # Where this start begins in the log, for the terminal that shows the current run (read_log).
+        log.write(f"\n{RUN_MARK}{_shown(root, command)} · PORT {environment.get('PORT', '')} · "
+                  f"{time.strftime('%Y-%m-%d %H:%M:%S')} ──\n".encode("utf-8"))
+        log.flush()
         return subprocess.Popen(command, cwd=root, stdout=log, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL,
                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

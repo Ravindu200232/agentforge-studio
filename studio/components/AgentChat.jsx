@@ -61,6 +61,7 @@ export default function AgentChat({ projectTitle = '', readOnly = false, classNa
     return candidates.sort((a, b) => (b.at || 0) - (a.at || 0))[0] || null
   })
   const agentState = useStore(s => s.agentState)
+  const agentDetail = useStore(s => s.agentDetail)
   const reasoning = useStore(s => s.reasoning)
   const runStartedAt = useStore(s => s.runStartedAt)
   const pushChat = useStore(s => s.pushChat)
@@ -365,7 +366,7 @@ export default function AgentChat({ projectTitle = '', readOnly = false, classNa
                   live={lifecycleStream.busy && turn.id === turns.at(-1)?.id} />
           ))}
           {lifecycleStream.busy && (reasoning || Boolean(agentState)) && !ask &&
-            <Thinking reasoning={reasoning} state={agentState} />}
+            <Thinking reasoning={reasoning} state={agentState} detail={agentDetail} />}
           {ask && <Asked ask={ask} onPick={said => { setText(said); box.current?.focus() }} />}
           {queued.map(item => (
             <Queued key={item.id} item={item}
@@ -863,8 +864,9 @@ const Row = ({ label, value }) => (
 )
 
 /** Animated indicator showing when the agent is reasoning or working between tool calls. */
-function Thinking({ reasoning = false, state = '' }) {
+function Thinking({ reasoning = false, state = '', detail = '' }) {
   const labels = {
+    compacting: 'Compacting earlier work into memory',
     thinking: 'Thinking',
     planning: 'Reviewing requirements and choosing what to inspect',
     'drafting the plan': 'Drafting the product scope',
@@ -889,19 +891,36 @@ function Thinking({ reasoning = false, state = '' }) {
     const timer = setInterval(() => setSeconds(value => value + 1), 1000)
     return () => clearInterval(timer)
   }, [state])
+  // Compacting says how far along it is: `12/35` parts summarized, then `merging 35`.
+  const part = state === 'compacting' ? String(detail).match(/^(\d+)\/(\d+)$/) : null
+  const merging = state === 'compacting' && /^merging/.test(String(detail))
+  const done = part ? Number(part[1]) : 0
+  const total = part ? Number(part[2]) : 0
+  const step = part ? ` · ${done} of ${total} parts done` : merging ? ' · merging the parts' : ''
   return (
-    <div className="flex items-center gap-2 py-1 text-muted">
-      <Loader2 className="size-3 shrink-0 animate-spin" />
-      <span className="text-[12px]">
-        {label}{seconds >= 3 ? ` · ${seconds}s` : ''}
-      </span>
-      <span className="flex gap-1" aria-hidden="true">
-        {[0, 1, 2].map(i => (
-          <span key={i}
-                className="size-1 animate-bounce rounded-full bg-accent"
-                style={{ animationDelay: `${i * 140}ms`, animationDuration: '900ms' }} />
-        ))}
-      </span>
+    <div className="py-1 text-muted">
+      <div className="flex items-center gap-2">
+        <Loader2 className="size-3 shrink-0 animate-spin" />
+        <span className="text-[12px]">
+          {label}{step}{seconds >= 3 ? ` · ${seconds}s` : ''}
+        </span>
+        <span className="flex gap-1" aria-hidden="true">
+          {[0, 1, 2].map(i => (
+            <span key={i}
+                  className="size-1 animate-bounce rounded-full bg-accent"
+                  style={{ animationDelay: `${i * 140}ms`, animationDuration: '900ms' }} />
+          ))}
+        </span>
+      </div>
+      {(part || merging) && (
+        <div className="ml-5 mt-1.5 flex max-w-[320px] items-center gap-2" title="The conversation grew past the model's window: older work is being summarized so the run can carry on">
+          <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-black/[.07]">
+            <span className="block h-full rounded-full bg-accent transition-[width] duration-500"
+                  style={{ width: `${merging ? 100 : total ? Math.round((done / total) * 100) : 0}%` }} />
+          </span>
+          <span className="font-mono text-[10.5px] text-muted2">{merging ? 'merging' : `${done}/${total}`}</span>
+        </div>
+      )}
     </div>
   )
 }

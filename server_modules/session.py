@@ -362,6 +362,10 @@ class ProjectSession:
                               agent=self.role)
         elif text.startswith("[thinking]"):
             bus.agent_state(self.project, "thinking", thinking=True, agent=self.role)
+        elif text.startswith("[compacting] "):
+            # The history is being summarized to fit the model's window: no model turn, no tool, often
+            # minutes. How far along it is ("12/35", "merging 35") is what keeps it from looking stuck.
+            bus.agent_state(self.project, "compacting", thinking=True, agent=self.role, detail=text[13:].strip())
         elif text.startswith("[usage]"):
             # This is emitted only after the provider has returned its exact
             # counters for a response.  It keeps the visual meter truthful.
