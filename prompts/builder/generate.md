@@ -48,6 +48,12 @@ your recommendation first. Ask in these situations:
   logo someone uploads. Ask once, before building that part, whether to keep them in Supabase Storage — see
   "Images and uploaded files" below.
 - **A real business decision has no safe default.**
+- **You are about to record a gap** — anything the build did not do or did not prove: a provider that is not
+  connected, a feature switched off, a check that was not written, a tool this computer lacks. Close it yourself
+  when the work is yours to do. When it needs the customer — a credential, an account, a provider or a tool
+  to choose, or whether to accept the limitation — ask first, and record the gap only with their answer:
+  `"asked"` is the question exactly as you asked it and `"answer"` is what they said. Never write that the
+  customer was asked when they were not.
 
 Before asking, make sure it is not something you can find out yourself: a current API signature, a config
 option, an error message or a provider's own setup step is a `web_search`/`web_fetch` job against the

@@ -15,7 +15,11 @@ BUILD_DIR = "build"
 REPORT = (BUILD_DIR, "report.json")
 QUESTION = (BUILD_DIR, "question.json")
 PENDING = (BUILD_DIR, "pending.json")
+ASKED = (BUILD_DIR, "asked.json")
+GAP_REVIEW = (BUILD_DIR, "gap-review.json")
 REPORT_REPAIR_ROUNDS = 2
+GAP_REVIEW_ROUNDS = 2
+ASKED_KEPT = 60
 
 
 def report(project: str) -> dict[str, Any]:
@@ -129,6 +133,95 @@ def _settle(project: str, session: Any, mode: str, request: str, plan: str,
     return {"status": "asking", "question": asked}
 
 
+def _key(text: Any) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(text or "").lower()))
+
+
+def _asked(session: Any) -> list[dict[str, str]]:
+    """Every question the builds of this project really asked the customer, with the answer given."""
+    saved = session.read_record(*ASKED, fallback=None)
+    return [row for row in saved if isinstance(row, dict)] if isinstance(saved, list) else []
+
+
+def _remember(session: Any, question: dict[str, Any], answer: str) -> None:
+    rows = [*_asked(session), {"question": str(question.get("question") or ""), "answer": answer}]
+    session.write_record(*ASKED, data=rows[-ASKED_KEPT:])
+
+
+def _review_state(session: Any) -> dict[str, Any]:
+    saved = session.read_record(*GAP_REVIEW, fallback=None)
+    saved = saved if isinstance(saved, dict) else {}
+    reviewed, rounds = saved.get("reviewed"), saved.get("rounds")
+    return {"reviewed": [str(key) for key in reviewed] if isinstance(reviewed, list) else [],
+            "rounds": rounds if isinstance(rounds, int) else 0}
+
+
+def _gap_key(gap: dict[str, Any]) -> str:
+    return _key(gap.get("item") or gap.get("area"))
+
+
+def _was_asked(gap: dict[str, Any], questions: set[str]) -> bool:
+    said = _key(gap.get("asked"))
+    return bool(said) and any(said == q or (min(len(said), len(q)) >= 24 and (said in q or q in said))
+                              for q in questions)
+
+
+def open_gaps(session: Any) -> list[dict[str, Any]]:
+    """The gaps in the build report the customer has not been asked about yet.
+
+    A gap counts as asked only when its `asked` names a question the customer really saw, or when it already
+    went through a gap review in this build. A gap's own wording ("the customer was asked") is not taken on trust.
+    """
+    built_report = session.read_record(*REPORT, fallback=None)
+    gaps = built_report.get("gaps") if isinstance(built_report, dict) else None
+    if not isinstance(gaps, list):
+        return []
+    questions = {_key(row.get("question")) for row in _asked(session)} - {""}
+    reviewed = set(_review_state(session)["reviewed"])
+    return [gap for gap in gaps if isinstance(gap, dict) and _gap_key(gap)
+            and _gap_key(gap) not in reviewed and not _was_asked(gap, questions)]
+
+
+def _review_gaps(project: str, session: Any, mode: str, plan: str) -> dict[str, Any] | None:
+    """Go through every gap the build recorded with the customer before the build is called finished.
+
+    What each gap needs and what to ask about it is the model's to work out from the gap itself: nothing here
+    knows about payments, sign-in or any other kind of gap. This only makes sure no recorded gap is left without
+    the customer being asked, a bounded number of times. Returns the paused state while a question waits.
+    """
+    state = _review_state(session)
+    while state["rounds"] < GAP_REVIEW_ROUNDS:
+        gaps = open_gaps(session)
+        if not gaps:
+            return None
+        state = {"reviewed": [*state["reviewed"], *(_gap_key(gap) for gap in gaps)], "rounds": state["rounds"] + 1}
+        session.write_record(*GAP_REVIEW, data=state)
+        bus.agent_msg(project, f"{len(gaps)} thing(s) are recorded as not done or not proven. Going through them "
+                               "with you before the build finishes.", title="Recorded gaps")
+        answers = "\n".join(f"- Q: {row.get('question', '')}\n  A: {row.get('answer', '')}"
+                            for row in _asked(session)) or "- nothing yet"
+        request = prompts.load("builder/gaps", gaps=json.dumps(gaps, ensure_ascii=False, indent=2),
+                               answers=answers, report_template=build_report.stage_template(session.workspace))
+        try:
+            settled = _settle(project, session, mode, request, plan, session.execute_approved(request, plan, model=""))
+        except RunCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a finished build is never failed over its gap review
+            bus.log(project, "WARN", f"Going through the recorded gaps stopped: {exc}")
+            return None
+        if settled.get("status") == "asking":
+            return settled
+    return None
+
+
+def _done(project: str, session: Any, mode: str, plan: str, result: dict[str, Any]) -> dict[str, Any]:
+    """The build's own work is finished: settle its recorded gaps with the customer, then finish."""
+    asking = _review_gaps(project, session, mode, plan)
+    if asking:
+        return asking
+    return _finish_run(project, session, result, plan) if mode == "run" else _finish_update(project, session, result)
+
+
 def answer(project: str, reply: str) -> dict[str, Any]:
     """Continue a build or update that paused to ask the customer something.
 
@@ -143,15 +236,17 @@ def answer(project: str, reply: str) -> dict[str, Any]:
     request = pending.get("request") or ""
     plan = pending.get("plan") or ""
     mode = pending.get("mode") or "run"
+    question = pending.get("question") or {}
+    _remember(session, question, reply.strip() or f"left it to the build: {question.get('assumption') or 'its recommendation'}")
     resume_request = request + "\n" + prompts.load(
-        "builder/resume", question=(pending.get("question") or {}).get("question", ""), answer=text)
+        "builder/resume", question=question.get("question", ""), answer=text)
     session.begin("build" if mode == "run" else "build-edit", role=bus.DEVELOPER)
     try:
         result = session.execute_approved(resume_request, plan, model="")
         settled = _settle(project, session, mode, request, plan, result)
         if settled.get("status") == "asking":
             return settled
-        return _finish_run(project, session, settled, plan) if mode == "run" else _finish_update(project, session, settled)
+        return _done(project, session, mode, plan, settled)
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -328,6 +423,7 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
     from . import scaffold
     stack = str(record.get("stack") or "nextjs-supabase")
     session.begin("build", role=bus.DEVELOPER)
+    session.write_record(*GAP_REVIEW, data={})  # this build's own gaps all go to the customer again
 
     try:
         # Every stack here is Supabase-backed: the one real project this AgentForge project gets
@@ -369,7 +465,7 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         settled = _settle(project, session, "run", request, build_result.get("plan") or "", build_result)
         if settled.get("status") == "asking":
             return settled
-        return _finish_run(project, session, settled, build_result.get("plan") or "")
+        return _done(project, session, "run", build_result.get("plan") or "", settled)
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -395,6 +491,8 @@ def update(project: str, request: str) -> dict[str, Any]:
 
     session = session_for(project)
     session.begin("build-edit", role=bus.DEVELOPER)
+    # Only gaps this change adds are new to the customer; those already gone through stay settled.
+    session.write_record(*GAP_REVIEW, data={**_review_state(session), "rounds": 0})
     try:
         bus.user_msg(project, request)
         full_request = prompts.load("builder/update", request=request)
@@ -402,7 +500,7 @@ def update(project: str, request: str) -> dict[str, Any]:
         settled = _settle(project, session, "update", full_request, result.get("plan") or "", result)
         if settled.get("status") == "asking":
             return settled
-        return _finish_update(project, session, settled)
+        return _done(project, session, "update", result.get("plan") or "", settled)
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001
