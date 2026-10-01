@@ -15,7 +15,7 @@ import uuid
 from pathlib import Path
 from urllib.request import urlopen
 
-from . import bus, config, plugins, store, supabase_connect
+from . import bus, config, deploy_vars, plugins, store, supabase_connect
 
 _lock = threading.RLock()
 _processes: dict[str, dict] = {}
@@ -28,6 +28,11 @@ _revision = 0
 # per project where possible, but are always checked before use.
 PREVIEW_PORT_FIRST = 3100
 PREVIEW_PORT_LAST = 5099
+
+# How long a preview may take to answer before it is shown as not started. It is watched a while
+# longer after that, so a slow first compile still turns into a running preview on its own.
+READY_SECONDS = 90
+LATE_READY_SECONDS = 300
 
 
 def _port_candidates(project: str) -> list[int]:
@@ -172,8 +177,10 @@ def status(project: str) -> dict:
             if (saved.get("port") and saved.get("listenerPid")
                     and int(saved["listenerPid"]) in _listening_pids(int(saved["port"]))):
                 return _state(project, "running", **_without_status(saved))
+            reason = _last_error(project)
             state = _state(project, "failed", revision=entry["revision"],
-                           detail=f"Preview exited with code {process.returncode}.")
+                           detail=f"Preview exited with code {process.returncode}."
+                                  + (f" {reason}" if reason else ""))
             _last[project] = state
             bus.runtime_state(project, "failed", revision=entry["revision"])
             return state
@@ -220,6 +227,86 @@ def _preview_command(root: Path, package: dict, script: str, port: int) -> list[
     return ["npm.cmd" if os.name == "nt" else "npm", "run", script]
 
 
+def _script_for(root: Path, package: dict) -> str:
+    """`start` once a production build exists, else `dev`."""
+    scripts = package.get("scripts") or {}
+    production_ready = (root / ".next" / "BUILD_ID").is_file() and bool(scripts.get("start"))
+    return "start" if production_ready else "dev"
+
+
+def _shown(root: Path, command: list[str]) -> str:
+    """The launch command as somebody would type it in the project folder."""
+    parts = []
+    for index, part in enumerate(command):
+        path = Path(part)
+        if index == 0 and path.stem.lower() in {"node", "npm"}:
+            part = path.stem.lower()
+        elif path.is_absolute() and path.is_relative_to(root):
+            part = path.relative_to(root).as_posix()
+        parts.append(f'"{part}"' if " " in part else part)
+    return " ".join(parts)
+
+
+def log_tail(project: str, limit: int = 6000) -> str:
+    """The end of the preview's own output: the latest start attempt and why it stopped."""
+    try:
+        with (config.record_dir(project) / "preview.log").open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - limit))
+            text = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text).strip()
+
+
+def _last_error(project: str) -> str:
+    """The last line of the preview's output that names an error, if one does."""
+    for line in reversed(log_tail(project, 4000).splitlines()):
+        line = line.strip()
+        if re.search(r"\b(error|cannot|failed|missing|EADDRINUSE)\b", line, re.IGNORECASE):
+            return line[:300]
+    return ""
+
+
+def start_brief(project: str, seen: str = "") -> dict:
+    """How the Studio starts this app's preview, for an agent asked to make it start.
+
+    The same command, port and variables `open_preview` uses, so what the agent proves on its
+    own run is what the Studio's next start does. `seen` is what the failed preview reported,
+    read before it was stopped to free its ports.
+    """
+    root = config.workspace_for(project)
+    manifest = root / "package.json"
+    if not manifest.is_file():
+        raise ValueError("this project has no package.json to start yet")
+    package = json.loads(manifest.read_text(encoding="utf-8"))
+    script = _script_for(root, package)
+    with _lock:
+        port = _preview_port(project, package)
+    command = _shown(root, _preview_command(root, package, script, port))
+    variables = {"PORT": str(port), "HOST": "127.0.0.1", "BROWSER": "none"}
+    if os.name == "nt":
+        prefix = "".join(f"$env:{name}='{value}'; " for name, value in variables.items())
+    else:
+        prefix = "".join(f"{name}={value} " for name, value in variables.items())
+    missing = "" if (package.get("scripts") or {}).get(script) else f"package.json has no `{script}` script."
+    return {"command": command, "run": prefix + command, "port": port,
+            "url": f"http://127.0.0.1:{port}/", "script": script,
+            "detail": missing or seen or str(status(project).get("detail") or "")
+                      or "nothing beyond its output below.",
+            "log": log_tail(project) or "(the preview wrote nothing)"}
+
+
+def wait_settled(project: str, seconds: float = READY_SECONDS + 15) -> dict:
+    """The preview's state once it is no longer starting, or after `seconds`."""
+    deadline = time.monotonic() + seconds
+    while True:
+        state = status(project)
+        if state["status"] != "starting" or time.monotonic() >= deadline:
+            return state
+        time.sleep(1)
+
+
 def open_preview(project: str) -> dict:
     global _revision
     root = config.workspace_for(project)
@@ -228,10 +315,11 @@ def open_preview(project: str) -> dict:
         return _state(project, detail="The builder has not written package.json yet.")
     package = json.loads(manifest.read_text(encoding="utf-8"))
     scripts = package.get("scripts") or {}
-    production_ready = (root / ".next" / "BUILD_ID").is_file() and bool(scripts.get("start"))
-    script = "start" if production_ready else "dev"
+    script = _script_for(root, package)
     if not scripts.get(script):
-        return _state(project, detail=f"package.json has no {script} script.")
+        state = _state(project, "failed", detail=f"package.json has no {script} script.")
+        _last[project] = state
+        return state
     with _lock:
         current = status(project)
         if current["status"] in {"running", "starting"}:
@@ -245,6 +333,10 @@ def open_preview(project: str) -> dict:
                 or (saved.get("script") and saved["script"] != script)
             if not stale:
                 return current
+            stop(project)
+        elif _processes.get(project):
+            # A preview shown as failed because it never answered is still alive, and still holds
+            # its ports (and its child processes theirs).
             stop(project)
         _last.pop(project, None)
         try:
@@ -263,8 +355,10 @@ def open_preview(project: str) -> dict:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         enabled_path = config.record_dir(project) / "plugins.json"
         enabled = json.loads(enabled_path.read_text(encoding="utf-8")) if enabled_path.is_file() else []
+        # The same variables the build ran and tested this app with (session.py's command_env): a
+        # MongoDB-stack preview reads the database the build seeded, not a local fallback.
         environment = {**os.environ, **plugins.environment(enabled),
-                       **supabase_connect.env_for(project),
+                       **supabase_connect.env_for(project), **deploy_vars.environment(),
                        "PORT": str(port), "HOST": "127.0.0.1", "BROWSER": "none"}
         # The Studio frames this app. Let this machine's pages do that, whatever the app's
         # own headers say; only this preview process is affected (see preview_hooks).
@@ -354,7 +448,9 @@ def _wait_ready(project: str, process: subprocess.Popen, url: str, root: Path, c
     # `.next` a prior `next build` already finished writing, so it cannot itself
     # get corrupted this way, and deleting it would just delete the real build.
     healable = not healed and script == "dev"
-    for _ in range(90):
+    for second in range(LATE_READY_SECONDS):
+        if second == READY_SECONDS:
+            _not_answering(project, process, url, log_path)
         if process.poll() is not None:
             if healable and _cache_corrupted(log_path):
                 _heal(project, process, url, root, command, environment, log_path, script)
@@ -368,6 +464,7 @@ def _wait_ready(project: str, process: subprocess.Popen, url: str, root: Path, c
                         entry = _processes.get(project)
                         if entry and entry["process"] is process:
                             entry["status"] = "running"
+                            entry.pop("detail", None)
                             # The npm shell is not necessarily the listener.
                             # Store the actual listener PID so a backend restart
                             # can distinguish this preview from an unrelated app
@@ -384,7 +481,19 @@ def _wait_ready(project: str, process: subprocess.Popen, url: str, root: Path, c
         except Exception:
             pass
         time.sleep(1)
-    bus.log(project, "WARN", "Preview did not become ready. Check .agentforge/preview.log.")
+
+
+def _not_answering(project: str, process: subprocess.Popen, url: str, log_path: Path) -> None:
+    """Show a preview that is up but silent as not started, so it can be retried or handed to the
+    agent, instead of a spinner that never ends. `_wait_ready` keeps watching it."""
+    with _lock:
+        entry = _processes.get(project)
+        if not entry or entry["process"] is not process or entry["status"] != "starting":
+            return
+        entry["status"] = "failed"
+        entry["detail"] = f"The app did not answer on {url} within {READY_SECONDS} seconds."
+        bus.runtime_state(project, "failed", revision=entry["revision"])
+    bus.log(project, "WARN", f"{entry['detail']} Check {log_path.name}.")
 
 
 def stop(project: str) -> dict:

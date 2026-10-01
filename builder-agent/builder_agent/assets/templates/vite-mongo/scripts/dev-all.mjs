@@ -1,10 +1,21 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
+import net from 'node:net';
 import process from 'node:process';
-import { freePort } from './port-guard.mjs';
 
-// Studio's allocated ports win. Also support running the downloaded project
-// directly, where no parent has loaded its environment yet.
+/**
+ * Start the API server and the Vite client locally, with no Docker and no process manager. The
+ * server owns MongoDB; Vite serves the UI and proxies /api to the server. One Ctrl-C stops both.
+ *
+ * PORT is the one port a browser opens - the Vite client here, the server in production
+ * (`npm start`). The AgentForge Studio gives every project's preview a private PORT of its own,
+ * so nothing here may insist on a fixed number: the server takes a free port (4100 when it is
+ * free). Run directly, with no PORT given, the client is on VITE_PORT or 5174.
+ */
+// The port a parent gave this process, before .env can say anything: that one is the browser's.
+const givenPort = process.env.PORT;
+
+// Also support running the downloaded project directly, where no parent has loaded its environment.
 const inherited = new Set(Object.keys(process.env));
 for (const file of ['.env', '.env.local']) {
   if (!existsSync(file)) continue;
@@ -16,22 +27,32 @@ for (const file of ['.env', '.env.local']) {
   }
 }
 
-/**
- * Start the API server and the Vite client locally, with no Docker and no
- * process manager. The server owns MongoDB and port 4100; Vite serves the UI
- * on 5174 and proxies /api to the server. One Ctrl-C stops both.
- */
-const serverPort = Number(process.env.PORT ?? 4100);
-const clientPort = Number(process.env.VITE_PORT ?? 5174);
-if (serverPort !== 4100 || clientPort !== 5174) {
-  throw new Error('Local vite-mongo development uses server 4100 and Vite 5174');
-}
 if (!existsSync('server/src/server.js')) throw new Error('server/src/server.js is missing');
 if (!existsSync('client/vite-dev.mjs')) throw new Error('client/vite-dev.mjs is missing');
 
-// Claim the fixed local ports before starting the process tree. A stale
-// listener must not redirect the server or client URLs to another app.
-await Promise.all([freePort(serverPort), freePort(clientPort)]);
+/** `preferred` when nothing listens there and it is not `avoid`, else any free port. */
+function freePort(preferred, avoid) {
+  const tryPort = (port) => new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', () => resolve(0));
+    probe.listen(port, '127.0.0.1', () => {
+      const found = probe.address().port;
+      probe.close(() => resolve(found));
+    });
+  });
+  return (async () => {
+    for (const port of [preferred, 0, 0, 0]) {
+      if (port && port === avoid) continue;
+      const found = await tryPort(port);
+      if (found && found !== avoid) return found;
+    }
+    throw new Error('No free local port is available for the server.');
+  })();
+}
+
+const clientPort = Number(givenPort || process.env.VITE_PORT || 5174);
+const serverPort = await freePort(Number(process.env.SERVER_PORT || (givenPort ? 0 : process.env.PORT) || 4100),
+  clientPort);
 
 const children = [];
 let stopping = false;
@@ -43,8 +64,8 @@ function stopAll(code = 0) {
   process.exit(code);
 }
 
-function spawnPart(name, file, args, env) {
-  const child = spawn(process.execPath, [file, ...args], {
+function spawnPart(name, file, env) {
+  const child = spawn(process.execPath, [file], {
     cwd: name === 'client' ? 'client' : undefined,
     env: { ...process.env, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -58,8 +79,9 @@ function spawnPart(name, file, args, env) {
   children.push(child);
 }
 
-spawnPart('server', 'server/src/server.js', [], { PORT: String(serverPort) });
-spawnPart('client', 'vite-dev.mjs', [], { VITE_PORT: String(clientPort), PORT: String(serverPort) });
+spawnPart('server', 'server/src/server.js', { PORT: String(serverPort) });
+spawnPart('client', 'vite-dev.mjs', { VITE_PORT: String(clientPort), PORT: String(serverPort) });
+console.log(`client http://127.0.0.1:${clientPort} · server ${serverPort}`);
 
 process.on('SIGINT', () => stopAll(0));
 process.on('SIGTERM', () => stopAll(0));

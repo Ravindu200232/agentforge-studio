@@ -13,8 +13,11 @@ from builder_agent import build as builder
 from prototype_agent import prototype as prototyper
 from qa_agent import verify as qa
 
-from . import bus, changes, config, plugins, prompts, secrets_guard, store
-from .session import RunCancelled, session_for
+from . import bus, changes, config, plugins, preview_runtime, prompts, secrets_guard, store
+from .session import PREVIEW_START, RunCancelled, session_for
+
+# How many times the agent fixes and the Studio starts the preview again before it gives up.
+PREVIEW_START_ROUNDS = 2
 
 
 _active_lock = threading.RLock()
@@ -268,6 +271,57 @@ def element_edit(message: dict[str, Any]) -> dict[str, Any]:
     return agent_update({**message, "prompt": f"{request}\n\nThey pointed at this {where}."})
 
 
+def preview_start(message: dict[str, Any]) -> dict[str, Any]:
+    """The preview did not start and the customer asked the agent to start it."""
+    _remember_model(message)
+    project = str(message.get("project") or "").strip()
+    if not project:
+        raise ValueError("that message names no project")
+    store.require(project)
+    if not builder.built(project):
+        raise ValueError("there is no built app to start yet")
+    _in_background(f"{PREVIEW_START}:{project}", project, bus.DEVELOPER, _start_preview, project,
+                   _model_from(message), _project=project)
+    return {"ok": True, "project": project}
+
+
+def _start_preview(project: str, model: str = "") -> None:
+    """The agent starts the app the way the Studio does, fixes what stops it, then the Studio
+    starts its own preview again.
+
+    The request is sent silently: the customer pressed a button, so nothing is posted as their
+    message, and it is not planned first - the prompt already says exactly what to do.
+    """
+    session = session_for(project)
+    session.begin(PREVIEW_START, role=bus.DEVELOPER)
+    try:
+        state: dict[str, Any] = {}
+        said = ""
+        for _ in range(PREVIEW_START_ROUNDS):
+            seen = str(preview_runtime.status(project).get("detail") or "")
+            # A preview shown as failed may still be alive, holding the ports the agent needs.
+            preview_runtime.stop(project)
+            brief = preview_runtime.start_brief(project, seen)
+            result = session.run_unplanned(prompts.load("preview/start", **brief), model=model)
+            said = result.get("text", "").strip() or said
+            preview_runtime.open_preview(project)
+            state = preview_runtime.wait_settled(project)
+            if state.get("status") == "running":
+                text = said or "The app is running in the preview."
+                bus.agent_msg(project, text, agent=bus.DEVELOPER)
+                session.finish(text)
+                return
+        reason = state.get("detail") or "The preview still did not answer."
+        if said:
+            bus.agent_msg(project, said, agent=bus.DEVELOPER)
+        session.fail(f"The app still does not start. {reason}")
+    except RunCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - shown as the run's failure, then re-raised
+        session.fail(f"The agent could not start the app: {exc}")
+        raise
+
+
 def run_tests(message: dict[str, Any]) -> dict[str, Any]:
     project = str(message.get("project") or "").strip()
     if not project:
@@ -284,6 +338,7 @@ HANDLERS = {
     "feature": feature,
     "element_edit": element_edit,
     "run_tests": run_tests,
+    "preview_start": preview_start,
 }
 
 

@@ -1,11 +1,26 @@
 import { spawn } from 'node:child_process';
 import { readdirSync, existsSync, readFileSync } from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import process from 'node:process';
-import { freePort } from './port-guard.mjs';
 
-// Studio's allocated ports win. Also support running the downloaded project
-// directly, where no parent has loaded its environment yet.
+/**
+ * Start every service, the gateway and the Vite client locally, with no Docker and no process
+ * manager. One Ctrl-C stops everything.
+ *
+ * PORT is the one port a browser opens - the Vite client here, the gateway in production
+ * (`npm start`). The AgentForge Studio gives every project's preview a private PORT of its own,
+ * so nothing here may insist on a fixed number: the gateway and the services take free ports
+ * (4000 and 4001+ when they are free), and each is told where the others are. Run directly, with
+ * no PORT given, the client is on VITE_PORT or 5173.
+ *
+ * The service list is read from the workspace rather than written here, so adding a package is
+ * the only step needed to run it.
+ */
+// The port a parent gave this process, before .env can say anything: that one is the browser's.
+const givenPort = process.env.PORT;
+
+// Also support running the downloaded project directly, where no parent has loaded its environment.
 const inherited = new Set(Object.keys(process.env));
 for (const file of ['.env', '.env.local']) {
   if (!existsSync(file)) continue;
@@ -17,14 +32,31 @@ for (const file of ['.env', '.env.local']) {
   }
 }
 
-/**
- * Start every service plus the gateway locally, with no Docker and no process
- * manager. Vite serves the UI on 5173, the gateway serves API on 4000, and
- * internal service packages use 4001–4020. One Ctrl-C stops everything.
- *
- * The service list is read from the workspace rather than written here, so
- * adding a package is the only step needed to run it.
- */
+const taken = new Set();
+
+/** `preferred` when nothing listens there, else any free port; never one already handed out. */
+function freePort(preferred = 0) {
+  const tryPort = (port) => new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', () => resolve(0));
+    probe.listen(port, '127.0.0.1', () => {
+      const found = probe.address().port;
+      probe.close(() => resolve(found));
+    });
+  });
+  return (async () => {
+    for (const port of [preferred, 0, 0, 0]) {
+      if (port && taken.has(port)) continue;
+      const found = await tryPort(port);
+      if (found && !taken.has(found)) {
+        taken.add(found);
+        return found;
+      }
+    }
+    throw new Error('No free local port is available for the services.');
+  })();
+}
+
 const packagesDir = 'packages';
 const services = readdirSync(packagesDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory() && existsSync(path.join(packagesDir, entry.name, 'src/server.js')))
@@ -37,6 +69,31 @@ if (!services.length) {
   console.error('No service found. A service is packages/<name>/src/server.js');
   process.exit(1);
 }
+if (!existsSync('client/vite-dev.mjs') || !existsSync('client/static-preview.mjs')) {
+  throw new Error('The client preview runners are missing');
+}
+
+const isGateway = (name) => name.includes('gateway');
+const gatewayService = services.find((s) => isGateway(s.name));
+const internalServices = services.filter((s) => !isGateway(s.name));
+const envName = (name) => name.replace(/[^A-Za-z0-9]+/g, '_').toUpperCase();
+
+const frontendPort = Number(givenPort || process.env.VITE_PORT || 5173);
+taken.add(frontendPort);
+const gatewayPort = await freePort(Number(process.env.GATEWAY_PORT || (givenPort ? 0 : process.env.PORT) || 4000));
+const firstInternal = Number(process.env.INTERNAL_PORT_BASE || 4001);
+const addresses = {};
+for (const [index, service] of internalServices.entries()) {
+  addresses[service.name] = await freePort(Number(process.env[envName(service.name) + '_PORT'] || firstInternal + index));
+}
+
+// Every package gets the whole address map: the gateway to route to the services, and a service
+// that asks a sibling for something (an order reading a price) without guessing a port.
+const addressEnv = { GATEWAY_PORT: String(gatewayPort), GATEWAY_URL: 'http://127.0.0.1:' + gatewayPort };
+for (const [name, port] of Object.entries(addresses)) {
+  addressEnv[envName(name) + '_PORT'] = String(port);
+  addressEnv[envName(name) + '_URL'] = 'http://127.0.0.1:' + port;
+}
 
 const children = [];
 let stopping = false;
@@ -48,39 +105,10 @@ function stopAll(code = 0) {
   process.exit(code);
 }
 
-const isGateway = (name) => name.includes('gateway');
-const gatewayService = services.find((s) => isGateway(s.name));
-const internalServices = services.filter((s) => !isGateway(s.name));
-
-const frontendPort = Number(process.env.VITE_PORT ?? 5173);
-const gatewayPort = Number(process.env.PORT ?? 4000);
-const FIRST_INTERNAL = Number(process.env.INTERNAL_PORT_BASE ?? 4001);
-const addresses = {};
-internalServices.forEach((service, index) => {
-  const envKey = service.name.replace(/[^A-Za-z0-9]+/g, '_').toUpperCase() + '_PORT';
-  const port = Number(process.env[envKey] ?? (FIRST_INTERNAL + index));
-  if (port < 4001 || port > 4020) throw new Error(`${service.name} must use an internal port from 4001 to 4020`);
-  addresses[service.name] = port;
-});
-if (gatewayPort !== 4000 || frontendPort !== 5173) {
-  throw new Error('Local MERN development uses Vite 5173 and gateway 4000');
-}
-if (!existsSync('client/vite-dev.mjs') || !existsSync('client/static-preview.mjs')) {
-  throw new Error('The client preview runners are missing');
-}
-
-// Claim the fixed local ports before starting the process tree. A stale
-// listener must not redirect the preview or service URLs to another app.
-await Promise.all([
-  freePort(frontendPort),
-  freePort(gatewayPort),
-  ...Object.values(addresses).map(freePort),
-]);
-
 function spawnService(service, extraEnv = {}) {
   const child = spawn(process.execPath, ['src/server.js'], {
     cwd: service.cwd,
-    env: { ...process.env, ...extraEnv },
+    env: { ...process.env, ...addressEnv, ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stdout.on('data', (chunk) => process.stdout.write('[' + service.name + '] ' + chunk));
@@ -96,16 +124,7 @@ for (const service of internalServices) {
   const port = String(addresses[service.name]);
   spawnService(service, { SERVICE_PORT: port, PORT: port });
 }
-
-if (gatewayService) {
-  const gatewayEnv = { PORT: String(gatewayPort) };
-  for (const [name, port] of Object.entries(addresses)) {
-    const prefix = name.replace(/[^A-Za-z0-9]+/g, '_').toUpperCase();
-    gatewayEnv[prefix + '_PORT'] = String(port);
-    gatewayEnv[prefix + '_URL'] = 'http://127.0.0.1:' + port;
-  }
-  spawnService(gatewayService, gatewayEnv);
-}
+if (gatewayService) spawnService(gatewayService, { PORT: String(gatewayPort) });
 
 function spawnClient(entry = 'vite-dev.mjs') {
   const client = spawn(process.execPath, [entry], {
@@ -127,6 +146,8 @@ function spawnClient(entry = 'vite-dev.mjs') {
   children.push(client);
 }
 spawnClient();
+console.log(`client http://127.0.0.1:${frontendPort} · gateway ${gatewayPort} · `
+  + Object.entries(addresses).map(([name, port]) => `${name} ${port}`).join(' · '));
 
 process.on('SIGINT', () => stopAll(0));
 process.on('SIGTERM', () => stopAll(0));

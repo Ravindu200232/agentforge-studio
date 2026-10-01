@@ -490,4 +490,5 @@ export const HTTP_FALLBACK = {
   agent_resume: '/resume',
   feature: '/feature',
   element_edit: '/element-edit',
+  preview_start: '/preview-start',
 }

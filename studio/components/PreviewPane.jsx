@@ -7,10 +7,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Monitor, Tablet, Smartphone, MousePointerClick, Pencil, Undo2, RotateCw,
   ChevronLeft, ChevronRight, Globe, Eraser, Rocket, Layers, Loader2, Play,
-  ExternalLink, Square,
+  ExternalLink, Square, Bot,
 } from 'lucide-react'
 import { useStore } from '@/lib/store'
 import { api, API } from '@/lib/api'
+import { send } from '@/lib/ws'
 import { attachPicker, pickedFrom, pickLabel } from '@/lib/picker'
 import { previewHref, needsAddress } from '@/lib/preview'
 import { watchFrame, recordConsole } from '@/lib/console-log'
@@ -68,12 +69,15 @@ export default function PreviewPane({ hidden, onBuild }) {
   const [path, setPath] = useState('/')
   const [iframeLoading, setIframeLoading] = useState(true)
   const [previewStopped, setPreviewStopped] = useState(false)
+  // The agent was asked to start the app after the preview could not.
+  const [agentStarting, setAgentStarting] = useState(false)
   const trail = useRef(['/'])
   const at = useRef(0)
   const jumping = useRef(false)
   const [nav, setNav] = useState({ back: false, forward: false })
 
-  useEffect(() => { setPreviewStopped(false) }, [project])
+  useEffect(() => { setPreviewStopped(false); setAgentStarting(false) }, [project])
+  useEffect(() => { if (!busy) setAgentStarting(false) }, [busy])
 
   // The app's own address as seen from this browser: its local one here, the
   // published one from a phone or another computer (lib/preview.js).
@@ -421,6 +425,21 @@ export default function PreviewPane({ hidden, onBuild }) {
     }
   }
 
+  /** Hand a preview that will not start to the agent: no chat message and no plan. It starts the
+   *  app the way the preview does, fixes what stops it, and the preview opens once it answers. */
+  function startWithAgent() {
+    const st = useStore.getState()
+    if (!project || busy) return
+    setPreviewStopped(false)
+    setAgentStarting(true)
+    st.setBusy(true)
+    addLog('INFO', 'The agent is starting the app and fixing what stops it')
+    send({ type: 'preview_start', project, agent: 'developer',
+           model: st.models.builder || st.models.agent,
+           builder_model: st.models.builder || st.models.agent,
+           thinking_level: st.thinkingLevel })
+  }
+
   async function stopPreview() {
     if (!project || drawing) return
     setPreviewStopped(true)
@@ -686,13 +705,33 @@ export default function PreviewPane({ hidden, onBuild }) {
                   <Play className="size-3.5" /> Resume Build
                 </button>
               </div>
+            ) : agentStarting && busy ? (
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-panel p-8 text-center" role="status">
+                <div className="grid size-14 place-items-center rounded-2xl border border-accent/20 bg-accent text-ink">
+                  <Bot className="size-7" />
+                </div>
+                <p className="flex items-center gap-2 font-semibold text-ink">
+                  <Loader2 className="size-3.5 animate-spin text-accent" /> The agent is starting the app
+                </p>
+                <p className="max-w-lg text-sm text-muted">
+                  It runs the app the way the preview does, fixes what stops it, and the preview opens here as soon as the app answers. Its commands show in the chat.
+                </p>
+              </div>
             ) : runtime?.status === 'failed' ? (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-panel p-8 text-center" role="status">
                 <p className="font-semibold text-rose-400">App could not start</p>
-                <p className="max-w-lg text-sm text-muted">{runtime?.error || 'Failed to start runtime.'}</p>
-                <button onClick={() => reloadPreview()} className="rounded-xl bg-accent px-5 py-2 text-sm font-semibold text-ink hover:bg-accent">
-                  Retry
-                </button>
+                <p className="max-w-lg whitespace-pre-wrap break-words text-sm text-muted">{runtime?.detail || runtime?.error || 'Failed to start runtime.'}</p>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => reloadPreview()} disabled={busy}
+                          className="rounded-xl border border-line bg-panel px-5 py-2 text-sm font-semibold text-ink hover:border-accent/50 disabled:pointer-events-none disabled:opacity-50">
+                    Retry
+                  </button>
+                  <button onClick={startWithAgent} disabled={busy}
+                          title={busy ? 'This project is already working — wait for it to finish' : 'The agent starts the app with its own commands, fixes what stops it, and opens the preview'}
+                          className="inline-flex items-center gap-2 rounded-xl bg-accent px-5 py-2 text-sm font-semibold text-ink hover:bg-accent disabled:pointer-events-none disabled:opacity-50">
+                    <Bot className="size-3.5" /> Start with agent
+                  </button>
+                </div>
               </div>
             ) : null}
             {/* While the agent is driving its own browser, that is the more

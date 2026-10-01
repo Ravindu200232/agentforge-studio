@@ -4,7 +4,7 @@ Everything here was installed, unit-tested and built before it was made a
 template. Build the application on top of it.
 
     npm install
-    npm run dev      # Vite client :5174, API server :4100
+    npm run dev      # Vite client on PORT (or :5174); API server on a free port (4100 when free)
     npm test         # both workspaces
     npm run qa:inventory   # which route, page and component has no unit test of its own (exit 1 until none)
     npm run test:coverage  # what the unit tests execute, per file

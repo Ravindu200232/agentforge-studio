@@ -14,7 +14,7 @@ for folder in ("", "src", "srs-agent", "prototype-agent", "builder-agent", "qa-a
     if value not in sys.path:
         sys.path.insert(0, value)
 
-from server_modules import preview_runtime  # noqa: E402
+from server_modules import preview_runtime, prompts, runs  # noqa: E402
 
 
 class PreviewRuntimeTests(unittest.TestCase):
@@ -134,6 +134,142 @@ class PreviewRuntimeTests(unittest.TestCase):
                 preview_runtime._wait_ready("demo", process, "http://127.0.0.1:3001/", root,
                                             ["npm", "run", "start"], {}, log_path, "start")
             heal.assert_not_called()
+
+    def test_a_preview_that_never_answers_is_shown_as_failed_with_why(self):
+        process = Mock()
+        process.poll.return_value = None
+        preview_runtime._processes["demo"] = {"process": process, "status": "starting", "port": 3100,
+                                              "url": "http://127.0.0.1:3100/", "revision": 1}
+        with patch.object(preview_runtime.bus, "runtime_state") as announced, \
+             patch.object(preview_runtime.bus, "log"):
+            preview_runtime._not_answering("demo", process, "http://127.0.0.1:3100/", Path("preview.log"))
+        state = preview_runtime.status("demo")
+        self.assertEqual(state["status"], "failed")
+        self.assertIn("did not answer on http://127.0.0.1:3100/", state["detail"])
+        self.assertEqual(announced.call_args.args[1], "failed")
+
+    def test_an_exited_preview_names_the_error_its_output_ended_with(self):
+        with tempfile.TemporaryDirectory() as directory:
+            record = Path(directory)
+            (record / "preview.log").write_text(
+                "> dev\nError: Local development uses a fixed port\n    at file:///scripts/dev-all.mjs:66:9\n",
+                encoding="utf-8")
+            process = Mock()
+            process.poll.return_value = 1
+            process.returncode = 1
+            preview_runtime._processes["demo"] = {"process": process, "status": "starting", "revision": 1}
+            with patch.object(preview_runtime.config, "record_dir", return_value=record), \
+                 patch.object(preview_runtime.bus, "runtime_state"):
+                state = preview_runtime.status("demo")
+        self.assertEqual(state["status"], "failed")
+        self.assertIn("exited with code 1", state["detail"])
+        self.assertIn("Error: Local development uses a fixed port", state["detail"])
+
+    def test_start_brief_is_the_command_port_and_output_the_studio_uses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "app"
+            (root / "node_modules" / "vite" / "bin").mkdir(parents=True)
+            (root / "node_modules" / "vite" / "bin" / "vite.js").write_text("", encoding="utf-8")
+            (root / "package.json").write_text(json.dumps(
+                {"scripts": {"dev": "vite"}, "devDependencies": {"vite": "5"}}), encoding="utf-8")
+            record = Path(directory) / "record"
+            record.mkdir()
+            (record / "preview.log").write_text("\x1b[31mSyntaxError: Unexpected token\x1b[0m\n", encoding="utf-8")
+            with patch.object(preview_runtime.config, "workspace_for", return_value=root), \
+                 patch.object(preview_runtime.config, "record_dir", return_value=record), \
+                 patch.object(preview_runtime, "_preview_port", return_value=4321), \
+                 patch.object(preview_runtime, "_node_program", return_value=r"C:\Program Files\nodejs\node.exe"):
+                brief = preview_runtime.start_brief("demo", "Preview exited with code 1.")
+        self.assertEqual(brief["command"],
+                         "node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 4321 --strictPort")
+        self.assertTrue(brief["run"].endswith(brief["command"]))
+        self.assertIn("4321", brief["run"].split("node node_modules")[0])
+        self.assertEqual(brief["url"], "http://127.0.0.1:4321/")
+        self.assertEqual(brief["detail"], "Preview exited with code 1.")
+        self.assertEqual(brief["log"], "SyntaxError: Unexpected token")
+        # Every placeholder of the prompt is filled from the brief.
+        text = prompts.load("preview/start", **brief)
+        self.assertNotIn("{{", text)
+        self.assertIn(brief["run"], text)
+
+    def test_reopening_a_failed_preview_stops_the_one_still_alive_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "package.json").write_text(json.dumps({"scripts": {"dev": "node server.js"}}),
+                                               encoding="utf-8")
+            alive = Mock()
+            alive.poll.return_value = None
+            preview_runtime._processes["demo"] = {"process": alive, "status": "failed", "port": 3100,
+                                                  "revision": 1}
+            stops = []
+
+            def stop(project):
+                stops.append(project)
+                preview_runtime._processes.pop(project, None)
+                return {}
+
+            with patch.object(preview_runtime.config, "workspace_for", return_value=root), \
+                 patch.object(preview_runtime.config, "record_dir", return_value=root / ".agentforge"), \
+                 patch.object(preview_runtime, "stop", side_effect=stop), \
+                 patch.object(preview_runtime, "_preview_port", return_value=3200), \
+                 patch.object(preview_runtime, "_launch", return_value=Mock(pid=5, poll=Mock(return_value=None))), \
+                 patch.object(preview_runtime, "_write_metadata"), \
+                 patch.object(preview_runtime.supabase_connect, "env_for", return_value={}), \
+                 patch.object(preview_runtime.deploy_vars, "environment", return_value={}), \
+                 patch.object(preview_runtime.bus, "runtime_state"), \
+                 patch.object(preview_runtime.threading, "Thread"):
+                state = preview_runtime.open_preview("demo")
+        self.assertEqual(stops, ["demo"])
+        self.assertEqual(state["status"], "starting")
+        self.assertEqual(state["port"], 3200)
+
+
+class StartWithAgentTests(unittest.TestCase):
+    """The failed preview's "Start with agent": silent, unplanned, and the Studio reopens it."""
+
+    def _run(self, settled):
+        session = Mock()
+        session.run_unplanned.return_value = {"text": "The start script demanded a fixed port; it now uses PORT."}
+        brief = {"command": "npm run dev", "run": "PORT=4000 npm run dev", "port": 4000,
+                 "url": "http://127.0.0.1:4000/", "script": "dev", "detail": "exited", "log": "Error"}
+        with patch.object(runs, "session_for", return_value=session), \
+             patch.object(runs.preview_runtime, "status", return_value={"detail": "Preview exited with code 1."}), \
+             patch.object(runs.preview_runtime, "stop") as stop, \
+             patch.object(runs.preview_runtime, "start_brief", return_value=brief) as start_brief, \
+             patch.object(runs.preview_runtime, "open_preview") as reopen, \
+             patch.object(runs.preview_runtime, "wait_settled", side_effect=settled), \
+             patch.object(runs.bus, "agent_msg") as said, \
+             patch.object(runs.bus, "user_msg") as user_msg:
+            runs._start_preview("demo")
+        return session, stop, start_brief, reopen, said, user_msg
+
+    def test_the_agent_starts_it_without_a_plan_or_a_customer_message(self):
+        session, stop, start_brief, reopen, said, user_msg = self._run([{"status": "running"}])
+        session.begin.assert_called_once_with(runs.PREVIEW_START, role=runs.bus.DEVELOPER)
+        session.run_task.assert_not_called()
+        prompt = session.run_unplanned.call_args.args[0]
+        self.assertIn("PORT=4000 npm run dev", prompt)
+        self.assertIn("Do not write a plan", prompt)
+        stop.assert_called_once_with("demo")
+        start_brief.assert_called_once_with("demo", "Preview exited with code 1.")
+        reopen.assert_called_once_with("demo")
+        user_msg.assert_not_called()
+        self.assertIn("now uses PORT", said.call_args.args[1])
+        session.finish.assert_called_once()
+        session.fail.assert_not_called()
+
+    def test_it_tries_again_then_says_why_it_still_does_not_start(self):
+        failed = {"status": "failed", "detail": "The app did not answer within 90 seconds."}
+        session, *_ = self._run([failed, failed])
+        self.assertEqual(session.run_unplanned.call_count, runs.PREVIEW_START_ROUNDS)
+        session.finish.assert_not_called()
+        self.assertIn("did not answer within 90 seconds", session.fail.call_args.args[0])
+
+    def test_only_a_built_app_can_be_handed_to_the_agent(self):
+        with patch.object(runs.store, "require"), \
+             patch.object(runs.builder, "built", return_value=False), \
+             self.assertRaises(ValueError):
+            runs.preview_start({"type": "preview_start", "project": "demo"})
 
 
 if __name__ == "__main__":

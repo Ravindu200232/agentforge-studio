@@ -41,6 +41,10 @@ class EngineUnavailable(RuntimeError):
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.+?)```", re.DOTALL)
 
+# The one stage whose agent may run the app's server itself: the preview did not start, and the
+# agent is starting it to find out why.
+PREVIEW_START = "preview_start"
+
 # A build stage is a long conversation with a remote service, and remote
 # services have bad minutes. Losing an hour of work to one 502 is not a model
 # problem to reason about, it is a call to make again.
@@ -212,7 +216,10 @@ class StudioTools(WorkspaceTools):
             # no separate "the studio's own" database to fall back to here.
             self.command_env.update(supabase_connect.env_for(self.project))
             stage = session_for(self.project).stage
-            if stage.startswith("deploy") or stage in {"build", "build-edit"}:
+            # Starting the app is that stage's whole job (the preview would not start); everywhere
+            # else the Studio's preview runtime owns the app's server.
+            self.managed_preview = stage != PREVIEW_START
+            if stage.startswith("deploy") or stage in {"build", "build-edit", PREVIEW_START}:
                 # A deployment may also override with what the customer saved for it explicitly
                 # (pointing production at a different Supabase project, or an unrelated variable);
                 # a build/update that paused to ask for a value only the customer has needs that
@@ -825,6 +832,14 @@ class ProjectSession:
         noisy stream without changing the decision, so these edits go straight
         to execution.
         """
+        result = self.run_unplanned(
+            "Apply this approved update directly in the workspace. Use the file tools, "
+            "keep the scope exact, do not create or run tests, and do not perform a "
+            "separate verification pass.\n\n" + request, model)
+        return {**result, "text": result["text"] or "Update applied."}
+
+    def run_unplanned(self, request: str, model: str = "") -> dict[str, Any]:
+        """One turn with every tool and no plan: the request already says exactly what to do."""
         agent = self.agent(model)
         if self.cancelled:
             raise RunCancelled(self.project)
@@ -832,17 +847,14 @@ class ProjectSession:
         try:
             with self.lock:
                 agent.set_mode("act")
-                text = agent.ask(
-                    "Apply this approved update directly in the workspace. Use the file tools, "
-                    "keep the scope exact, do not create or run tests, and do not perform a "
-                    "separate verification pass.\n\n" + request)
+                text = agent.ask(request)
         finally:
             bus.agent_state(self.project, "", agent=self.role)
             self.report_memory()
             self.save_context()
         if self.cancelled:
             raise RunCancelled(self.project)
-        return {"status": "complete", "text": text or "Update applied.", "rounds": 1}
+        return {"status": "complete", "text": text or "", "rounds": 1}
 
     def plan_focused_task(self, request: str, model: str = "", subject: str = "the pages") -> str:
         """Use the agent's /plan mode before a focused, per-file generation run.

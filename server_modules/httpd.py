@@ -972,6 +972,11 @@ def http_element_edit(ctx: dict) -> Any:
     return runs.element_edit(ctx)
 
 
+@route("POST", r"/preview-start")
+def http_preview_start(ctx: dict) -> Any:
+    return runs.preview_start(ctx)
+
+
 # =========================================================================
 # attachments and uploads
 # =========================================================================
