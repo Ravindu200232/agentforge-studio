@@ -88,7 +88,9 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
                   detail="Build, runtime, units, routes, journeys, accessibility and load.")
         from builder_agent.scaffold import guide_files
         stack = str(store.require(project).get("stack") or "nextjs-supabase")
-        request = prompts.load("testing/run", project=project)
+        from server_modules.validation import build_report
+        request = prompts.load("testing/run", project=project,
+                               report_template=build_report.stage_template(session.workspace))
         guide_paths = reference_staging.stage(session.workspace, f"{QA_DIR}/guides", guide_files(stack))
         request += ("\n\n## Selected scaffold and test guides\n\nRead these yourself before planning:\n"
                    + reference_staging.as_bullets(guide_paths))

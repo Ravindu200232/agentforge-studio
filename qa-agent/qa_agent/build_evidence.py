@@ -29,7 +29,11 @@ ZAP_SUMMARY = ".agentforge/qa/zap/summary.json"
 INVENTORY = ".agentforge/qa/coverage-inventory.json"
 COVERAGE_SUMMARY = ".agentforge/qa/coverage/coverage-summary.json"
 PLAYWRIGHT_JSON = "test-results/results.json"
+# `scripts/with-server.mjs` keeps a copy of each run's Playwright JSON here, because the
+# runner overwrites PLAYWRIGHT_JSON on every run (journeys, visual, accessibility, ...).
+PLAYWRIGHT_RUNS = ".agentforge/qa/runs"
 PREVIEW_RUNTIME = ".agentforge/preview-runtime.json"
+VITEST_JSON = ".agentforge/qa/vitest.json"
 
 # What PowerShell and Windows consoles do to UTF-8 on its way into a log file.
 _MOJIBAKE = (("ΓÇ║", "›"), ("ΓÇö", "—"), ("ΓÇô", "–"), ("Â·", "·"),
@@ -161,6 +165,12 @@ def _runs_found(workspace: Path) -> list[dict]:
     if exact:
         found.append({**exact, "source": PLAYWRIGHT_JSON,
                       "at": _iso(workspace / PLAYWRIGHT_JSON), "rank": 1})
+    kept = workspace / PLAYWRIGHT_RUNS
+    for path in sorted(kept.glob("*.json")) if kept.is_dir() else []:
+        run = _from_playwright_json(_json(path))
+        if run:
+            found.append({**run, "source": path.relative_to(workspace).as_posix(),
+                          "at": _iso(path), "rank": 1})
     qa = workspace / QA_DIR
     for log in sorted(qa.glob("*.log")) if qa.is_dir() else []:
         try:
@@ -379,9 +389,10 @@ def _contracts(workspace: Path, build: dict, vitest: Any) -> list[dict]:
     return sorted(rows.values(), key=lambda row: row["route"])
 
 
-def _declared_layer(build: dict, kind: str) -> dict | None:
-    """A build report may retain an aggregate after detailed runner output is overwritten."""
-    phases = [build, build.get("phase_3") if isinstance(build.get("phase_3"), dict) else {}]
+def _declared_layer(build: dict, kind: str, qa: dict | None = None) -> dict | None:
+    """A build or QA report may retain an aggregate after detailed runner output is overwritten."""
+    phases = [build, build.get("phase_3") if isinstance(build.get("phase_3"), dict) else {},
+              qa if isinstance(qa, dict) else {}]
     for phase in phases:
         for layer in _rows(phase.get("layers")):
             name = str(layer.get("layer") or "")
@@ -416,10 +427,46 @@ def _build_repairs(build: dict) -> dict | None:
     return {"status": "fixed", "source": "build", "items": items}
 
 
+def _as_template(build: dict) -> dict:
+    """A report written before the template (`prompts/builder/report-template.json`) existed,
+    read as the template's keys. Only shapes real builds wrote are mapped, and only where the
+    template's own key is absent, so a report that follows the template passes through unchanged."""
+    build = dict(build)
+    routes = [{"route": r} if isinstance(r, str) else r for r in build.get("routes") or []] \
+        if isinstance(build.get("routes"), list) else build.get("routes")
+    if isinstance(routes, list) and isinstance(build.get("api"), list):
+        for line in build["api"]:
+            method, _, path = str(line).strip().partition(" ")
+            if path.startswith("/"):
+                routes.append({"route": path, "method": method})
+    if routes is not None:
+        build["routes"] = routes
+    if isinstance(build.get("gaps"), list):
+        build["gaps"] = [{**g, "item": g.get("area", ""), "status": g.get("severity") or "gap",
+                          "reason": g.get("detail", "")}
+                         if isinstance(g, dict) and "item" not in g and ("area" in g or "detail" in g) else g
+                         for g in build["gaps"]]
+    if "defects_found_and_fixed" not in build and isinstance(build.get("repairs"), list):
+        build["defects_found_and_fixed"] = [
+            {"where": str(r.get("phase") or ""), "defect": str(r.get("finding") or ""), "fix": str(r.get("fix") or "")}
+            for r in build["repairs"] if isinstance(r, dict)]
+    return build
+
+
+def _unit_result(vitest: Any) -> dict | None:
+    """The unit layer as the Testing screen's `unit` entry, from Vitest's own JSON."""
+    if not isinstance(vitest, dict) or not isinstance(vitest.get("numTotalTests"), int):
+        return None
+    failed = int(vitest.get("numFailedTests") or 0)
+    return {"status": "failed" if failed or vitest.get("success") is False else "passed",
+            "total": vitest["numTotalTests"], "passed": int(vitest.get("numPassedTests") or 0),
+            "failed": failed, "artifact": VITEST_JSON}
+
+
 def derive(workspace: Path, have: dict) -> dict:
     """Everything the Testing views can read from what the build left behind."""
     build = _json(workspace / BUILD_REPORT)
-    build = build if isinstance(build, dict) else {}
+    build = _as_template(build) if isinstance(build, dict) else {}
     runs = browser_runs(workspace)
     lh = lighthouse(workspace)
     probe = route_probe(workspace)
@@ -428,10 +475,13 @@ def derive(workspace: Path, have: dict) -> dict:
     inventory = unit_inventory(workspace)
     coverage = code_coverage(workspace)
     runtime = runtime_status(workspace)
-    if not (build or runs or lh or probe or zap_summary or inventory or coverage or runtime):
+    unit = _unit_result(have.get("vitest"))
+    if not (build or runs or lh or probe or zap_summary or inventory or coverage or runtime or unit):
         return {}
 
     out: dict[str, Any] = {}
+    if unit:
+        out["unit"] = unit
     if inventory:
         out["unitInventory"] = inventory
     if coverage:
@@ -499,7 +549,7 @@ def derive(workspace: Path, have: dict) -> dict:
         out.setdefault("report", {})["e2e"] = e2e
         out["visualRuns"] = {"tests": len(visual), "passed": sum(1 for t in visual if t["status"] == "passed")}
 
-    declared_a11y = _declared_layer(build, "a11y")
+    declared_a11y = _declared_layer(build, "a11y", have)
     if declared_a11y:
         accessibility = out.setdefault("accessibility", {"status": declared_a11y["status"], "pages": []})
         accessibility["declaredAudited"] = declared_a11y["count"]
@@ -507,7 +557,7 @@ def derive(workspace: Path, have: dict) -> dict:
         accessibility["declaredDetail"] = declared_a11y["detail"]
         accessibility.setdefault("manualReview", "not run")
 
-    visual = _declared_layer(build, "visual")
+    visual = _declared_layer(build, "visual", have)
     if visual:
         out["uiQualitySummary"] = visual
 

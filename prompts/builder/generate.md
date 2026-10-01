@@ -59,7 +59,7 @@ Implement every approved page, route, role, business rule, data record and main 
 
 ## Phase 1 — complete the real application
 
-Finish the entire application before creating or running any tests. Run only the minimum build command needed to compile it. Update `.agentforge/build/report.json` in place with delivered routes, real commands, exit codes and honest gaps. Preserve its existing fields and arrays because the Testing screen reads this JSON.
+Finish the entire application before creating or running any tests. Run only the minimum build command needed to compile it. Update `.agentforge/build/report.json` in place with delivered routes, real commands, exit codes and honest gaps, in the shape written down in `{{report_template}}` — the Testing screen reads exactly those keys.
 
 ## Phase 2 — read the completed app and test business logic
 
@@ -80,4 +80,4 @@ Derive E2E selectors, roles, setup and expected outcomes from the saved user-jou
 
 Run each planned layer once. If a check finds a real product defect, repair only the affected code and rerun only that affected check. Never loop through the whole plan again. Record unavailable tools honestly instead of repeatedly trying to install or rerun them.
 
-Merge the real commands, exit codes and outcomes into `.agentforge/build/report.json`, preserving all earlier evidence. Write `.agentforge/qa/report.json` in the existing UI-compatible shape and mark it complete only after every planned layer has one honest recorded outcome. Finish the single plan after Phase 3.
+Then reopen `{{report_template}}` and fill both report files from it: `.agentforge/build/report.json` from its `build` section, preserving all earlier evidence, and `.agentforge/qa/report.json` from its `qa` section. Take every count from the runners' own output on disk, not from memory. Mark the QA report complete only after every planned layer has one honest recorded outcome. Finish the single plan after Phase 3.

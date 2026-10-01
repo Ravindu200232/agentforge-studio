@@ -486,5 +486,81 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(historic["counts"]["browser"], {"total": 4, "passed": 4, "failed": 0})
 
 
+class ReportShapeEvidenceTests(unittest.TestCase):
+    """Found live: every check passed, yet the Testing views showed empty route names, empty
+    gaps, "not run" and no accessibility - the report used keys of its own, and Playwright's
+    results file held only the last of several runs."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.workspace = Path(temp.name)
+        (self.workspace / ".agentforge/build").mkdir(parents=True)
+        (self.workspace / ".agentforge/qa").mkdir(parents=True)
+
+    def write(self, rel, data):
+        path = self.workspace / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_a_report_written_before_the_template_still_fills_the_views(self):
+        self.write(".agentforge/build/report.json", {
+            "app": "x", "routes": ["/", "/shop"], "api": ["POST /api/cart"],
+            "gaps": [{"area": "Online payments", "detail": "no live credentials", "severity": "gap"}],
+            "repairs": [{"phase": "a11y", "finding": "link contrast", "fix": "underlined links"}]})
+        result = collect(self.workspace, {"project": "x"})
+        routes = result["build"]["routes"]
+        self.assertEqual([r["route"] for r in routes], ["/", "/shop", "/api/cart"])
+        self.assertEqual(routes[-1]["method"], "POST")
+        gap = result["build"]["gaps"][0]
+        self.assertEqual((gap["item"], gap["status"], gap["reason"]), ("Online payments", "gap", "no live credentials"))
+        self.assertEqual(result["buildRepairs"]["items"][0],
+                         {"where": "a11y", "problem": "link contrast", "fix": "underlined links"})
+
+    def test_a_report_in_the_template_shape_passes_through_unchanged(self):
+        gaps = [{"item": "Payments", "status": "gap", "reason": "no keys"}]
+        self.write(".agentforge/build/report.json", {"app": "x", "gaps": gaps,
+                                                     "routes": [{"route": "/", "verified": True, "how": "smoke"}]})
+        result = collect(self.workspace, {"project": "x"})
+        self.assertEqual(result["build"]["gaps"], gaps)
+        self.assertEqual(result["build"]["routes"], [{"route": "/", "verified": True, "how": "smoke"}])
+
+    def test_each_kept_run_counts_after_a_later_run_overwrote_results_json(self):
+        def run(spec, title):
+            return {"suites": [{"file": spec, "title": spec, "specs": [
+                {"title": title, "file": spec, "tests": [{"projectName": "desktop", "results": [{"status": "passed"}]}]}]}]}
+        self.write("test-results/results.json", run("journeys.spec.js", "[UJ-001] a journey"))
+        self.write(".agentforge/qa/runs/test-a11y.json", run("a11y.spec.js", "@a11y Home is accessible"))
+        result = collect(self.workspace, {"project": "x"})
+        self.assertEqual(result["accessibility"]["audited"], 1)
+        self.assertEqual(result["browserRuns"]["total"], 2)
+
+    def test_the_unit_entry_comes_from_vitest_and_a_saved_one_still_wins(self):
+        self.write(".agentforge/qa/vitest.json", {"numTotalTests": 63, "numPassedTests": 63,
+                                                   "numFailedTests": 0, "success": True, "testResults": []})
+        unit = collect(self.workspace, {"project": "x"})["unit"]
+        self.assertEqual((unit["status"], unit["total"], unit["passed"]), ("passed", 63, 63))
+        saved = {"status": "failed", "total": 2, "passed": 1, "failed": 1}
+        self.assertEqual(collect(self.workspace, {"project": "x", "unit": saved})["unit"]["status"], "failed")
+
+    def test_a_layer_recorded_only_in_the_qa_report_still_shows(self):
+        self.write(".agentforge/build/report.json", {"app": "x"})
+        qa = {"project": "x", "layers": [{"layer": "a11y", "exit_code": 0, "status": "passed",
+                                          "result": "10 passed (axe)"}]}
+        self.assertEqual(collect(self.workspace, qa)["accessibility"]["declaredAudited"], 10)
+
+    def test_a_prose_summary_becomes_counts_and_keeps_its_words(self):
+        qa = {"project": "x", "summary": "Every layer passed.",
+              "layers": [{"layer": "unit", "status": "passed"}, {"layer": "e2e", "status": "failed"}]}
+        result = collect(self.workspace, qa)
+        self.assertEqual(result["summary"], {"pass": 1, "fail": 1, "warn": 0})
+        self.assertEqual(result["summaryText"], "Every layer passed.")
+
+    def test_the_server_wrapper_keeps_each_runs_results(self):
+        runner = (scaffold.ROOT / "_testing/scripts/with-server.mjs").read_text(encoding="utf-8")
+        self.assertIn("keepRunResults(command, startedAt)", runner)
+        self.assertIn("path.join('.agentforge', 'qa', 'runs')", runner)
+
+
 if __name__ == "__main__":
     unittest.main()
