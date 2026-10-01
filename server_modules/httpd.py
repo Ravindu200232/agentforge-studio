@@ -515,7 +515,7 @@ def decide(ctx: dict) -> Any:
     if project and question.get("flow") == "build":
         # A build or update paused mid-run: the answer (or "you decide") resumes it exactly
         # where it stopped, never as a fresh separate request.
-        return builder.answer(project, reply if choice == "answer" else "")
+        return runs.answer_build(project, reply if choice == "answer" else "")
     if project and choice in {"answer", "revise"} and reply:
         runs.agent_update_direct({"project": project, "prompt": reply,
                                   "agent": question.get("agent", bus.DEVELOPER)})

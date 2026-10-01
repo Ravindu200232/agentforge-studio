@@ -51,6 +51,10 @@ Build it the way a senior team ships a product people depend on, in every part o
 
 ## When only the customer can settle it
 
+Most of what the build needs from the customer was settled before this plan — the database, the first
+accounts, uploads, outside services — and is listed under "Settled with the customer before this build": build
+on it, and never ask any of it again. What only shows itself while building is asked then.
+
 Ask the customer, the way the deployment does, whenever the work genuinely needs them. Ask **in the middle of
 the build, at the moment the need comes up** — in the phase where you reach it, before you write the part that
 depends on the answer — and then carry on with the rest of the plan. Never save questions up to ask at the end,
@@ -59,7 +63,8 @@ plain words about this project, one question at a time, with two to four concret
 recommendation first. Ask in these situations:
 
 - **You are stuck.** The same failure came back after two honest fixes, or the next step needs something you
-  do not have. Stop and ask with the ways forward you see, instead of looping.
+  do not have. Stop and ask the customer what to do, with the ways forward you see and what each one costs or
+  changes, instead of looping.
 - **A credential is needed.** An API key, an OAuth client, a mail or payment provider key, a provider account
   or its own password — something that must be created or supplied by the customer. Ask for it when you reach
   the feature that needs it, before building that feature; never invent, hardcode or placeholder it, never

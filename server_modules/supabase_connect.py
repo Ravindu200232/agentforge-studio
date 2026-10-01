@@ -386,7 +386,43 @@ def _keys_from(rows: Any) -> tuple[str, str]:
     return "", ""
 
 
-def ensure_project(project: str, name: str = "", log=None) -> dict:
+def account_facts() -> dict:
+    """What the connected Supabase account already has, for the build to ask about: its organisations
+    (each one's plan when Supabase says it) and its projects. Never keys. Empty when nothing can be read."""
+    if not token_status()["connected"]:
+        return {"connected": False}
+    out: dict[str, Any] = {"connected": True, "organizations": [], "projects": []}
+    try:
+        tool = _tool()
+        orgs = _run_json([tool, "orgs", "list", "--output", "json"]) or []
+        projects = _run_json([tool, "projects", "list", "--output", "json"]) or []
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        out["unreadable"] = str(exc)[:200]
+        return out
+    token = _refresh_if_needed()
+    for org in orgs if isinstance(orgs, list) else []:
+        if not isinstance(org, dict):
+            continue
+        row = {"id": str(org.get("id") or org.get("slug") or ""), "name": str(org.get("name") or "")}
+        try:
+            answer = httpx.get(f"https://api.supabase.com/v1/organizations/{row['id']}",
+                               headers={"Authorization": f"Bearer {token}"}, timeout=10)
+            plan = _json_body(answer).get("plan") if answer.status_code < 400 else None
+            if plan:
+                row["plan"] = str(plan)
+        except httpx.HTTPError:
+            pass
+        out["organizations"].append(row)
+    for item in projects if isinstance(projects, list) else []:
+        if isinstance(item, dict):
+            out["projects"].append({key: str(item.get(key) or "") for key in
+                                    ("name", "region", "status", "organization_id")}
+                                   | {"ref": str(item.get("id") or item.get("ref") or "")})
+    return out
+
+
+def ensure_project(project: str, name: str = "", log=None, region: str = "", org_id: str = "",
+                   fresh: bool = False) -> dict:
     """The project's own Supabase project: the existing one, or a freshly created one.
 
     Blocking (project creation takes a minute or two): called from the build pipeline, which
@@ -397,6 +433,8 @@ def ensure_project(project: str, name: str = "", log=None) -> dict:
     project = str(project or "")
     if not project:
         raise ValueError("no project given")
+    if fresh:
+        forget(project)  # a new one was asked for: the old project stays in the account, unused by this one
     existing = record(project)
     if existing:
         return status(project)
@@ -411,11 +449,14 @@ def ensure_project(project: str, name: str = "", log=None) -> dict:
     if not isinstance(orgs, list) or not orgs:
         raise ValueError("Your Supabase account has no organisation to create a project in. "
                           "Make one at supabase.com/dashboard/organizations and try again.")
-    org_id = str(orgs[0].get("id") or orgs[0].get("slug") or "")
+    known = {str(org.get("id") or org.get("slug") or "") for org in orgs if isinstance(org, dict)}
+    if org_id and org_id not in known:
+        raise ValueError(f"Your Supabase account has no organisation {org_id}.")
+    org_id = org_id or str(orgs[0].get("id") or orgs[0].get("slug") or "")
     db_password = _db_password()
     created = _run_json([
         tool, "projects", "create", name or project, "--org-id", org_id,
-        "--db-password", db_password, "--region", DEFAULT_REGION, "--output", "json",
+        "--db-password", db_password, "--region", region or DEFAULT_REGION, "--output", "json",
     ], timeout=60) or {}
     ref = str(created.get("id") or created.get("ref") or "")
     if not ref:

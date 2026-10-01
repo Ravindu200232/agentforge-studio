@@ -86,6 +86,13 @@ def _guarded(name: str, fn, args: tuple, kwargs: dict) -> None:
                     _active.pop(project, None)
 
 
+def answer_build(project: str, reply: str) -> dict[str, Any]:
+    """The customer answered a build's question: carry on in the background, like the build itself, so the
+    answer comes back at once and the next question or the build streams into the chat."""
+    _in_background(f"build:{project}", project, bus.DEVELOPER, builder.answer, project, reply, _project=project)
+    return {"ok": True}
+
+
 def active_run(project: str) -> str:
     with _active_lock:
         return _active.get(project, "")

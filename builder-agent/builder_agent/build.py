@@ -16,6 +16,8 @@ BUILD_DIR = "build"
 REPORT = (BUILD_DIR, "report.json")
 QUESTION = (BUILD_DIR, "question.json")
 PENDING = (BUILD_DIR, "pending.json")
+SETUP = (BUILD_DIR, "setup.json")
+SETUP_RETRIES = 2
 REPORT_REPAIR_ROUNDS = 2
 
 
@@ -144,6 +146,22 @@ def answer(project: str, reply: str) -> dict[str, Any]:
     request = pending.get("request") or ""
     plan = pending.get("plan") or ""
     mode = pending.get("mode") or "run"
+    if mode == "setup":
+        # Asked before the build was planned: the answer joins the others and the next question (or the
+        # build itself, once everything is settled) follows.
+        state = _setup_state(session)
+        state.setdefault("answers", []).append({"question": (pending.get("question") or {}).get("question", ""),
+                                                "answer": text})
+        session.write_record(*SETUP, data=state)
+        session.write_record(*PENDING, data={})
+        session.begin("build", role=bus.DEVELOPER)
+        try:
+            return _setup(project, session)
+        except RunCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            session.fail(str(exc))
+            raise
     resume_request = request + "\n" + prompts.load(
         "builder/resume", question=(pending.get("question") or {}).get("question", ""), answer=text)
     session.begin("build" if mode == "run" else "build-edit", role=bus.DEVELOPER)
@@ -315,7 +333,11 @@ def _finish_run(project: str, session: Any, build_result: dict[str, Any], plan: 
 
 
 def run(project: str, direction: str = "") -> dict[str, Any]:
-    """Build the application from everything the project already settled."""
+    """Build the application from everything the project already settled.
+
+    First the customer is asked, one question at a time, everything the build will need from them (see
+    `setup.py`); the build is planned only once that is settled, so it can run without stopping.
+    """
     from srs_agent import document as srs_document
 
     if not srs_document.has_document(project):
@@ -324,65 +346,143 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         raise ValueError("this project already has a build waiting on an earlier question - "
                          "answer it before starting another")
 
-    record = store.require(project)
     session = session_for(project)
-    from . import scaffold
-    stack = str(record.get("stack") or "nextjs-supabase")
     session.begin("build", role=bus.DEVELOPER)
-
     try:
-        # Every stack here is Supabase-backed: the one real project this AgentForge project gets
-        # is created now, the first time it actually builds (signing in to the Supabase account
-        # itself already happened from the stack picker - see supabase_connect.py's OAuth flow). A
-        # later build of the same project finds the record already there and does nothing.
-        supabase_connect.ensure_project(project, name=str(record.get("name") or project),
-                                        log=lambda line: bus.agent_msg(project, line, title="Supabase"))
-        installed = scaffold.install(session.workspace, stack)
-        bus.agent_msg(project,
-                      f"{stack} scaffold copied ({len(installed['files'])} files)."
-                      if installed["scaffolded"] else "Existing application preserved; building on its files.",
-                      title="Builder scaffold")
-        bus.phase(project, "build:write", "Building and checking the application",
-                  detail="One sequential plan: complete the app, focused business units, then final product checks.")
-        request = prompts.load("builder/generate", stack=stack,
-                               report_template=build_report.stage_template(session.workspace))
-        request += _prototype_context_block(session.workspace)
-        request += "\n\n## Scaffold installation\n" + json.dumps(installed, indent=2)
-        guide_paths = reference_staging.stage(session.workspace, "build/guides",
-                                              scaffold.build_guide_files(stack))
-        request += ("\n\n## Stack build guides\n\nRead these yourself before planning:\n"
-                   + reference_staging.as_bullets(guide_paths))
-        auth = auth_guide.staged_for(session.workspace, srs_document.document(project).get("srs_document", {}))
-        if auth:
-            request += ("\n\n## Authentication, roles and navigation\n\n"
-                        f"Read `{auth}` yourself before planning. It is the standard this app's sign-up, sign-in, cookie "
-                        "sessions, role-based access, role dashboards and signed-in and signed-out navigation are built and "
-                        "tested to (its section 7 is for the real application). The specification decides which roles and "
-                        "pages exist; this file decides how they behave.")
-        from prototype_agent import design as design_stage
-        customization = design_stage.approved_customization(project)
-        if customization:
-            request += ("\n\n## Approved design customization\n"
-                        + json.dumps({"selected_design_path": customization.get("design_md_path"),
-                                      "customizer_prompt": customization.get("customizer_prompt"),
-                                      "customizer_spec": customization.get("customizer_spec")},
-                                     ensure_ascii=False, indent=2))
-            if customization.get("design_md_workspace_path"):
-                request += (f"\n\nRead `{customization['design_md_workspace_path']}` yourself for "
-                           f"the selected theme's own guidance.")
-        if direction.strip():
-            request += f"\n\n## What the customer asked for on top of that\n\n{direction.strip()}"
-
-        build_result = session.run_task(request, plan_directory="plan", audit=False)
-        settled = _settle(project, session, "run", request, build_result.get("plan") or "", build_result)
-        if settled.get("status") == "asking":
-            return settled
-        return _finish_run(project, session, settled, build_result.get("plan") or "")
+        saved = session.read_record(*SETUP, fallback=None)
+        previous = (saved.get("decisions") or []) if isinstance(saved, dict) and saved.get("status") == "ready" else []
+        session.write_record(*SETUP, data={"direction": direction, "answers": [], "previous": previous,
+                                           "status": "asking"})
+        return _setup(project, session)
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001
         session.fail(str(exc))
         raise
+
+
+def _setup_state(session: Any) -> dict[str, Any]:
+    saved = session.read_record(*SETUP, fallback=None)
+    return saved if isinstance(saved, dict) else {"answers": []}
+
+
+def _setup(project: str, session: Any) -> dict[str, Any]:
+    """One turn of settling the build with the customer: the next question, or - once nothing is left to ask -
+    the build itself. The model reads the specification and what the accounts already have, and writes every
+    question itself; nothing here decides what to ask."""
+    from srs_agent import document as srs_document
+
+    from . import scaffold, setup
+
+    record = store.require(project)
+    stack = str(record.get("stack") or "nextjs-supabase")
+    state = _setup_state(session)
+    reference_staging.stage(session.workspace, "build/guides", scaffold.build_guide_files(stack))
+    auth_guide.staged_for(session.workspace, srs_document.document(project).get("srs_document", {}))
+    bus.phase(project, "build:setup", "Settling the build with you",
+              detail="Reading the specification and what your accounts already have, then asking what the build "
+                     "needs from you before it is planned.")
+    found = setup.facts(project, stack, state.get("facts"))
+    state["facts"] = found
+    session.write_record(*SETUP, data=state)
+    left = setup.MAX_QUESTIONS - len(state.get("answers") or [])
+    request = setup.prompt(project, session, stack, found, state, left)
+    agent = session.agent("")
+    with session.lock:
+        agent.set_mode("plan")
+    try:
+        reply = session.ask_json(request, validator=lambda data: setup.check(data, left > 0, stack, found))
+    finally:
+        with session.lock:
+            agent.set_mode("act")
+    if reply["kind"] == "question":
+        if _asks_for_supabase(reply) and supabase_connect.record(project) and left > 1:
+            # Never the customer's to answer: this project's Supabase is connected through its account.
+            state.setdefault("answers", []).append({"question": reply["question"],
+                                                    "answer": prompts.load("builder/supabase-connected").strip()})
+            session.write_record(*SETUP, data=state)
+            return _setup(project, session)
+        asked = _private_value(reply)
+        session.write_record(*PENDING, data={"mode": "setup", "request": "", "plan": "", "question": asked})
+        _ask(project, asked)
+        session.finish("Waiting for your answer.")
+        return {"status": "asking", "question": asked}
+    state.update(status="ready", decisions=reply["decisions"], database=reply["database"], problem="")
+    session.write_record(*SETUP, data=state)
+    bus.phase(project, "build:setup", "Settled with you", status="complete",
+              detail="; ".join(reply["decisions"][:6]))
+    return _build(project, session, state)
+
+
+def _build(project: str, session: Any, state: dict[str, Any]) -> dict[str, Any]:
+    """The build itself, on what was settled with the customer before it."""
+    from srs_agent import document as srs_document
+
+    from . import scaffold, setup
+
+    record = store.require(project)
+    stack = str(record.get("stack") or "nextjs-supabase")
+    direction = str(state.get("direction") or "")
+    try:
+        # Where the data lives, exactly as settled: this project's Supabase project kept or created (every
+        # stack has one), and on a MongoDB stack the cluster. A later build finds them there and does nothing.
+        setup.apply(project, str(record.get("name") or project), state.get("database") or {},
+                    say=lambda line: bus.agent_msg(project, line, title="Database"))
+    except RunCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a setup that fails is the customer's to decide, not a dead end
+        failures = int(state.get("failures") or 0) + 1
+        if failures > SETUP_RETRIES:
+            raise
+        bus.log(project, "WARN", f"Setting up the database did not work: {exc}")
+        state.pop("facts", None)  # what failed may have changed what the accounts have: read them again
+        state.update(status="asking", failures=failures,
+                     problem=f"Setting up where the data lives, as settled ({json.dumps(state.get('database'))}), "
+                             f"failed: {exc}")
+        session.write_record(*SETUP, data=state)
+        return _setup(project, session)
+    installed = scaffold.install(session.workspace, stack)
+    bus.agent_msg(project,
+                  f"{stack} scaffold copied ({len(installed['files'])} files)."
+                  if installed["scaffolded"] else "Existing application preserved; building on its files.",
+                  title="Builder scaffold")
+    bus.phase(project, "build:write", "Building and checking the application",
+              detail="One sequential plan: complete the app, focused business units, then final product checks.")
+    request = prompts.load("builder/generate", stack=stack,
+                           report_template=build_report.stage_template(session.workspace))
+    request += _prototype_context_block(session.workspace)
+    request += "\n\n## Scaffold installation\n" + json.dumps(installed, indent=2)
+    guide_paths = reference_staging.stage(session.workspace, "build/guides",
+                                          scaffold.build_guide_files(stack))
+    request += ("\n\n## Stack build guides\n\nRead these yourself before planning:\n"
+               + reference_staging.as_bullets(guide_paths))
+    auth = auth_guide.staged_for(session.workspace, srs_document.document(project).get("srs_document", {}))
+    if auth:
+        request += ("\n\n## Authentication, roles and navigation\n\n"
+                    f"Read `{auth}` yourself before planning. It is the standard this app's sign-up, sign-in, cookie "
+                    "sessions, role-based access, role dashboards and signed-in and signed-out navigation are built and "
+                    "tested to (its section 7 is for the real application). The specification decides which roles and "
+                    "pages exist; this file decides how they behave.")
+    from prototype_agent import design as design_stage
+    customization = design_stage.approved_customization(project)
+    if customization:
+        request += ("\n\n## Approved design customization\n"
+                    + json.dumps({"selected_design_path": customization.get("design_md_path"),
+                                  "customizer_prompt": customization.get("customizer_prompt"),
+                                  "customizer_spec": customization.get("customizer_spec")},
+                                 ensure_ascii=False, indent=2))
+        if customization.get("design_md_workspace_path"):
+            request += (f"\n\nRead `{customization['design_md_workspace_path']}` yourself for "
+                       f"the selected theme's own guidance.")
+    request += setup.settled_block(state)
+    if direction.strip():
+        request += f"\n\n## What the customer asked for on top of that\n\n{direction.strip()}"
+
+    build_result = session.run_task(request, plan_directory="plan", audit=False)
+    settled = _settle(project, session, "run", request, build_result.get("plan") or "", build_result)
+    if settled.get("status") == "asking":
+        return settled
+    return _finish_run(project, session, settled, build_result.get("plan") or "")
 
 
 def _finish_update(project: str, session: Any, result: dict[str, Any]) -> dict[str, Any]:

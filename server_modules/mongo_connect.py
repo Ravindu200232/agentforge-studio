@@ -183,7 +183,7 @@ def _ensure_group(token: str) -> str:
     return group_id
 
 
-def _ensure_cluster(token: str, group_id: str, say) -> str:
+def _ensure_cluster(token: str, group_id: str, say, region: str = "") -> str:
     """The name of the cluster to use in this project - not necessarily CLUSTER_NAME: a free-tier
     project allows only one M0 cluster, so an existing one (whatever a person already made by hand)
     is reused rather than failing to create a second one there is no room for."""
@@ -198,7 +198,7 @@ def _ensure_cluster(token: str, group_id: str, say) -> str:
     say(f"Creating the {CLUSTER_NAME} cluster (free tier)…")
     _api("POST", f"/groups/{group_id}/clusters", {
         "name": CLUSTER_NAME, "clusterType": "REPLICASET",
-        "providerSettings": {"providerName": "TENANT", "instanceSizeName": "M0", "regionName": DEFAULT_REGION},
+        "providerSettings": {"providerName": "TENANT", "instanceSizeName": "M0", "regionName": region or DEFAULT_REGION},
     }, token=token)
     return CLUSTER_NAME
 
@@ -239,7 +239,18 @@ def _ensure_access_list(token: str, group_id: str) -> None:
     }, token=token)
 
 
-def ensure_cluster(log=None) -> dict:
+def account_facts() -> dict:
+    """What the build may ask about: whether an Atlas account is connected, the cluster this studio already
+    made, and whether a connection string is already saved. Never the string itself."""
+    from . import deploy_vars
+
+    saved = {row["name"] for row in deploy_vars.names()}
+    return {"atlas_connected": credentials_saved(),
+            "studio_cluster": str(config.setting(CLUSTER_NAME_SETTING) or ""),
+            "connection_string_saved": bool(config.setting("deploy_mongodb_uri", "") or "MONGODB_URI" in saved)}
+
+
+def ensure_cluster(log=None, region: str = "") -> dict:
     """The studio's one Atlas cluster: the existing one, or a freshly provisioned one. Blocking
     (cluster creation takes a few minutes) - called from a background job (routes_deploy.py), the
     same way the Deploy panel already runs anything slow."""
@@ -252,7 +263,7 @@ def ensure_cluster(log=None) -> dict:
     token = _token()
     say("Finding or creating the Atlas project…")
     group_id = _ensure_group(token)
-    cluster_name = _ensure_cluster(token, group_id, say)
+    cluster_name = _ensure_cluster(token, group_id, say, region)
     cluster = _wait_idle(token, group_id, cluster_name, say)
     password = _db_password()
     say("Creating the database user…")
