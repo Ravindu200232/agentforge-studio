@@ -14,27 +14,25 @@ param(
 )
 
 $root = $PSScriptRoot
-$bundled = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
+. "$root\find-python.ps1"
 
-if (Test-Path -LiteralPath $bundled) {
-    $python = $bundled
-    $env:PYTHONPATH = "$root\.deps;$root\src;$root\srs-agent;$root\prototype-agent;$root\builder-agent;$root\qa-agent;$root\deploy-agent;$root"
-} else {
-    $python = (Get-Command python -ErrorAction SilentlyContinue).Source
-    if (-not $python) {
-        Write-Error 'Python was not found. Install Python 3.10+ and run: python -m pip install -e .'
-        exit 2
-    }
-    $env:PYTHONPATH = "$root\.deps;$root\src;$root\srs-agent;$root\prototype-agent;$root\builder-agent;$root\qa-agent;$root\deploy-agent;$root"
+$python = Find-Python
+if (-not $python) {
+    Write-Error 'Python 3.10+ was not found. Install it from https://www.python.org/downloads/ (tick "Add python.exe to PATH"), then run studio.bat again.'
+    exit 2
 }
+Write-Host "Python   $python"
+$deps = Get-PythonDeps $python $root
+$env:PYTHONPATH = "$deps;$root\src;$root\srs-agent;$root\prototype-agent;$root\builder-agent;$root\qa-agent;$root\deploy-agent;$root"
 
-# The desktop runtime supplies Python, but not this project's optional SDKs.
-# Keep them project-local so a first launch cannot leave Next.js running alone
-# and turn every API request (including sign-in) into a confusing HTTP 500.
+# This project's Python packages, if your Python does not have them yet. They go into the project's
+# own .deps folder for this Python version, so your Python's own packages are never changed, and a
+# first launch cannot leave Next.js running alone with every API request (including sign-in) failing
+# as an HTTP 500.
 & $python -c "import ollama, httpx, pydantic, cryptography" 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Host 'Installing missing backend Python dependencies...'
-    & $python -m pip install --target "$root\.deps" `
+    & $python -m pip install --upgrade --target "$deps" `
         'ollama>=0.6.2,<1' 'httpx>=0.27,<1' 'pydantic>=2.6,<3' 'cryptography>=42,<48'
     if ($LASTEXITCODE -ne 0) {
         Write-Error 'Backend dependencies could not be installed. Check your Internet connection, then run studio.bat again.'
