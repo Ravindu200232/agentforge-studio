@@ -6,8 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from server_modules import (auth_guide, bus, changes, deploy_vars, plugins, prompts, reference_staging, store,
-                            supabase_connect)
+from server_modules import (auth_guide, bus, changes, config, deploy_vars, plugins, prompts, reference_staging,
+                            store, supabase_connect)
 from server_modules.qa_report import summary_counts
 from server_modules.session import RunCancelled, session_for
 from server_modules.validation import build_report
@@ -19,6 +19,9 @@ PENDING = (BUILD_DIR, "pending.json")
 SETUP = (BUILD_DIR, "setup.json")
 SETUP_RETRIES = 2
 REPORT_REPAIR_ROUNDS = 2
+# The stack's build guides, staged where the agent reads them - inside the record folder, never the app root: a
+# folder there would make `scaffold.install` take a fresh workspace for an existing app and copy no template.
+GUIDES_DIR = f"{config.RECORD_DIR}/{BUILD_DIR}/guides"
 
 
 def report(project: str) -> dict[str, Any]:
@@ -377,7 +380,7 @@ def _setup(project: str, session: Any) -> dict[str, Any]:
     record = store.require(project)
     stack = str(record.get("stack") or "nextjs-supabase")
     state = _setup_state(session)
-    reference_staging.stage(session.workspace, "build/guides", scaffold.build_guide_files(stack))
+    reference_staging.stage(session.workspace, GUIDES_DIR, scaffold.build_guide_files(stack))
     auth_guide.staged_for(session.workspace, srs_document.document(project).get("srs_document", {}))
     bus.phase(project, "build:setup", "Settling the build with you",
               detail="Reading the specification and what your accounts already have, then asking what the build "
@@ -452,7 +455,7 @@ def _build(project: str, session: Any, state: dict[str, Any]) -> dict[str, Any]:
                            report_template=build_report.stage_template(session.workspace))
     request += _prototype_context_block(session.workspace)
     request += "\n\n## Scaffold installation\n" + json.dumps(installed, indent=2)
-    guide_paths = reference_staging.stage(session.workspace, "build/guides",
+    guide_paths = reference_staging.stage(session.workspace, GUIDES_DIR,
                                           scaffold.build_guide_files(stack))
     request += ("\n\n## Stack build guides\n\nRead these yourself before planning:\n"
                + reference_staging.as_bullets(guide_paths))

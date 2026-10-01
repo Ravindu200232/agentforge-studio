@@ -11,7 +11,7 @@ import time
 import threading
 from typing import Any
 
-from server_modules import bus, prompts, reference_staging, store
+from server_modules import bus, config, prompts, reference_staging, store
 from server_modules.qa_report import summary_counts
 from server_modules.session import ProjectSession, RunCancelled, session_for
 
@@ -91,7 +91,8 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         from server_modules.validation import build_report
         request = prompts.load("testing/run", project=project,
                                report_template=build_report.stage_template(session.workspace))
-        guide_paths = reference_staging.stage(session.workspace, f"{QA_DIR}/guides", guide_files(stack))
+        guide_paths = reference_staging.stage(session.workspace, f"{config.RECORD_DIR}/{QA_DIR}/guides",
+                                              guide_files(stack))
         request += ("\n\n## Selected scaffold and test guides\n\nRead these yourself before planning:\n"
                    + reference_staging.as_bullets(guide_paths))
         if direction.strip():

@@ -148,6 +148,21 @@ class SetupTests(SetupFlowCase):
         self.assertIsNone(facts.call_args_list[0].args[2])
         self.assertEqual(facts.call_args_list[1].args[2], FACTS)
 
+    def test_a_fresh_project_still_gets_its_template_after_the_setup(self):
+        """The setup stages the stack's guides before the build installs the template: they go in the record
+        folder, never the app root, where any folder made `scaffold.install` keep a fresh workspace as it is."""
+        from builder_agent import scaffold
+
+        installed = []
+        self.enterContext(mock.patch.object(
+            build, "_build", lambda project, session, state:
+            installed.append(scaffold.install(session.workspace, "nextjs-supabase")) or {"status": "building"}))
+        self.session.replies.append(READY)
+        build.run(PROJECT)
+        self.assertTrue(installed[0]["scaffolded"], installed[0].get("existing"))
+        self.assertTrue((self.session.workspace / ".agentforge" / "build" / "guides" / "pitfalls.md").is_file())
+        self.assertFalse((self.session.workspace / "build").exists())
+
     def test_an_earlier_builds_settled_decisions_are_not_asked_again(self):
         self.session.write_record(*build.SETUP, data={"status": "ready", "decisions": ["Keep the Mumbai project"]})
         self.session.replies.append(READY)
