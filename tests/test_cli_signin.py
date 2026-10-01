@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -283,6 +284,7 @@ class VercelCredentialTests(unittest.TestCase):
 
 
 class WhereTheToolsAreTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows installers put .exe tools under Program Files; elsewhere a tool has no suffix")
     def test_a_tool_installed_after_the_server_started_is_still_found(self):
         with tempfile_dir() as folder:
             (folder / "AWSCLIV2").mkdir()

@@ -177,9 +177,12 @@ class ReliabilityScenarioTests(unittest.TestCase):
         self.assertEqual(bus.pending_decisions(), [])
 
     def test_forget_discards_late_events_from_a_deleted_project(self):
-        bus.forget("prj_deleted")
-        bus.emit({"type": "log", "project": "prj_deleted", "agent": bus.DEVELOPER, "text": "late"})
-        self.assertEqual(bus.history("prj_deleted"), [])
+        # Its own workspace folder: history() reads events back from disk, and a folder left by another run
+        # would answer for this one.
+        with tempfile.TemporaryDirectory() as folder, patch.object(config, "WORKSPACES", Path(folder) / "workspaces"):
+            bus.forget("prj_deleted")
+            bus.emit({"type": "log", "project": "prj_deleted", "agent": bus.DEVELOPER, "text": "late"})
+            self.assertEqual(bus.history("prj_deleted"), [])
 
     def test_project_creation_releases_its_event_tombstone(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(config, "WORKSPACES", Path(folder) / "workspaces"):

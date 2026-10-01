@@ -10,10 +10,12 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tests"))
 for folder in (".", "src", "srs-agent", "builder-agent", "prototype-agent", "qa-agent"):
     sys.path.insert(0, str(ROOT / folder))
 
 from server_modules import bus, changes, config, httpd, prompts, runs  # noqa: E402
+from support import forget_project  # noqa: E402
 
 PROJECT = "prj_changes_test"
 
@@ -108,7 +110,7 @@ class ChangesTestCase(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
         self.addCleanup(bus.subscribe(self.events.append))
-        self.addCleanup(bus.forget, PROJECT)
+        self.addCleanup(forget_project, PROJECT)
 
     def settle(self, change_id: str):
         thread = changes._threads.get(change_id)
@@ -433,7 +435,7 @@ class PlanModeTests(unittest.TestCase):
             finally:
                 config.PROJECTS_FILE = original
                 config.WORKSPACES = original_workspaces
-                bus.forget(project)
+                forget_project(project)
 
 
 if __name__ == "__main__":

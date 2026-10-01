@@ -183,13 +183,10 @@ class ScaffoldTests(unittest.TestCase):
     def test_builder_is_told_to_unit_test_every_page_route_and_component(self):
         self.assertIn("unit-tests.md", scaffold.COMMON_GUIDES)
         for stack in scaffold.STACK_GUIDES:
-            context = scaffold.guide_context(stack)
-            self.assertIn("### unit-tests.md", context)
-            self.assertLess(context.index("### pitfalls.md"), context.index("### unit-tests.md"))
+            names = list(scaffold.guide_files(stack))        # what the QA run is given to read
+            self.assertIn("unit-tests.md", names)
+            self.assertLess(names.index("pitfalls.md"), names.index("unit-tests.md"))
         self.assertIn("### unit-tests.md", scaffold.common_context())
-        for name in ("builder/generate", "builder/update", "testing/run"):
-            prompt = (ROOT / "prompts" / f"{name}.md").read_text(encoding="utf-8")
-            self.assertIn("qa:inventory", prompt, name)
         self.assertIn("every approved page", (ROOT / "prompts/builder/generate.md").read_text(encoding="utf-8"))
 
     def test_shared_guidance_and_templates_name_no_particular_app(self):

@@ -203,6 +203,16 @@ def _node_module(root: Path, relative: str) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def _framework(package: dict) -> str:
+    """Which framework serves this app, as the preview starts it: a change means a new process."""
+    dependencies = {**(package.get("dependencies") or {}), **(package.get("devDependencies") or {})}
+    if "next" in dependencies:
+        return "next"
+    if any(name.startswith("@remix-run/") for name in dependencies):
+        return "remix"
+    return "vite" if "vite" in dependencies else ""
+
+
 def _preview_command(root: Path, package: dict, script: str, port: int) -> list[str]:
     """Start known frameworks directly so their checked private port always wins.
 
@@ -243,8 +253,9 @@ def _shown(root: Path, command: list[str]) -> str:
     parts = []
     for index, part in enumerate(command):
         path = Path(part)
-        if index == 0 and path.stem.lower() in {"node", "npm"}:
-            part = path.stem.lower()
+        program = Path(re.split(r"[\\/]", part)[-1]).stem.lower()
+        if index == 0 and program in {"node", "npm"}:
+            part = program
         elif path.is_absolute() and path.is_relative_to(root):
             part = path.relative_to(root).as_posix()
         parts.append(f'"{part}"' if " " in part else part)
@@ -491,9 +502,12 @@ def open_preview(project: str) -> dict:
             # and is still the slow dev server.
             saved = _processes.get(project) or _read_metadata(project)
             current_port = int(current.get("port") or 0)
+            # ... or the app is now served by another framework (Vite became Next.js): the old process would keep
+            # serving the old app.
+            relaunch = saved.get("framework") is not None and saved["framework"] != _framework(package)
             stale = not current_port or \
                 (current["status"] == "running" and not _port_open(current_port)) \
-                or (saved.get("script") and saved["script"] != script)
+                or (saved.get("script") and saved["script"] != script) or bool(relaunch)
             if not stale:
                 return current
             stop(project)
@@ -534,6 +548,7 @@ def open_preview(project: str) -> dict:
         url = f"http://127.0.0.1:{port}/"
         _processes[project] = {"process": process, "status": "starting", "url": url,
                                "port": port, "runtimeId": runtime_id, "script": script,
+                               "framework": _framework(package),
                                "serverId": f"srv-{project}", "revision": revision}
         _write_metadata(project, _processes[project])
         bus.runtime_state(project, "starting", url, f"srv-{project}", revision)

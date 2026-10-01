@@ -10,12 +10,14 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tests"))
 for folder in (".", "src", "srs-agent", "builder-agent", "prototype-agent", "qa-agent", "deploy-agent"):
     sys.path.insert(0, str(ROOT / folder))
 
 import httpx  # noqa: E402
 from deploy_agent import deploy  # noqa: E402
 from server_modules import bus, changes, config, prompts  # noqa: E402
+from support import forget_project  # noqa: E402
 
 PROJECT = "prj_deploy_flow_test"
 SKILLS = deploy.SKILLS_DIR
@@ -120,7 +122,7 @@ class DeployFlowCase(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
         self.addCleanup(bus.subscribe(self.events.append))
-        self.addCleanup(bus.forget, PROJECT)
+        self.addCleanup(forget_project, PROJECT)
         self.session.reads = [f"{SKILLS}/{slug}/SKILL.md" for slug in ("core", "vercel", "stack-nextjs-supabase")]
 
     def settle(self, change_id):

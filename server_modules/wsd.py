@@ -248,6 +248,12 @@ class FeedServer:
                 client.close()
             self.clients.clear()
         if self.socket:
+            # Close alone leaves a listening socket bound on Linux and macOS while the accept loop still holds
+            # it, so a restarted feed could not take its port back; shutdown wakes that loop and frees the port.
+            try:
+                self.socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             try:
                 self.socket.close()
             except OSError:

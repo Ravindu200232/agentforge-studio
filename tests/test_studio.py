@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tests"))
 for folder in ("", "src", "srs-agent", "prototype-agent", "builder-agent",
                "qa-agent", "deploy-agent", ".deps"):
     path = str(ROOT / folder) if folder else str(ROOT)
@@ -26,6 +27,7 @@ from server_modules import store as project_store  # noqa: E402
 from server_modules.session import extract_json  # noqa: E402
 from server_modules.validation import completeness, plan_rules, review, srs_schema  # noqa: E402
 from srs_agent import document as srs_document  # noqa: E402
+from support import forget_project  # noqa: E402
 
 
 def a_plan(**patch):
@@ -838,7 +840,7 @@ class EventStreamTests(unittest.TestCase):
                 self.assertIn("request 4000", text)
             finally:
                 config.WORKSPACES = original
-                bus.forget(project)
+                forget_project(project)
 
     def test_the_durable_events_survive_a_restart(self):
         from server_modules import bus, config
@@ -869,7 +871,7 @@ class EventStreamTests(unittest.TestCase):
                 self.assertEqual(stream["logs"][0]["text"], "started")
             finally:
                 config.WORKSPACES = original
-                bus.forget("prj_test")
+                forget_project("prj_test")
 
     def test_events_carry_what_the_studio_reducer_reads(self):
         from server_modules import bus, config
@@ -888,7 +890,7 @@ class EventStreamTests(unittest.TestCase):
             finally:
                 cancel()
                 config.WORKSPACES = original
-                bus.forget("prj_shape")
+                forget_project("prj_shape")
 
         by_type = {event["type"]: event for event in seen}
         self.assertEqual(by_type["phase"]["title"], "Writing")
@@ -922,7 +924,7 @@ class StreamWriterTests(unittest.TestCase):
             writer.token("more")
         finally:
             cancel()
-            bus.forget("prj_stream")
+            forget_project("prj_stream")
         # start() itself emits stream_start; no stream (token) event yet.
         self.assertNotIn("stream", [e["type"] for e in self._own_role_events(seen)])
 
@@ -938,7 +940,7 @@ class StreamWriterTests(unittest.TestCase):
             writer.token("lo!")   # 6 characters buffered, over the 5-character threshold
         finally:
             cancel()
-            bus.forget("prj_stream")
+            forget_project("prj_stream")
         tokens = [e for e in self._own_role_events(seen) if e["type"] == "stream"]
         self.assertEqual(len(tokens), 1)
         self.assertEqual(tokens[0]["token"], "hello!")
@@ -954,7 +956,7 @@ class StreamWriterTests(unittest.TestCase):
             writer.token("x")
         finally:
             cancel()
-            bus.forget("prj_stream")
+            forget_project("prj_stream")
         tokens = [e for e in self._own_role_events(seen) if e["type"] == "stream"]
         self.assertEqual(len(tokens), 1)
         self.assertEqual(tokens[0]["token"], "x")
@@ -970,7 +972,7 @@ class StreamWriterTests(unittest.TestCase):
             writer.token("")
         finally:
             cancel()
-            bus.forget("prj_stream")
+            forget_project("prj_stream")
         self.assertEqual([e for e in self._own_role_events(seen) if e["type"] == "stream"], [])
 
     def test_end_flushes_a_buffered_tail_that_never_crossed_a_threshold(self):
@@ -987,7 +989,7 @@ class StreamWriterTests(unittest.TestCase):
             writer.end("a.html", "just a few characters")
         finally:
             cancel()
-            bus.forget("prj_stream")
+            forget_project("prj_stream")
         own = self._own_role_events(seen)
         tokens = [e for e in own if e["type"] == "stream"]
         ends = [e for e in own if e["type"] == "stream_end"]
@@ -1016,7 +1018,7 @@ class StreamWriterTests(unittest.TestCase):
             writer.end("a.html", "the real page")
         finally:
             cancel()
-            bus.forget("prj_stream")
+            forget_project("prj_stream")
         tokens = [e for e in self._own_role_events(seen) if e["type"] == "stream"]
         self.assertEqual(len(tokens), 1)
         self.assertEqual(tokens[0]["token"], "the real page")
@@ -1032,7 +1034,7 @@ class StreamWriterTests(unittest.TestCase):
             writer.end("a.html", "")
         finally:
             cancel()
-            bus.forget("prj_stream")
+            forget_project("prj_stream")
         own = self._own_role_events(seen)
         self.assertEqual([e for e in own if e["type"] == "stream"], [])
         self.assertEqual(len([e for e in own if e["type"] == "stream_end"]), 1)
@@ -1050,7 +1052,7 @@ class LiveUsageMeterTests(unittest.TestCase):
                        turn_output_tokens=9)
         finally:
             cancel()
-            bus.forget("prj_usage")
+            forget_project("prj_usage")
         event = next(e for e in seen if e["type"] == "memory" and e["agent"] == "developer")
         self.assertEqual(event["turn_started_at"], 1234)
         self.assertEqual(event["sent"], 41)
@@ -1543,20 +1545,31 @@ class PrototypeFromWireframesTests(unittest.TestCase):
         self.assertNotIn("/account", owner)
         self.assertNotIn("/admin", {p["route"] for p in accounts["Shopper"]["can_open"]})
 
-    def test_missing_wireframes_block_approval_before_starting_a_run(self):
+    def test_a_missing_wireframe_does_not_block_the_prototype(self):
+        """A route whose wireframe is not drawn is prototyped from the SRS and handoff; the ready ones are honoured."""
         from prototype_agent import prototype as prototyper
         from srs_agent import document as srs_document
 
+        drawn = {}
+
+        def draw(project, spec, direction, *, wireframe_source=None):
+            drawn["source"] = wireframe_source
+            raise RuntimeError("stop after the draw was started")
+
         with patch.object(srs_document, "has_document", return_value=True), \
              patch.object(prototyper.design_stage, "current", return_value={"approved": True}), \
+             patch.object(prototyper.design_stage, "approved_spec", return_value={"tokens": {}}), \
              patch.object(srs_document, "wireframes", return_value={"pages": [
                  {"route": "/", "has_html": True},
                  {"route": "/checkout", "has_html": False},
              ]}), \
+             patch.object(srs_document, "wireframe_html", return_value="<html></html>"), \
+             patch.object(prototyper, "_draw_with_agent", draw), \
              patch.object(prototyper, "session_for") as session:
-            with self.assertRaisesRegex(ValueError, "/checkout"):
+            with self.assertRaisesRegex(RuntimeError, "stop after the draw"):
                 prototyper.generate_from_wireframes("test", "direction")
-            session.return_value.begin.assert_not_called()
+        session.return_value.begin.assert_called_once()
+        self.assertEqual(drawn["source"], {"/": "<html></html>"})
 
     def test_selected_design_md_is_read_only_from_the_chosen_theme(self):
         from prototype_agent import design as design_stage

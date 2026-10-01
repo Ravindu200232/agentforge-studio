@@ -13,10 +13,12 @@ from unittest import mock
 import ollama
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tests"))
 for folder in (".", "src"):
     sys.path.insert(0, str(ROOT / folder))
 
 from server_modules import bus, llm, llm_tools  # noqa: E402
+from support import forget_project  # noqa: E402
 
 
 class FakeMessage:
@@ -198,7 +200,7 @@ class FocusedUsageTests(unittest.TestCase):
             report(SimpleNamespace(prompt_eval_count=123, eval_count=17))
         finally:
             cancel()
-            bus.forget(project)
+            forget_project(project)
         event = next(row for row in seen if row.get("type") == "memory" and row.get("agent") == bus.DEVELOPER)
         self.assertEqual(event["used"], 123)
         self.assertEqual(event["limit"], 8192)

@@ -9,10 +9,12 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tests"))
 for folder in (".", "src", "srs-agent", "builder-agent", "prototype-agent", "qa-agent", "deploy-agent"):
     sys.path.insert(0, str(ROOT / folder))
 
 from server_modules import bus, changes, config, deploy_vars, httpd, runs, secrets_guard, session, supabase_connect  # noqa: E402
+from support import forget_project  # noqa: E402
 
 PROJECT = "prj_deploy_vars_test"
 # A connection string with a password in it, only ever used here as an example of the shape
@@ -189,7 +191,7 @@ class ValueQuestionTests(SettingsCase):
         self.events: list[dict] = []
         self.addCleanup(bus.subscribe(self.events.append))
         bus._pending_decisions.clear()
-        self.addCleanup(bus.forget, PROJECT)
+        self.addCleanup(forget_project, PROJECT)
 
     def test_a_question_names_its_variable_and_a_bad_name_or_check_is_sent_back(self):
         asked = changes.check_question({"question": "Which password?", "variable": "ADMIN_PASSWORD"}, True)
@@ -300,7 +302,7 @@ class ChatRefusesSecretsTests(unittest.TestCase):
         self.events: list[dict] = []
         self.addCleanup(bus.subscribe(self.events.append))
         bus._pending_decisions.clear()
-        self.addCleanup(bus.forget, PROJECT)
+        self.addCleanup(forget_project, PROJECT)
 
     def test_a_typed_message_holding_a_secret_is_not_planned_or_kept(self):
         with mock.patch.object(runs.changes, "submit") as submit:
