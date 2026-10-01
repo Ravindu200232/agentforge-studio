@@ -8,6 +8,7 @@ import re
 import shlex
 from pathlib import Path
 import queue
+import signal
 import subprocess
 import threading
 import time
@@ -389,7 +390,11 @@ class WorkspaceTools:
         output_parts: list[str] = []
         process: subprocess.Popen | None = None
         timed_out = False
+        stopped_at = 0.0
         exit_code = 1
+        # The host can ask a running command to stop (the Stop button): it is checked while the command runs,
+        # so Stop does not wait for a build or a test run to finish on its own.
+        stop_requested = getattr(self, "stop_requested", None)
 
         def append(text: str) -> None:
             if not text:
@@ -409,11 +414,19 @@ class WorkspaceTools:
                                capture_output=True, check=False,
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             else:
-                child.terminate()
+                # The command runs in its own process group, so the shell's children (npm, node, a test
+                # runner) stop with it instead of holding the output open after the shell is gone.
+                try:
+                    os.killpg(child.pid, signal.SIGTERM)
+                except OSError:
+                    child.terminate()
                 try:
                     child.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    child.kill()
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except OSError:
+                        child.kill()
 
         try:
             process = subprocess.Popen(shell_args, cwd=self.root, stdout=subprocess.PIPE,
@@ -425,6 +438,7 @@ class WorkspaceTools:
                                        # print came out as mojibake ("â–²" for "▲", "Æ’" for "ƒ").
                                        text=True, encoding="utf-8", errors="replace",
                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                                       start_new_session=os.name != "nt",
                                        env=getattr(self, "command_env", None))
             self.command_started(command, timeout)
             lines: queue.Queue[str | None] = queue.Queue()
@@ -440,6 +454,8 @@ class WorkspaceTools:
             heartbeat = 0
             reader_done = False
             while process.poll() is None or not reader_done:
+                if stopped_at and process.poll() is not None and time.monotonic() - stopped_at > 2:
+                    break  # stopped: a grandchild still holding the output open is not waited for
                 try:
                     line = lines.get(timeout=0.25)
                     if line is None:
@@ -449,6 +465,11 @@ class WorkspaceTools:
                         self.command_output(line)
                 except queue.Empty:
                     pass
+                if (not stopped_at and callable(stop_requested) and stop_requested()
+                        and process.poll() is None):
+                    stopped_at = time.monotonic()
+                    stop_tree(process)
+                    append("Stopped: the run was stopped, and this command's process tree with it.\n")
                 elapsed = int(time.monotonic() - started)
                 if elapsed >= timeout and process.poll() is None:
                     timed_out = True
@@ -460,6 +481,11 @@ class WorkspaceTools:
             exit_code = process.wait()
             self.command_finished(command, exit_code, timed_out)
             output = f"exit_code={exit_code}\n" + "".join(output_parts)
+        except BaseException:
+            # Interrupted while it ran (Ctrl+C in the terminal): its own process group would outlive us.
+            if process is not None:
+                stop_tree(process)
+            raise
         finally:
             if self.source_guard and before is not None:
                 changed = self.source_guard.restore(before)

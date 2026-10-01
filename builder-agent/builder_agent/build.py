@@ -6,7 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from server_modules import bus, changes, deploy_vars, plugins, prompts, reference_staging, store, supabase_connect
+from server_modules import (auth_guide, bus, changes, deploy_vars, plugins, prompts, reference_staging, store,
+                            supabase_connect)
 from server_modules.qa_report import summary_counts
 from server_modules.session import RunCancelled, session_for
 from server_modules.validation import build_report
@@ -15,11 +16,9 @@ BUILD_DIR = "build"
 REPORT = (BUILD_DIR, "report.json")
 QUESTION = (BUILD_DIR, "question.json")
 PENDING = (BUILD_DIR, "pending.json")
-ASKED = (BUILD_DIR, "asked.json")
-GAP_REVIEW = (BUILD_DIR, "gap-review.json")
+SETUP = (BUILD_DIR, "setup.json")
+SETUP_RETRIES = 2
 REPORT_REPAIR_ROUNDS = 2
-GAP_REVIEW_ROUNDS = 2
-ASKED_KEPT = 60
 
 
 def report(project: str) -> dict[str, Any]:
@@ -133,95 +132,6 @@ def _settle(project: str, session: Any, mode: str, request: str, plan: str,
     return {"status": "asking", "question": asked}
 
 
-def _key(text: Any) -> str:
-    return " ".join(re.findall(r"[a-z0-9]+", str(text or "").lower()))
-
-
-def _asked(session: Any) -> list[dict[str, str]]:
-    """Every question the builds of this project really asked the customer, with the answer given."""
-    saved = session.read_record(*ASKED, fallback=None)
-    return [row for row in saved if isinstance(row, dict)] if isinstance(saved, list) else []
-
-
-def _remember(session: Any, question: dict[str, Any], answer: str) -> None:
-    rows = [*_asked(session), {"question": str(question.get("question") or ""), "answer": answer}]
-    session.write_record(*ASKED, data=rows[-ASKED_KEPT:])
-
-
-def _review_state(session: Any) -> dict[str, Any]:
-    saved = session.read_record(*GAP_REVIEW, fallback=None)
-    saved = saved if isinstance(saved, dict) else {}
-    reviewed, rounds = saved.get("reviewed"), saved.get("rounds")
-    return {"reviewed": [str(key) for key in reviewed] if isinstance(reviewed, list) else [],
-            "rounds": rounds if isinstance(rounds, int) else 0}
-
-
-def _gap_key(gap: dict[str, Any]) -> str:
-    return _key(gap.get("item") or gap.get("area"))
-
-
-def _was_asked(gap: dict[str, Any], questions: set[str]) -> bool:
-    said = _key(gap.get("asked"))
-    return bool(said) and any(said == q or (min(len(said), len(q)) >= 24 and (said in q or q in said))
-                              for q in questions)
-
-
-def open_gaps(session: Any) -> list[dict[str, Any]]:
-    """The gaps in the build report the customer has not been asked about yet.
-
-    A gap counts as asked only when its `asked` names a question the customer really saw, or when it already
-    went through a gap review in this build. A gap's own wording ("the customer was asked") is not taken on trust.
-    """
-    built_report = session.read_record(*REPORT, fallback=None)
-    gaps = built_report.get("gaps") if isinstance(built_report, dict) else None
-    if not isinstance(gaps, list):
-        return []
-    questions = {_key(row.get("question")) for row in _asked(session)} - {""}
-    reviewed = set(_review_state(session)["reviewed"])
-    return [gap for gap in gaps if isinstance(gap, dict) and _gap_key(gap)
-            and _gap_key(gap) not in reviewed and not _was_asked(gap, questions)]
-
-
-def _review_gaps(project: str, session: Any, mode: str, plan: str) -> dict[str, Any] | None:
-    """Go through every gap the build recorded with the customer before the build is called finished.
-
-    What each gap needs and what to ask about it is the model's to work out from the gap itself: nothing here
-    knows about payments, sign-in or any other kind of gap. This only makes sure no recorded gap is left without
-    the customer being asked, a bounded number of times. Returns the paused state while a question waits.
-    """
-    state = _review_state(session)
-    while state["rounds"] < GAP_REVIEW_ROUNDS:
-        gaps = open_gaps(session)
-        if not gaps:
-            return None
-        state = {"reviewed": [*state["reviewed"], *(_gap_key(gap) for gap in gaps)], "rounds": state["rounds"] + 1}
-        session.write_record(*GAP_REVIEW, data=state)
-        bus.agent_msg(project, f"{len(gaps)} thing(s) are recorded as not done or not proven. Going through them "
-                               "with you before the build finishes.", title="Recorded gaps")
-        answers = "\n".join(f"- Q: {row.get('question', '')}\n  A: {row.get('answer', '')}"
-                            for row in _asked(session)) or "- nothing yet"
-        request = prompts.load("builder/gaps", gaps=json.dumps(gaps, ensure_ascii=False, indent=2),
-                               answers=answers, report_template=build_report.stage_template(session.workspace))
-        try:
-            settled = _settle(project, session, mode, request, plan, session.execute_approved(request, plan, model=""))
-        except RunCancelled:
-            raise
-        except Exception as exc:  # noqa: BLE001 - a finished build is never failed over its gap review
-            bus.log(project, "WARN", f"Going through the recorded gaps stopped: {exc}")
-            return None
-        if settled.get("status") == "asking":
-            return settled
-    return None
-
-
-def _done(project: str, session: Any, mode: str, plan: str, result: dict[str, Any]) -> dict[str, Any]:
-    """The build's own work is finished: settle its recorded gaps with the customer, then finish."""
-    asking = _review_gaps(project, session, mode, plan)
-    if asking:
-        return asking
-    return _finish_run(project, session, result, plan) if mode == "run" else _finish_update(project, session, result)
-
-
 def answer(project: str, reply: str) -> dict[str, Any]:
     """Continue a build or update that paused to ask the customer something.
 
@@ -236,17 +146,31 @@ def answer(project: str, reply: str) -> dict[str, Any]:
     request = pending.get("request") or ""
     plan = pending.get("plan") or ""
     mode = pending.get("mode") or "run"
-    question = pending.get("question") or {}
-    _remember(session, question, reply.strip() or f"left it to the build: {question.get('assumption') or 'its recommendation'}")
+    if mode == "setup":
+        # Asked before the build was planned: the answer joins the others and the next question (or the
+        # build itself, once everything is settled) follows.
+        state = _setup_state(session)
+        state.setdefault("answers", []).append({"question": (pending.get("question") or {}).get("question", ""),
+                                                "answer": text})
+        session.write_record(*SETUP, data=state)
+        session.write_record(*PENDING, data={})
+        session.begin("build", role=bus.DEVELOPER)
+        try:
+            return _setup(project, session)
+        except RunCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            session.fail(str(exc))
+            raise
     resume_request = request + "\n" + prompts.load(
-        "builder/resume", question=question.get("question", ""), answer=text)
+        "builder/resume", question=(pending.get("question") or {}).get("question", ""), answer=text)
     session.begin("build" if mode == "run" else "build-edit", role=bus.DEVELOPER)
     try:
         result = session.execute_approved(resume_request, plan, model="")
         settled = _settle(project, session, mode, request, plan, result)
         if settled.get("status") == "asking":
             return settled
-        return _done(project, session, mode, plan, settled)
+        return _finish_run(project, session, settled, plan) if mode == "run" else _finish_update(project, session, settled)
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -409,7 +333,11 @@ def _finish_run(project: str, session: Any, build_result: dict[str, Any], plan: 
 
 
 def run(project: str, direction: str = "") -> dict[str, Any]:
-    """Build the application from everything the project already settled."""
+    """Build the application from everything the project already settled.
+
+    First the customer is asked, one question at a time, everything the build will need from them (see
+    `setup.py`); the build is planned only once that is settled, so it can run without stopping.
+    """
     from srs_agent import document as srs_document
 
     if not srs_document.has_document(project):
@@ -418,59 +346,143 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         raise ValueError("this project already has a build waiting on an earlier question - "
                          "answer it before starting another")
 
-    record = store.require(project)
     session = session_for(project)
-    from . import scaffold
-    stack = str(record.get("stack") or "nextjs-supabase")
     session.begin("build", role=bus.DEVELOPER)
-    session.write_record(*GAP_REVIEW, data={})  # this build's own gaps all go to the customer again
-
     try:
-        # Every stack here is Supabase-backed: the one real project this AgentForge project gets
-        # is created now, the first time it actually builds (signing in to the Supabase account
-        # itself already happened from the stack picker - see supabase_connect.py's OAuth flow). A
-        # later build of the same project finds the record already there and does nothing.
-        supabase_connect.ensure_project(project, name=str(record.get("name") or project),
-                                        log=lambda line: bus.agent_msg(project, line, title="Supabase"))
-        installed = scaffold.install(session.workspace, stack)
-        bus.agent_msg(project,
-                      f"{stack} scaffold copied ({len(installed['files'])} files)."
-                      if installed["scaffolded"] else "Existing application preserved; building on its files.",
-                      title="Builder scaffold")
-        bus.phase(project, "build:write", "Building and checking the application",
-                  detail="One sequential plan: complete the app, focused business units, then final product checks.")
-        request = prompts.load("builder/generate", stack=stack,
-                               report_template=build_report.stage_template(session.workspace))
-        request += _prototype_context_block(session.workspace)
-        request += "\n\n## Scaffold installation\n" + json.dumps(installed, indent=2)
-        guide_paths = reference_staging.stage(session.workspace, "build/guides",
-                                              scaffold.build_guide_files(stack))
-        request += ("\n\n## Stack build guides\n\nRead these yourself before planning:\n"
-                   + reference_staging.as_bullets(guide_paths))
-        from prototype_agent import design as design_stage
-        customization = design_stage.approved_customization(project)
-        if customization:
-            request += ("\n\n## Approved design customization\n"
-                        + json.dumps({"selected_design_path": customization.get("design_md_path"),
-                                      "customizer_prompt": customization.get("customizer_prompt"),
-                                      "customizer_spec": customization.get("customizer_spec")},
-                                     ensure_ascii=False, indent=2))
-            if customization.get("design_md_workspace_path"):
-                request += (f"\n\nRead `{customization['design_md_workspace_path']}` yourself for "
-                           f"the selected theme's own guidance.")
-        if direction.strip():
-            request += f"\n\n## What the customer asked for on top of that\n\n{direction.strip()}"
-
-        build_result = session.run_task(request, plan_directory="plan", audit=False)
-        settled = _settle(project, session, "run", request, build_result.get("plan") or "", build_result)
-        if settled.get("status") == "asking":
-            return settled
-        return _done(project, session, "run", build_result.get("plan") or "", settled)
+        saved = session.read_record(*SETUP, fallback=None)
+        previous = (saved.get("decisions") or []) if isinstance(saved, dict) and saved.get("status") == "ready" else []
+        session.write_record(*SETUP, data={"direction": direction, "answers": [], "previous": previous,
+                                           "status": "asking"})
+        return _setup(project, session)
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001
         session.fail(str(exc))
         raise
+
+
+def _setup_state(session: Any) -> dict[str, Any]:
+    saved = session.read_record(*SETUP, fallback=None)
+    return saved if isinstance(saved, dict) else {"answers": []}
+
+
+def _setup(project: str, session: Any) -> dict[str, Any]:
+    """One turn of settling the build with the customer: the next question, or - once nothing is left to ask -
+    the build itself. The model reads the specification and what the accounts already have, and writes every
+    question itself; nothing here decides what to ask."""
+    from srs_agent import document as srs_document
+
+    from . import scaffold, setup
+
+    record = store.require(project)
+    stack = str(record.get("stack") or "nextjs-supabase")
+    state = _setup_state(session)
+    reference_staging.stage(session.workspace, "build/guides", scaffold.build_guide_files(stack))
+    auth_guide.staged_for(session.workspace, srs_document.document(project).get("srs_document", {}))
+    bus.phase(project, "build:setup", "Settling the build with you",
+              detail="Reading the specification and what your accounts already have, then asking what the build "
+                     "needs from you before it is planned.")
+    found = setup.facts(project, stack, state.get("facts"))
+    state["facts"] = found
+    session.write_record(*SETUP, data=state)
+    left = setup.MAX_QUESTIONS - len(state.get("answers") or [])
+    request = setup.prompt(project, session, stack, found, state, left)
+    agent = session.agent("")
+    with session.lock:
+        agent.set_mode("plan")
+    try:
+        reply = session.ask_json(request, validator=lambda data: setup.check(data, left > 0, stack, found))
+    finally:
+        with session.lock:
+            agent.set_mode("act")
+    if reply["kind"] == "question":
+        if _asks_for_supabase(reply) and supabase_connect.record(project) and left > 1:
+            # Never the customer's to answer: this project's Supabase is connected through its account.
+            state.setdefault("answers", []).append({"question": reply["question"],
+                                                    "answer": prompts.load("builder/supabase-connected").strip()})
+            session.write_record(*SETUP, data=state)
+            return _setup(project, session)
+        asked = _private_value(reply)
+        session.write_record(*PENDING, data={"mode": "setup", "request": "", "plan": "", "question": asked})
+        _ask(project, asked)
+        session.finish("Waiting for your answer.")
+        return {"status": "asking", "question": asked}
+    state.update(status="ready", decisions=reply["decisions"], database=reply["database"], problem="")
+    session.write_record(*SETUP, data=state)
+    bus.phase(project, "build:setup", "Settled with you", status="complete",
+              detail="; ".join(reply["decisions"][:6]))
+    return _build(project, session, state)
+
+
+def _build(project: str, session: Any, state: dict[str, Any]) -> dict[str, Any]:
+    """The build itself, on what was settled with the customer before it."""
+    from srs_agent import document as srs_document
+
+    from . import scaffold, setup
+
+    record = store.require(project)
+    stack = str(record.get("stack") or "nextjs-supabase")
+    direction = str(state.get("direction") or "")
+    try:
+        # Where the data lives, exactly as settled: this project's Supabase project kept or created (every
+        # stack has one), and on a MongoDB stack the cluster. A later build finds them there and does nothing.
+        setup.apply(project, str(record.get("name") or project), state.get("database") or {},
+                    say=lambda line: bus.agent_msg(project, line, title="Database"))
+    except RunCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a setup that fails is the customer's to decide, not a dead end
+        failures = int(state.get("failures") or 0) + 1
+        if failures > SETUP_RETRIES:
+            raise
+        bus.log(project, "WARN", f"Setting up the database did not work: {exc}")
+        state.pop("facts", None)  # what failed may have changed what the accounts have: read them again
+        state.update(status="asking", failures=failures,
+                     problem=f"Setting up where the data lives, as settled ({json.dumps(state.get('database'))}), "
+                             f"failed: {exc}")
+        session.write_record(*SETUP, data=state)
+        return _setup(project, session)
+    installed = scaffold.install(session.workspace, stack)
+    bus.agent_msg(project,
+                  f"{stack} scaffold copied ({len(installed['files'])} files)."
+                  if installed["scaffolded"] else "Existing application preserved; building on its files.",
+                  title="Builder scaffold")
+    bus.phase(project, "build:write", "Building and checking the application",
+              detail="One sequential plan: complete the app, focused business units, then final product checks.")
+    request = prompts.load("builder/generate", stack=stack,
+                           report_template=build_report.stage_template(session.workspace))
+    request += _prototype_context_block(session.workspace)
+    request += "\n\n## Scaffold installation\n" + json.dumps(installed, indent=2)
+    guide_paths = reference_staging.stage(session.workspace, "build/guides",
+                                          scaffold.build_guide_files(stack))
+    request += ("\n\n## Stack build guides\n\nRead these yourself before planning:\n"
+               + reference_staging.as_bullets(guide_paths))
+    auth = auth_guide.staged_for(session.workspace, srs_document.document(project).get("srs_document", {}))
+    if auth:
+        request += ("\n\n## Authentication, roles and navigation\n\n"
+                    f"Read `{auth}` yourself before planning. It is the standard this app's sign-up, sign-in, cookie "
+                    "sessions, role-based access, role dashboards and signed-in and signed-out navigation are built and "
+                    "tested to (its section 7 is for the real application). The specification decides which roles and "
+                    "pages exist; this file decides how they behave.")
+    from prototype_agent import design as design_stage
+    customization = design_stage.approved_customization(project)
+    if customization:
+        request += ("\n\n## Approved design customization\n"
+                    + json.dumps({"selected_design_path": customization.get("design_md_path"),
+                                  "customizer_prompt": customization.get("customizer_prompt"),
+                                  "customizer_spec": customization.get("customizer_spec")},
+                                 ensure_ascii=False, indent=2))
+        if customization.get("design_md_workspace_path"):
+            request += (f"\n\nRead `{customization['design_md_workspace_path']}` yourself for "
+                       f"the selected theme's own guidance.")
+    request += setup.settled_block(state)
+    if direction.strip():
+        request += f"\n\n## What the customer asked for on top of that\n\n{direction.strip()}"
+
+    build_result = session.run_task(request, plan_directory="plan", audit=False)
+    settled = _settle(project, session, "run", request, build_result.get("plan") or "", build_result)
+    if settled.get("status") == "asking":
+        return settled
+    return _finish_run(project, session, settled, build_result.get("plan") or "")
 
 
 def _finish_update(project: str, session: Any, result: dict[str, Any]) -> dict[str, Any]:
@@ -491,8 +503,6 @@ def update(project: str, request: str) -> dict[str, Any]:
 
     session = session_for(project)
     session.begin("build-edit", role=bus.DEVELOPER)
-    # Only gaps this change adds are new to the customer; those already gone through stay settled.
-    session.write_record(*GAP_REVIEW, data={**_review_state(session), "rounds": 0})
     try:
         bus.user_msg(project, request)
         full_request = prompts.load("builder/update", request=request)
@@ -500,7 +510,7 @@ def update(project: str, request: str) -> dict[str, Any]:
         settled = _settle(project, session, "update", full_request, result.get("plan") or "", result)
         if settled.get("status") == "asking":
             return settled
-        return _done(project, session, "update", result.get("plan") or "", settled)
+        return _finish_update(project, session, settled)
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001

@@ -144,7 +144,7 @@ required = {
         ("../qa-agent/qa_agent/browser.py", "def post"),
     "the engine reports thinking": ("../server_modules/builder/bridge.py", '"state": "thinking"'),
     "SRS planner animation": ("components/srs/SrsActivity.jsx", "animate-spin"),
-    "a run can be stopped from the chat": ("components/AgentChat.jsx", "function CancelRun"),
+    "a run can be stopped from the chat": ("components/AgentChat.jsx", "function useStopRun"),
     "each project keeps its own stream": ("lib/store.js", "streams: {}"),
     "a stream outlives the tab that watched it": ("lib/api.js", "saveStream:"),
     "one project's lines stay its own": ("lib/ws.js", "function meantForMe"),

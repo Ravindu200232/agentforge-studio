@@ -259,6 +259,52 @@ class EnsureProjectTests(SupabaseSettingsCase):
         self.assertEqual((row["anon_key"], row["service_role_key"]), ("anon-1", "service-1"))
         self.assertTrue(row["db_password"])  # generated, never empty
 
+    def test_a_new_project_goes_to_the_chosen_organisation_and_region(self):
+        self.register()
+        config.save_settings({"supabase_oauth_access_token": "at"})
+        sc._write_all({PROJECT: {"ref": "oldref", "name": PROJECT, "url": "https://oldref.supabase.co"}})
+        calls = []
+
+        def fake_run_json(args, timeout=40):
+            calls.append(args)
+            if args[1:3] == ["orgs", "list"]:
+                return [{"id": "org-free", "name": "Mine"}, {"id": "org-pro", "name": "Team"}]
+            if args[1:3] == ["projects", "create"]:
+                return {"id": "newref"}
+            return [{"name": "anon", "api_key": "a"}, {"name": "service_role", "api_key": "s"}]
+
+        with mock.patch.object(sc, "_tool", return_value="supabase"), \
+                mock.patch.object(sc, "_run_json", side_effect=fake_run_json):
+            result = sc.ensure_project(PROJECT, name="Shop", region="ap-south-1", org_id="org-pro", fresh=True)
+        create = next(args for args in calls if args[1:3] == ["projects", "create"])
+        self.assertEqual(create[create.index("--org-id") + 1], "org-pro")
+        self.assertEqual(create[create.index("--region") + 1], "ap-south-1")
+        self.assertEqual(result["ref"], "newref")
+        with mock.patch.object(sc, "_tool", return_value="supabase"), \
+                mock.patch.object(sc, "_run_json", side_effect=fake_run_json):
+            with self.assertRaisesRegex(ValueError, "no organisation org-gone"):
+                sc.ensure_project(PROJECT, org_id="org-gone", fresh=True)
+
+    def test_account_facts_list_organisations_and_projects_never_keys(self):
+        self.register()
+        config.save_settings({"supabase_oauth_access_token": "at"})
+
+        def fake_run_json(args, timeout=40):
+            if args[1:3] == ["orgs", "list"]:
+                return [{"id": "org-free", "name": "Mine"}]
+            return [{"id": "ref1", "name": "Old shop", "region": "us-east-1", "status": "ACTIVE_HEALTHY",
+                     "organization_id": "org-free", "anon_key": "secret"}]
+
+        answer = mock.Mock(status_code=200)
+        answer.json.return_value = {"plan": "free"}
+        with mock.patch.object(sc, "_tool", return_value="supabase"), \
+                mock.patch.object(sc, "_run_json", side_effect=fake_run_json), \
+                mock.patch.object(sc.httpx, "get", return_value=answer):
+            facts = sc.account_facts()
+        self.assertEqual(facts["organizations"], [{"id": "org-free", "name": "Mine", "plan": "free"}])
+        self.assertEqual(facts["projects"][0]["ref"], "ref1")
+        self.assertNotIn("secret", json.dumps(facts))
+
     def test_no_organisation_is_a_clear_error_not_a_crash(self):
         self.register()
         config.save_settings({"supabase_oauth_access_token": "at"})

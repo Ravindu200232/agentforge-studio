@@ -54,7 +54,7 @@ STAGE_PLAN = "deploy_plan"
 STAGE_RUN = "deploy"
 # A deployment has many decisions the customer may make: account, names, layout, region, database, domain,
 # cost, and every choice the target's and the stack's pages list. A guard against an endless interview only.
-MAX_QUESTIONS = 10
+MAX_QUESTIONS = 20
 # How many times a live address that does not hold is handed back to the agent before the run fails.
 REPAIR_ROUNDS = 2
 PROBE_SECONDS = 25
@@ -635,9 +635,19 @@ def execute(project: str, change: dict, session: Any, model: str) -> dict[str, A
 
     progress = _Progress(project, titles)
     progress.seen = len(events(project)) if resume else 0
+
+    def carry(text: str) -> dict[str, Any]:
+        """One turn of the run. A turn that stopped for the customer without the question it stopped for is told
+        so once, and asks it (or carries on) - rather than the deployment failing with nobody asked anything."""
+        outcome = session.execute_approved(text, plan_markdown(plan), model)
+        stopped = outcome["status"] == "blocked" or str(run_state(project).get("state") or "") == "NEEDS_INPUT"
+        if pending_question(project) or not stopped:
+            return outcome
+        return session.execute_approved(text + "\n" + prompts.load("deployment/ask-now"), plan_markdown(plan), model)
+
     progress.start()
     try:
-        result = session.execute_approved(request, plan_markdown(plan), model)
+        result = carry(request)
         for attempt in range(REPAIR_ROUNDS + 1):
             question = pending_question(project)
             if result["status"] == "blocked" and question:
@@ -663,7 +673,7 @@ def execute(project: str, change: dict, session: Any, model: str) -> dict[str, A
                                f"{REPAIR_ROUNDS} repair round(s): " + "; ".join(failures))
             _record(project, {"state": "REPAIRING"})
             again = request + prompts.load("deployment/verify-failed", failures="\n".join(f"- {row}" for row in failures))
-            result = session.execute_approved(again, plan_markdown(plan), model)
+            result = carry(again)
         return _settle(project, session, target, failed="The deployment could not be verified.")
     except RunCancelled:
         _record(project, {"state": "CANCELLED", "finished_at": time.time()})

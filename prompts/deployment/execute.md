@@ -38,16 +38,27 @@ safety matter, the skill page wins and you say so.
   the files, do what the deployment needs and say plainly what you did differently and why. Do not
   silently drop a step, and do not add work the plan did not name (a bigger size, another region, another
   account).
-- If a required tool is missing or signed out, or you need a decision or a value the plan did not settle
-  (or that turned out not to be saved), do not invent it, do not go around it and do not carry on without
-  it recording it as an "open item": stop and ask. Write `.agentforge/deploy/question.json`, exactly
+- **Ask in the middle of the deployment whenever it needs the customer** — the plan's questions were not the
+  last ones. Stop and ask when a required tool is missing or signed out; when you need a decision or a value
+  the plan did not settle (or one that turned out not to be saved); when the provider refuses something the
+  plan counted on (a free tier that is not available, a quota, a region, a name already taken) and the ways
+  forward change the cost or the result; and when you are stuck — the same failure came back after two
+  honest fixes, or an error you could not fix after reading the provider's own documentation — then ask
+  what to do, with the ways forward you see and what each one costs or changes. First make sure it is not
+  something you can find out yourself with `web_search`/`web_fetch` on the provider's own site. Never invent
+  the answer, never go around it, and never carry on without it recording it as an "open item". Write
+  `.agentforge/deploy/question.json`, exactly
 
   ```
   {"question": "...", "why": "...", "options": [{"label": "...", "hint": "..."}], "assumption": "..."}
   ```
 
-  set `state` to `NEEDS_INPUT` in `run.json`, and end your reply with the blocked marker. The customer
-  is asked in the chat and you are started again with their answer. A value only the customer has (a
+  one question at a time, written yourself in plain words, with two to four options and your recommendation
+  first; set `state` to `NEEDS_INPUT` in `run.json`, and end your reply with the blocked marker. The customer
+  is asked in the chat and you are started again with their answer, from exactly where you stopped:
+  finished steps are not done again. Ask as many times as the deployment genuinely needs. A plain value that
+  is not secret (a domain, a name, an email) is asked for the same way, one value per question; never offer an
+  option that only means "I will type it". A value only the customer has (a
   password, a key, or a different production Supabase project's own values) is asked for the same way
   with `"variable": "NAME"` and `"secret": true`: the studio shows a private box, keeps it out of the
   conversation and tells you it is saved. Your commands then receive it in the environment under that

@@ -11,12 +11,16 @@ import { Button, SectionLabel, Tag } from '../ui'
  * The last finished deployment, in short: what it was, where it is, whether it held up, and (when it stopped part of the way)
  * the way to carry on. Everything else about it is in the navigation, read live from the provider's own command line tool.
  */
-export default function DeployResult({ data }) {
+export default function DeployResult({ data, onResumed }) {
   const project = useStore(s => s.project)
   const [resuming, setResuming] = useState(false)
   const [problem, setProblem] = useState('')
+  // The stopped run this card was resumed from: hidden from the moment it carries on, so its old error is gone and the
+  // pipeline shows instead. If the resumed run stops again it finishes at another time, and the card comes back for it.
+  const [resumedFrom, setResumedFrom] = useState(null)
   const last = data?.last
   if (!last || !TERMINAL.has(last.state)) return null
+  if (resumedFrom && resumedFrom === `${last.run_id}|${last.finished_at}`) return null
 
   // A run that was stopped part of the way goes on from where it stopped, on the plan that was approved.
   async function resume() {
@@ -28,6 +32,10 @@ export default function DeployResult({ data }) {
         decision: 'retry', model: state.models.builder || state.models.agent,
       })
       if (result && result.ok === false) setProblem(result.detail || 'That deployment cannot be resumed.')
+      else {
+        setResumedFrom(`${last.run_id}|${last.finished_at}`)
+        await onResumed?.()
+      }
     } catch (e) {
       setProblem(e.message || 'Could not resume it.')
     }
@@ -75,7 +83,7 @@ export default function DeployResult({ data }) {
       </dl>
 
       {last.error && (
-        <p className="mt-3 rounded-xl border border-bad/30 bg-bad/10 px-3 py-2.5 text-[11.5px] text-bad">{last.error}</p>
+        <p className="mt-3 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-xl border border-bad/30 bg-bad/10 px-3 py-2.5 text-[11.5px] text-bad">{last.error}</p>
       )}
       {data.retry && (
         <div className="mt-3 flex flex-wrap items-center gap-2.5">

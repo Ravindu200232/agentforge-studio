@@ -8,7 +8,7 @@ import re
 import shutil
 from typing import Any
 
-from server_modules import bus, config, prompts, store
+from server_modules import auth_guide, bus, config, prompts, store
 from server_modules.session import ProjectSession, RunCancelled, session_for
 
 from . import design as design_stage
@@ -139,7 +139,8 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str,
 
     routes_out = [{"route": p["route"], "file": filename(str(p["route"])),
                    "name": p.get("page_name") or p["route"],
-                   "roles": p.get("allowed_roles") or []} for p in pages]
+                   "roles": p.get("allowed_roles") or [],
+                   "signed_in": prototype_brief.signed_in_page(p)} for p in pages]
     root = session.record / PROTOTYPE_DIR
     root.mkdir(parents=True, exist_ok=True)
     record = f"{config.RECORD_DIR}/{PROTOTYPE_DIR}"
@@ -177,6 +178,10 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str,
     if customization.get("design_md_workspace_path"):
         inputs.append(f"- `{customization['design_md_workspace_path']}` — the selected theme's guidance "
                       f"({customization.get('design_md_path') or 'DESIGN.md'})")
+    guide = auth_guide.staged_for(session.workspace, doc)
+    if guide:
+        inputs.append(f"- `{guide}` — how signing in, roles, each role's dashboard and the signed-in and signed-out "
+                      "navigation work (its sections 1–4 and 6 are for the prototype)")
     inputs += [f"- `{path}` — the wireframe of `{route}`" for route, path in blueprints.items()]
     direction_text = "\n\n".join(part for part in (
         ("### The customer's design direction (from Design Customize)\n\n" + str(customization["customizer_prompt"]).strip())

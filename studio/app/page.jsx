@@ -6,6 +6,7 @@ import { useStore } from '@/lib/store'
 import { answerQuestion, connect, send } from '@/lib/ws'
 import { forgetConsole } from '@/lib/console-log'
 import { api } from '@/lib/api'
+import { previewHref } from '@/lib/preview'
 import { catalogue, TIERS } from '@/lib/models'
 import { readFolder } from '@/lib/importer'
 import Sidebar from '@/components/Sidebar'
@@ -510,7 +511,7 @@ export default function Studio() {
       useStore.getState().setRuntime(runtime)
       if (tab) {
         tab.opener = null
-        tab.location.href = runtime.previewUrl
+        tab.location.href = previewHref(runtime) || runtime.previewUrl
       }
     } catch (error) {
       tab?.close()
