@@ -1,14 +1,14 @@
 """The clickable prototype, drawn directly from approved wireframes and design."""
 from __future__ import annotations
 
-import json
 import hashlib
+import html as html_text
+import json
 import re
 import shutil
-import threading
 from typing import Any
 
-from server_modules import bus, config, llm, prompts, reference_staging, store
+from server_modules import bus, config, prompts, store
 from server_modules.session import ProjectSession, RunCancelled, session_for
 
 from . import design as design_stage
@@ -91,27 +91,26 @@ def asset(project: str, name: str) -> tuple[bytes, str]:
     return path.read_bytes(), kind.get(path.suffix.lower(), "application/octet-stream")
 
 
-def _write_kit(session: ProjectSession, project: str, root: Any, made: dict[str, Any], routes_out: list[dict]) -> None:
-    """The shared kit and what goes with it, into the prototype folder, announced as files in the chat."""
-    files = {"assets/app.css": made["kit"]["assets/app.css"], "assets/app.js": made["kit"]["assets/app.js"],
-             "assets/flow.js": made["flow_js"], "kit/shell.html": made["kit"]["shell.html"]}
-    if made["ideas"]:
-        files["kit/ideas.md"] = made["ideas"]
-    files["demo-accounts.json"] = json.dumps({"sign_in": made["sign_in"], "accounts": made["accounts"]}, ensure_ascii=False, indent=2)
-    if made["images"]:
-        files["kit/images.json"] = json.dumps(made["images"], ensure_ascii=False, indent=2)
-    for name, body in files.items():
-        path = root / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body, encoding="utf-8")
-        bus.file_written(project, f".agentforge/prototype/{name}", body, note="written", agent=bus.DESIGNER)
+def _fallback_page(row: dict, wireframe: str) -> str:
+    """A page the agent did not write, kept clickable: its approved wireframe wired into the flow, else a titled empty page."""
+    if wireframe.strip():
+        return wireframe
+    name = html_text.escape(str(row.get("name") or row["route"]))
+    return (f'<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>{name}</title>\n'
+            f'</head>\n<body>\n<main><h1>{name}</h1></main>\n</body>\n</html>\n')
 
 
-def _draw_focused(project: str, spec: dict[str, Any], direction: str,
-                  *, wireframe_source: dict[str, str] | None = None,
-                  approved_execution_plan: str = "") -> list[dict]:
-    """Generate each screen with its own output budget and an exact route map."""
+def _draw_with_agent(project: str, spec: dict[str, Any], direction: str,
+                     *, wireframe_source: dict[str, str] | None = None) -> list[dict]:
+    """Let the project's agent read the wireframes, app.md and the design, plan silently and write the prototype — like the builder.
+
+    Only what is the same for every prototype is code: the route map, the flow and the demo sign-in in `assets/flow.js`. Everything
+    drawn is the agent's, written with its own file tools, so every read and every file appears in the chat stream as it happens.
+    Nothing it writes is rejected or redrawn.
+    """
     from srs_agent import document as srs_document
+    from srs_agent import handoff as handoff_files
 
     session = session_for(project)
     doc = srs_document.document(project).get("srs_document", {})
@@ -141,209 +140,152 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
     routes_out = [{"route": p["route"], "file": filename(str(p["route"])),
                    "name": p.get("page_name") or p["route"],
                    "roles": p.get("allowed_roles") or []} for p in pages]
-    nav = [{"label": r["name"], "href": r["file"]} for r in routes_out]
     root = session.record / PROTOTYPE_DIR
     root.mkdir(parents=True, exist_ok=True)
+    record = f"{config.RECORD_DIR}/{PROTOTYPE_DIR}"
     uploaded_images = _uploaded_site_images(session, root)
-    context = {key: doc.get(key) for key in ("app_summary", "roles", "main_modules",
-               "functional_requirements", "business_workflows", "validation_rules",
-               "ui_ux_requirements", "database_design") if doc.get(key)}
-    handoff = srs_document.handoff_docs(session) if wireframe_source is not None else {}
-    customization = design_stage.approved_customization(project) if wireframe_source is not None else {}
-    customization["uploaded_site_images"] = uploaded_images
-    fingerprint_payload = {
-        "routes": routes_out,
-        "design": spec,
-        "customization": customization,
-    }
-    # Structures are computed just below. Keep the payload declaration close to
-    # the other input gathering, then finish the fingerprint once they exist.
-    completed = 0
-    progress_lock = threading.Lock()
+    wireframe_source = wireframe_source or {}
 
-    def say(text: str) -> None:
-        bus.log(project, "INFO", text, agent=bus.DESIGNER)
+    def write(name: str, body: str, note: str = "written") -> None:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        bus.file_written(project, f"{record}/{name}", body, note=note, agent=bus.DESIGNER)
 
-    # Before any page: what makes them one product. Read the approved wireframe
-    # structure, flow and images, then create the shared kit once.
-    structures = {str(route): prototype_brief.structure(html) for route, html in (wireframe_source or {}).items()}
-    fingerprint_payload["structures"] = structures
+    # The three inputs, and only these. app.md and the design spec are read where earlier stages wrote them; a wireframe is
+    # read as its structure, with its low-fidelity styling already gone, so the agent reads content rather than grey boxes.
+    handoff_app_md = session.record / srs_document.SRS_DIR / "handoff" / "app.md"
+    app_md_path = f"{config.RECORD_DIR}/{srs_document.SRS_DIR}/handoff/app.md"
+    if not handoff_app_md.is_file():
+        app_md_path = f"{record}/input/app.md"
+        write("input/app.md", handoff_files.app_md(doc))
+    spec_path = f"{config.RECORD_DIR}/design/design-spec.json"
+    if not (session.record / "design" / "design-spec.json").is_file():
+        spec_path = f"{record}/input/design-spec.json"
+        write("input/design-spec.json", json.dumps(spec, ensure_ascii=False, indent=2))
+    customization = dict(design_stage.approved_customization(project) or {})
+    blueprints: dict[str, str] = {}
+    for row in routes_out:
+        html = wireframe_source.get(str(row["route"]), "")
+        if html.strip():
+            name = f"input/wireframes/{row['file']}"
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(prototype_brief.structure(html, limit=22000), encoding="utf-8")
+            blueprints[str(row["route"])] = f"{record}/{name}"
+    inputs = [f"- `{app_md_path}` — app.md, the approved application",
+              f"- `{spec_path}` — the approved design tokens"]
+    if customization.get("design_md_workspace_path"):
+        inputs.append(f"- `{customization['design_md_workspace_path']}` — the selected theme's guidance "
+                      f"({customization.get('design_md_path') or 'DESIGN.md'})")
+    inputs += [f"- `{path}` — the wireframe of `{route}`" for route, path in blueprints.items()]
+    direction_text = "\n\n".join(part for part in (
+        ("### The customer's design direction (from Design Customize)\n\n" + str(customization["customizer_prompt"]).strip())
+        if customization.get("customizer_prompt") else "",
+        ("### What the customer asked for on this prototype\n\n" + direction.strip()) if direction.strip() else "",
+    ) if part)
+
+    flow = prototype_brief.flow_of(doc, routes_out)
+    sign_in = prototype_brief.sign_in_route(doc)
+    accounts = prototype_brief.draw_accounts(doc, routes_out, flow, "")
+
     fingerprint = hashlib.sha256(json.dumps(
-        fingerprint_payload, ensure_ascii=False, sort_keys=True, default=str,
+        {"routes": routes_out, "design": spec, "customization": customization, "blueprints":
+         {route: (root / path.removeprefix(record + "/")).read_text(encoding="utf-8") for route, path in blueprints.items()},
+         "app_md": (session.workspace / app_md_path).read_text(encoding="utf-8"), "direction": direction},
+        ensure_ascii=False, sort_keys=True, default=str,
     ).encode("utf-8")).hexdigest()
     checkpoint_path = root / "generation.json"
     checkpoint = _read_record(session, PROTOTYPE_DIR, "generation.json", fallback=None) or {}
-    kit_paths = {
-        "assets/app.css": root / "assets" / "app.css",
-        "assets/app.js": root / "assets" / "app.js",
-        "shell.html": root / "kit" / "shell.html",
-    }
-    can_resume = checkpoint.get("fingerprint") == fingerprint and all(path.is_file() for path in kit_paths.values())
-
-    if not can_resume:
-        # A changed design, route map or wireframe owns a fresh generated page
-        # set. A matching interrupted run keeps its already completed work.
+    resuming = checkpoint.get("fingerprint") == fingerprint and not checkpoint.get("complete")
+    if not resuming:
+        # A changed design, route map or wireframe owns a fresh page set. A matching interrupted run keeps its completed pages.
         for stale in root.glob("*.html"):
             stale.unlink(missing_ok=True)
-        (root / "routes.json").unlink(missing_ok=True)
-        checkpoint_path.unlink(missing_ok=True)
+        for stale in ("assets/app.css", "assets/app.js", "routes.json"):
+            (root / stale).unlink(missing_ok=True)
+    written = [row for row in routes_out if (root / row["file"]).is_file() and (root / row["file"]).stat().st_size >= 1000]
+    checkpoint_path.write_text(json.dumps({"fingerprint": fingerprint, "complete": False, "sign_in": sign_in,
+                                           "accounts": accounts, "flow": flow}, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    premium_skill_path, = reference_staging.stage(
-        session.workspace, f"{config.RECORD_DIR}/{PROTOTYPE_DIR}/skills/premium-frontend",
-        {"SKILL.md": prompts.skill("prototype", "premium-frontend")})
+    # The parts that are the same for every prototype: the route map, the flow and the demo sign-in.
+    write("assets/flow.js", prototype_brief.flow_script(routes_out, flow, accounts, sign_in))
+    write("demo-accounts.json", json.dumps({"sign_in": sign_in, "accounts": accounts}, ensure_ascii=False, indent=2))
 
-    bus.phase(project, "prototype:kit", "Designing the shared look",
-              detail="Reading the approved wireframes, images and flow, then drawing the shared design system.")
-    if can_resume:
-        made = {
-            "ideas": checkpoint.get("ideas") or "",
-            "flow": checkpoint.get("flow") or {"journeys": [], "leads_to": {}},
-            "sign_in": checkpoint.get("sign_in") or "",
-            "accounts": checkpoint.get("accounts") or [],
-            "images": checkpoint.get("images") or [],
-            "kit": {name: path.read_text(encoding="utf-8") for name, path in kit_paths.items()},
-            "flow_js": (root / "assets" / "flow.js").read_text(encoding="utf-8")
-                       if (root / "assets" / "flow.js").is_file() else "",
-        }
-        say("Resuming the prototype from its saved design kit and completed pages.")
-    else:
-        bus.progress(project, "Preparing the shared prototype design", 2, agent=bus.DESIGNER)
-        made = prototype_brief.prepare(doc, spec, customization, routes_out, structures, say,
-                                       project=project, workspace=session.workspace,
-                                       premium_skill_path=premium_skill_path)
-        _write_kit(session, project, root, made, routes_out)
-        checkpoint = {
-            "fingerprint": fingerprint,
-            "complete": False,
-            "ideas": made["ideas"],
-            "flow": made["flow"],
-            "sign_in": made["sign_in"],
-            "accounts": made["accounts"],
-            "images": made["images"],
-        }
-        checkpoint_path.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8")
-    system = (prompts.load("prototype/system")
-              + "\n\n## Premium frontend design skill\n\n"
-              + f"Read `{premium_skill_path}` yourself with your `read_file` tool.")
+    def publish(done: set[str]) -> None:
+        """routes.json lists the pages already written, so the preview shows each one as soon as it exists."""
+        write("routes.json", json.dumps({"routes": [row for row in routes_out if row["file"] in done]},
+                                        ensure_ascii=False, indent=2), note="updated")
 
-    # What every screen needs and does not change per page: staged once, read
-    # by each page's own call, rather than pasted into every one of them.
-    context_dir = f"{config.RECORD_DIR}/{PROTOTYPE_DIR}/context"
-    srs_subset_path, uploaded_images_path, kit_reference_path = reference_staging.stage(
-        session.workspace, context_dir, {
-            "srs-subset.json": json.dumps(context, ensure_ascii=False),
-            "uploaded-images.json": json.dumps(uploaded_images, ensure_ascii=False),
-            "kit-reference.json": json.dumps(prototype_brief.kit_reference(made["kit"]), ensure_ascii=False),
-        })
+    resume = ""
+    if resuming and (written or (root / "assets" / "app.css").is_file()):
+        resume = ("## Resuming an interrupted run\n\nThese files are already written and finished — keep them, do not read or "
+                  "rewrite them, and write only the rest:\n\n"
+                  + "\n".join(f"- `{record}/{name}`" for name in
+                              [n for n in ("assets/app.css", "assets/app.js") if (root / n).is_file()]
+                              + [row["file"] for row in written]))
+    request = prompts.load(
+        "prototype/generate", inputs="\n".join(inputs), design_direction=direction_text,
+        routes=prototype_brief.routes_text(routes_out, blueprints), journeys=prototype_brief.journey_text(flow),
+        sign_in=prototype_brief.sign_in_text(accounts, sign_in, routes_out),
+        uploads=(json.dumps(uploaded_images, ensure_ascii=False, indent=2) if uploaded_images
+                 else "None — use the wireframes' images or fitting real photos."),
+        resume=resume)
 
-    def draw(item: tuple[dict, dict]) -> dict:
-        nonlocal completed
-        if session.cancelled:
-            raise RunCancelled(project)
-        page, row = item
-        path = root / row["file"]
-        if can_resume and path.is_file() and path.stat().st_size >= 1000:
-            with progress_lock:
-                completed += 1
-                ready_routes.append(row)
-                _publish_ready_routes()
-                bus.progress(project, "Drawing prototype screens",
-                             completed * 100 / len(pages), agent=bus.DESIGNER)
-            return row
-        bus.agent_msg(project, f"Drawing prototype screen {row['name']} ({row['route']}) from the approved wireframe and design.",
-                      title="Prototype screen", kind="narration", agent=bus.DESIGNER)
-        slug = row["file"].rsplit(".", 1)[0]
-        requirements = [fr for fr in doc.get("functional_requirements", [])
-                        if set(fr.get("allowed_roles") or []) &
-                        set(page.get("allowed_roles") or [])][:12]
-        requirements_path, = reference_staging.stage(
-            session.workspace, context_dir, {f"requirements-{slug}.json":
-                json.dumps(requirements, ensure_ascii=False)}, fresh=False)
-        brief = {"page": page, "route_map": nav,
-                 "design_spec_path": f"{config.RECORD_DIR}/design/design-spec.json",
-                 "product_context_path": srs_subset_path, "customer_direction": direction,
-                 "flow": prototype_brief.page_flow(made["flow"], str(page["route"])),
-                 "kit_shell_path": f"{config.RECORD_DIR}/{PROTOTYPE_DIR}/kit/shell.html",
-                 "kit_reference_path": kit_reference_path,
-                 "demo_accounts": made["accounts"],
-                 "sample_photographs": made["images"],
-                 "uploaded_site_images_path": uploaded_images_path,
-                 "ideas_from_the_web": made["ideas"],
-                 "requirements_path": requirements_path}
-        if wireframe_source is not None:
-            # The source HTML often carries grey boxes and other low-fidelity
-            # styling. Stage only the stripped functional blueprint, so the
-            # approved design decides the finished visual UI.
-            blueprint_path, = reference_staging.stage(
-                session.workspace, context_dir, {f"blueprint-{slug}.html":
-                    structures.get(str(page["route"]), "")}, fresh=False)
-            brief.update({"approved_prototype_plan": approved_execution_plan,
-                          "functional_blueprint_path": blueprint_path,
-                          "selected_design_md_path": customization.get("design_md_path", ""),
-                          "selected_design_md_workspace_path":
-                              customization.get("design_md_workspace_path", ""),
-                          "customizer_prompt": customization.get("customizer_prompt", ""),
-                          "customizer_selection": customization.get("customizer_spec", {})})
-        user = json.dumps(brief, ensure_ascii=False)
-        weight = len(page.get("sections") or []) + len(page.get("functions") or [])
-        # Large screens used to demand 15–25k characters from the model even
-        # when the approved wireframe was concise. Keep a useful floor while
-        # bounding output so generation time follows the actual screen.
-        minimum = max(2800, min(6500, weight * 650))
-        relative = f".agentforge/prototype/{row['file']}"
-        # Screens are drawn one at a time (lanes=1, above) precisely so each
-        # can see the last one's flow — which also makes it the one drawing
-        # path in this file safe to stream: never two screens competing for
-        # the studio's one live-file buffer at once.
-        writer = bus.StreamWriter(project, agent=bus.DESIGNER)
-        html = llm.complete_html(system, user, minimum=minimum,
-                                 label=f"prototype {row['route']}", attempts=3,
-                                 think=False, project=project, workspace=session.workspace,
-                                 role=bus.DESIGNER,
-                                 on_stream_start=lambda: writer.start(relative),
-                                 on_stream_token=writer.token)
-        if session.cancelled:
-            raise RunCancelled(project)
-        html = prototype_brief.ensure_assets(html)
-        html = normalize_inline_svg(html, spec)
-        path.write_text(html, encoding="utf-8")
-        writer.end(relative, html)
-        bus.file_written(project, relative, html, note="drawn", agent=bus.DESIGNER)
-        with progress_lock:
-            completed += 1
-            ready_routes.append(row)
-            _publish_ready_routes()
-            bus.progress(project, "Drawing prototype screens",
-                         completed * 100 / len(pages), agent=bus.DESIGNER)
-        return row
+    # Every page the agent writes is exposed to the preview and counted at once, while it goes on to the next.
+    pages_done: set[str] = {row["file"] for row in written}
+    by_file = {f"{record}/{row['file']}": row for row in routes_out}
 
-    ready_routes: list[dict] = []
+    def watch(event: dict) -> None:
+        if event.get("project") != project or event.get("type") != "file" or event.get("agent") != bus.DESIGNER:
+            return
+        row = by_file.get(str(event.get("name") or ""))
+        if not row or row["file"] in pages_done:
+            return
+        pages_done.add(row["file"])
+        publish(pages_done)
+        bus.progress(project, "Drawing prototype screens", len(pages_done) * 100 / len(routes_out), agent=bus.DESIGNER)
 
-    def _publish_ready_routes() -> None:
-        """Expose each completed page immediately while the rest keep drawing."""
-        routes_text = json.dumps({"routes": ready_routes}, ensure_ascii=False, indent=2)
-        (root / "routes.json").write_text(routes_text, encoding="utf-8")
-        bus.file_written(project, ".agentforge/prototype/routes.json", routes_text,
-                         note="updated", agent=bus.DESIGNER)
-
-    # Screens share a route map and user journeys. Draw them one at a time so
-    # each screen can apply the approved flow without competing context.
-    results = llm.in_lanes(list(zip(pages, routes_out)), draw, lanes=1,
-                           on_error=lambda item, exc: bus.log(project, "ERROR",
-                               f"Could not draw {item[1]['route']}: {exc}", agent=bus.DESIGNER))
-    drawn = [row for row in results if isinstance(row, dict)]
+    publish(pages_done)
+    stop_watching = bus.subscribe(watch)
+    try:
+        # Read everything, plan silently, then write — the builder's own run, without its audit pass.
+        result = session.run_task(request, audit=False, parallel_write_limit=4)
+    finally:
+        stop_watching()
     if session.cancelled:
         raise RunCancelled(project)
-    if len(drawn) != len(routes_out):
-        raise ValueError(f"only {len(drawn)}/{len(routes_out)} prototype screens rendered")
-    routes_text = json.dumps({"routes": drawn}, ensure_ascii=False, indent=2)
-    (root / "routes.json").write_text(routes_text, encoding="utf-8")
-    bus.file_written(project, ".agentforge/prototype/routes.json", routes_text,
-                     note="written", agent=bus.DESIGNER)
-    checkpoint["fingerprint"] = fingerprint
-    checkpoint["complete"] = True
-    checkpoint_path.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8")
-    return drawn
+    if result.get("plan"):
+        (root / "plan.md").write_text(result["plan"], encoding="utf-8")
+    if result.get("status") != "complete" and result.get("text"):
+        bus.log(project, "WARN", f"The agent stopped early: {str(result['text'])[:300]}", agent=bus.DESIGNER)
+
+    # What the agent wrote is used as it is. Only the links to the shared files every page needs are added if one is missing,
+    # and a page it never wrote keeps its wireframe so every link in the prototype still opens something.
+    kept: list[str] = []
+    for row in routes_out:
+        path = root / row["file"]
+        html = path.read_text(encoding="utf-8") if path.is_file() else ""
+        if not html.strip():
+            html = _fallback_page(row, wireframe_source.get(str(row["route"]), ""))
+            kept.append(str(row["route"]))
+        finished = normalize_inline_svg(prototype_brief.ensure_assets(html), spec)
+        if finished != (path.read_text(encoding="utf-8") if path.is_file() else None):
+            write(row["file"], finished, note="patched")
+    if len(kept) == len(routes_out):
+        raise ValueError("the agent wrote no prototype page"
+                         + (f": {str(result.get('text'))[:300]}" if result.get("text") else ""))
+    if kept:
+        bus.agent_msg(project, f"The agent did not write {', '.join(kept)}, so "
+                               f"{'they open' if len(kept) != 1 else 'it opens'} as {'their' if len(kept) != 1 else 'its'} "
+                               "approved wireframe (or a titled page) for now. Ask for it in the chat to have it drawn.",
+                      title="Prototype screens", kind="narration", agent=bus.DESIGNER)
+    for name in ("assets/app.css", "assets/app.js"):
+        if not (root / name).is_file():
+            write(name, "/* The agent wrote no shared " + ("stylesheet" if name.endswith("css") else "script") + ". */\n")
+    write("routes.json", json.dumps({"routes": routes_out}, ensure_ascii=False, indent=2))
+    checkpoint_path.write_text(json.dumps({"fingerprint": fingerprint, "complete": True, "sign_in": sign_in,
+                                           "accounts": accounts, "flow": flow}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return routes_out
 
 
 def generate(project: str, direction: str = "") -> dict[str, Any]:
@@ -381,23 +323,17 @@ def _generate(project: str, direction: str,
         bus.sync_state(project, "running", "Drawing the approved prototype",
                        source="prototype")
     try:
-        execution_plan = ("Read the handoff, route map and each approved wireframe's functional blueprint before drawing its screen. "
-                          "Draw one screen at a time as a high-fidelity, real product UI. Preserve every button destination, "
-                          "page navigation, image and user-flow step; reread the supplied inputs instead of guessing.")
-        if source is not None:
-            if direction.strip():
-                execution_plan += " Customer direction: " + direction.strip()
         spec = design_stage.approved_spec(project)
         if not spec:
             design_stage.draft(project, direction=direction)
             design_stage.approve(project)
             spec = design_stage.approved_spec(project)
         bus.phase(project, "prototype:draw", "Drawing the prototype",
-                  detail="Every screen in the specification, with the approved design.")
-        bus.agent_msg(project, "Building the clickable prototype from the available approved wireframes, SRS handoff, and design.",
+                  detail="Every screen, from the wireframes, app.md and the approved design.")
+        bus.agent_msg(project, "Building the clickable prototype from the approved wireframes, app.md and Design Customize.",
                       title="Prototype generation", kind="narration", agent=bus.DESIGNER)
-        _draw_focused(project, spec, direction, wireframe_source=source,
-                      approved_execution_plan=execution_plan)
+        _draw_with_agent(project, spec, direction, wireframe_source=source)
+        bus.phase(project, "prototype:draw", "Drawing the prototype", status="complete")
         if session.cancelled:
             raise RunCancelled(project)
 
@@ -435,12 +371,14 @@ def _generate(project: str, direction: str,
             bus.sync_state(project, "clean", "Prototype ready", source="prototype")
         return {"routes": drawn}
     except RunCancelled:
+        bus.phase(project, "prototype:draw", "Drawing the prototype", status="paused")
         session.stage = "idle"
         session.save_context()
         if from_wireframes:
             bus.sync_state(project, "paused", "Prototype generation stopped.", source="prototype")
         raise
     except Exception as exc:  # noqa: BLE001
+        bus.phase(project, "prototype:draw", "Drawing the prototype", status="failed", detail=str(exc)[:300])
         session.fail(str(exc))
         if from_wireframes:
             bus.sync_state(project, "failed", str(exc)[:300], source="prototype",

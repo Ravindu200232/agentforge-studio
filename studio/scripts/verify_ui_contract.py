@@ -134,7 +134,7 @@ required = {
     "the live step is animated": ("components/AgentChat.jsx", "live ? <Loader2"),
     "the last row is the live one": ("components/AgentChat.jsx", "live={busy && i === turns.length - 1}"),
     "thinking is shown as thinking": ("components/AgentChat.jsx", "function Thinking"),
-    "thinking is actually rendered": ("components/AgentChat.jsx", "reasoning || /plan|draft|revis/i.test(agentState)"),
+    "thinking is actually rendered": ("components/AgentChat.jsx", "reasoning || Boolean(agentState)"),
     # Verify that UI indicators distinguish active model reasoning from tool transitions.
     "the indicator distinguishes planning actions":
         ("components/AgentChat.jsx", "Reviewing requirements and choosing what to inspect"),

@@ -371,7 +371,7 @@ export default function AgentChat({ projectTitle = '' }) {
             <Turn key={turn.id || `${turn.at}-${turn.role}-${turn.title || turn.text || ''}`} turn={turn}
                   live={lifecycleStream.busy && turn.id === turns.at(-1)?.id} />
           ))}
-          {lifecycleStream.busy && (reasoning || /plan|draft|revis/i.test(agentState)) && !ask &&
+          {lifecycleStream.busy && (reasoning || Boolean(agentState)) && !ask &&
             <Thinking reasoning={reasoning} state={agentState} />}
           {ask && <Asked ask={ask} onPick={said => { setText(said); box.current?.focus() }} />}
           {queued.map(item => (
@@ -865,20 +865,33 @@ function Thinking({ reasoning = false, state = '' }) {
     planning: 'Reviewing requirements and choosing what to inspect',
     'drafting the plan': 'Drafting the product scope',
     'revising the plan': 'Revising the product scope',
+    building: 'Writing the next files',
     read_file: 'Reading a project file',
     list_files: 'Reviewing the project structure',
     search_text: 'Searching the project context',
     web_search: 'Researching supporting context',
     web_fetch: 'Reading a supporting source',
+    write_file: 'Writing the next file',
+    replace_text: 'Editing a file',
+    run_command: 'Running a command',
+    browser_inspect: 'Checking the page in a browser',
   }
   const label = labels[state] || (reasoning ? 'Analysing project context' : 'Working')
+  // A model writing a whole page sends nothing until the page is done. A clock
+  // that keeps counting is what tells a long write apart from a stuck one.
+  const [seconds, setSeconds] = useState(0)
+  useEffect(() => {
+    setSeconds(0)
+    const timer = setInterval(() => setSeconds(value => value + 1), 1000)
+    return () => clearInterval(timer)
+  }, [state])
   return (
     <div className="flex items-center gap-2.5 py-0.5">
       <span className="grid size-6 shrink-0 place-items-center rounded-full bg-accent text-ink">
         <Sparkles className="size-3 animate-pulse" />
       </span>
       <span className="text-[12px] font-medium text-muted">
-        {label}
+        {label}{seconds >= 3 ? ` · ${seconds}s` : ''}
       </span>
       <span className="flex gap-1" aria-hidden="true">
         {[0, 1, 2].map(i => (

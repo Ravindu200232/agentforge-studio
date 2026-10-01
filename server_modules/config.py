@@ -188,7 +188,7 @@ SCAFFOLD_DIRS = (
     "srs/handoff", "srs/wireframes", "srs/diagrams", "srs/diagram-context",
     "srs/reviews", "srs/wireframe-system",
     "design",
-    "prototype/context", "prototype/kit", "prototype/assets/uploads", "prototype/skills",
+    "prototype/input", "prototype/assets/uploads",
     "build/guides", "build/plan",
     "qa/guides",
     "deploy/skills", "deploy/runs",

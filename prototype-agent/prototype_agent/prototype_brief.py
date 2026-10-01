@@ -1,33 +1,22 @@
-"""What a prototype page is given besides its own record.
+"""What the prototype agent is given besides its own record, and the parts of the prototype that are code rather than drawing.
 
-The prototype used to be drawn page by page, each page from the whole wireframe, so it came out looking like the wireframe, with a
-different shell on every page and no shared flow. This module is what makes it one product:
+The agent reads three things and nothing else: the approved wireframes, the handoff's `app.md` and what Design Customize produced. It
+plans silently and writes the prototype itself, the same way the builder works. What is the same for every prototype is prepared here:
 
 * the wireframe's *structure* without its look (its styles, classes and scripts are dropped, so nothing low-fidelity is left to copy);
-* one shared kit, drawn once: `assets/app.css`, `assets/app.js` and the shell every page starts from;
 * the flow: the journeys as "this page leads to that page", written into `assets/flow.js` so links cannot go to a page that is not there;
-* one demo account per role, defined once, used by the sign-in page, by the kit and by the message to the customer;
-* ideas from the web on how the best products of this kind look, and real sample photographs found by web search and checked alive.
+* one demo account per role, defined once, used by the sign-in page's one-click demo login (in `assets/flow.js`) and by the message to
+  the customer.
 
-Everything the model is asked is in `prompts/prototype/` and `prompts/research/`.
+What the model is asked is in `prompts/prototype/generate.md`.
 """
 from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-import httpx
-
-from server_modules import config, journeys as journey_module
-from server_modules import llm, prompts, research
-
-Say = Callable[[str], None]
-
-_MARKER = re.compile(r"^=====\s*(assets/app\.css|assets/app\.js|shell\.html)\s*=====\s*$", re.MULTILINE)
-_FENCE = re.compile(r"^```[a-zA-Z]*\s*\n|\n```\s*$")
-_PEXELS = re.compile(r"https?://(?:www\.)?pexels\.com/photo/[a-z0-9-]+-(\d+)/?$")
+from server_modules import journeys as journey_module
 
 
 # --- the wireframe, as structure only ---------------------------------------------------------------------------------
@@ -113,14 +102,42 @@ def page_flow(flow: dict, route: str) -> dict[str, Any]:
             "journeys": [j["name"] for j in flow["journeys"] if any(s["route"] == route for s in j["steps"])]}
 
 
-def _journey_text(flow: dict) -> str:
+def journey_text(flow: dict) -> str:
     return "\n".join(f"- {j['name']}" + (f" ({j['who']})" if j["who"] else "") + ": " + " → ".join(f"{s['step']} [{s['route']}]" for s in j["steps"])
                      for j in flow["journeys"]) or "(the specification lists no journeys)"
 
 
-def _routes_text(routes_out: list[dict]) -> str:
-    return "\n".join(f"- {r['route']} — {r['file']} — {r['name']}" + (f" — roles: {', '.join(map(str, r.get('roles') or []))}" if r.get("roles") else "")
-                     for r in routes_out)
+def routes_text(routes_out: list[dict], wireframes: dict[str, str] | None = None) -> str:
+    """The route table the agent writes against: one page file per route, and the wireframe it is drawn from."""
+    wireframes = wireframes or {}
+    rows = ["| Route | Write to | Page | Roles | Wireframe |", "|---|---|---|---|---|"]
+    for r in routes_out:
+        rows.append(f"| `{r['route']}` | `.agentforge/prototype/{r['file']}` | {r['name']} | "
+                    f"{', '.join(map(str, r.get('roles') or [])) or 'anyone'} | "
+                    + (f"`{wireframes[r['route']]}`" if wireframes.get(r["route"]) else "none — draw it from app.md") + " |")
+    return "\n".join(rows)
+
+
+def sign_in_text(accounts: list[dict], sign_in: str, routes_out: list[dict]) -> str:
+    """What the agent is told about signing in: one-click role-based demo login, already provided by `assets/flow.js`."""
+    if not sign_in or not accounts:
+        return "This product has no sign-in. Draw no sign-in form and no account menu."
+    page = next((r for r in routes_out if r["route"] == sign_in), {"file": sign_in, "name": sign_in})
+    lines = [f"The sign-in page is **{page['name']}** (`.agentforge/prototype/{page['file']}`). Signing in is a role-based demo "
+             "login, and `assets/flow.js` already does all of it:", "",
+             "- On the sign-in page draw a polished form marked `<form data-sign-in>` with an email field (`type=\"email\"`) and a "
+             "password field (`type=\"password\"`), and directly under it an empty `<div data-demo-login></div>`. flow.js fills that "
+             "block with one \"continue as\" button per role, signs in with one click and opens that role's first page; typing a demo "
+             "email and password works too. Do not write the accounts into the page and do not write your own sign-in script.",
+             "- Wherever the signed-in person shows, write `<span data-user=\"name\"></span>` (or `\"email\"`, `\"role\"`); a "
+             "sign-out control carries `data-sign-out`.",
+             "- An element only some roles use carries `data-roles=\"role_key\"` (comma-separated for several); when someone is "
+             "signed in, flow.js hides it from the other roles.",
+             "- `window.PROTOTYPE.user()`, `.login(email, password)`, `.loginAs(role)`, `.logout()` and `.canOpen(route)` are "
+             "there if app.js needs them.", "", "The demo accounts:", ""]
+    lines += [f"- **{a['role']}** (`{a['role_key']}`) — {a['email']} / {a['password']} — opens "
+              f"`{next((r['file'] for r in routes_out if r['route'] == a['lands_on']), a['lands_on'])}` first" for a in accounts]
+    return "\n".join(lines)
 
 
 # --- demo accounts -----------------------------------------------------------------------------------------------------
@@ -130,6 +147,7 @@ def draw_accounts(doc: dict, routes_out: list[dict], flow: dict, system: str) ->
     sign_in, roles = sign_in_route(doc), roles_of(doc)
     if not sign_in or not roles:
         return []
+    protected = {str(page["route"]): page for page in pages_of(doc)}
     out = []
     for index, role in enumerate(roles, start=1):
         label = str(role.get("role_name") or role.get("role_key") or f"User {index}").strip()
@@ -137,7 +155,9 @@ def draw_accounts(doc: dict, routes_out: list[dict], flow: dict, system: str) ->
         slug = re.sub(r"[^a-z0-9]+", ".", key.lower()).strip(".") or f"user{index}"
         yes, no = can_open(doc, role)
         destinations = [str(page["route"]) for page in yes if str(page.get("route")) != sign_in]
-        lands_on = destinations[0] if destinations else sign_in
+        # A role signs in to its own first page — the dashboard it came for — not to the public home page.
+        own = [route for route in destinations if (protected.get(route) or {}).get("login_required")]
+        lands_on = (own or destinations or [sign_in])[0]
         out.append({
             "role": label,
             "role_key": key,
@@ -225,170 +245,133 @@ def flow_script(routes_out: list[dict], flow: dict, accounts: list[dict], sign_i
   }, true);
 })();
 '''
-    return "window.PROTOTYPE = Object.assign(window.PROTOTYPE || {}, " + payload + ");\n" + navigation
+    return "window.PROTOTYPE = Object.assign(window.PROTOTYPE || {}, " + payload + ");\n" + navigation + DEMO_SESSION
 
 
-# --- photographs -------------------------------------------------------------------------------------------------------
-
-def _subjects(data: Any) -> list[dict]:
-    rows = data.get("subjects") if isinstance(data, dict) else data
-    return [{"subject": " ".join(str(r.get("subject") or "").split()), "used_on": str(r.get("used_on") or "")}
-            for r in rows or [] if isinstance(r, dict) and str(r.get("subject") or "").strip()][:6]
-
-
-def _alive(url: str) -> bool:
-    try:
-        reply = httpx.get(url, timeout=15, headers={"Range": "bytes=0-1024"}, follow_redirects=True)
-        return reply.status_code in (200, 206) and reply.headers.get("content-type", "").startswith("image/")
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def gather_images(product: str, pages: str, system: str, say: Say) -> list[dict]:
-    """Real sample photographs: the model names the subjects, web search finds photo pages, the direct image is built and checked alive."""
-    try:
-        subjects = llm.complete_json(system=system, label="prototype_images", validator=_subjects,
-                                     user=prompts.load("prototype/images", product=product, pages=pages))
-    except Exception as exc:  # noqa: BLE001
-        say(f"Could not plan the sample photographs ({str(exc)[:120]}); drawing without them.")
-        return []
-    found: list[dict] = []
-    for item in subjects:
-        say(f'Searched the web for photos of "{item["subject"]}"')
-        for row in llm.web_search(f'{item["subject"]} free stock photo pexels', 8):
-            match = _PEXELS.match(row["url"])
-            if not match:
-                continue
-            url = f"https://images.pexels.com/photos/{match.group(1)}/pexels-photo-{match.group(1)}.jpeg?auto=compress&cs=tinysrgb&w=1200"
-            if _alive(url):
-                alt = re.sub(r"\s*[·|-]\s*Free Stock Photo.*$", "", row["title"], flags=re.IGNORECASE).strip()
-                found.append({"subject": item["subject"], "used_on": item["used_on"], "url": url, "alt": alt or item["subject"]})
-                break
-    return found
-
-
-# --- the kit -----------------------------------------------------------------------------------------------------------
-
-def parse_kit(text: str) -> dict[str, str]:
-    parts = _MARKER.split(text or "")
-    blocks: dict[str, str] = {}
-    for index in range(1, len(parts) - 1, 2):
-        blocks[parts[index]] = _FENCE.sub("", parts[index + 1].strip()).strip()
-    return blocks
-
-
-def kit_problems(blocks: dict[str, str], tokens: dict) -> list[str]:
-    problems = []
-    for name in ("assets/app.css", "assets/app.js", "shell.html"):
-        if not blocks.get(name):
-            problems.append(f"the block `{name}` is missing")
-    css, js, shell = blocks.get("assets/app.css", ""), blocks.get("assets/app.js", ""), blocks.get("shell.html", "")
-    palette = (tokens or {}).get("light") or (tokens or {}).get("dark") or {}
-    if css and len(css) < 3000:
-        problems.append("the stylesheet is far too short for a complete design system")
-    missing = [n for n in list(palette)[:6] if f"--{n}" not in css]
-    if css and missing:
-        problems.append(f"the stylesheet does not define the design's tokens as custom properties ({', '.join('--' + n for n in missing)})")
-    if js and "PROTOTYPE" not in js:
-        problems.append("the script does not use window.PROTOTYPE")
-    if shell and ("page content" not in shell or "data-go" not in shell):
-        problems.append("the shell must hold the `<!-- page content -->` marker and navigation written with data-go")
-    return problems
-
-
-def draw_kit(spec: dict, customization: dict, routes_out: list[dict], flow: dict, sign_in: str, accounts: list[dict], ideas: str,
-             say: Say, project: str, workspace: Path, premium_skill_path: str, attempts: int = 1) -> dict[str, str]:
-    """The stylesheet, the script and the shell every page shares, drawn once."""
-    design_md_workspace_path = str(customization.get("design_md_workspace_path") or "")
-    sign_in_text = (f"The sign-in page is `{sign_in}`. Demo accounts (role, name, email, password, lands on): "
-                    + "; ".join(f"{a['role']}, {a['display_name']}, {a['email']}, {a['password']}, {a['lands_on']}" for a in accounts)) if sign_in else "The product has no sign-in."
-    user = prompts.load("prototype/kit", design_spec_path=f"{config.RECORD_DIR}/design/design-spec.json",
-                        design_md=(f"Read `{design_md_workspace_path}` yourself — the selected theme's own guidance "
-                                   f"({customization.get('design_md_path')})." if design_md_workspace_path else ""),
-                        customizer=(f"### Customer's design direction\n\n{customization['customizer_prompt']}" if customization.get("customizer_prompt") else ""),
-                        routes=_routes_text(routes_out), sign_in=sign_in_text, journeys=_journey_text(flow),
-                        ideas=ideas or "(none gathered — rely on the design contract and your own judgement)",
-                        premium_frontend_skill_path=premium_skill_path)
-    if customization.get("uploaded_site_images"):
-        user += ("\n\n## User-uploaded site images\n"
-                 "Prefer these for their named uses, including the shared logo or favicon. "
-                 "Use each prototype_url as a relative asset URL.\n"
-                 + json.dumps(customization["uploaded_site_images"], ensure_ascii=False, indent=2))
-    system, previous, problems = prompts.load("prototype/kit-system"), "", []
-    for attempt in range(max(1, attempts)):
-        request = user if not problems else (
-            user + "\n\n## Your last attempt\n\n" + (previous[:1500] or "(empty — you returned nothing at all)")
-            + "\n\nIt was rejected: " + "; ".join(problems) + ". Do not call read_file, list_files or "
-              "search_text again — you already read what you need. Return all three blocks now, complete.")
-        # This call writes a concrete artifact. Hidden chain-of-thought adds a
-        # long wait before the first visible file without improving the CSS/JS
-        # contract enforced below.
-        previous = llm.complete(system=system, user=request, think=False,
-                                project=project, workspace=workspace)
-        blocks = parse_kit(previous)
-        problems = kit_problems(blocks, spec.get("tokens") or {})
-        if not problems:
-            return blocks
-        say(f"The shared design system was not usable ({'; '.join(problems)[:200]}); drawing it again.")
-    raise ValueError("could not draw the prototype's shared design system: " + "; ".join(problems))
-
-
-_ID = re.compile(r"\b(?:FR|NFR|AC|TC|US|REQ)-\d+\b")
-
-
-def kit_api(js: str) -> list[str]:
-    """The names the kit's script defines on `PROTOTYPE`, read from the script itself."""
-    aliases = {"PROTOTYPE"} | set(re.findall(r"\b(\w+)\s*=\s*(?:window\.)?PROTOTYPE\b", js))
-    names: set[str] = set()
-    for alias in aliases:
-        names |= set(re.findall(rf"\b{re.escape(alias)}\.(\w+)\s*=", js))
-    return sorted(names | {"routes", "accounts", "signIn", "journeys"})
-
-
-def kit_reference(kit: dict[str, str]) -> dict[str, Any]:
-    """What a page must know about the kit to use it as it is: its stylesheet (minus comments) and the script's API."""
-    return {"stylesheet": re.sub(r"/\*.*?\*/", "", kit["assets/app.css"], flags=re.S).strip(), "script_api": kit_api(kit["assets/app.js"])}
-
-
-def page_problems(html: str, kit: dict[str, str], routes: set[str], accounts: list[dict] | None = None) -> list[str]:
-    """What is wrong with a page that a reader would only find by clicking: a kit function that is not there, a class the kit does not
-    define (so the element renders unstyled), a route that is not a page, a demo account that does not exist (pass `accounts` for the
-    sign-in page), and specification talk printed on the page."""
-    problems = []
-    defined = set(kit_api(kit["assets/app.js"]))
-    missing = sorted({n for n in re.findall(r"PROTOTYPE\.(\w+)", html)} - defined)
-    if missing:
-        problems.append("the page calls " + ", ".join(f"PROTOTYPE.{n}" for n in missing) + ", which the kit does not define; the kit defines only: " + ", ".join(sorted(defined)))
-    page_style = "".join(re.findall(r"<style[^>]*>(.*?)</style>", html, flags=re.S | re.I))
-    known = set(re.findall(r"\.([A-Za-z_][\w-]*)", kit["assets/app.css"] + page_style))
-    used: set[str] = set()
-    for match in re.finditer(r'\sclass\s*=\s*"([^"]*)"', html):
-        used |= set(match.group(1).split())
-    unknown = sorted(c for c in used if c not in known and not c.startswith(("is-", "has-", "js-")))
-    if len(unknown) >= 4:
-        problems.append("these classes are defined neither by the kit nor by the page's own style, so the elements render unstyled: " + ", ".join(unknown[:12])
-                        + " — use the kit's own class names")
-    for go in sorted(set(re.findall(r'data-go\s*=\s*"([^"]*)"', html))):
-        if (go.rstrip("/") or "/") not in routes:
-            problems.append(f'data-go="{go}" is not a route of the prototype')
-    own_scripts = "\n".join(re.findall(r"<script(?![^>]*\bsrc\b)[^>]*>(.*?)</script>", html, flags=re.S | re.I))
-    if re.search(r"\b(?:sessionStorage|localStorage)\b", own_scripts):
-        problems.append("the page reads browser storage itself. The session, the signed-in user and who may open the page are the kit's job: it guards the "
-                        "page, fills `data-user` fields and shows `data-roles` items. Remove the page's own session and access logic")
-    visible = re.sub(r"<(script|style)\b.*?</\1>|<[^>]+>", " ", html, flags=re.S | re.I)
-    ids = sorted(set(_ID.findall(visible)))
-    if ids:
-        problems.append("the page prints requirement ids (" + ", ".join(ids) + "): every word on a page belongs to the product, never to the specification")
-    printed = sorted(r for r in routes if r != "/" and re.search(rf"(?<![\w./-]){re.escape(r)}(?![\w-])", visible))
-    if printed:
-        problems.append("the page prints route paths (" + ", ".join(printed) + "): a person never sees a route, so name the page instead")
-    if accounts is not None:
-        real = {str(a["email"]).lower() for a in accounts}
-        invented = sorted({e.lower() for e in re.findall(r"[\w.+-]+@example\.com", html, flags=re.IGNORECASE)} - real)
-        if invented:
-            problems.append("the page shows demo accounts that do not exist (" + ", ".join(invented) + "); the only demo accounts are "
-                            + ", ".join(sorted(real)) + ", one per role, and it shows exactly those")
-    return problems
+# The demo sign-in is the same on every prototype, so it is code rather than something each model run re-invents: one click per
+# role on the sign-in page, the typed demo email and password also work, sign-out, the signed-in user's fields and role-only items.
+DEMO_SESSION = r'''
+(function () {
+  var P = window.PROTOTYPE = window.PROTOTYPE || {};
+  var KEY = 'agentforge.prototype.user';
+  function accounts() { return Array.isArray(P.accounts) ? P.accounts : []; }
+  function fileFor(route) {
+    var row = (P.routes || []).filter(function (r) { return r && r.route === route; })[0];
+    return row && row.file ? row.file : 'index.html';
+  }
+  function read() {
+    try { var saved = window.localStorage.getItem(KEY); if (saved) return saved; } catch (ignore) {}
+    return String(window.name || '').indexOf(KEY + '=') === 0 ? window.name.slice(KEY.length + 1) : '';
+  }
+  function write(email) {
+    try { if (email) window.localStorage.setItem(KEY, email); else window.localStorage.removeItem(KEY); } catch (ignore) {}
+    window.name = email ? KEY + '=' + email : '';
+  }
+  function find(value) {
+    var key = String(value || '').trim().toLowerCase();
+    return accounts().filter(function (a) {
+      return [a.roleKey, a.role, a.email].some(function (v) { return String(v || '').toLowerCase() === key; });
+    })[0] || null;
+  }
+  P.user = function () { return find(read()); };
+  P.loginAs = function (roleOrEmail) {
+    var account = find(roleOrEmail);
+    if (!account) return null;
+    write(account.email);
+    window.location.href = fileFor(account.landsOn);
+    return account;
+  };
+  P.login = function (email, password) {
+    var account = find(email);
+    return account && account.password === String(password || '') ? P.loginAs(account.email) : null;
+  };
+  P.logout = function () {
+    write('');
+    window.location.href = P.signIn && P.signIn.file ? P.signIn.file : 'index.html';
+  };
+  P.canOpen = function (route) {
+    var user = P.user();
+    return !user || (user.canOpen || []).indexOf(route) >= 0;
+  };
+  function here() { return decodeURIComponent(window.location.pathname.split('/').pop() || 'index.html'); }
+  function onSignIn() { return !!(P.signIn && P.signIn.file === here()); }
+  function demoLogin() {
+    var list = accounts();
+    if (!list.length) return;
+    var slots = Array.prototype.slice.call(document.querySelectorAll('[data-demo-login]'));
+    if (!slots.length && onSignIn()) {
+      var slot = document.createElement('div');
+      slot.setAttribute('data-demo-login', '');
+      var form = document.querySelector('form');
+      if (form && form.parentNode) form.parentNode.insertBefore(slot, form.nextSibling);
+      else (document.querySelector('main') || document.body).appendChild(slot);
+      slots = [slot];
+    }
+    slots.forEach(function (slot) {
+      if (slot.querySelector('[data-login-as]')) return;
+      slot.classList.add('demo-login');
+      var title = document.createElement('p');
+      title.className = 'demo-login__title';
+      title.textContent = 'Demo login \u2014 continue as';
+      slot.appendChild(title);
+      list.forEach(function (a) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-secondary demo-login__btn';
+        button.setAttribute('data-login-as', a.roleKey || a.role);
+        var role = document.createElement('strong');
+        role.textContent = a.role;
+        var email = document.createElement('span');
+        email.textContent = a.email + ' \u00b7 ' + a.password;
+        button.appendChild(role);
+        button.appendChild(email);
+        slot.appendChild(button);
+      });
+    });
+  }
+  function signedIn() {
+    var user = P.user();
+    document.documentElement.setAttribute('data-signed-in', user ? (user.roleKey || user.role) : '');
+    document.querySelectorAll('[data-user]').forEach(function (el) {
+      if (!user) return;
+      var field = el.getAttribute('data-user') || 'name';
+      var value = { name: user.name, email: user.email, role: user.role }[field];
+      if (value) el.textContent = value;
+    });
+    document.querySelectorAll('[data-roles]').forEach(function (el) {
+      if (!user) return;
+      var roles = el.getAttribute('data-roles').toLowerCase().split(/[\s,]+/).filter(Boolean);
+      var mine = [user.roleKey, user.role].map(function (v) { return String(v || '').toLowerCase(); });
+      if (roles.length && !roles.some(function (r) { return mine.indexOf(r) >= 0; })) el.hidden = true;
+    });
+  }
+  document.addEventListener('DOMContentLoaded', function () { demoLogin(); signedIn(); });
+  document.addEventListener('click', function (event) {
+    var as = event.target.closest && event.target.closest('[data-login-as]');
+    if (as) { event.preventDefault(); event.stopImmediatePropagation(); P.loginAs(as.getAttribute('data-login-as')); return; }
+    var out = event.target.closest && event.target.closest('[data-sign-out]');
+    if (out) { event.preventDefault(); event.stopImmediatePropagation(); P.logout(); }
+  }, true);
+  document.addEventListener('submit', function (event) {
+    var form = event.target;
+    var password = form.querySelector && form.querySelector('input[type="password"]');
+    if (!accounts().length || !(form.hasAttribute('data-sign-in') || (onSignIn() && password))) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    var email = form.querySelector('input[type="email"], input[name*="email" i], input[autocomplete="username"]');
+    if (P.login(email && email.value, password && password.value)) return;
+    var note = form.querySelector('[data-sign-in-error]');
+    if (!note) {
+      note = document.createElement('p');
+      note.setAttribute('data-sign-in-error', '');
+      note.setAttribute('role', 'alert');
+      note.className = 'form-error';
+      form.appendChild(note);
+    }
+    note.textContent = 'That email and password do not match a demo account. Use a Demo login button.';
+  }, true);
+})();
+'''
 
 
 def ensure_assets(html: str) -> str:
@@ -400,26 +383,3 @@ def ensure_assets(html: str) -> str:
     if tail:
         html = re.sub(r"</body>", tail + "</body>", html, count=1, flags=re.IGNORECASE) if re.search(r"</body>", html, re.I) else html + "\n" + tail
     return html
-
-
-# --- everything, once, before any page ------------------------------------------------------------------------------------
-
-def prepare(doc: dict, spec: dict, customization: dict, routes_out: list[dict], structures: dict[str, str], say: Say,
-           project: str, workspace: Path, premium_skill_path: str) -> dict[str, Any]:
-    """Build the shared flow and kit directly from the approved artifacts.
-
-    The wireframes already contain the chosen structure and image references.
-    A second research and image-verification pass only delays the prototype and
-    can make it drift from what the customer approved.
-    """
-    system = prompts.load("srs/system")
-    ideas = ""
-    flow = flow_of(doc, routes_out)
-    sign_in = sign_in_route(doc)
-    accounts = draw_accounts(doc, routes_out, flow, system)
-    images: list[dict] = []
-    kit = draw_kit(spec, customization, routes_out, flow, sign_in, accounts, ideas, say,
-                   project=project, workspace=workspace, premium_skill_path=premium_skill_path,
-                   attempts=3)
-    return {"ideas": ideas, "flow": flow, "sign_in": sign_in, "accounts": accounts, "images": images, "kit": kit,
-            "flow_js": flow_script(routes_out, flow, accounts, sign_in)}

@@ -1209,16 +1209,19 @@ class WireframeGenerationTests(unittest.TestCase):
 
 
 class PrototypeFromWireframesTests(unittest.TestCase):
-    def test_every_approved_route_uses_its_html_and_handoff(self):
+    def test_the_agent_reads_the_three_inputs_plans_silently_and_writes_every_page(self):
         from prototype_agent import prototype as prototyper
         from srs_agent import document as srs_document
 
-        doc = a_document()
+        doc = a_document(
+            authentication_requirement={"login_required": True, "sign_in_route": "/login"},
+            public_pages=[{"page_name": "Home", "route": "/", "sections": ["hero", "list"], "functions": ["browse"]},
+                          {"page_name": "Sign in", "route": "/login", "sections": ["form"], "functions": ["sign in"]}])
         approved = a_plan(screens=[
             {"name": "Home", "route": "/", "purpose": "Browse", "who": ["Visitor"]},
             {"name": "Checkout", "route": "/checkout", "purpose": "Pay", "who": ["Visitor"]},
         ])
-        captured = []
+        runs = []
 
         class Session:
             cancelled = False
@@ -1227,41 +1230,78 @@ class PrototypeFromWireframesTests(unittest.TestCase):
                 self.workspace = root
                 self.record = root / ".agentforge"
 
-        def complete_html(_system, user, **_kwargs):
-            captured.append(json.loads(user))
-            return "<!DOCTYPE html><html><style>body{color:red}</style><body>Ready</body></html>"
+            def run_task(self, request, **kwargs):
+                runs.append((request, kwargs))
+                pages = self.record / "prototype"
+                (pages / "assets" / "app.css").write_text(":root{--accent:#c2410c}", encoding="utf-8")
+                (pages / "index.html").write_text(
+                    "<!DOCTYPE html><html><head></head><body><h1>Fresh cakes</h1></body></html>", encoding="utf-8")
+                (pages / "login.html").write_text(
+                    "<!DOCTYPE html><html><head></head><body><form data-sign-in></form>"
+                    "<div data-demo-login></div></body></html>", encoding="utf-8")
+                return {"plan": "THE SILENT PLAN", "status": "complete", "text": "done"}
 
-        with tempfile.TemporaryDirectory() as folder, \
-             patch.object(prototyper, "session_for", return_value=Session(Path(folder))), \
-             patch.object(prototyper.design_stage, "approved_customization", return_value={
-                 "design_md_path": "prompts/design/themes/terracotta/DESIGN.md",
-                 "design_md": "SELECTED_DESIGN_MARKDOWN",
-                 "customizer_prompt": "CUSTOMIZER_EXTRA_PROMPT",
-                 "customizer_spec": {"mode": "theme", "theme": {"slug": "terracotta"}},
-             }), \
-             patch.object(srs_document, "document", return_value={"srs_document": doc}), \
-             patch.object(srs_document.plan_stage, "approved_plan", return_value=approved), \
-             patch.object(srs_document, "handoff_docs", return_value={"app.md": "FINAL_HANDOFF_DETAIL"}), \
-             patch.object(prototyper.llm, "complete_html", side_effect=complete_html), \
-             patch.object(prototyper.llm, "in_lanes", side_effect=lambda items, fn, **_kw: [fn(item) for item in items]), \
-             patch.object(prototyper.bus, "file_written"), \
-             patch.object(prototyper.bus, "progress"), \
-             patch.object(prototyper.bus, "agent_msg") as messages:
-            rows = prototyper._draw_focused(
-                "test", {"tokens": {}}, "Make a realistic prototype",
-                wireframe_source={"/": "HOME_WIREFRAME", "/checkout": "CHECKOUT_WIREFRAME"},
-                approved_execution_plan="APPROVED_EXECUTION_PLAN")
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            handoff = root / ".agentforge" / "srs" / "handoff"
+            handoff.mkdir(parents=True)
+            (handoff / "app.md").write_text("FINAL_HANDOFF_DETAIL", encoding="utf-8")
+            with patch.object(prototyper, "session_for", return_value=Session(root)), \
+                 patch.object(prototyper.design_stage, "approved_customization", return_value={
+                     "design_md_path": "prompts/design/themes/terracotta/DESIGN.md",
+                     "design_md": "SELECTED_DESIGN_MARKDOWN",
+                     "design_md_workspace_path": "design/theme.md",
+                     "customizer_prompt": "CUSTOMIZER_EXTRA_PROMPT",
+                     "customizer_spec": {"mode": "theme", "theme": {"slug": "terracotta"}},
+                 }), \
+                 patch.object(srs_document, "document", return_value={"srs_document": doc}), \
+                 patch.object(srs_document.plan_stage, "approved_plan", return_value=approved), \
+                 patch.object(prototyper.bus, "file_written"), \
+                 patch.object(prototyper.bus, "progress"), \
+                 patch.object(prototyper.bus, "log"), \
+                 patch.object(prototyper.bus, "agent_msg") as messages:
+                rows = prototyper._draw_with_agent(
+                    "test", {"tokens": {"light": {"accent": "#c2410c"}}}, "Make a realistic prototype",
+                    wireframe_source={"/": "<html><head><style>.box{}</style></head><body><h1 class='box'>HOME_WIREFRAME</h1></body></html>",
+                                      "/checkout": "<html><body><form>CHECKOUT_WIREFRAME</form></body></html>"})
 
-        self.assertEqual([row["route"] for row in rows], ["/", "/checkout"])
-        self.assertEqual([call.kwargs.get("title") for call in messages.call_args_list],
-                         ["Prototype screen", "Prototype screen"])
-        self.assertEqual([item["source_wireframe_html"] for item in captured],
-                         ["HOME_WIREFRAME", "CHECKOUT_WIREFRAME"])
-        self.assertTrue(all(item["srs_handoff_files"]["app.md"] == "FINAL_HANDOFF_DETAIL"
-                            and item["approved_prototype_plan"] == "APPROVED_EXECUTION_PLAN"
-                            and item["selected_design_md"] == "SELECTED_DESIGN_MARKDOWN"
-                            and item["customizer_prompt"] == "CUSTOMIZER_EXTRA_PROMPT"
-                            for item in captured))
+            prototype = root / ".agentforge" / "prototype"
+            self.assertEqual([row["route"] for row in rows], ["/", "/login", "/checkout"])
+            self.assertEqual(len(runs), 1)
+            request, kwargs = runs[0]
+            # the builder's own run: silent plan, then write; no audit pass
+            self.assertFalse(kwargs["audit"])
+            # only the three inputs: app.md, the wireframes and what Design Customize produced
+            for expected in (".agentforge/srs/handoff/app.md", ".agentforge/prototype/input/design-spec.json",
+                             "design/theme.md", ".agentforge/prototype/input/wireframes/index.html",
+                             ".agentforge/prototype/input/wireframes/checkout.html",
+                             "CUSTOMIZER_EXTRA_PROMPT", "Make a realistic prototype"):
+                self.assertIn(expected, request)
+            self.assertNotIn("SKILL", request)
+            self.assertNotIn("premium-frontend", request.lower())
+            # sample data, every piece of wireframe content, role-based demo login and no guards are asked for in the prompt
+            for expected in ("realistic sample data", "Do not miss a single piece of wireframe content",
+                             "**No guards.**", "data-demo-login", "owner@example.com"):
+                self.assertIn(expected, request)
+            blueprint = (prototype / "input" / "wireframes" / "index.html").read_text(encoding="utf-8")
+            self.assertIn("HOME_WIREFRAME", blueprint)
+            self.assertNotIn("<style", blueprint)
+            # what the agent wrote is kept, only wired to the shared files
+            home = (prototype / "index.html").read_text(encoding="utf-8")
+            self.assertIn("Fresh cakes", home)
+            self.assertIn("assets/flow.js", home)
+            self.assertIn("assets/app.css", home)
+            # a page the agent never wrote keeps its wireframe instead of stopping the run
+            self.assertIn("CHECKOUT_WIREFRAME", (prototype / "checkout.html").read_text(encoding="utf-8"))
+            self.assertTrue(any("/checkout" in call.args[1] for call in messages.call_args_list))
+            flow = (prototype / "assets" / "flow.js").read_text(encoding="utf-8")
+            self.assertIn("owner@example.com", flow)
+            self.assertIn("P.loginAs", flow)
+            self.assertNotIn("location.replace", flow)
+            self.assertEqual((prototype / "plan.md").read_text(encoding="utf-8"), "THE SILENT PLAN")
+            saved = json.loads((prototype / "routes.json").read_text(encoding="utf-8"))
+            self.assertEqual([row["file"] for row in saved["routes"]], ["index.html", "login.html", "checkout.html"])
+            self.assertTrue(json.loads((prototype / "generation.json").read_text(encoding="utf-8"))["complete"])
 
     def test_missing_wireframes_block_approval_before_starting_a_run(self):
         from prototype_agent import prototype as prototyper
