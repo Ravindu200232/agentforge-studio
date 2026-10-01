@@ -8,11 +8,13 @@ from typing import Any
 from server_modules import bus, changes, plugins, prompts, reference_staging, store, supabase_connect
 from server_modules.qa_report import summary_counts
 from server_modules.session import RunCancelled, session_for
+from server_modules.validation import build_report
 
 BUILD_DIR = "build"
 REPORT = (BUILD_DIR, "report.json")
 QUESTION = (BUILD_DIR, "question.json")
 PENDING = (BUILD_DIR, "pending.json")
+REPORT_REPAIR_ROUNDS = 2
 
 
 def report(project: str) -> dict[str, Any]:
@@ -89,7 +91,7 @@ def answer(project: str, reply: str) -> dict[str, Any]:
         settled = _settle(project, session, mode, request, plan, result)
         if settled.get("status") == "asking":
             return settled
-        return _finish_run(project, session, settled) if mode == "run" else _finish_update(project, session, settled)
+        return _finish_run(project, session, settled, plan) if mode == "run" else _finish_update(project, session, settled)
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -155,7 +157,48 @@ def _prototype_context_block(workspace: Path) -> str:
     )
 
 
-def _finish_run(project: str, session: Any, build_result: dict[str, Any]) -> dict[str, Any]:
+def _report_problems(session: Any) -> list[str]:
+    """What keeps either report file from the Testing views' template. A file that is missing
+    altogether is not listed: the gates in `_finish_run` already say so plainly."""
+    found = []
+    for section, (folder, name) in build_report.SECTIONS.items():
+        saved = session.read_record(folder, name, fallback=None)
+        if isinstance(saved, dict):
+            found += [f"{folder}/{name}: {issue}" for issue in build_report.problems(saved, section)]
+    return found
+
+
+def _conform_reports(project: str, session: Any, plan: str) -> None:
+    """Hold both report files to the template the Testing views read (`build_report.py`).
+
+    The same conversation continues, so nothing finished is redone - only the two report
+    files are rewritten. A build whose app and checks are done is never failed over its
+    report's shape: what is still off is logged, and the Testing views show what they can read.
+    """
+    for _ in range(REPORT_REPAIR_ROUNDS):
+        found = _report_problems(session)
+        if not found:
+            return
+        bus.log(project, "INFO", f"The report files miss the Testing screen's template in {len(found)} "
+                                 "place(s); asking for them to be rewritten.")
+        try:
+            request = prompts.load("builder/report-repair",
+                                   template=build_report.stage_template(session.workspace),
+                                   problems="\n".join(f"- {issue}" for issue in found))
+            session.execute_approved(request, plan)
+        except RunCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a report rewrite never undoes a finished build
+            bus.log(project, "WARN", f"The report rewrite stopped: {exc}")
+            return
+    found = _report_problems(session)
+    if found:
+        bus.log(project, "WARN", "The report files still miss the Testing screen's template: "
+                                 + "; ".join(found[:5]))
+
+
+def _finish_run(project: str, session: Any, build_result: dict[str, Any], plan: str = "") -> dict[str, Any]:
+    _conform_reports(project, session, plan)
     bus.phase(project, "build:write", "Building the application", status="complete")
 
     built_report = report(project)
@@ -240,7 +283,8 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
                       title="Builder scaffold")
         bus.phase(project, "build:write", "Building and checking the application",
                   detail="One sequential plan: complete the app, focused business units, then final product checks.")
-        request = prompts.load("builder/generate", stack=stack)
+        request = prompts.load("builder/generate", stack=stack,
+                               report_template=build_report.stage_template(session.workspace))
         request += _prototype_context_block(session.workspace)
         request += "\n\n## Scaffold installation\n" + json.dumps(installed, indent=2)
         guide_paths = reference_staging.stage(session.workspace, "build/guides",
@@ -265,7 +309,7 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         settled = _settle(project, session, "run", request, build_result.get("plan") or "", build_result)
         if settled.get("status") == "asking":
             return settled
-        return _finish_run(project, session, settled)
+        return _finish_run(project, session, settled, build_result.get("plan") or "")
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001

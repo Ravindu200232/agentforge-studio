@@ -8,6 +8,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from server_modules.qa_report import summary_counts
+
 from . import build_evidence
 
 
@@ -144,6 +146,12 @@ def result_history(workspace: Path) -> list[dict]:
 
 def collect(workspace: Path, saved: dict) -> dict:
     result = dict(saved)
+    if "summary" in result and not isinstance(result["summary"], dict):
+        # A sentence where the screen reads {pass, fail, warn}: keep the words, count the layers.
+        result["summaryText"] = result.pop("summary")
+        counts = summary_counts(saved)
+        if any(counts.values()):
+            result["summary"] = counts
     sources = test_sources(workspace)
     if sources:
         result["testSources"] = sources

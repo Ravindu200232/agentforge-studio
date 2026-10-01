@@ -193,6 +193,26 @@ function run(commandParts, env) {
   })
 }
 
+/**
+ * Playwright overwrites test-results/results.json on every run, so after journeys, visual and
+ * accessibility run one after another only the last is left. Keep this run's own copy in
+ * .agentforge/qa/runs/, named after its script (test-a11y.json), where the Testing views read
+ * every run from. Not this script's result to judge: a failed copy only says so.
+ */
+function keepRunResults(commandParts, since) {
+  const source = path.join('test-results', 'results.json')
+  try {
+    if (!fs.existsSync(source) || fs.statSync(source).mtimeMs < since) return
+    const label = String(commandParts[commandParts.length - 1] || '')
+      .replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'run'
+    const folder = path.join('.agentforge', 'qa', 'runs')
+    fs.mkdirSync(folder, { recursive: true })
+    fs.copyFileSync(source, path.join(folder, `${label}.json`))
+  } catch (error) {
+    console.error(`with-server: could not keep this run's results: ${error.message}`)
+  }
+}
+
 async function resetQaDatabase(uri) {
   if (!uri) return
   const { default: mongoose } = await import('mongoose')
@@ -251,11 +271,13 @@ async function main() {
   console.log(`Serving ${server.why} at ${base} for this run (log: ${logFile})`)
 
   const resolved = resolveCommand(command)
+  const startedAt = Date.now()
   const code = await new Promise((resolve) => {
     const test = spawn(resolved.file, resolved.args, { stdio: 'inherit', env: qaEnv })
     test.on('error', (error) => { console.error(`could not run ${command[0]}: ${error.message}`); resolve(1) })
     test.on('exit', (exitCode) => resolve(exitCode ?? 1))
   })
+  keepRunResults(command, startedAt)
   stop(child)
   await resetQaDatabase(mongoUri)
   process.exit(code)
