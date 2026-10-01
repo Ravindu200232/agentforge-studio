@@ -282,7 +282,8 @@ def _validate_journeys(project: str, envelope: dict) -> dict:
                 system=prompts.load("srs/system"),
                 user=prompts.load("srs/journey-routes", pages=pages, workflows=workflows,
                                   problems="\n".join(f"- {problem}" for problem in problems[:40])),
-                validator=_journey_routes_validator(doc, names), label="srs_journey_routes", attempts=2)
+                validator=_journey_routes_validator(doc, names), label="srs_journey_routes", attempts=2,
+                project=project)
             for flow in doc.get("business_workflows") or []:
                 if isinstance(flow, dict) and str(flow.get("workflow_name") or "") in answer:
                     flow["step_routes"] = answer[str(flow.get("workflow_name") or "")]
@@ -669,7 +670,8 @@ def _wireframe_system(session: ProjectSession, project: str, doc: dict, docs: di
         "layout": session.read_record(SRS_DIR, WIREFRAME_SYSTEM, "layout.html", fallback="") or "",
     }
     made = wireframe_brief.prepare(doc, docs, have,
-                                   (lambda _text: None) if quiet else lambda text: bus.log(project, "INFO", text))
+                                   (lambda _text: None) if quiet else lambda text: bus.log(project, "INFO", text),
+                                   project=project)
     for name, file in (("ideas", "ideas.md"), ("layout", "layout.html")):
         if name in made["new"]:
             path = session.record_path(SRS_DIR, WIREFRAME_SYSTEM, file)
@@ -741,7 +743,8 @@ def _write_handoff(session: ProjectSession, project: str, doc: dict, record: dic
         user=("Write the single instruction the build agent works from. Name every "
               "page, role, record, workflow and acceptance proof it must deliver, "
               "in the order it should build them. Prose, no JSON, no preamble.\n\n"
-              + json.dumps(handoff, ensure_ascii=False)[:30000]))
+              + json.dumps(handoff, ensure_ascii=False)[:30000]),
+        project=project)
     handoff["files"] = {"BUILD.md": handoff["prompt"]}
     session.write_record(*HANDOFF, data=handoff)
     session.write_record(SRS_DIR, "BUILD.md", data=handoff["prompt"])
@@ -1212,7 +1215,7 @@ def _review_loop(session: ProjectSession, project: str, envelope: dict,
                                corpus_audit=corpus_rules.audit_readout(corpus_audit)),
                 user="Report against the standards above. Judge how the requirements "
                      "are written, not what the product does.",
-                validator=review_rules.review_validator(doc), label="srs_review")
+                validator=review_rules.review_validator(doc), label="srs_review", project=project)
         except Exception as exc:  # noqa: BLE001 - a critic must never block the draft
             bus.log(project, "WARN", f"Review skipped ({exc}) — keeping the draft.")
             review_rules.stamp(doc, "skipped", round_no, "the review did not complete")
@@ -1261,7 +1264,7 @@ def _review_loop(session: ProjectSession, project: str, envelope: dict,
                                   findings=review_rules.findings_text(verdict),
                                   plan=json.dumps(approved, ensure_ascii=False, indent=2),
                                   document=json.dumps(envelope, ensure_ascii=False, indent=2)),
-                validator=srs_schema.srs_validator, label="srs_review_repair")
+                validator=srs_schema.srs_validator, label="srs_review_repair", project=project)
             repaired["srs_document"]["diagrams"] = doc.get("diagrams") or []
             envelope = repaired
             session.write_record(*DOCUMENT, data=envelope)
@@ -1573,6 +1576,7 @@ Current page HTML:
         minimum=minimum,
         label=f"wireframe_ai_edit:{wanted}",
         attempts=2,
+        project=project,
     )
     gaps = completeness.wireframe_depth([(wanted, html)], doc)
     if gaps:

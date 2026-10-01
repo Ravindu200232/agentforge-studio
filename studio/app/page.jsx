@@ -141,6 +141,10 @@ export default function Studio() {
   const [cat, setCat] = useState(() => catalogue(null))
   const [screen, setScreen] = useState('home')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // The tab Settings opens on ('' = its own first tab), and a count of closings: Home re-reads
+  // the account connections whenever Settings closes, since that is where they are made.
+  const [settingsTab, setSettingsTab] = useState('')
+  const [settingsClosed, setSettingsClosed] = useState(0)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [mobileView, setMobileView] = useState('view') // 'chat' | 'view'
   const opening = useRef(0)
@@ -546,7 +550,8 @@ export default function Studio() {
       <AgentDecision />
 
       {settingsOpen && (
-        <SettingsModal onClose={() => setSettingsOpen(false)}
+        <SettingsModal initialTab={settingsTab}
+                       onClose={() => { setSettingsOpen(false); setSettingsTab(''); setSettingsClosed(n => n + 1) }}
                        onSaved={() => api.models().then(r => setCat(catalogue(r)))
                                          .catch(() => { })}
                        onImport={importFolder}
@@ -708,6 +713,8 @@ export default function Studio() {
           <Home
             modelOptions={cat.all}
             user={user}
+            onSettings={tab => { setSettingsTab(tab || ''); setSettingsOpen(true) }}
+            connectionsVersion={settingsClosed}
             onRequireAuth={() => openAuth('methods')}
             onSignIn={() => openAuth('email')}
             onSignUp={() => openAuth('email')}

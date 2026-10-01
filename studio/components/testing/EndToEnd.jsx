@@ -1,8 +1,8 @@
 'use client'
 
-import { useState } from 'react'
-import { ChevronDown, ChevronRight, CircleCheck, CircleX, CircleDashed, ShieldAlert, Sparkles, Terminal } from 'lucide-react'
+import { CircleCheck, CircleX, CircleDashed, ShieldAlert, Sparkles, Terminal } from 'lucide-react'
 import { Badge, Empty } from '../ui'
+import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { e2eStageSummary, journeyStageSummary } from '@/lib/e2e-rate'
 
@@ -64,7 +64,8 @@ export default function EndToEnd({ qa }) {
 
       {flows.length > 0 && (
         <div className="grid gap-2.5">
-          {flows.map((flow, i) => <Journey key={`${flow.title}-${i}`} flow={flow} />)}
+          {flows.map((flow, i) => <Journey key={`${flow.title}-${i}`} flow={flow} project={qa.project}
+                                           journeys={e2e.journeyCoverage?.journeys || []} />)}
         </div>
       )}
 
@@ -161,23 +162,27 @@ function ScoreCard({ score }) {
   )
 }
 
-function Journey({ flow }) {
-  const [open, setOpen] = useState(false)
+/** The journey (from the SRS's user-journey contract) a stage's `[UJ-001]` title proves. */
+const journeyFor = (label, journeys) => {
+  const id = String(label || '').match(/\bUJ-\d+\b/i)?.[0]?.toUpperCase()
+  return id ? journeys.find(j => String(j.id).toUpperCase() === id) : null
+}
+
+function Journey({ flow, journeys, project }) {
   const score = journeyStageSummary(flow)
   const stages = flow.stages || []
   return (
-    <div className="overflow-hidden rounded-none border border-line bg-panel shadow-xl backdrop-blur-xl transition-all duration-200 hover:border-black/20">
-      <button onClick={() => setOpen(v => !v)} className="flex w-full items-center gap-4 px-5 py-4 text-left transition-colors hover:bg-black/[0.03]">
-        {open ? <ChevronDown className="size-4 text-muted" /> : <ChevronRight className="size-4 text-muted" />}
+    <section className="overflow-hidden rounded-none border border-line bg-panel shadow-xl backdrop-blur-xl">
+      <header className="flex flex-wrap items-center gap-4 border-b border-line px-5 py-4">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2.5">
-            <span className="truncate text-[13px] font-bold text-ink">{flow.title || flow.flow || 'Journey'}</span>
+            <h3 className="text-[15px] font-bold text-ink">{flow.title || flow.flow || 'Journey'}</h3>
             {flow.role ? <Badge tone="mute">{flow.role}</Badge> : null}
             {flow.blocked_upstream ? <Badge tone="bad">blocked</Badge> : null}
           </div>
-          <div className="mt-1 text-[11.5px] text-muted">
+          <p className="mt-1 text-[12px] text-muted">
             {score.total ? `${score.passed}/${score.total} stages passed · ${score.rate}%` : 'No measurable browser stages'}
-          </div>
+          </p>
         </div>
         {score.total > 0 && (
           <div className="w-32">
@@ -190,30 +195,61 @@ function Journey({ flow }) {
             </div>
           </div>
         )}
-      </button>
-      {open && (
-        <div className="border-t border-line bg-panel px-5 py-3.5">
-          {stages.length ? (
-            <ol className="divide-y divide-black/5">
-              {stages.map((stage, i) => <Stage key={`${stage.index}-${i}`} stage={{ ...stage, index: stage.index || i + 1 }} />)}
-            </ol>
-          ) : <p className="text-[11.5px] text-muted2">This older run has no stage ledger.</p>}
-        </div>
-      )}
-    </div>
+      </header>
+      {stages.length ? (
+        <ol className="divide-y divide-line">
+          {stages.map((stage, i) => <Stage key={`${stage.index}-${i}`} project={project}
+                                           stage={{ ...stage, index: stage.index || i + 1 }}
+                                           journey={journeyFor(stage.label || stage.name, journeys)} />)}
+        </ol>
+      ) : <p className="px-5 py-4 text-[11.5px] text-muted2">This older run has no stage ledger.</p>}
+    </section>
   )
 }
 
-function Stage({ stage }) {
+function Stage({ stage, journey, project }) {
   stage = { ...stage, label: stage.label || stage.name,
             status: ({ passed: 'pass', failed: 'fail' })[stage.status] || stage.status }
+  const tone = stage.status === 'pass' ? 'text-ok' : stage.status === 'fail' ? 'text-bad' : 'text-muted2'
   const Icon = stage.status === 'pass' ? CircleCheck : stage.status === 'fail' ? CircleX : CircleDashed
+  const shot = stage.screenshot ? api.qaScreenshotUrl(project, stage.screenshot) : ''
   return (
-    <li className="flex items-center gap-3 py-2 text-[11.5px]">
-      <Icon className={cn('size-4 shrink-0', stage.status === 'pass' ? 'text-ok' : stage.status === 'fail' ? 'text-bad' : 'text-muted2')} />
-      <span className="w-5 shrink-0 font-mono text-muted2">{String(stage.index || '').padStart(2, '0')}</span>
-      <code className={cn('break-all font-mono', stage.status === 'not_reached' ? 'text-muted2' : 'text-ink')}>{stage.label}</code>
-      <span className={cn('ml-auto shrink-0 text-[10px] font-bold uppercase tracking-wider', stage.status === 'pass' ? 'text-ok' : stage.status === 'fail' ? 'text-bad' : 'text-muted2')}>{String(stage.status || '').replace('_', ' ')}</span>
+    <li className="flex gap-3.5 px-5 py-4">
+      <Icon className={cn('mt-0.5 size-5 shrink-0', tone)} />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <span className="font-mono text-[11px] text-muted2">{String(stage.index || '').padStart(2, '0')}</span>
+          <p className={cn('min-w-0 flex-1 text-[13.5px] font-semibold leading-snug', stage.status === 'not_reached' ? 'text-muted2' : 'text-ink')}>
+            {stage.label}
+          </p>
+          <span className={cn('shrink-0 text-[10.5px] font-bold uppercase tracking-wider', tone)}>
+            {String(stage.status || '').replace('_', ' ')}{stage.seconds != null ? ` · ${stage.seconds}s` : ''}
+          </span>
+        </div>
+        {journey && (
+          <div className="mt-3 border border-line bg-panel2/60 p-3.5">
+            <p className="text-[11px] font-semibold uppercase tracking-[.12em] text-muted">
+              {journey.workflow_name}{journey.who ? ` · as ${journey.who}` : ''}
+            </p>
+            {!!journey.steps?.length && (
+              <ol className="mt-2 space-y-1.5">
+                {journey.steps.map((step, i) => (
+                  <li key={i} className="flex gap-2.5 text-[12px] leading-relaxed text-ink">
+                    <span className="mt-px shrink-0 font-mono text-[10.5px] text-muted2">{i + 1}.</span>
+                    <span>{step}</span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        )}
+        {shot && (
+          <a href={shot} target="_blank" rel="noreferrer" className="mt-3 block max-w-md">
+            <img src={shot} alt={`The screen when this stage ended: ${stage.label}`} loading="lazy"
+                 className="max-h-56 w-full border border-line object-cover object-top" />
+          </a>
+        )}
+      </div>
     </li>
   )
 }

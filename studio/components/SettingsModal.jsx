@@ -156,7 +156,7 @@ function ModelPicker({ meta, onSaved }) {
   )
 }
 
-export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpenInNewTab, onLogout }) {
+export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpenInNewTab, onLogout, initialTab }) {
   const theme = useStore(s => s.theme)
   const setTheme = useStore(s => s.setTheme)
   const user = useAuthStore(s => s.user)
@@ -164,7 +164,7 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
   // than only hold the credentials.
   const project = useStore(s => s.project)
 
-  const [activeTab, setActiveTab] = useState('general')
+  const [activeTab, setActiveTab] = useState(initialTab || 'general')
   const folderRef = useRef(null)
 
   // Real server settings — loaded via api.settings()

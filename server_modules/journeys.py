@@ -234,6 +234,9 @@ def e2e_coverage(workspace: Path, tests: list[dict[str, Any]]) -> dict[str, Any]
         statuses = [str(test.get("status") or "unknown") for test in matched]
         status = "passed" if matched and all(value == "passed" for value in statuses) else "failed"
         rows.append({"id": journey_id, "workflow_name": journey.get("workflow_name") or journey_id,
+                     "who": journey.get("who") or "",
+                     "steps": [str(step.get("step") or "") for step in journey.get("steps") or []
+                               if isinstance(step, dict)],
                      "status": status, "tests": [{"file": test.get("file") or "",
                                                       "title": test.get("title") or "",
                                                       "status": test.get("status") or "unknown"}

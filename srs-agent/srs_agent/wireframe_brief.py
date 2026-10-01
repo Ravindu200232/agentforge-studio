@@ -157,11 +157,11 @@ def _queries(data: Any) -> list[str]:
     return found[:3]
 
 
-def gather_ideas(app_summary: str, site_map: str, say: Say) -> str:
+def gather_ideas(app_summary: str, site_map: str, say: Say, project: str = "") -> str:
     """Search the web for how products like this lay out their screens, and write down what the results are good for."""
     system = prompts.load("srs/system")
     try:
-        queries = llm.complete_json(system=system, label="wireframe_research", validator=_queries,
+        queries = llm.complete_json(system=system, label="wireframe_research", validator=_queries, project=project,
                                     user=prompts.load("srs/wireframe-research", app_summary=app_summary, site_map=site_map))
     except Exception as exc:  # noqa: BLE001 - drawing goes on without ideas
         say(f"Could not plan the web search ({str(exc)[:120]}); drawing without web ideas.")
@@ -179,16 +179,16 @@ def gather_ideas(app_summary: str, site_map: str, say: Say) -> str:
     results = "\n\n".join(f"### {r['title']}\n{r['content']}" for r in found[:10])
     try:
         return llm.complete(system=system, user=prompts.load("srs/wireframe-ideas", app_summary=app_summary, site_map=site_map,
-                                                             results=results)).strip()
+                                                             results=results), project=project).strip()
     except Exception as exc:  # noqa: BLE001
         say(f"Could not write the ideas up ({str(exc)[:120]}); drawing without web ideas.")
         return ""
 
 
-def draw_layout(app_summary: str, site_map: str, ideas: str, say: Say) -> str:
+def draw_layout(app_summary: str, site_map: str, ideas: str, say: Say, project: str = "") -> str:
     """The layout every page starts from: its shells and its components, drawn once."""
     try:
-        return llm.complete_html(system=prompts.load("srs/system"), label="wireframe_layout", minimum=2500,
+        return llm.complete_html(system=prompts.load("srs/system"), label="wireframe_layout", minimum=2500, project=project,
                                  user=prompts.load("srs/wireframe-layout", app_summary=app_summary, site_map=site_map,
                                                    ideas=ideas or "(none gathered)"))
     except Exception as exc:  # noqa: BLE001
@@ -196,17 +196,18 @@ def draw_layout(app_summary: str, site_map: str, ideas: str, say: Say) -> str:
         return ""
 
 
-def prepare(doc: dict, docs: dict[str, str], have: dict[str, str], say: Say) -> dict[str, Any]:
-    """The ideas and the layout: what is already kept is reused, what is missing is made. `new` names what was just made."""
+def prepare(doc: dict, docs: dict[str, str], have: dict[str, str], say: Say, project: str = "") -> dict[str, Any]:
+    """The ideas and the layout: what is already kept is reused, what is missing is made. `new` names what was just made.
+    `project` only reports each call's context to the chat's meter."""
     summary = json.dumps(doc.get("app_summary") or {}, ensure_ascii=False)
     site_map = clean(docs.get("sitemap.md", "")).strip()[:8000]
     ideas, layout, new = have.get("ideas", ""), have.get("layout", ""), []
     if not ideas:
-        ideas = gather_ideas(summary, site_map, say)
+        ideas = gather_ideas(summary, site_map, say, project)
         if ideas:
             new.append("ideas")
     if not layout:
-        layout = draw_layout(summary, site_map, ideas, say)
+        layout = draw_layout(summary, site_map, ideas, say, project)
         if layout:
             new.append("layout")
     return {"ideas": ideas, "layout": layout, "new": new}

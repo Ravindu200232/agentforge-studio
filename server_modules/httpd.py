@@ -27,10 +27,11 @@ from builder_agent import build as builder
 from deploy_agent import deploy as deployer
 from prototype_agent import design as design_stage
 from prototype_agent import prototype as prototyper
+from qa_agent import report_pdf
 from qa_agent import verify as qa
 from srs_agent import document as srs_document
 
-from . import bus, changes, cli_monitor, cli_signin, config, deploy_vars, github_device, jobs, live, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, workspace_picker
+from . import bus, changes, cli_monitor, cli_signin, config, deploy_vars, github_device, jobs, live, pdf, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, workspace_picker
 from .session import session_for
 
 Handler = Callable[[dict[str, Any]], Any]
@@ -825,12 +826,20 @@ def project_wireframes(ctx: dict) -> Any:
 @route("GET", r"/srs-pdf/(?P<project>[^/]+)")
 @route("GET", r"/srs/projects/(?P<project>[^/]+)/download/pdf")
 def srs_pdf(ctx: dict) -> Any:
-    """The specification as a document. Markdown, because no PDF engine is bundled."""
+    """The specification as a PDF: SRS.md, then every diagram it was drawn with."""
     project = _project(ctx)
-    text = session_for(project).read_record("srs", "SRS.md", fallback="")
+    session = session_for(project)
+    text = session.read_record("srs", "SRS.md", fallback="")
     if not text:
         raise HttpError(404, "this project has no specification document yet")
-    return Raw(text.encode("utf-8"), "text/markdown; charset=utf-8", "SRS.md")
+    diagrams = sorted((session.record / "srs" / "diagrams").glob("*.svg"))
+    if diagrams:
+        named = lambda stem: stem.upper() if len(stem) <= 4 else stem.replace("_", " ").capitalize()  # noqa: E731
+        text += "\n\n## Diagrams\n\n" + "\n\n".join(
+            f"### {named(svg.stem)}\n\n![{named(svg.stem)}](diagrams/{svg.name})" for svg in diagrams)
+    name = str((store.get(project) or {}).get("title") or project)
+    return Raw(pdf.render_markdown(text, session.record / "srs", f"{name} — Software Requirements Specification"),
+               "application/pdf", "SRS.pdf")
 
 
 @route("GET", r"/srs/projects/(?P<project>[^/]+)/wireframes/html")
@@ -901,10 +910,13 @@ def qa_screenshot(ctx: dict) -> Any:
 
 @route("GET", r"/qa-pdf/(?P<project>[^/]+)")
 def qa_pdf(ctx: dict) -> Any:
+    """Every Testing view's evidence as one PDF: layers, unit files, journeys and their stages,
+    accessibility, performance, security, API handlers, requirements, gaps and repairs."""
     project = _project(ctx)
-    report = qa.report(project)
-    return Raw(json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"),
-               "application/json", f"{project}-test-report.json")
+    name = str((store.get(project) or {}).get("title") or project)
+    markdown = report_pdf.markdown_of(qa.report(project), name)
+    return Raw(pdf.render_markdown(markdown, session_for(project).workspace, f"{name} — test report"),
+               "application/pdf", f"{project}-test-report.pdf")
 
 
 # =========================================================================

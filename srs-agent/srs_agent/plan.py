@@ -151,7 +151,7 @@ def draft(project: str, revision: str = "", answers: dict[str, str] | None = Non
     merged = llm.complete_json(
         system=prompts.load("plan/system")
         + (f"\n\n## What this project already knows\n\n{memory}" if memory else ""),
-        user=prompt, validator=check, label="plan")
+        user=prompt, validator=check, label="plan", project=project)
 
     data["versions"] = (data.get("versions") or []) + [{
         "version": data.get("version", 0) + 1,

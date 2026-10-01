@@ -12,6 +12,7 @@ report always wins over what is derived here (see `evidence.collect`).
 """
 from __future__ import annotations
 
+import base64
 import json
 import re
 from datetime import datetime, timezone
@@ -125,7 +126,48 @@ def _from_line_log(text: str) -> dict | None:
             "seconds": seconds, "tests": tests}
 
 
-def _from_playwright_json(data: Any) -> dict | None:
+def _screenshot_of(result: dict, workspace: Path | None) -> str:
+    """The screenshot Playwright attached to a test result, workspace-relative, if it still exists."""
+    if workspace is None:
+        return ""
+    root = workspace.resolve()
+    for attachment in _rows(result.get("attachments")):
+        if attachment.get("name") != "screenshot" or not attachment.get("path"):
+            continue
+        path = Path(str(attachment["path"]))
+        path = (path if path.is_absolute() else workspace / path).resolve()
+        if path.is_relative_to(root) and path.is_file():
+            return path.relative_to(root).as_posix()
+    return ""
+
+
+def _api_calls_of(result: dict, workspace: Path | None) -> list[dict]:
+    """The app's own API calls this test's page made: `e2e/fixtures.js` attaches them as `api-calls`."""
+    for attachment in _rows(result.get("attachments")):
+        if attachment.get("name") != "api-calls":
+            continue
+        try:
+            if attachment.get("body"):
+                raw = base64.b64decode(str(attachment["body"])).decode("utf-8")
+            elif attachment.get("path") and workspace is not None:
+                raw = _read_text(workspace / str(attachment["path"]))
+            else:
+                return []
+            lines = json.loads(raw)
+        except (OSError, ValueError):
+            return []
+        calls = []
+        for line in lines if isinstance(lines, list) else []:
+            method, _, rest = str(line).partition(" ")
+            path, _, status = rest.rpartition(" ")
+            if method and path.startswith("/api"):
+                calls.append({"method": method.upper(), "path": path,
+                              "status": int(status) if status.isdigit() else None})
+        return calls
+    return []
+
+
+def _from_playwright_json(data: Any, workspace: Path | None = None) -> dict | None:
     if not isinstance(data, dict):
         return None
     tests: list[dict] = []
@@ -140,10 +182,15 @@ def _from_playwright_json(data: Any) -> dict | None:
                 status = {"passed": "passed", "expected": "passed", "failed": "failed",
                           "unexpected": "failed", "timedOut": "failed", "skipped": "skipped",
                           "flaky": "flaky"}.get(str(last or test.get("status")), "unknown")
+                final = results[-1] if results else {}
+                duration = final.get("duration")
                 tests.append({"index": len(tests) + 1, "project": test.get("projectName") or "",
                               "file": _spec_of(spec.get("file") or file),
                               "suite": " › ".join(here), "title": spec.get("title") or "",
-                              "status": status})
+                              "status": status,
+                              "seconds": round(duration / 1000, 1) if isinstance(duration, (int, float)) else None,
+                              "screenshot": _screenshot_of(final, workspace),
+                              "api_calls": _api_calls_of(final, workspace)})
         for child in _rows(suite.get("suites")):
             walk(child, here, file)
 
@@ -161,13 +208,13 @@ def _from_playwright_json(data: Any) -> dict | None:
 def _runs_found(workspace: Path) -> list[dict]:
     """Every browser run the build left: Playwright's JSON reporter and each log."""
     found: list[dict] = []
-    exact = _from_playwright_json(_json(workspace / PLAYWRIGHT_JSON))
+    exact = _from_playwright_json(_json(workspace / PLAYWRIGHT_JSON), workspace)
     if exact:
         found.append({**exact, "source": PLAYWRIGHT_JSON,
                       "at": _iso(workspace / PLAYWRIGHT_JSON), "rank": 1})
     kept = workspace / PLAYWRIGHT_RUNS
     for path in sorted(kept.glob("*.json")) if kept.is_dir() else []:
-        run = _from_playwright_json(_json(path))
+        run = _from_playwright_json(_json(path), workspace)
         if run:
             found.append({**run, "source": path.relative_to(workspace).as_posix(),
                           "at": _iso(path), "rank": 1})
@@ -321,7 +368,8 @@ def _group(tests: list[dict], keep) -> list[dict]:
                                       "role": t["project"], "stages": []})
         status = {"passed": "pass", "failed": "fail"}.get(t["status"], "not_reached")
         label = f"{t['suite']} › {t['title']}" if t["suite"] else t["title"]
-        flow["stages"].append({"index": len(flow["stages"]) + 1, "label": label, "status": status})
+        flow["stages"].append({"index": len(flow["stages"]) + 1, "label": label, "status": status,
+                               "seconds": t.get("seconds"), "screenshot": t.get("screenshot") or ""})
     for flow in flows.values():
         st = [s["status"] for s in flow["stages"]]
         flow.update(stage_total=len(st), stage_passed=st.count("pass"),
@@ -366,7 +414,45 @@ def _api_handlers(workspace: Path) -> list[dict]:
     return rows
 
 
-def _contracts(workspace: Path, build: dict, vitest: Any) -> list[dict]:
+def _route_pattern(route: str) -> tuple[re.Pattern[str], int]:
+    """A handler's URL as a pattern, and how many dynamic segments it has (fewer = more specific)."""
+    parts = [p for p in route.strip("/").split("/") if p and not (p.startswith("(") and p.endswith(")"))]
+    regex, dynamic = [], 0
+    for part in parts:
+        if re.fullmatch(r"\[\[?\.\.\.[^\]]+\]\]?", part):
+            regex.append(".+")
+            dynamic += 2
+        elif re.fullmatch(r"\[[^\]]+\]", part):
+            regex.append("[^/]+")
+            dynamic += 1
+        else:
+            regex.append(re.escape(part))
+    return re.compile("^/" + "/".join(regex) + "/?$"), dynamic
+
+
+def _link_e2e(rows: dict[str, dict], tests: list[dict]) -> None:
+    """Each API call an E2E test's page made, linked to the one handler that answered it - the most
+    specific match, the way Next.js picks `/api/orders/new` before `/api/orders/[id]`."""
+    patterns = {handler: _route_pattern(row["route"]) for handler, row in rows.items()}
+    for test in tests:
+        linked: dict[str, dict] = {}
+        for call in test.get("api_calls") or []:
+            matches = [(dynamic, handler) for handler, (pattern, dynamic) in patterns.items()
+                       if pattern.match(call["path"])]
+            if not matches:
+                continue
+            handler = min(matches)[1]
+            entry = linked.setdefault(handler, {"kind": "e2e", "file": test.get("file") or "",
+                                                "title": test.get("title") or "",
+                                                "status": test.get("status") or "recorded", "calls": []})
+            said = f"{call['method']} {call['status'] if call['status'] is not None else ''}".strip()
+            if said not in entry["calls"]:
+                entry["calls"].append(said)
+        for handler, entry in linked.items():
+            rows[handler]["tests"].append(entry)
+
+
+def _contracts(workspace: Path, build: dict, vitest: Any, tests: list[dict] | None = None) -> list[dict]:
     files = _test_sources(vitest)
     rows: dict[str, dict] = {}
     for row in _api_handlers(workspace):
@@ -385,7 +471,8 @@ def _contracts(workspace: Path, build: dict, vitest: Any) -> list[dict]:
         handler_root = row["handler"].rsplit("/route.", 1)[0]
         for f in files:
             if handler_root in f["text"].replace("\\", "/"):
-                row["tests"].append({"file": f["file"], "status": f["status"] or "recorded"})
+                row["tests"].append({"kind": "unit", "file": f["file"], "status": f["status"] or "recorded"})
+    _link_e2e(rows, tests or [])
     return sorted(rows.values(), key=lambda row: row["route"])
 
 
@@ -631,7 +718,7 @@ def derive(workspace: Path, have: dict) -> dict:
         report["evidence"] = evidence
         report.setdefault("suite", {"unresolved": [], "suspects": [], "quarantined": [], "failures": []})
 
-    contracts = _contracts(workspace, build, have.get("vitest"))
+    contracts = _contracts(workspace, build, have.get("vitest"), tests)
     if contracts:
         out["contracts"] = contracts
 

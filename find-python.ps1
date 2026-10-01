@@ -2,7 +2,9 @@
 # Windows `py` launcher. A Python bundled inside another application (such as a Codex runtime) is never
 # used, and a PATH entry that cannot run Python 3.10+ (the Microsoft Store `python` stub) is skipped.
 function Find-Python {
-    $check = 'import sys; print(sys.executable if sys.version_info >= (3, 10) else "")'
+    # No double quotes in Python code passed to an exe: Windows PowerShell 5.1 drops them on the way
+    # out, so `else ""` arrived as `else )` and every Python failed this check with a SyntaxError.
+    $check = 'import sys; print(sys.executable if sys.version_info >= (3, 10) else '''')'
     foreach ($name in 'python', 'python3') {
         foreach ($command in @(Get-Command $name -All -CommandType Application -ErrorAction SilentlyContinue)) {
             $path = $command.Source
@@ -22,6 +24,6 @@ function Find-Python {
 # The folder this project's Python packages go in for that Python: one per Python version (`.deps\py312`),
 # because compiled packages (pydantic-core, cryptography) built for one version do not load in another.
 function Get-PythonDeps([string]$Python, [string]$Root) {
-    $tag = & $Python -c 'import sys; print("py%d%d" % sys.version_info[:2])' 2>$null | Select-Object -Last 1
+    $tag = & $Python -c 'import sys; print(''py%d%d'' % sys.version_info[:2])' 2>$null | Select-Object -Last 1
     return (Join-Path (Join-Path $Root '.deps') $tag)
 }

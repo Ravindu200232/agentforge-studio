@@ -304,8 +304,10 @@ class ProjectSession:
         self._turn_prompt_base = 0
         self._turn_completion_base = 0
         # Stage notes recorded before anything opened the conversation — the
-        # interview runs long before a tool-using stage creates the agent.
-        self._pending_notes: list[str] = []
+        # interview runs long before a tool-using stage creates the agent. Kept on
+        # disk as well: a backend restart between the interview and the prototype
+        # used to lose every one of them.
+        self._pending_notes: list[str] = self._load_pending_notes()
 
     # --- the engine ---------------------------------------------------------
 
@@ -431,7 +433,10 @@ class ProjectSession:
                 for note in self._pending_notes:
                     self._agent.messages.append({"role": "user", "content": note})
                     self._agent.messages.append({"role": "assistant", "content": "Noted."})
-                self._pending_notes.clear()
+                if self._pending_notes:
+                    self._pending_notes.clear()
+                    self.save_context()
+                    self._save_pending_notes()
             elif wanted != self._model:
                 # Switching the model keeps the conversation: the context is the
                 # project's, not the model's.
@@ -628,6 +633,7 @@ class ProjectSession:
         if agent is None:
             # Nothing has opened the conversation yet; keep it for when it does.
             self._pending_notes.append(body)
+            self._save_pending_notes()
             return
         with self.lock:
             agent.messages.append({"role": "user", "content": body})
@@ -638,7 +644,29 @@ class ProjectSession:
         bus.log(self.project, "DEBUG", f"[memory] {body[:160]}",
                 agent=role or self.role)
 
-    def memory_digest(self, limit: int = 6000) -> str:
+    def _pending_file(self) -> Path:
+        return self.record / "pending-notes.json"
+
+    def _load_pending_notes(self) -> list[str]:
+        try:
+            saved = json.loads(self._pending_file().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        return [str(note) for note in saved if str(note).strip()] if isinstance(saved, list) else []
+
+    def _save_pending_notes(self) -> None:
+        """The notes still waiting for the conversation, or no file once there are none."""
+        try:
+            if self._pending_notes:
+                self._pending_file().write_text(json.dumps(self._pending_notes, ensure_ascii=False),
+                                                encoding="utf-8")
+            else:
+                self._pending_file().unlink(missing_ok=True)
+        except OSError:
+            # Same posture as save_context(): the notes are still held in memory.
+            pass
+
+    def memory_digest(self, limit: int = 24000) -> str:
         """What this project knows, for a focused call that has no conversation.
 
         The focused calls are stateless by design. This is how they still get the
