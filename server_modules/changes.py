@@ -132,17 +132,6 @@ def recent(project: str, limit: int = 30) -> list[dict]:
     return rows
 
 
-def for_run(project: str, run_id: str) -> dict | None:
-    """The request a flow's run belongs to (a run is one request carried out)."""
-    if not run_id:
-        return None
-    for path in sorted(_dir(project).glob("chg-*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-        found = _load(project, path.stem)
-        if found and found.get("run_id") == run_id:
-            return found
-    return None
-
-
 def _alive(change_id: str) -> bool:
     thread = _threads.get(change_id)
     return bool(thread and thread.is_alive())
@@ -727,5 +716,3 @@ def _announce(project: str, before: dict, after: dict) -> None:
 # What the flows' modules use of the state above.
 alive = _alive
 mark = _mark
-load = _load
-

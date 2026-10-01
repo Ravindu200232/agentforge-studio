@@ -85,8 +85,3 @@ def poll(job_id: str) -> dict[str, Any]:
             "result": record["result"],
             "error": record["error"],
         }
-
-
-def running() -> list[str]:
-    with _lock:
-        return [k for k, v in _jobs.items() if v["status"] == "running"]

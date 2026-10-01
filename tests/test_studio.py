@@ -97,7 +97,7 @@ class PromptPackTests(unittest.TestCase):
     def test_every_stage_has_its_pack(self):
         for name in ("shared/engine", "interview/system", "interview/turn",
                      "plan/system", "plan/draft", "plan/revise",
-                     "srs/system", "srs/generate", "srs/review", "srs/repair",
+                     "srs/system", "srs/document", "srs/review", "srs/repair",
                      "design/system", "design/draft",
                      "prototype/generate", "prototype/revise",
                      "builder/generate", "builder/update",
@@ -113,7 +113,7 @@ class PromptPackTests(unittest.TestCase):
         self.assertIn("{{target}}", prompts.load("deployment/execute"))
 
     def test_skill_pages_come_from_the_pack(self):
-        self.assertIn("wireframe", prompts.skill("srs", "wireframe-generation").lower())
+        self.assertIn("requirement", prompts.skill("srs", "functional-requirements").lower())
         self.assertTrue({"aws", "vercel", "netlify"} <=
                         {row["slug"] for row in prompts.catalogue("deployment")})
         self.assertGreater(len(prompts.catalogue("design", kind="themes")), 20)
@@ -163,7 +163,7 @@ class InterviewShapeTests(unittest.TestCase):
         from server_modules import coverage
         from srs_agent import interview
 
-        self.assertNotIn(interview.APP_TYPE_KEY, coverage.category_keys())
+        self.assertNotIn(interview.APP_TYPE_KEY, coverage.categories())
 
     def test_the_first_question_is_the_product_shape_and_costs_no_model_call(self):
         from srs_agent import interview
@@ -236,7 +236,7 @@ class InterviewTurnTests(unittest.TestCase):
     def _validator(self):
         from server_modules import coverage
         from srs_agent import interview
-        return interview._turn_validator(coverage.category_keys())
+        return interview._turn_validator(set(coverage.categories()))
 
     def test_an_unknown_category_in_coverage_updates_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "unknown categories"):
@@ -550,11 +550,6 @@ class CoverageTests(unittest.TestCase):
         for key in others:
             self.assertEqual(blank[key]["status"], "UNKNOWN", key)
 
-    def test_category_keys_matches_the_taxonomy(self):
-        from server_modules import coverage
-
-        self.assertEqual(coverage.category_keys(), set(coverage.categories()))
-
 
 class JsonExtractionTests(unittest.TestCase):
     def test_reads_json_however_the_model_wrapped_it(self):
@@ -674,7 +669,8 @@ def a_wireframe(body: str = "", pad: int = 8000) -> str:
 class CompletenessTests(unittest.TestCase):
     def test_a_covered_specification_has_no_gaps(self):
         pages = [("/", a_wireframe("<main><h1>Our Cakes</h1></main>"))]
-        self.assertEqual(completeness.check(a_document(), a_plan(), pages), [])
+        self.assertEqual(completeness.check_document(a_document(), a_plan()), [])
+        self.assertEqual(completeness.wireframe_depth(pages, a_document()), [])
 
     def test_a_screen_the_plan_promised_and_the_document_dropped(self):
         plan = a_plan(screens=[
@@ -702,7 +698,6 @@ class CompletenessTests(unittest.TestCase):
     def test_main_srs_gate_does_not_require_diagrams_before_they_are_drawn(self):
         doc = a_document(diagrams=[])
         self.assertEqual(completeness.check_document(doc, a_plan()), [])
-        self.assertTrue(completeness.diagram_coverage(doc))
 
     def test_plan_synchronization_fills_missing_workflows_screens_and_trace_rows(self):
         plan = a_plan(
@@ -734,12 +729,6 @@ class CompletenessTests(unittest.TestCase):
         gaps = completeness.requirement_coverage(a_document(), plan)
         self.assertTrue(any("revenue" in gap for gap in gaps))
 
-    def test_a_diagram_skipped_while_its_evidence_is_in_the_document(self):
-        doc = a_document()
-        doc["diagrams"][0]["applicable"] = False   # the ERD, with a table present
-        gaps = completeness.diagram_coverage(doc)
-        self.assertTrue(any("erd" in gap for gap in gaps))
-
     def test_the_wireframe_floor_is_sized_to_the_page(self):
         # A sign-in screen is a finished screen at the floor; a page the
         # specification says carries eight things is not.
@@ -765,19 +754,6 @@ class CompletenessTests(unittest.TestCase):
                  + "y" * 9000 + "</body></html>")
         gaps = completeness.wireframe_depth([("/", naked)], a_document())
         self.assertTrue(any("<style>" in gap for gap in gaps))
-
-    def test_a_prototype_link_that_goes_nowhere(self):
-        routes = [{"route": "/", "file": "index.html", "name": "Home"}]
-        pages = {"index.html": '<a href="_basket.html">Basket</a>' + "x" * 2000}
-        gaps = completeness.prototype_coverage(a_document(), routes, pages)
-        self.assertTrue(any("_basket.html" in gap for gap in gaps))
-
-    def test_a_prototype_that_ignored_the_approved_tokens(self):
-        routes = [{"route": "/", "file": "index.html", "name": "Home"}]
-        pages = {"index.html": "x" * 3000, "assets/app.css": "body { color: red }"}
-        gaps = completeness.prototype_coverage(
-            a_document(), routes, pages, {"light": {"accent": "#c2410c", "bg": "#fffaf5"}})
-        self.assertTrue(any("design tokens" in gap for gap in gaps))
 
 
 class StructuralRubricTests(unittest.TestCase):

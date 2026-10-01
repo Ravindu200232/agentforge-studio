@@ -359,7 +359,6 @@ class StudioTools(WorkspaceTools):
             bus.agent_msg(self.project, result[:2000], title=f"MCP · {name[len(MCP_NAME_PREFIX):]}",
                           kind="mcp_result", agent=role)
         elif name == "run_command":
-            command = str(args.get("command") or "")
             exit_code = result.split("\n", 1)[0] if result.startswith("exit_code=") else ""
             output = result.split("\n", 1)[1] if "\n" in result else result
             bus.agent_msg(self.project, output or "(No output)",
@@ -1053,8 +1052,3 @@ def drop(project: str) -> None:
             found.discard()
         _discarded_projects.add(project)
     bus.forget(project)
-
-
-def active() -> list[str]:
-    with _sessions_lock:
-        return list(_sessions)

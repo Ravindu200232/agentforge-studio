@@ -202,10 +202,6 @@ def approved_plan(project: str) -> dict[str, Any]:
     return data.get("plan") or {}
 
 
-def is_approved(project: str) -> bool:
-    return bool(state(session_for(project)).get("approved"))
-
-
 def markdown(project: str) -> str:
     plan = approved_plan(project)
     return _markdown(plan) if plan else ""

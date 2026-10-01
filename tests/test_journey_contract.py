@@ -60,6 +60,11 @@ ROLE_DOCUMENT = {
 }
 
 
+
+def problems_of(doc: dict) -> list[str]:
+    """What is wrong with the SRS's own step routes, one sentence per step."""
+    return [issue["problem"] for issue in journeys.journey_issues(doc)]
+
 class JourneyContractTests(unittest.TestCase):
     def test_srs_writer_saves_the_contract_as_its_own_json_artifact(self):
         class Session:
@@ -180,12 +185,12 @@ class JourneyRouteTests(unittest.TestCase):
 
     def test_wrong_step_routes_are_reported_per_step_and_filled(self):
         doc = json.loads(json.dumps(ROLE_DOCUMENT))
-        problems = journeys.journey_problems(doc)
+        problems = problems_of(doc)
         self.assertIn('"Visitor sends a request" step 1 has no route', problems)
         self.assertIn('"Member reviews requests" step 2 is on /admin/discounts, which Member cannot open', problems)
         self.assertEqual(len(problems), 4)
         self.assertEqual(journeys.fill_step_routes(doc), 4)
-        self.assertEqual(journeys.journey_problems(doc), [])
+        self.assertEqual(problems_of(doc), [])
         self.assertEqual(doc["business_workflows"][0]["step_routes"], ["/request", "/request", "/request/[id]/done"])
 
     def test_only_the_wrong_steps_go_to_the_model_and_only_they_change(self):
@@ -215,7 +220,7 @@ class JourneyRouteTests(unittest.TestCase):
         with mock.patch.object(srs_document.llm, "complete_json", side_effect=ValueError("still wrong")), \
              mock.patch.object(srs_document.bus, "log"):
             envelope = srs_document._validate_journeys("prj", {"srs_document": json.loads(json.dumps(ROLE_DOCUMENT))})
-        self.assertEqual(journeys.journey_problems(envelope["srs_document"]), [])
+        self.assertEqual(problems_of(envelope["srs_document"]), [])
 
     def test_a_route_the_role_cannot_open_is_sent_back(self):
         doc = json.loads(json.dumps(ROLE_DOCUMENT))

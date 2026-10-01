@@ -10,7 +10,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import socket
 import struct
 import threading
@@ -258,7 +257,3 @@ class FeedServer:
                 self.socket.close()
             except OSError:
                 pass
-
-
-def env_port() -> int:
-    return int(os.environ.get("AGENTFORGE_WS_PORT", config.WS_PORT))

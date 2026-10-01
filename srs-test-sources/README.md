@@ -4,15 +4,11 @@ This directory is the provenance boundary for material used to improve
 AgentForge's SRS prompts, diagram guards, and evaluation checks.
 
 - `diagram-sources/` contains link-and-license records for notation sources.
-- `diagram-data/` contains small, authored conformance fixtures. They describe
-  notation facts; they do not reproduce third-party diagrams or images.
 - `srs-sources/` is the catalogue of public requirements corpora and
   IEEE/ISO-aligned templates.
 - `srs-data/` is the local-only destination for downloaded corpus archives.
   Archives are deliberately ignored by Git; their download URL, licence,
   checksum and attribution must be recorded in the catalogue first.
-- `imports/` holds a previously fetched PURE archive. The fetch tool uses the
-  canonical `srs-data/` location for new imports.
 
 ## Use policy
 

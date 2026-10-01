@@ -2,7 +2,6 @@
 so a read tool can find its way around before any stage has run."""
 from __future__ import annotations
 
-import json
 import sys
 import tempfile
 import unittest
@@ -35,9 +34,6 @@ class ScaffoldTests(unittest.TestCase):
             folder = record_dir / relative
             self.assertTrue(folder.is_dir(), f"{relative} was not created")
             self.assertEqual(list(folder.iterdir()), [])
-        runtime = json.loads((record_dir / "runtime.json").read_text(encoding="utf-8"))
-        self.assertEqual(runtime["template"], "agentforge-project-runtime")
-        self.assertEqual(runtime["node"]["provider"], "studio-bundled")
 
     def test_scaffolding_is_idempotent_and_never_clobbers_existing_content(self):
         record = store.create(idea="A shop")

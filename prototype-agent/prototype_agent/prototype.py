@@ -67,17 +67,6 @@ def exists(project: str) -> bool:
     return bool(routes(project))
 
 
-def page_html(project: str, route: str = "/") -> str:
-    session = session_for(project)
-    wanted = str(route or "/")
-    for row in routes(project):
-        if str(row.get("route")) == wanted:
-            path = session.record / PROTOTYPE_DIR / str(row.get("file") or "")
-            if path.is_file():
-                return path.read_text(encoding="utf-8")
-    raise FileNotFoundError(f"no prototype page for {wanted}")
-
-
 def asset(project: str, name: str) -> tuple[bytes, str]:
     """One prototype asset, for the studio's preview iframe."""
     session = session_for(project)

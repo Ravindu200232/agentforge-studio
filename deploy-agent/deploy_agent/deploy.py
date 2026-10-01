@@ -42,7 +42,6 @@ from server_modules.session import RunCancelled, session_for
 
 DEPLOY_DIR = "deploy"
 RUN = (DEPLOY_DIR, "run.json")
-EVENTS = (DEPLOY_DIR, "events.jsonl")
 QUESTION = (DEPLOY_DIR, "question.json")
 PLAN = (DEPLOY_DIR, "plan.json")
 SKILLS_DIR = f"{config.RECORD_DIR}/{DEPLOY_DIR}/skills"

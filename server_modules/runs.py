@@ -346,22 +346,12 @@ def _start_preview(project: str, model: str = "", part: str = "") -> None:
         raise
 
 
-def run_tests(message: dict[str, Any]) -> dict[str, Any]:
-    project = str(message.get("project") or "").strip()
-    if not project:
-        raise ValueError("that message names no project")
-    _in_background(f"test:{project}", project, bus.DEVELOPER, qa.run, project,
-                   str(message.get("prompt") or ""), _project=project)
-    return {"ok": True, "project": project}
-
-
 HANDLERS = {
     "agent_build": agent_build,
     "agent_update": agent_update,
     "agent_resume": agent_resume,
     "feature": feature,
     "element_edit": element_edit,
-    "run_tests": run_tests,
     "preview_start": preview_start,
 }
 

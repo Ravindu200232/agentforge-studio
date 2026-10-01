@@ -129,11 +129,6 @@ def flow_of(doc: dict, routes_out: list[dict]) -> dict[str, Any]:
     return {"journeys": journeys, "leads_to": leads}
 
 
-def page_flow(flow: dict, route: str) -> dict[str, Any]:
-    return {"leads_to": flow["leads_to"].get(route, []),
-            "journeys": [j["name"] for j in flow["journeys"] if any(s["route"] == route for s in j["steps"])]}
-
-
 def journey_text(flow: dict) -> str:
     return "\n".join(f"- {j['name']}" + (f" ({j['who']})" if j["who"] else "") + ": " + " → ".join(f"{s['step']} [{s['route']}]" for s in j["steps"])
                      for j in flow["journeys"]) or "(the specification lists no journeys)"

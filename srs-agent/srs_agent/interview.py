@@ -197,10 +197,6 @@ def _chosen_app_type(data: dict[str, Any]) -> str:
     return str(entry.get("value") or "")
 
 
-def app_type(project: str) -> str:
-    return _chosen_app_type(state(session_for(project)))
-
-
 def _attachment_digest(session: ProjectSession) -> str:
     rows = session.read_record("attachments.json", fallback=[]) or []
     if not rows:

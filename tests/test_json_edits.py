@@ -1,7 +1,6 @@
 """A repair changes only what it names: edits to the SRS JSON instead of a whole new document."""
 from __future__ import annotations
 
-import json
 import sys
 import unittest
 from pathlib import Path

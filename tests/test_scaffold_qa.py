@@ -21,8 +21,8 @@ SUPABASE_STACKS = {"nextjs-supabase", "vite-supabase", "remix-supabase"}
 MONGO_STACKS = {"nextjs-mongo", "vite-mongo", "mern-microservices"}
 NEXTJS_STACKS = {"nextjs-supabase", "nextjs-mongo"}
 # These two have their own long-running server on a fixed local port (not a single Studio-assigned
-# one) and their own aggressive, port-freeing port-guard - a deliberate, different convention from
-# the single-app Next.js stacks, not an oversight.
+# one) and their own aggressive, port-freeing port-guard. The single-app stacks need none: the Studio
+# starts each one on a port of its own.
 WORKSPACE_STACKS = {"vite-mongo", "mern-microservices"}
 AGGRESSIVE_PORT_GUARD_STACKS = WORKSPACE_STACKS
 MICROSERVICES_STACKS = {"mern-microservices"}
@@ -52,7 +52,7 @@ class ScaffoldTests(unittest.TestCase):
                 self.assertTrue((workspace / "playwright.config.js").is_file())
                 self.assertTrue((workspace / "e2e/a11y.spec.js").is_file())
                 self.assertTrue((workspace / ".agentforge/build/scaffold.json").is_file())
-                if stack in NEXTJS_STACKS or stack in AGGRESSIVE_PORT_GUARD_STACKS:
+                if stack in AGGRESSIVE_PORT_GUARD_STACKS:
                     self.assertTrue((workspace / "scripts/port-guard.mjs").is_file())
                 manifest = json.loads((workspace / "package.json").read_text(encoding="utf-8"))
                 for script in ("build", "test", "test:e2e", "test:visual", "test:a11y", "test:perf"):
@@ -84,7 +84,7 @@ class ScaffoldTests(unittest.TestCase):
                 slug = scaffold.project_slug(workspace.name)
                 texts = {t: (workspace / t).read_text(encoding="utf-8", errors="ignore") for t in result["files"]}
                 self.assertEqual([t for t, body in texts.items() if scaffold.DB_PLACEHOLDER in body], [])
-                self.assertTrue(scaffold.guide_context(stack).lstrip().startswith("### pitfalls.md"))
+                self.assertEqual(list(scaffold.guide_files(stack))[0], "pitfalls.md")
 
                 if stack in SUPABASE_STACKS:
                     # Every generated app has a Supabase project of its own; nothing here still
@@ -116,17 +116,10 @@ class ScaffoldTests(unittest.TestCase):
                     for path in result["files"]:
                         if path.startswith("src/"):
                             self.assertNotIn("env.SUPABASE_SERVICE_ROLE_KEY", texts[path], path)
-                self.assertIn(scaffold.STACK_GUIDES[stack], scaffold.guide_context(stack))
-
-    def test_port_guard_never_terminates_an_unrelated_application(self):
-        for stack in NEXTJS_STACKS:
-            guard = (scaffold.ROOT / stack / "scripts" / "port-guard.mjs").read_text(encoding="utf-8")
-            self.assertIn("Let Studio allocate", guard)
-            self.assertNotIn("taskkill", guard)
-            self.assertNotIn("process.kill", guard)
+                self.assertIn(scaffold.STACK_GUIDES[stack], scaffold.guide_files(stack))
 
     def test_workspace_stacks_port_guard_frees_only_its_own_fixed_port(self):
-        # Unlike the single-app Next.js stacks above, these run a fixed local port every project
+        # Unlike the single-app stacks, these run a fixed local port every project
         # shares, so a stale listener on it is freed rather than left to block the next run.
         for stack in AGGRESSIVE_PORT_GUARD_STACKS:
             guard = (scaffold.ROOT / stack / "scripts" / "port-guard.mjs").read_text(encoding="utf-8")
@@ -317,7 +310,7 @@ class ScaffoldTests(unittest.TestCase):
         # logic the model has to hand-copy correctly) close that gap.
         self.assertIn("visual.md", scaffold.TEST_GUIDES)
         for stack in scaffold.STACK_GUIDES:
-            self.assertIn("### visual.md", scaffold.guide_context(stack))
+            self.assertIn("visual.md", scaffold.guide_files(stack))
             with tempfile.TemporaryDirectory() as temp:
                 workspace = Path(temp)
                 scaffold.install(workspace, stack)

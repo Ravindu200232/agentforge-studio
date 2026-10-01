@@ -15,7 +15,7 @@ import uuid
 from pathlib import Path
 from urllib.request import urlopen
 
-from . import bus, config, deploy_vars, plugins, secrets_guard, store, supabase_connect
+from . import bus, config, deploy_vars, plugins, secrets_guard, supabase_connect
 
 _lock = threading.RLock()
 _processes: dict[str, dict] = {}

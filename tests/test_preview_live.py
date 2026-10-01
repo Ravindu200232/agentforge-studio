@@ -79,7 +79,7 @@ class PreviewRuntimeTests(unittest.TestCase):
 
     def test_stopping_one_project_leaves_the_other_preview_running(self):
         first = preview_runtime.open_preview("alpha")
-        second = preview_runtime.open_preview("beta")
+        preview_runtime.open_preview("beta")
         alpha_pid = preview_runtime._processes["alpha"]["process"].pid
         beta_pid = preview_runtime._processes["beta"]["process"].pid
 

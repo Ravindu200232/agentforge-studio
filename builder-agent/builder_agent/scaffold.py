@@ -99,42 +99,18 @@ def _guides(names: tuple[str, ...]) -> str:
     return "\n\n".join(f"### {name}\n{body}" for name, body in _guide_bodies(names).items())
 
 
-def guide_context(stack: str) -> str:
-    """Give the plan the actual local guidance, not a guessed remote path."""
-    if stack not in STACK_GUIDES:
-        raise ValueError(f"unsupported build stack: {stack}")
-    return _guides((*COMMON_GUIDES, STACK_GUIDES[stack], *TEST_GUIDES))
-
-
 def guide_files(stack: str) -> dict[str, str]:
-    """The same guidance `guide_context` describes, as name->body for staging into a workspace."""
+    """Every guide a QA run reads for this stack - common, stack, then test guides - as name->body for staging."""
     if stack not in STACK_GUIDES:
         raise ValueError(f"unsupported build stack: {stack}")
     return _guide_bodies((*COMMON_GUIDES, STACK_GUIDES[stack], *TEST_GUIDES))
 
 
-def build_context(stack: str) -> str:
-    """Guidance needed while implementing the app, without test-suite material."""
-    if stack not in STACK_GUIDES:
-        raise ValueError(f"unsupported build stack: {stack}")
-    return _guides(("pitfalls.md", STACK_GUIDES[stack]))
-
-
 def build_guide_files(stack: str) -> dict[str, str]:
-    """The same guidance `build_context` describes, as name->body for staging into a workspace."""
+    """The guides a build reads while implementing (pitfalls and the stack guide), as name->body for staging."""
     if stack not in STACK_GUIDES:
         raise ValueError(f"unsupported build stack: {stack}")
     return _guide_bodies(("pitfalls.md", STACK_GUIDES[stack]))
-
-
-def unit_context() -> str:
-    """Guidance for the focused business-logic unit-test phase."""
-    return _guides(("unit-tests.md", "vitest.md"))
-
-
-def quality_context() -> str:
-    """Guidance for the final browser and quality phase."""
-    return _guides(("playwright.md", "axe.md", "lighthouse.md", "zap.md"))
 
 
 def common_context() -> str:

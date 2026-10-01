@@ -163,14 +163,6 @@ def journey_issues(doc: dict) -> list[dict[str, Any]]:
     return issues
 
 
-def journey_problems(doc: dict) -> list[str]:
-    """What is wrong with the SRS's own `step_routes`, as sentences."""
-    extra = [f'"{flow.get("workflow_name")}" has {len(flow["step_routes"]) - len(flow.get("steps") or [])} step_routes '
-             f"more than steps" for flow in doc.get("business_workflows") or []
-             if isinstance(flow, dict) and len(flow.get("step_routes") or []) > len(flow.get("steps") or [])]
-    return extra + [issue["problem"] for issue in journey_issues(doc)]
-
-
 def journey_contract_for(doc: dict) -> dict[str, Any]:
     """The stable, product-only journey contract derived from the final SRS.
 

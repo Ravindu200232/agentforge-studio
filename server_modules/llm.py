@@ -20,7 +20,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence, TypeVar
+from typing import Any, Callable, Sequence, TypeVar
 
 import httpx
 import ollama

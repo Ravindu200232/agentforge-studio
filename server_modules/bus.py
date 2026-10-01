@@ -326,11 +326,6 @@ def memory(project: str, model: str, used: int, context: int, tools: int,
           "context_scope": context_scope})
 
 
-def step(project: str, name: str, status: str, agent: str = DEVELOPER) -> None:
-    emit({"type": "step", "project": project, "agent": agent,
-          "step": name, "status": status})
-
-
 def progress(project: str, name: str, pct: float, agent: str = DEVELOPER) -> None:
     emit({"type": "progress", "project": project, "agent": agent,
           "step": name, "pct": pct})
@@ -541,7 +536,3 @@ def saved_stream(project: str) -> dict:
             chat.append({"role": "assistant", "text": event.get("text", ""),
                          "title": event.get("title", ""), "at": event.get("at")})
     return {"logs": logs, "chat": chat}
-
-
-def as_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, default=str)

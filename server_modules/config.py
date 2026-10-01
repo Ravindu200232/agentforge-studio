@@ -13,7 +13,6 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 PROMPTS = ROOT / "prompts"
-TEMPLATES = ROOT / "templates"
 WORKSPACES = ROOT / "workspaces"
 STATE = ROOT / ".agentforge-server"
 SETTINGS_FILE = STATE / "settings.json"
@@ -28,7 +27,6 @@ API_PREFIX = "/__agentforge/api"
 
 # Where the project's own record lives, inside each workspace.
 RECORD_DIR = ".agentforge"
-RUNTIME_TEMPLATE = TEMPLATES / "project-runtime.json"
 
 DEFAULTS: dict[str, Any] = {
     "ollama_host": os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
@@ -272,14 +270,10 @@ SCAFFOLD_DIRS = (
 
 def scaffold_workspace(project: str) -> Path:
     """The project's workspace, with its predictable empty stage-folder
-    skeleton and managed runtime template, so a read tool can find its way
-    around before any stage has run."""
+    skeleton, so a read tool can find its way around before any stage has run."""
     workspace = workspace_for(project)
     workspace.mkdir(parents=True, exist_ok=True)
     record = workspace / RECORD_DIR
     for relative in SCAFFOLD_DIRS:
         (record / relative).mkdir(parents=True, exist_ok=True)
-    runtime = record / "runtime.json"
-    if not runtime.exists() and RUNTIME_TEMPLATE.is_file():
-        runtime.write_text(RUNTIME_TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
     return workspace

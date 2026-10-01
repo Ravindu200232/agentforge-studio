@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from . import config
@@ -123,18 +122,6 @@ def catalogue(area: str, kind: str = "skills") -> list[dict[str, str]]:
     return rows
 
 
-def reference(area: str, filename: str) -> str:
-    """A standards document that sits beside the skills, such as the SRS profile."""
-    path = (config.PROMPTS / area / filename).resolve()
-    if not path.is_relative_to(config.PROMPTS.resolve()) or not path.is_file():
-        raise MissingPrompt(f"no reference at prompts/{area}/{filename}")
-    return path.read_text(encoding="utf-8")
-
-
 def clear_cache() -> None:
     """Pick up an edited prompt without restarting the server."""
     data.cache_clear()
-
-
-def pack_root() -> Path:
-    return config.PROMPTS

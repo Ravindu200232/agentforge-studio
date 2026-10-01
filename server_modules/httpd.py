@@ -25,7 +25,6 @@ import ollama
 
 from builder_agent import build as builder
 from deploy_agent import deploy as deployer
-from prototype_agent import design as design_stage
 from prototype_agent import prototype as prototyper
 from qa_agent import report_pdf
 from qa_agent import verify as qa

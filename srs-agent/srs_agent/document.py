@@ -1069,17 +1069,6 @@ def _forget_stale_wireframes(session: ProjectSession, screens: list[dict]) -> No
                 pass
 
 
-def _drawn_pages(session: ProjectSession) -> list[tuple[str, str]]:
-    index = session.read_record(*WIREFRAME_INDEX, fallback=None) or {}
-    out: list[tuple[str, str]] = []
-    for row in (index.get("screens") or []):
-        path = session.workspace / str(row.get("file") or "")
-        if path.is_file():
-            out.append((str(row.get("route") or ""),
-                        path.read_text(encoding="utf-8", errors="replace")))
-    return out
-
-
 def _slug_words(value: str) -> list[str]:
     return [word for word in re.split(r"[^a-z0-9]+", str(value or "").lower()) if word]
 

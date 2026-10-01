@@ -18,8 +18,6 @@ from server_modules.session import ProjectSession, RunCancelled, session_for
 QA_DIR = "qa"
 REPORT = (QA_DIR, "report.json")
 
-LAYERS = ("build", "runtime", "unit", "contracts", "journeys", "accessibility", "load")
-
 
 def report(project: str) -> dict[str, Any]:
     session = session_for(project)
@@ -72,7 +70,6 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
     if preview.get("status") not in {"starting", "running"}:
         bus.log(project, "WARN", f"Local preview is unavailable for browser inspection: {preview.get('detail') or 'unknown reason'}")
     started = time.time()
-    seen = 0
     published = [0]
     stop_feed = threading.Event()
 
@@ -104,7 +101,7 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         result = session.run_task(request, audit=False)
         stop_feed.set()
         watcher.join(timeout=2)
-        seen = _publish(session, project, published[0])
+        _publish(session, project, published[0])
 
         final = report(project)
         if not final.get("complete"):
@@ -160,45 +157,6 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         raise
 
 
-def repair(project: str, request: str = "") -> dict[str, Any]:
-    """Fix what the last run found, and prove the fix."""
-    current = report(project)
-    open_bugs = [b for b in (current.get("bugs") or [])
-                 if isinstance(b, dict) and b.get("status") != "fixed"]
-    if not open_bugs and not request.strip():
-        return current
-
-    session = session_for(project)
-    session.begin("test-repair", role=bus.DEVELOPER)
-    from .evidence import archive_results
-    archive_results(session.workspace, "Before this repair run", "before-repair")
-    try:
-        listed = "\n".join(
-            f"- [{b.get('severity', 'medium')}] {b.get('where', '')}: {b.get('what', '')}"
-            for b in open_bugs) or "(none recorded)"
-        task = (f"Repair what verification found, then prove each repair by "
-                f"re-running the check that caught it.\n\n## Open findings\n\n{listed}")
-        if request.strip():
-            task += f"\n\n## What the customer asked for\n\n{request.strip()}"
-        task += ("\n\nUpdate `.agentforge/qa/report.json` as you go: move each repaired "
-                 "finding into `resolvedBugs` and record the round in `repairs`.")
-
-        session.run_task(task, audit=False)
-        session.finish("Repairs applied.")
-        repaired = report(project)
-        archive_results(session.workspace, "Repair run completed", "repair-run")
-        return repaired
-    except RunCancelled:
-        archive_results(session.workspace, "Repair run cancelled", "repair-run")
-        session.stage = "idle"
-        session.save_context()
-        raise
-    except Exception as exc:  # noqa: BLE001
-        archive_results(session.workspace, "Repair run stopped with an error", "repair-run")
-        session.fail(str(exc))
-        raise
-
-
 def screenshot(project: str, path: str) -> tuple[bytes, str]:
     session = session_for(project)
     target = (session.workspace / path).resolve()
@@ -206,9 +164,3 @@ def screenshot(project: str, path: str) -> tuple[bytes, str]:
         raise FileNotFoundError(path)
     kind = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
     return target.read_bytes(), kind.get(target.suffix.lower(), "application/octet-stream")
-
-
-def status() -> dict[str, Any]:
-    """Whether this machine can verify at all — what the studio asks on load."""
-    return {"available": True, "engine": "ollama-terminal",
-            "layers": list(LAYERS)}

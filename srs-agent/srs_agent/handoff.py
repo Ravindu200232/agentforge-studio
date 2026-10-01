@@ -24,10 +24,6 @@ def _rows(doc: dict, key: str) -> list[dict]:
     return [r for r in (doc.get(key) or []) if isinstance(r, dict)]
 
 
-def _pages(doc: dict) -> list[dict]:
-    return _rows(doc, "public_pages") + _rows(doc, "protected_pages")
-
-
 def _cell(value: Any) -> str:
     """One table cell, with nothing in it that would break the row."""
     if isinstance(value, (list, tuple)):

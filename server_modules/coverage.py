@@ -24,10 +24,6 @@ def categories() -> dict[str, dict[str, Any]]:
         return {}
 
 
-def category_keys() -> set[str]:
-    return set(categories())
-
-
 def blank_coverage() -> dict[str, dict[str, Any]]:
     """One entry per category, seeded UNKNOWN — except a category marked
     `auto: not_applicable` in the taxonomy (deployment: decided elsewhere,
