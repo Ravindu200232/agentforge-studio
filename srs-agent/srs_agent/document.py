@@ -13,6 +13,7 @@ diagrams and the pages, and each call is given exactly the part it needs.
 """
 from __future__ import annotations
 
+import copy
 import json
 import hashlib
 import re
@@ -230,6 +231,68 @@ def _write_document(session: ProjectSession, project: str, record: dict,
     named = str((doc.get("app_summary") or {}).get("app_name") or "").strip()
     if named and str(doc.get("project_name") or "").strip() in ("", project):
         doc["project_name"] = named
+    return envelope
+
+
+def _journey_routes_validator(doc: dict, names: set[str]):
+    """Check a model's corrected `step_routes` against the SRS's own pages and roles before any of it is kept."""
+    def check(data: Any) -> dict[str, list[str]]:
+        rows = data.get("workflows") if isinstance(data, dict) else data
+        if not isinstance(rows, list):
+            raise ValueError('return {"workflows": [{"workflow_name": "...", "step_routes": ["/..."]}]}')
+        answer = {str(row.get("workflow_name") or ""): [str(route or "") for route in row.get("step_routes") or []]
+                  for row in rows if isinstance(row, dict)}
+        trial = copy.deepcopy(doc)
+        for flow in trial.get("business_workflows") or []:
+            if isinstance(flow, dict) and str(flow.get("workflow_name") or "") in names:
+                flow["step_routes"] = answer.get(str(flow.get("workflow_name") or ""), [])
+        problems = [problem for problem in journeys.journey_problems(trial)
+                    if any(problem.startswith(f'"{name}"') for name in names)]
+        if problems:
+            raise ValueError("these step routes are still wrong:\n- " + "\n- ".join(problems[:20]))
+        return answer
+    return check
+
+
+def _validate_journeys(project: str, envelope: dict) -> dict:
+    """Every workflow step on a page its role can open, checked and fixed before anything downstream reads the journeys.
+
+    The SRS writes `step_routes` itself. A wrong one — a route that is no page, a page the role cannot open, one too many
+    or too few — goes back to the model once, with the exact problems; whatever is still wrong after that is taken from
+    the page each step names, among the pages its role can open, or the page the person is already on. Never a reason
+    to fail the specification.
+    """
+    doc = envelope["srs_document"]
+    problems = journeys.journey_problems(doc)
+    if problems:
+        names = {problem.split('"')[1] for problem in problems if problem.startswith('"')}
+        bus.log(project, "WARN", f"{len(problems)} journey step route(s) to correct in {len(names)} workflow(s).")
+        pages = "\n".join(
+            f"- `{page['route']}` — {page['page_name']} — "
+            + (("signed in: " + (", ".join(sorted(page["roles"])) or "any signed-in role")) if page["login_required"]
+               else "no sign-in")
+            for page in journeys._pages_of(doc))
+        workflows = "\n\n".join(
+            f"### {flow.get('workflow_name')} — {flow.get('who') or 'anyone'}\n"
+            + "\n".join(f"{index}. {step}" for index, step in enumerate(flow.get("steps") or [], 1))
+            for flow in doc.get("business_workflows") or []
+            if isinstance(flow, dict) and str(flow.get("workflow_name") or "") in names)
+        try:
+            answer = llm.complete_json(
+                system=prompts.load("srs/system"),
+                user=prompts.load("srs/journey-routes", pages=pages, workflows=workflows,
+                                  problems="\n".join(f"- {problem}" for problem in problems[:40])),
+                validator=_journey_routes_validator(doc, names), label="srs_journey_routes", attempts=2)
+            for flow in doc.get("business_workflows") or []:
+                if isinstance(flow, dict) and str(flow.get("workflow_name") or "") in answer:
+                    flow["step_routes"] = answer[str(flow.get("workflow_name") or "")]
+        except Exception as exc:  # noqa: BLE001 - the page names below still place every step
+            bus.log(project, "WARN", f"Could not correct the journey routes with the model ({str(exc)[:160]}); "
+                                     "placing those steps by the pages they name.")
+    changed = journeys.fill_step_routes(doc)
+    count = len([flow for flow in doc.get("business_workflows") or [] if isinstance(flow, dict)])
+    bus.log(project, "SUCCESS", f"{count} user journeys validated: every step is on a page its role can open"
+                                + (f" ({changed} step route(s) completed)." if changed else "."))
     return envelope
 
 
@@ -798,6 +861,7 @@ def generate(project: str) -> dict[str, Any]:
                       title="SRS review", kind="narration")
         envelope = _review_loop(session, project, envelope, approved)
         envelope = _close_gaps(session, project, envelope, approved)
+        envelope = _validate_journeys(project, envelope)
         srs_schema.srs_validator(envelope)
         _write_record_visible(session, project, DOCUMENT, envelope)
 

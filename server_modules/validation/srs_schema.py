@@ -115,6 +115,9 @@ class BusinessWorkflow(_Loose):
     workflow_name: str
     who: Optional[str] = None
     steps: list[str] = Field(default_factory=list)
+    # The route of the page each step happens on, one per step. Checked and completed after the
+    # document is written (`journeys.journey_problems` / `fill_step_routes`), never a reason to reject it.
+    step_routes: list[str] = Field(default_factory=list)
 
 
 class ValidationRule(_Loose):

@@ -136,8 +136,11 @@ def app_md(doc: dict) -> str:
         for flow in _rows(doc, "business_workflows"):
             out.append(f"### {flow.get('workflow_name')} "
                        f"({flow.get('who') or 'anyone'})")
-            out += [""] + [f"{i}. {step}" for i, step in
-                           enumerate(flow.get("steps") or [], 1)] + [""]
+            steps = flow.get("steps") or []
+            routes = flow.get("step_routes") or []
+            routes = routes if len(routes) == len(steps) else []
+            out += [""] + [f"{i}. {step}" + (f" — on `{routes[i - 1]}`" if routes and routes[i - 1] else "")
+                           for i, step in enumerate(steps, 1)] + [""]
 
     for title, key, render in (
         ("Validation rules", "validation_rules",

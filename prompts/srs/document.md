@@ -65,6 +65,16 @@ Every workflow in the approved plan must appear by name in
 `business_workflows`, with its role and ordered end-to-end steps. Do not omit
 workflows simply because the same capability appears in a requirement.
 
+Each workflow also carries `step_routes`: exactly one route per step, in the
+same order — the page that step happens on. Use only routes from
+`public_pages` and `protected_pages`, and only pages the workflow's `who` can
+open: a page without sign-in is open to everyone, a signed-in page only to the
+roles in its `allowed_roles`, and someone who never signs in opens no signed-in
+page. A step that names a page is on that page. A step that continues where the
+person already is (filling a form, choosing an option, the system answering)
+repeats the route of the step before it. Never pick a page because it shares a
+word with the step.
+
 Every screen in the approved plan must appear in exactly one of
 `public_pages` or `protected_pages`, with its route, roles, sections and
 functions. Every planned record must have a semantically matching database
@@ -128,7 +138,7 @@ this main SRS has passed validation.
     "api_design": [{"method": "GET", "path": "/api/...", "description": "...", "auth_required": true, "allowed_roles": ["..."]}],
     "functional_requirements": [{"id": "FR-001", "module": "...", "requirement": "The system shall ...", "priority": "high", "allowed_roles": ["..."], "verification_method": "Functional Test", "rationale": "..."}],
     "non_functional_requirements": [{"id": "NFR-001", "category": "Performance", "requirement": "...", "verification_method": "Analysis"}],
-    "business_workflows": [{"workflow_name": "...", "who": "...", "steps": ["..."]}],
+    "business_workflows": [{"workflow_name": "...", "who": "...", "steps": ["...", "..."], "step_routes": ["/...", "/..."]}],
     "validation_rules": [{"field": "table.field", "rule": "..."}],
     "notification_rules": [{"event": "...", "recipients": ["..."], "channels": ["email"]}],
     "security_requirements": ["..."],
