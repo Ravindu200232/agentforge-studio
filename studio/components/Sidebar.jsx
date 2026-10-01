@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { useStore, KEYS } from '@/lib/store'
 import { api } from '@/lib/api'
+import { previewHref } from '@/lib/preview'
 import { Badge, Button, Input, SectionLabel, Tag, Tip } from './ui'
 import { cn } from '@/lib/utils'
 
@@ -71,7 +72,7 @@ export default function Sidebar({
     try {
       const runtime = await api.open(project)
       useStore.getState().setRuntime(runtime)
-      if (tab) { tab.opener = null; tab.location.href = runtime.previewUrl }
+      if (tab) { tab.opener = null; tab.location.href = previewHref(runtime) || runtime.previewUrl }
     } catch (error) {
       tab?.close()
       useStore.getState().addLog('WARN', `Could not open app: ${error.message}`)

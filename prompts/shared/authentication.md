@@ -64,7 +64,8 @@ navigation.
 - The new account gets the role app.md gives sign-ups. A person never picks a privileged role (an administrator,
   staff) for themselves; those accounts are created by whoever app.md says provisions them.
 - "Already have an account? Sign in". After sign-up: straight into the new account's dashboard, or a "check your
-  email" screen when the product verifies email first.
+  email" screen when the product verifies email first. Someone already signed in who opens it goes to their
+  dashboard.
 
 **Forgot and reset password** — when the product has them. Asking for a link always answers "If that email has
 an account, we've sent a link", the same words whether or not it does. The link works once and expires; the new
@@ -150,6 +151,8 @@ The prototype has no guards — every page opens directly — but it shows both 
 
 **Tests** (Playwright, for every role)
 - Each role signs in through the form, lands on its own dashboard and sees its own navigation and account menu.
+- Signed in, a reload keeps them signed in, and something they save is still there after the reload — a session
+  that is not kept shows up here as being signed out and as saves refused.
 - Signed out: a signed-in route goes to sign-in and back after signing in; the public navigation shows Sign in
   (and Sign up when it exists) and no account menu.
 - Another role's route is refused (redirect or no-access page), and its API answers 403.
