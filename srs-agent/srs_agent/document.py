@@ -24,7 +24,7 @@ from typing import Any
 
 from server_modules import bus, config, journeys, llm, mermaid, prompts, reference_staging, store
 from server_modules.session import ProjectSession, RunCancelled, session_for
-from server_modules.validation import completeness
+from server_modules.validation import completeness, json_edits
 from server_modules.validation import corpus as corpus_rules
 from server_modules.validation import review as review_rules
 from server_modules.validation import srs_schema
@@ -234,59 +234,90 @@ def _write_document(session: ProjectSession, project: str, record: dict,
     return envelope
 
 
-def _journey_routes_validator(doc: dict, names: set[str]):
-    """Check a model's corrected `step_routes` against the SRS's own pages and roles before any of it is kept."""
-    def check(data: Any) -> dict[str, list[str]]:
-        rows = data.get("workflows") if isinstance(data, dict) else data
+def _journey_edits_validator(doc: dict, issues: list[dict]):
+    """Check the model's route for each wrong step against the SRS's own pages and roles before any of it is kept.
+
+    Only the steps that were wrong may change; an edit to any other step is ignored, so a correct route is never touched.
+    """
+    wrong = {(issue["workflow"], issue["step"]) for issue in issues}
+
+    def check(data: Any) -> list[tuple[str, int, str]]:
+        rows = data.get("edits") if isinstance(data, dict) else data
         if not isinstance(rows, list):
-            raise ValueError('return {"workflows": [{"workflow_name": "...", "step_routes": ["/..."]}]}')
-        answer = {str(row.get("workflow_name") or ""): [str(route or "") for route in row.get("step_routes") or []]
-                  for row in rows if isinstance(row, dict)}
+            raise ValueError('return {"edits": [{"workflow_name": "...", "step": 1, "route": "/..."}]}')
+        edits = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                key = (str(row.get("workflow_name") or ""), int(row.get("step")))
+            except (TypeError, ValueError):
+                continue
+            if key in wrong:
+                edits.append((key[0], key[1], str(row.get("route") or "").strip()))
         trial = copy.deepcopy(doc)
-        for flow in trial.get("business_workflows") or []:
-            if isinstance(flow, dict) and str(flow.get("workflow_name") or "") in names:
-                flow["step_routes"] = answer.get(str(flow.get("workflow_name") or ""), [])
-        problems = [problem for problem in journeys.journey_problems(trial)
-                    if any(problem.startswith(f'"{name}"') for name in names)]
-        if problems:
-            raise ValueError("these step routes are still wrong:\n- " + "\n- ".join(problems[:20]))
-        return answer
+        _apply_journey_edits(trial, edits)
+        left = [issue["problem"] for issue in journeys.journey_issues(trial)
+                if (issue["workflow"], issue["step"]) in wrong]
+        if left:
+            raise ValueError("these steps are still wrong — give a route for each:\n- " + "\n- ".join(left[:20]))
+        return edits
     return check
+
+
+def _apply_journey_edits(doc: dict, edits: list[tuple[str, int, str]]) -> None:
+    flows = {str(flow.get("workflow_name") or ""): flow for flow in doc.get("business_workflows") or []
+             if isinstance(flow, dict)}
+    for name, step, route in edits:
+        flow = flows.get(name)
+        if not flow or not 1 <= step <= len(flow.get("steps") or []):
+            continue
+        routes = list(flow.get("step_routes") or [])
+        routes += [""] * (len(flow.get("steps") or []) - len(routes))
+        routes[step - 1] = route
+        flow["step_routes"] = routes
 
 
 def _validate_journeys(project: str, envelope: dict) -> dict:
     """Every workflow step on a page its role can open, checked and fixed before anything downstream reads the journeys.
 
-    The SRS writes `step_routes` itself. A wrong one — a route that is no page, a page the role cannot open, one too many
-    or too few — goes back to the model once, with the exact problems; whatever is still wrong after that is taken from
-    the page each step names, among the pages its role can open, or the page the person is already on. Never a reason
-    to fail the specification.
+    The SRS writes `step_routes` itself. Only the steps that are wrong — no route, a route that is no page, a page the
+    role cannot open — go back to the model, which answers with a route for each of those steps and nothing else; every
+    other step and the rest of the specification stay exactly as they are. Whatever is still wrong after that is taken
+    from the page the step names, among the pages its role can open, or the page the person is already on. Never a
+    reason to fail the specification.
     """
     doc = envelope["srs_document"]
-    problems = journeys.journey_problems(doc)
-    if problems:
-        names = {problem.split('"')[1] for problem in problems if problem.startswith('"')}
-        bus.log(project, "WARN", f"{len(problems)} journey step route(s) to correct in {len(names)} workflow(s).")
+    journeys.trim_step_routes(doc)
+    issues = journeys.journey_issues(doc)
+    if issues:
+        names = sorted({issue["workflow"] for issue in issues})
+        bus.log(project, "WARN", f"{len(issues)} journey step route(s) to correct in {len(names)} workflow(s); "
+                                 "fixing only those steps.")
         pages = "\n".join(
             f"- `{page['route']}` — {page['page_name']} — "
             + (("signed in: " + (", ".join(sorted(page["roles"])) or "any signed-in role")) if page["login_required"]
                else "no sign-in")
             for page in journeys._pages_of(doc))
+        marked = {(issue["workflow"], issue["step"]): issue for issue in issues}
         workflows = "\n\n".join(
-            f"### {flow.get('workflow_name')} — {flow.get('who') or 'anyone'}\n"
-            + "\n".join(f"{index}. {step}" for index, step in enumerate(flow.get("steps") or [], 1))
+            f"### {flow.get('workflow_name')} — {flow.get('who') or 'anyone'}\n" + "\n".join(
+                f"{index}. {step} — "
+                + (f"**WRONG: {marked[(str(flow.get('workflow_name') or ''), index)]['problem']}**"
+                   if (str(flow.get("workflow_name") or ""), index) in marked
+                   else f"on `{(flow.get('step_routes') or [''] * index)[index - 1]}`")
+                for index, step in enumerate(flow.get("steps") or [], 1))
             for flow in doc.get("business_workflows") or []
             if isinstance(flow, dict) and str(flow.get("workflow_name") or "") in names)
         try:
-            answer = llm.complete_json(
+            edits = llm.complete_json(
                 system=prompts.load("srs/system"),
-                user=prompts.load("srs/journey-routes", pages=pages, workflows=workflows,
-                                  problems="\n".join(f"- {problem}" for problem in problems[:40])),
-                validator=_journey_routes_validator(doc, names), label="srs_journey_routes", attempts=2,
+                user=prompts.load("srs/journey-routes", pages=pages, workflows=workflows),
+                validator=_journey_edits_validator(doc, issues), label="srs_journey_routes", attempts=2,
                 project=project)
-            for flow in doc.get("business_workflows") or []:
-                if isinstance(flow, dict) and str(flow.get("workflow_name") or "") in answer:
-                    flow["step_routes"] = answer[str(flow.get("workflow_name") or "")]
+            _apply_journey_edits(doc, edits)
+            bus.log(project, "INFO", f"Corrected {len(edits)} journey step route(s): "
+                                     + "; ".join(f'"{name}" step {step} → {route}' for name, step, route in edits)[:400])
         except Exception as exc:  # noqa: BLE001 - the page names below still place every step
             bus.log(project, "WARN", f"Could not correct the journey routes with the model ({str(exc)[:160]}); "
                                      "placing those steps by the pages they name.")
@@ -571,7 +602,7 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
 
 
 def _page_instruction(project: str, doc: dict, page: dict, docs: dict[str, str], request: str = "",
-                      ideas: str = "", layout: str = "") -> str:
+                      ideas: str = "", layout: str = "", wireframe_plan: str = "") -> str:
     """The prompt one wireframe is drawn from.
 
     The site map and application spec are no longer pasted in: the model reads
@@ -591,6 +622,7 @@ def _page_instruction(project: str, doc: dict, page: dict, docs: dict[str, str],
                                page_contract=json.dumps(wireframe_brief.page_facts(page), ensure_ascii=False, indent=2),
                                ideas=ideas or "(none gathered — draw from the specification and your own judgement)",
                                layout=layout or "(none drawn — keep the shell and the components consistent from the site map)",
+                               wireframe_plan=wireframe_plan or "(no wireframe plan — draw this page from its record and the site map)",
                                plan=wireframe_brief.clean(plan_stage.markdown(project)))
     if request:
         instruction += "\n\n## Approved wireframe request\n\n" + request
@@ -627,7 +659,8 @@ def _draw_page(session: ProjectSession, project: str, doc: dict, page: dict,
     on_token = writer.token if stream else None
 
     instruction = _page_instruction(project, doc, page, docs, request,
-                                    ideas=system.get("ideas", ""), layout=system.get("layout", ""))
+                                    ideas=system.get("ideas", ""), layout=system.get("layout", ""),
+                                    wireframe_plan=_plan_for_page(system.get("plan", ""), route))
     minimum = max(completeness.WIREFRAME_FLOOR,
                   weight * completeness.WIREFRAME_CHARS_PER_SECTION)
     html = llm.complete_html(system=prompts.load("srs/system"), user=instruction,
@@ -660,7 +693,7 @@ def _draw_page(session: ProjectSession, project: str, doc: dict, page: dict,
 
 
 def _wireframe_system(session: ProjectSession, project: str, doc: dict, docs: dict[str, str], fresh: bool,
-                      quiet: bool = False) -> dict[str, Any]:
+                      quiet: bool = False, plan: str = "") -> dict[str, Any]:
     """The web ideas and the shared layout every page is drawn from.
 
     Kept with the project, so redrawing one page reuses them; made anew when every page is drawn again.
@@ -671,7 +704,7 @@ def _wireframe_system(session: ProjectSession, project: str, doc: dict, docs: di
     }
     made = wireframe_brief.prepare(doc, docs, have,
                                    (lambda _text: None) if quiet else lambda text: bus.log(project, "INFO", text),
-                                   project=project)
+                                   plan=_plan_sections(plan)[0], project=project)
     for name, file in (("ideas", "ideas.md"), ("layout", "layout.html")):
         if name in made["new"]:
             path = session.record_path(SRS_DIR, WIREFRAME_SYSTEM, file)
@@ -679,6 +712,75 @@ def _wireframe_system(session: ProjectSession, project: str, doc: dict, docs: di
             if not quiet:
                 bus.file_written(project, path.relative_to(session.workspace).as_posix(), made[name], note="written")
     return made
+
+
+_PLAN_PAGE = re.compile(r"^###\s+`?(/[^`\s]*)`?", re.MULTILINE)
+
+
+def _plan_sections(plan: str) -> tuple[str, dict[str, str]]:
+    """The wireframe plan's shared part, and each page's own part by route."""
+    text = str(plan or "")
+    found = list(_PLAN_PAGE.finditer(text))
+    first = found[0].start() if found else len(text)
+    pages_at = re.search(r"^##\s+Pages\b", text, re.MULTILINE)
+    shared = text[:pages_at.start() if pages_at and pages_at.start() < first else first].strip()
+    sections: dict[str, str] = {}
+    for index, match in enumerate(found):
+        end = found[index + 1].start() if index + 1 < len(found) else len(text)
+        chunk = text[match.start():end]
+        after = re.search(r"^##\s", chunk[3:], re.MULTILINE)
+        sections[match.group(1).rstrip("/") or "/"] = (chunk[:after.start() + 3] if after else chunk).strip()
+    return shared, sections
+
+
+def _plan_for_page(plan: str, route: str) -> str:
+    """What one page is drawn from: the plan's shared part and the page's own part, or the whole plan if it has none."""
+    if not str(plan or "").strip():
+        return ""
+    shared, sections = _plan_sections(plan)
+    own = sections.get(str(route).rstrip("/") or "/")
+    return f"{shared}\n\n{own}".strip() if own else str(plan)[:12000]
+
+
+def _wireframe_plan(session: ProjectSession, project: str, doc: dict, approved: dict, fresh: bool,
+                    quiet: bool = False) -> str:
+    """The plan every wireframe is drawn from, made silently by the project's agent before any page — like the builder's.
+
+    It reads app.md and the site map, then sets out the shells and navigation and, for every route, what the page holds
+    and where each action leads. Kept with the project, so one page redrawn later follows the same plan. A plan that
+    cannot be made never stops the drawing: each page is then drawn from its own record, as before.
+    """
+    saved = "" if fresh else str(session.read_record(SRS_DIR, WIREFRAME_SYSTEM, "plan.md", fallback="") or "")
+    planner = getattr(session, "plan_focused_task", None)
+    if saved.strip() or not callable(planner):
+        return saved
+    routes = "\n".join(
+        f"- `{page['route']}` — {page.get('page_name') or page['route']} — "
+        + (("signed in: " + (", ".join(map(str, page.get("allowed_roles") or [])) or "any signed-in role"))
+           if page.get("login_required") else "no sign-in")
+        + (f" — sections: {', '.join(wireframe_brief.page_lines(page.get('sections')))}" if page.get("sections") else "")
+        + (f" — functions: {', '.join(wireframe_brief.page_lines(page.get('functions')))}" if page.get("functions") else "")
+        for page in _wireframe_pages(doc, approved))
+    flows = "\n".join(
+        f"- {flow['workflow_name']} ({flow.get('who') or 'anyone'}): "
+        + " → ".join(f"{step['step'][:90]} [{step['route']}]" for step in flow["steps"])
+        for flow in journeys.user_journeys_for(doc)) or "(the specification lists no journeys)"
+    if not quiet:
+        bus.phase(project, "wireframes", "Planning the wireframes",
+                  detail="Reading app.md and the site map, then planning every page and how the pages connect.")
+    try:
+        plan = planner(prompts.load("srs/wireframe-plan", routes=routes, journeys=flows), subject="the wireframes")
+    except RunCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the pages can still be drawn from their own records
+        if not quiet:
+            bus.log(project, "WARN", f"Could not plan the wireframes ({str(exc)[:160]}); "
+                                     "drawing each page from its own record.")
+        return ""
+    path = session.write_record(SRS_DIR, WIREFRAME_SYSTEM, "plan.md", data=plan)
+    if not quiet:
+        bus.file_written(project, path.relative_to(session.workspace).as_posix(), plan, note="written")
+    return plan
 
 
 def handoff_docs(session: ProjectSession) -> dict[str, str]:
@@ -1176,6 +1278,15 @@ def _close_gaps(session: ProjectSession, project: str, envelope: dict,
     return envelope
 
 
+def _repair_edits_validator(envelope: dict):
+    """Apply a repair's edits to a copy of the SRS and accept it only when the result is still a valid SRS."""
+    def check(data: Any) -> tuple[dict, int]:
+        edits = data.get("edits") if isinstance(data, dict) else data
+        repaired = {**envelope, "srs_document": json_edits.apply_edits(envelope["srs_document"], edits)}
+        return srs_schema.srs_validator(repaired), len(edits)
+    return check
+
+
 def _review_loop(session: ProjectSession, project: str, envelope: dict,
                  approved: dict) -> dict:
     """Audit the draft against the standards, and send it back while that helps."""
@@ -1256,20 +1367,22 @@ def _review_loop(session: ProjectSession, project: str, envelope: dict,
             return envelope
 
         previous = len(blocking)
-        bus.log(project, "WARN", f"{len(blocking)} blocking finding(s) — rewriting.")
+        bus.log(project, "WARN", f"{len(blocking)} blocking finding(s) — fixing them with edits.")
         try:
-            repaired = llm.complete_json(
+            # The model answers with edits to the parts the findings name, never the whole document again: much less
+            # to write, and nothing that was right can be lost on the way.
+            repaired, applied = llm.complete_json(
                 system=prompts.load("srs/system"),
                 user=prompts.load("srs/repair",
                                   findings=review_rules.findings_text(verdict),
                                   plan=json.dumps(approved, ensure_ascii=False, indent=2),
-                                  document=json.dumps(envelope, ensure_ascii=False, indent=2)),
-                validator=srs_schema.srs_validator, label="srs_review_repair", project=project)
-            repaired["srs_document"]["diagrams"] = doc.get("diagrams") or []
+                                  document=json.dumps(doc, ensure_ascii=False, indent=2)),
+                validator=_repair_edits_validator(envelope), label="srs_review_repair", project=project)
             envelope = repaired
             session.write_record(*DOCUMENT, data=envelope)
+            bus.log(project, "INFO", f"{applied} edit(s) applied to the specification.")
         except Exception as exc:  # noqa: BLE001
-            bus.log(project, "WARN", f"The rewrite failed ({exc}); keeping the draft.")
+            bus.log(project, "WARN", f"The repair failed ({exc}); keeping the draft.")
             review_rules.stamp(doc, "stalled", round_no + 1, "a repair round failed", verdict)
             return envelope
     return envelope
@@ -1651,11 +1764,14 @@ def _generate_wireframes(session: ProjectSession, project: str, doc: dict,
             return None
 
     try:
-        # Before any page: ideas from the web and the one layout every page starts from (kept when a single page is redrawn).
+        # Before any page: a silent plan of every page, then ideas from the web and the one layout every page starts
+        # from (all kept when a single page is redrawn).
+        plan = _wireframe_plan(session, project, doc, approved, fresh=not route, quiet=quiet)
         if not quiet:
             bus.phase(project, "wireframes", "Preparing the design system",
                       detail="Looking up how products like this lay out their screens, then drawing the shared layout.")
-        system.update(_wireframe_system(session, project, doc, docs, fresh=not route, quiet=quiet))
+        system.update(_wireframe_system(session, project, doc, docs, fresh=not route, quiet=quiet, plan=plan))
+        system["plan"] = plan
         results = llm.in_lanes(selected, draw)
     finally:
         state["drawing"] = False

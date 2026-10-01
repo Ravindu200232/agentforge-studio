@@ -116,6 +116,58 @@ class SettleTests(QuestionFlowCase):
         self.assertEqual(decision["variable"], "STRIPE_SECRET_KEY")
         self.assertTrue(decision["secret"])
 
+    def test_a_secret_asked_for_without_a_variable_still_gets_the_private_box(self):
+        self.session.write_record(*build.QUESTION, data={
+            "question": "What should the admin password be?", "why": "the first sign-in account needs one",
+            "options": [{"label": "Use the prototype's demo password"}], "assumption": "use the demo password"})
+        build._settle(PROJECT, self.session, "run", "req", "plan", {"status": "blocked", "text": ""})
+        decision = bus.pending_decisions()[0]
+        self.assertEqual(decision["variable"], "ADMIN_PASSWORD")
+        self.assertTrue(decision["secret"])
+
+    def test_a_choice_that_only_mentions_a_password_stays_a_plain_question(self):
+        self.session.write_record(*build.QUESTION, data={
+            "question": "Should people sign in with a password or with Google?", "why": "",
+            "options": [{"label": "Password"}, {"label": "Google"}], "assumption": "password"})
+        build._settle(PROJECT, self.session, "run", "req", "plan", {"status": "blocked", "text": ""})
+        self.assertFalse(bus.pending_decisions()[0].get("variable"))
+
+    def test_a_supabase_value_is_never_asked_when_the_project_is_connected(self):
+        self.session.write_record(*build.QUESTION, data={
+            "question": "What is the Supabase service role key?", "why": "storage uploads need it",
+            "options": [], "assumption": "", "variable": "SUPABASE_SERVICE_ROLE_KEY", "secret": True})
+        self.session.runs.append(lambda request, plan: {"status": "complete", "text": "done"})
+        with mock.patch.object(build.supabase_connect, "record", return_value={"ref": "abc", "url": "https://abc.supabase.co"}):
+            result = build._settle(PROJECT, self.session, "run", "req", "plan", {"status": "blocked", "text": ""})
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(bus.pending_decisions(), [])
+        resumed, _plan = self.session.executed[0]
+        self.assertIn("already connected", resumed)
+        self.assertIn("What is the Supabase service role key?", resumed)
+
+    def test_the_supabase_storage_choice_is_still_asked(self):
+        self.session.write_record(*build.QUESTION, data={
+            "question": "This app stores product photos. Keep them in Supabase Storage, served by signed URL?",
+            "why": "", "options": [{"label": "Yes — Supabase Storage"}, {"label": "No"}],
+            "assumption": "keep them in Supabase Storage"})
+        with mock.patch.object(build.supabase_connect, "record", return_value={"ref": "abc"}):
+            result = build._settle(PROJECT, self.session, "run", "req", "plan", {"status": "blocked", "text": ""})
+        self.assertEqual(result["status"], "asking")
+        self.assertIn("Supabase Storage", bus.pending_decisions()[0]["question"])
+
+    def test_a_supabase_question_keeps_asking_the_customer_only_after_the_automatic_answers(self):
+        def ask_again(request, plan):
+            self.session.write_record(*build.QUESTION, data={
+                "question": "Paste the Supabase anon key", "why": "", "options": [], "assumption": ""})
+            return {"status": "blocked", "text": ""}
+        self.session.write_record(*build.QUESTION, data={
+            "question": "Paste the Supabase anon key", "why": "", "options": [], "assumption": ""})
+        self.session.runs.extend([ask_again] * build.AUTO_ANSWERS)
+        with mock.patch.object(build.supabase_connect, "record", return_value={"ref": "abc"}):
+            result = build._settle(PROJECT, self.session, "run", "req", "plan", {"status": "blocked", "text": ""})
+        self.assertEqual(result["status"], "asking")
+        self.assertEqual(len(self.session.executed), build.AUTO_ANSWERS)
+
     def test_there_is_no_cap_on_how_many_times_a_build_may_ask(self):
         for index in range(12):
             self.session.write_record(*build.QUESTION, data={

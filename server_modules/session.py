@@ -844,7 +844,7 @@ class ProjectSession:
             raise RunCancelled(self.project)
         return {"status": "complete", "text": text or "Update applied.", "rounds": 1}
 
-    def plan_focused_task(self, request: str, model: str = "") -> str:
+    def plan_focused_task(self, request: str, model: str = "", subject: str = "the pages") -> str:
         """Use the agent's /plan mode before a focused, per-file generation run.
 
         The caller executes the approved plan with independent model calls, so
@@ -870,8 +870,8 @@ class ProjectSession:
         if self.cancelled:
             raise RunCancelled(self.project)
         if not plan.strip():
-            raise ValueError("the prototype plan was empty")
-        bus.log(self.project, "INFO", "Prototype plan ready — approved automatically; drawing the pages.",
+            raise ValueError("the plan was empty")
+        bus.log(self.project, "INFO", f"Plan ready — approved automatically; drawing {subject}.",
                 agent=self.role)
         return plan
 

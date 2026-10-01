@@ -4,16 +4,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Loader2,
-  Move,
-  ArrowUpDown,
   AlignLeft,
   AlignCenter,
   AlignRight,
-  Maximize2,
   RotateCcw,
   Copy,
   Trash2,
-  Type,
   Layers,
   ArrowUp,
   ArrowDown,
@@ -85,13 +81,9 @@ function Thumbnail({ srsId, page, waiting }) {
         <div className="absolute inset-0 opacity-15 bg-[radial-gradient(var(--accent)_1px,transparent_1px)] [background-size:12px_12px]" />
         {isGenerating ? (
           <div className="relative z-10 flex flex-col items-center gap-2 text-center p-3">
-            <div className="relative flex size-9 items-center justify-center rounded-none bg-accent border border-accent/40 shadow-[0_0_20px_rgba(191, 185, 255,0.3)]">
-              <Sparkles className="size-4 text-ink animate-spin" style={{ animationDuration: '6s' }} />
-              <div className="absolute inset-0 rounded-none border border-accent/40 animate-ping opacity-30" />
-            </div>
+            <Loader2 className="size-5 animate-spin text-accent" />
             <span className="text-[11px] font-semibold text-ink tracking-wide">Drawing wireframe…</span>
             <span className="text-[9px] text-muted2">Synthesizing blueprint layout</span>
-            <div className="absolute inset-x-0 h-0.5 bg-gradient-to-r from-transparent via-accent to-transparent animate-pulse" />
           </div>
         ) : (
           <span className="relative z-10 text-[11px] text-muted2">not drawn yet</span>
@@ -116,13 +108,9 @@ function Thumbnail({ srsId, page, waiting }) {
       />
       {isGenerating && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-panel/75 backdrop-blur-[2px] z-10 transition-all">
-          <div className="relative flex size-9 items-center justify-center rounded-none bg-accent border border-accent/50 shadow-[0_0_20px_rgba(191, 185, 255,0.4)]">
-            <Sparkles className="size-4 text-ink animate-spin" style={{ animationDuration: '6s' }} />
-            <div className="absolute inset-0 rounded-none border border-accent/40 animate-ping opacity-30" />
-          </div>
+          <Loader2 className="size-5 animate-spin text-accent" />
           <span className="mt-2 text-[11px] font-semibold text-ink tracking-wide">Updating…</span>
           <span className="text-[9px] text-muted font-mono">Redrawing wireframe</span>
-          <div className="absolute inset-x-0 h-[2px] bg-gradient-to-r from-transparent via-accent to-transparent animate-pulse" />
         </div>
       )}
     </div>
@@ -141,9 +129,7 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
   const [stale, setStale] = useState(Boolean(page.html_stale))
   const [picked, setPicked] = useState('')
   const [dirty, setDirty] = useState(false)
-  const [typing, setTyping] = useState(false)
   const [metrics, setMetrics] = useState(null)
-  const [dragMode, setDragMode] = useState('free')
   const [selectionKey, setSelectionKey] = useState(0)
   const [aiOpen, setAiOpen] = useState(false)
   const [aiPrompt, setAiPrompt] = useState('')
@@ -223,7 +209,7 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
     try {
       await api.drawWireframeHtml(srsId, page.route)
       setStamp(n => n + 1)
-      setStale(false); setDirty(false); setPicked(''); setTyping(false); setMetrics(null)
+      setStale(false); setDirty(false); setPicked(''); setMetrics(null)
     } catch (failure) {
       setProblem(failure?.message || 'The page could not be drawn.')
     } finally {
@@ -235,7 +221,7 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
     if (!editor.current) return
     setSaving(true); setProblem('')
     try {
-      if (typing) { editor.current.editText(false); setTyping(false) }
+      editor.current.editText(false)
       const edits = editor.current.changes?.() || []
       await api.saveWireframeHtml(srsId, page.route, editor.current.serialize())
       editor.current.saved()
@@ -258,7 +244,7 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
     if (!request || !srsId || aiUpdating) return
     setAiUpdating(true); setProblem('')
     try {
-      if (typing) { editor.current?.editText(false); setTyping(false) }
+      editor.current?.editText(false)
       // Keep the AI's source buffer in sync with any direct edits the user has
       // made in the canvas. The AI endpoint intentionally reads only this page.
       if (dirty && editor.current) {
@@ -267,7 +253,7 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
       }
       await api.aiEditWireframeHtml(srsId, page.route, request)
       setStamp(n => n + 1)
-      setDirty(false); setPicked(''); setTyping(false); setMetrics(null)
+      setDirty(false); setPicked(''); setMetrics(null)
       setAiPrompt(''); setAiOpen(false)
     } catch (failure) {
       setProblem(failure?.message || 'The AI could not update this page.')
@@ -287,11 +273,6 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
       setPicked('')
       setMetrics(null)
     }
-  }
-
-  const setMode = mode => {
-    setDragMode(mode)
-    editor.current?.setDragMode?.(mode)
   }
 
   const Tool = ({ onClick, children, on = false, always = false, title }) => (
@@ -333,32 +314,6 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
 
       {stamp ? (
         <div className="hidden shrink-0 flex-wrap items-center gap-1.5 border-b border-black/10 bg-black/[.03] px-3.5 py-2 select-none">
-          {/* Tool Mode: Free Move (Figma Canvas) vs Flow Reorder */}
-          <div className="flex items-center rounded-none bg-black/40 p-0.5 border border-black/10">
-            <button
-              type="button"
-              onClick={() => setMode('free')}
-              title="Move Tool (V): Drag with cursor to freely position anywhere"
-              className={cn('flex items-center gap-1 rounded-none px-2 py-1 text-[10.5px] font-medium transition cursor-pointer',
-                dragMode === 'free' ? 'bg-accent text-ink font-semibold shadow-sm' : 'text-muted hover:text-ink')}
-            >
-              <Move className="size-3" />
-              <span>Move</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode('flow')}
-              title="Reorder Tool: Drag with cursor to drop between elements"
-              className={cn('flex items-center gap-1 rounded-none px-2 py-1 text-[10.5px] font-medium transition cursor-pointer',
-                dragMode === 'flow' ? 'bg-accent text-ink font-semibold shadow-sm' : 'text-muted hover:text-ink')}
-            >
-              <ArrowUpDown className="size-3" />
-              <span>Reorder</span>
-            </button>
-          </div>
-
-          <span className="mx-1 h-4 w-px bg-black/10" />
-
           {picked ? (
             <>
               {/* Selected Tag & Dimensions */}
@@ -419,33 +374,21 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
               <Tool onClick={act('align', 'left')} title="Align Left"><AlignLeft className="size-3" /></Tool>
               <Tool onClick={act('align', 'center')} title="Align Centre"><AlignCenter className="size-3" /></Tool>
               <Tool onClick={act('align', 'right')} title="Align Right"><AlignRight className="size-3" /></Tool>
-              <Tool onClick={act('align', 'full')} title="Full Width"><Maximize2 className="size-3" /></Tool>
 
               <span className="mx-1 h-4 w-px bg-black/10" />
 
               {/* Hierarchy */}
               <Tool onClick={act('parent')} title="Select Parent Container"><Layers className="size-3 mr-0.5" /> Parent</Tool>
-              <Tool onClick={act('move', -1)} title="Move Up in DOM"><ArrowUp className="size-3" /></Tool>
-              <Tool onClick={act('move', 1)} title="Move Down in DOM"><ArrowDown className="size-3" /></Tool>
-
-              {/* Size */}
-              <Tool onClick={act('wider', -10)} title="Narrower">-10%</Tool>
-              <Tool onClick={act('wider', 10)} title="Wider">+10%</Tool>
 
               <span className="mx-1 h-4 w-px bg-black/10" />
 
               {/* Actions */}
               <Tool onClick={act('duplicate')} title="Duplicate Element"><Copy className="size-3" /></Tool>
               <Tool onClick={act('remove')} title="Delete Element"><Trash2 className="size-3 text-rose-300" /></Tool>
-              <Tool on={typing} onClick={() => { editor.current?.editText(!typing); setTyping(!typing) }} title="Edit Text Directly">
-                <Type className="size-3" />
-                <span>{typing ? 'Done typing' : 'Text'}</span>
-              </Tool>
             </>
           ) : (
             <span className="flex items-center gap-1.5 font-mono text-[11px] text-muted2">
-              <Move className="size-3 text-accent" />
-              <span>Click any element to drag with cursor · Drag corner handles to resize · Arrow keys to nudge</span>
+              <span>Click an element to select it · Click text to type</span>
             </span>
           )}
 
@@ -509,14 +452,6 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
               onOpenAi={() => setAiOpen(true)}
               selectionMode={selectionMode}
               onSelectionMode={setSelectionMode}
-              typing={typing}
-              onEditText={enabled => {
-                const selected = editor.current?.selected?.()
-                if (!selected?.textContent?.trim()) return
-                editor.current.editText(enabled)
-                setTyping(enabled)
-                setSelectionKey(key => key + 1)
-              }}
               onChange={() => {
                 setDirty(true)
                 setPicked(editor.current?.selected?.()?.tagName?.toLowerCase() || '')

@@ -178,43 +178,50 @@ class JourneyRouteTests(unittest.TestCase):
         # a valid SRS route is kept; one the member cannot open is replaced
         self.assertEqual([s["route"] for s in member["steps"]], ["/account/requests", "/account/contact"])
 
-    def test_wrong_step_routes_are_reported_and_filled(self):
+    def test_wrong_step_routes_are_reported_per_step_and_filled(self):
         doc = json.loads(json.dumps(ROLE_DOCUMENT))
         problems = journeys.journey_problems(doc)
-        self.assertIn('"Visitor sends a request" has 3 steps but 0 step_routes', problems)
-        self.assertTrue(any("Member reviews requests" in p and "/admin/discounts" in p and "cannot open" in p for p in problems))
+        self.assertIn('"Visitor sends a request" step 1 has no route', problems)
+        self.assertIn('"Member reviews requests" step 2 is on /admin/discounts, which Member cannot open', problems)
+        self.assertEqual(len(problems), 4)
         self.assertEqual(journeys.fill_step_routes(doc), 4)
         self.assertEqual(journeys.journey_problems(doc), [])
         self.assertEqual(doc["business_workflows"][0]["step_routes"], ["/request", "/request", "/request/[id]/done"])
 
-    def test_the_srs_fixes_journey_routes_with_the_model_and_never_fails_on_them(self):
+    def test_only_the_wrong_steps_go_to_the_model_and_only_they_change(self):
+        doc = json.loads(json.dumps(ROLE_DOCUMENT))
+        doc["business_workflows"][0]["step_routes"] = ["/request", "/account/contact", "/request/[id]/done", "/extra"]
+        seen = {}
+
         def corrected(**kwargs):
-            answer = {"workflows": [{"workflow_name": "Visitor sends a request",
-                                     "step_routes": ["/request", "/request", "/request/[id]/done"]},
-                                    {"workflow_name": "Member reviews requests",
-                                     "step_routes": ["/account/requests", "/account/contact"]}]}
-            return kwargs["validator"](answer)
+            seen["user"] = kwargs["user"]
+            # a route for each wrong step, plus one for a step that was right, which must be ignored
+            return kwargs["validator"]({"edits": [
+                {"workflow_name": "Visitor sends a request", "step": 2, "route": "/request"},
+                {"workflow_name": "Member reviews requests", "step": 2, "route": "/account/contact"},
+                {"workflow_name": "Member reviews requests", "step": 1, "route": "/"}]})
 
         with mock.patch.object(srs_document.llm, "complete_json", side_effect=corrected) as model, \
              mock.patch.object(srs_document.bus, "log"):
-            envelope = srs_document._validate_journeys("prj", {"srs_document": json.loads(json.dumps(ROLE_DOCUMENT))})
+            envelope = srs_document._validate_journeys("prj", {"srs_document": doc})
         self.assertEqual(model.call_count, 1)
-        self.assertIn("/admin/discounts", model.call_args.kwargs["user"])
-        self.assertEqual(journeys.journey_problems(envelope["srs_document"]), [])
+        self.assertIn("**WRONG", seen["user"])
+        self.assertIn("on `/account/requests`", seen["user"])
+        flows = envelope["srs_document"]["business_workflows"]
+        self.assertEqual(flows[0]["step_routes"], ["/request", "/request", "/request/[id]/done"])
+        self.assertEqual(flows[1]["step_routes"], ["/account/requests", "/account/contact"])
 
-        # a model answer that is still wrong is rejected by the validator; the pages the steps name place them instead
+        # a model that cannot fix them never fails the SRS: the pages the steps name place them instead
         with mock.patch.object(srs_document.llm, "complete_json", side_effect=ValueError("still wrong")), \
              mock.patch.object(srs_document.bus, "log"):
             envelope = srs_document._validate_journeys("prj", {"srs_document": json.loads(json.dumps(ROLE_DOCUMENT))})
-        flows = envelope["srs_document"]["business_workflows"]
-        self.assertEqual(flows[1]["step_routes"], ["/account/requests", "/account/contact"])
         self.assertEqual(journeys.journey_problems(envelope["srs_document"]), [])
 
-    def test_a_validator_rejects_a_route_the_role_cannot_open(self):
-        check = srs_document._journey_routes_validator(ROLE_DOCUMENT, {"Visitor sends a request"})
+    def test_a_route_the_role_cannot_open_is_sent_back(self):
+        doc = json.loads(json.dumps(ROLE_DOCUMENT))
+        check = srs_document._journey_edits_validator(doc, journeys.journey_issues(doc))
         with self.assertRaisesRegex(ValueError, "cannot open"):
-            check({"workflows": [{"workflow_name": "Visitor sends a request",
-                                  "step_routes": ["/request", "/admin/discounts", "/request/[id]/done"]}]})
+            check({"edits": [{"workflow_name": "Member reviews requests", "step": 2, "route": "/admin/discounts"}]})
 
     def test_app_md_shows_the_page_of_each_step(self):
         from srs_agent import handoff

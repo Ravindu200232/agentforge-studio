@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
-from server_modules import bus, changes, plugins, prompts, reference_staging, store, supabase_connect
+from server_modules import bus, changes, deploy_vars, plugins, prompts, reference_staging, store, supabase_connect
 from server_modules.qa_report import summary_counts
 from server_modules.session import RunCancelled, session_for
 from server_modules.validation import build_report
@@ -44,8 +45,58 @@ def _ask(project: str, question: dict[str, Any]) -> None:
            secret=question.get("secret", False), check=question.get("check", ""))
 
 
+_SECRET_WORDS = re.compile(r"\b(passwords?|passcodes?|passphrases?|api[ _-]?keys?|access keys?|secret keys?|client secrets?"
+                           r"|private keys?|secrets?|tokens?|credentials?|connection strings?)\b", re.IGNORECASE)
+_ASKS_FOR_VALUE = re.compile(r"\b(what (?:is|are|should|will|would)|what(?:\s+\w+){0,2}?\s+(?:password|passcode|passphrase|key|secret"
+                             r"|token|credential|connection string)s?|enter|provide|give|share|paste|type|send|set|choose)\b",
+                             re.IGNORECASE)
+_FILLER = {"what", "which", "is", "are", "the", "a", "an", "your", "you", "my", "our", "their", "should", "would",
+           "will", "can", "could", "please", "enter", "provide", "give", "share", "paste", "type", "send", "set",
+           "choose", "use", "for", "of", "to", "me", "we", "i", "do", "does", "want", "need", "new", "be", "this",
+           "that", "it", "in", "on", "with", "and", "or", "here", "now", "real"}
+
+
+def _private_value(question: dict[str, Any]) -> dict[str, Any]:
+    """A question that asks the customer to give a password, key, token or other secret always gets the private box.
+
+    The prompt tells the model to name a `variable` for such a value; when it did not, one is named here from the
+    question's own words (`ADMIN_PASSWORD`, `STRIPE_SECRET_KEY`), so the value is typed into a box that hides it and is
+    saved on this computer, never into the open chat. A question that only mentions a password while asking for a
+    choice ("sign in with a password or with Google?") is left as it is.
+    """
+    text = str(question.get("question") or "")
+    found = _SECRET_WORDS.search(text)
+    if question.get("variable") or not found or not _ASKS_FOR_VALUE.search(text):
+        return question
+    words = lambda part: [w for w in re.findall(r"[A-Za-z0-9]+", part) if w.lower() not in _FILLER]
+    around = words(text[:found.start()])[-2:] or words(text[found.end():])[:2]
+    keyword = re.sub(r"S$", "", "_".join(re.findall(r"[A-Za-z0-9]+", found.group(1))).upper())
+    name = re.sub(r"^[^A-Z]+", "", "_".join([w.upper() for w in around] + [keyword]))
+    try:
+        deploy_vars.valid_name(name)
+    except ValueError:
+        name = "BUILD_SECRET"
+    return {**question, "variable": name, "secret": True}
+
+
+_SUPABASE_VALUE = re.compile(r"\b(url|keys?|password|anon|service[ _-]?role|credentials?|project ref|ref|connection"
+                             r"|token|secret)\b", re.IGNORECASE)
+AUTO_ANSWERS = 2
+
+
+def _asks_for_supabase(question: dict[str, Any]) -> bool:
+    """Whether a question asks the customer for a Supabase value — never needed: the project is connected before a build."""
+    if str(question.get("variable") or "").upper().startswith("SUPABASE"):
+        return True
+    text = str(question.get("question") or "")
+    # Asking the customer to give a value ("what is…", "paste…", "enter…"), not a choice such as
+    # "keep the images in Supabase Storage?" - that one is the customer's to answer.
+    return bool(re.search(r"supabase", text, re.IGNORECASE) and _SUPABASE_VALUE.search(text)
+                and _ASKS_FOR_VALUE.search(text))
+
+
 def _settle(project: str, session: Any, mode: str, request: str, plan: str,
-           result: dict[str, Any]) -> dict[str, Any]:
+           result: dict[str, Any], auto_answered: int = 0) -> dict[str, Any]:
     """A `run_task`/`execute_approved` outcome: pass a real result through unchanged, or turn a
     genuine question the model raised into a paused, resumable wait instead of a hard failure.
 
@@ -62,7 +113,16 @@ def _settle(project: str, session: Any, mode: str, request: str, plan: str,
     session.write_record(*QUESTION, data={})
     if not question:
         raise ValueError(result.get("text") or "the build was blocked")
-    asked = changes.check_question({"kind": "question", **question}, True)
+    if _asks_for_supabase(question) and supabase_connect.record(project) and auto_answered < AUTO_ANSWERS:
+        # The customer is never asked for Supabase values: the project was connected before the build started and
+        # every value is already in the environment. Answer for them and carry straight on.
+        bus.log(project, "INFO", "The build asked for Supabase values; this project's Supabase is already connected, "
+                                 "so it was answered automatically and the build continues.")
+        resume = request + "\n" + prompts.load("builder/resume", question=question.get("question", ""),
+                                                answer=prompts.load("builder/supabase-connected").strip())
+        return _settle(project, session, mode, request, plan, session.execute_approved(resume, plan, model=""),
+                       auto_answered + 1)
+    asked = changes.check_question({"kind": "question", **_private_value(question)}, True)
     session.write_record(*PENDING, data={"mode": mode, "request": request, "plan": plan, "question": asked})
     _ask(project, asked)
     session.finish("Waiting for your answer.")

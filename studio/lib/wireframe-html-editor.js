@@ -231,7 +231,7 @@ function selectable(node, doc) {
 function label(node) {
   if (!node) return ''
   const tag = node.tagName.toLowerCase()
-  const cls = String(node.getAttribute('class') || '').split(/\s+/).filter(Boolean)[0]
+  const cls = String(node.getAttribute('class') || '').split(/\s+/).filter(name => name && !name.startsWith('__wf_'))[0]
   return cls ? `${tag}.${cls}` : tag
 }
 
@@ -250,8 +250,8 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
   let selected = null
   let selectedNodes = new Set()
   let dirty = false
-  let dragMode = 'free' // 'free' (Figma Canvas Free Move) | 'flow' (DOM Flow Reorder)
   const undoStack = []
+  let typedFrom = null
   const redoStack = []
   const editLog = []
 
@@ -312,33 +312,11 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
       w: Math.round(rect.width),
       h: Math.round(rect.height),
       hasOffset: curX !== 0 || curY !== 0,
-      mode: dragMode,
-      canMoveUp: Boolean(selected.previousElementSibling),
-      canMoveDown: Boolean(selected.nextElementSibling),
     }
   }
 
   function notifyMetrics() {
     onMetrics?.(getMetrics())
-  }
-
-  function showHud(text, clientX, clientY) {
-    let hud = doc.getElementById('__wf_hud')
-    if (!hud) {
-      hud = doc.createElement('div')
-      hud.id = '__wf_hud'
-      hud.setAttribute('data-wf-editor-ui', 'true')
-      doc.body.appendChild(hud)
-    }
-    hud.textContent = text
-    hud.style.display = 'flex'
-    hud.style.left = `${Math.min(doc.documentElement.clientWidth - 170, clientX + 16)}px`
-    hud.style.top = `${clientY + 18}px`
-  }
-
-  function hideHud() {
-    const hud = doc.getElementById('__wf_hud')
-    if (hud) hud.style.display = 'none'
   }
 
   function updateOverlay() {
@@ -353,42 +331,11 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
       overlay.setAttribute('data-wf-editor-ui', 'true')
       overlay.innerHTML = `
         <div id="__wf_tag_badge" data-wf-editor-ui="true">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.9;flex-shrink:0;">
-            <polyline points="5 9 2 12 5 15"></polyline>
-            <polyline points="9 5 12 2 15 5"></polyline>
-            <polyline points="15 19 12 22 9 19"></polyline>
-            <polyline points="19 9 22 12 19 15"></polyline>
-            <line x1="2" x2="22" y1="12" y2="12"></line>
-            <line x1="12" x2="12" y1="2" y2="22"></line>
-          </svg>
           <span id="__wf_tag_name"></span>
           <span id="__wf_tag_dims" style="opacity:0.75;font-size:9.5px;margin-left:4px;"></span>
         </div>
-        <div class="__wf_handle __wf_handle_nw" data-handle="nw" data-wf-editor-ui="true"></div>
-        <div class="__wf_handle __wf_handle_ne" data-handle="ne" data-wf-editor-ui="true"></div>
-        <div class="__wf_handle __wf_handle_se" data-handle="se" data-wf-editor-ui="true"></div>
-        <div class="__wf_handle __wf_handle_sw" data-handle="sw" data-wf-editor-ui="true"></div>
-        <div class="__wf_handle __wf_handle_e" data-handle="e" data-wf-editor-ui="true"></div>
-        <div class="__wf_handle __wf_handle_s" data-handle="s" data-wf-editor-ui="true"></div>
       `
       doc.body.appendChild(overlay)
-
-      const badge = overlay.querySelector('#__wf_tag_badge')
-      badge?.addEventListener('mousedown', e => {
-        e.preventDefault()
-        e.stopPropagation()
-        startDrag(e, null)
-      })
-
-      overlay.querySelectorAll('.__wf_handle').forEach(h => {
-        h.addEventListener('mousedown', e => {
-          e.preventDefault()
-          e.stopPropagation()
-          const handleType = h.getAttribute('data-handle')
-          startDrag(e, handleType)
-        })
-      })
     }
 
     overlay.style.display = 'block'
@@ -409,60 +356,6 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
       const curY = Math.round(parseFloat(selected.style.top) || 0)
       tagDims.textContent = `${Math.round(r.width)}×${Math.round(r.height)}${curX || curY ? ` (X:${curX} Y:${curY})` : ''}`
     }
-  }
-
-  function updateDropLine(target) {
-    let line = doc.getElementById('__wf_drop_line')
-    if (!target) {
-      if (line) line.style.display = 'none'
-      return
-    }
-    if (!line) {
-      line = doc.createElement('div')
-      line.id = '__wf_drop_line'
-      line.setAttribute('data-wf-editor-ui', 'true')
-      doc.body.appendChild(line)
-    }
-    line.style.display = 'block'
-    const r = target.rect
-    const scrollX = doc.defaultView?.scrollX || doc.documentElement.scrollLeft || 0
-    const scrollY = doc.defaultView?.scrollY || doc.documentElement.scrollTop || 0
-
-    if (target.isVertical) {
-      line.style.width = `${Math.max(40, r.width)}px`
-      line.style.height = '3px'
-      line.style.left = `${r.left + scrollX}px`
-      line.style.top = target.position === 'before'
-        ? `${r.top + scrollY - 2}px`
-        : `${r.bottom + scrollY - 1}px`
-    } else {
-      line.style.width = '3px'
-      line.style.height = `${Math.max(20, r.height)}px`
-      line.style.top = `${r.top + scrollY}px`
-      line.style.left = target.position === 'before'
-        ? `${r.left + scrollX - 2}px`
-        : `${r.right + scrollX - 1}px`
-    }
-  }
-
-  function findDropTarget(clientX, clientY) {
-    const overlay = doc.getElementById('__wf_overlay')
-    if (overlay) overlay.style.display = 'none'
-    const el = doc.elementFromPoint(clientX, clientY)
-    if (overlay) overlay.style.display = 'block'
-
-    if (!el || el === selected || selected.contains(el) || el === doc.documentElement || el === doc.body) {
-      return null
-    }
-    if (el.hasAttribute?.('data-wf-editor-ui')) return null
-
-    const rect = el.getBoundingClientRect()
-    const isVertical = rect.height >= rect.width || rect.width > 300
-    const position = isVertical
-      ? (clientY < rect.top + rect.height / 2 ? 'before' : 'after')
-      : (clientX < rect.left + rect.width / 2 ? 'before' : 'after')
-
-    return { element: el, rect, position, isVertical }
   }
 
   function clearSelection() {
@@ -563,27 +456,6 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
     el.style.zIndex = '1'
   }
 
-  /**
-   * A flex child sized by a non-`auto` flex-basis (Tailwind's `flex-1` and similar,
-   * common throughout these wireframes) ignores an explicit `width`/`height` entirely
-   * - the flex algorithm sizes it from flex-basis, not from `width`. A flex or grid
-   * child that stretches to fill its row/track (the default `align-items: stretch`)
-   * ignores an explicit `height` the same way. Resizing one by hand must opt it out
-   * of that auto-sizing first, the way a real design tool's resize handle does, or
-   * the drag changes the inline style while the rendered box never moves.
-   */
-  function freeSize(el) {
-    const computed = doc.defaultView.getComputedStyle(el)
-    const parentDisplay = el.parentElement ? doc.defaultView.getComputedStyle(el.parentElement).display : ''
-    if (/flex/.test(parentDisplay) &&
-        (computed.flexBasis !== 'auto' || Number(computed.flexGrow) !== 0 || Number(computed.flexShrink) !== 0)) {
-      el.style.flex = '0 0 auto'
-    }
-    if (/flex|grid/.test(parentDisplay) && computed.alignSelf !== 'flex-start' && computed.alignSelf !== 'start') {
-      el.style.alignSelf = 'flex-start'
-    }
-  }
-
   let hovered = null
   const onOver = event => {
     if (hovered) hovered.classList.remove('__wf_hover')
@@ -597,165 +469,20 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
     hovered = null
   }
 
-  // --- DRAGGING ENGINE ---
-  let isDragging = false
-  let dragStart = null
-  let activeResize = null
-  let dropCandidate = null
-
-  function startDrag(e, resizeType = null) {
-    if (!selected) return
-    if (doc.body.getAttribute('data-wf-editing') === 'text') return
-
-    const initialLeft = parseFloat(selected.style.left) || 0
-    const initialTop = parseFloat(selected.style.top) || 0
-    const rect = selected.getBoundingClientRect()
-
-    dragStart = {
-      mouseX: e.clientX,
-      mouseY: e.clientY,
-      initLeft: initialLeft,
-      initTop: initialTop,
-      initWidth: rect.width,
-      initHeight: rect.height,
-    }
-    activeResize = resizeType
-    isDragging = false
-  }
-
-  function onMouseMove(e) {
-    if (!dragStart || !selected) return
-
-    const dx = e.clientX - dragStart.mouseX
-    const dy = e.clientY - dragStart.mouseY
-
-    if (!isDragging && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) {
-      isDragging = true
-      selected.classList.add('__wf_dragging')
-      // Exactly once per gesture, before this drag's first mutation (resize, free
-      // move or reorder all still lie below this line) - not on mouseup, by which
-      // point the live preview during mousemove already applied the change, so a
-      // snapshot taken there just re-captures the state already on screen and one
-      // undo click appears to do nothing.
-      snapshot(activeResize ? `Resized <${label(selected)}>` : `Moved <${label(selected)}>`)
-    }
-
-    if (!isDragging) return
-
-    e.preventDefault()
-
-    // 1. Resizing
-    if (activeResize) {
-      if (!dragStart.freed) {
-        liftFree(selected)
-        freeSize(selected)
-        dragStart.freed = true
-      }
-      let newW = dragStart.initWidth
-      let newH = dragStart.initHeight
-
-      if (activeResize.includes('e')) newW = Math.max(30, Math.round(dragStart.initWidth + dx))
-      if (activeResize.includes('s')) newH = Math.max(20, Math.round(dragStart.initHeight + dy))
-      if (activeResize.includes('w')) newW = Math.max(30, Math.round(dragStart.initWidth - dx))
-      if (activeResize.includes('n')) newH = Math.max(20, Math.round(dragStart.initHeight - dy))
-
-      selected.style.width = `${newW}px`
-      if (activeResize.includes('s') || activeResize.includes('n')) {
-        selected.style.height = `${newH}px`
-      }
-      showHud(`W: ${newW}px  H: ${newH}px`, e.clientX, e.clientY)
-      updateOverlay()
-      notifyMetrics()
-      return
-    }
-
-    // 2. Moving
-    const effectiveMode = (e.ctrlKey || e.metaKey)
-      ? (dragMode === 'free' ? 'flow' : 'free')
-      : dragMode
-
-    if (effectiveMode === 'flow') {
-      dropCandidate = findDropTarget(e.clientX, e.clientY)
-      updateDropLine(dropCandidate)
-      if (dropCandidate) {
-        showHud(`Reorder ${dropCandidate.position} <${label(dropCandidate.element)}>`, e.clientX, e.clientY)
-      } else {
-        showHud('Drag over element to reorder', e.clientX, e.clientY)
-      }
-    } else {
-      updateDropLine(null)
-      dropCandidate = null
-
-      // Lifted lazily, only once an actual free-move drag is happening: a click that
-      // turns into a flow-reorder (ctrl/meta held) must never have been lifted out of
-      // flow first, or the leftover absolute position would misplace it at its new
-      // flow spot too.
-      if (!dragStart.lifted) {
-        liftFree(selected)
-        dragStart.initLeft = parseFloat(selected.style.left) || 0
-        dragStart.initTop = parseFloat(selected.style.top) || 0
-        dragStart.lifted = true
-      }
-
-      let curDx = dx
-      let curDy = dy
-
-      if (e.shiftKey) {
-        if (Math.abs(curDx) > Math.abs(curDy)) curDy = 0
-        else curDx = 0
-      }
-
-      const newLeft = Math.round(dragStart.initLeft + curDx)
-      const newTop = Math.round(dragStart.initTop + curDy)
-
-      selected.style.left = `${newLeft}px`
-      selected.style.top = `${newTop}px`
-
-      const signX = curDx >= 0 ? `+${curDx}` : `${curDx}`
-      const signY = curDy >= 0 ? `+${curDy}` : `${curDy}`
-      showHud(`X: ${newLeft}px  Y: ${newTop}px (Δ ${signX}, ${signY})`, e.clientX, e.clientY)
-      updateOverlay()
-      notifyMetrics()
-    }
-  }
-
-  function onMouseUp() {
-    if (!dragStart) return
-
-    if (isDragging) {
-      if (selected) selected.classList.remove('__wf_dragging')
-      hideHud()
-      updateDropLine(null)
-
-      if (dropCandidate && dropCandidate.element && selected) {
-        // Already snapshotted pre-drag, above, when this gesture first crossed the
-        // move threshold - that one entry covers this reorder too.
-        const target = dropCandidate.element
-        if (dropCandidate.position === 'before') {
-          target.before(selected)
-        } else {
-          target.after(selected)
-        }
-        selected.scrollIntoView({ block: 'nearest' })
-        touched()
-      } else {
-        touched()
-      }
-      updateOverlay()
-      notifyMetrics()
-    }
-
-    dragStart = null
-    activeResize = null
-    dropCandidate = null
-    isDragging = false
+  // An element that holds text of its own (a heading, a paragraph, a label, a button's words) is typed into
+  // where it is clicked; anything else is selected. Nothing is dragged, moved or resized from here.
+  function ownText(node) {
+    if (!node || /^(INPUT|TEXTAREA|SELECT|IMG|SVG|VIDEO|CANVAS|IFRAME|TABLE|TBODY|THEAD|TR|UL|OL)$/i.test(node.tagName)) return false
+    return Array.from(node.childNodes || []).some(child => child.nodeType === 3 && child.textContent.trim())
   }
 
   const onMouseDown = event => {
-    if (doc.body.getAttribute('data-wf-editing') === 'text') return
     const target = event.target
-
     if (target.hasAttribute?.('data-wf-editor-ui')) return
+    const editing = doc.body.getAttribute('data-wf-editing') === 'text'
+    // Inside the text being typed: let the browser place the caret and select words as usual.
+    if (editing && selected && (target === selected || selected.contains(target))) return
+    if (editing) api.editText(false)
 
     if (event.ctrlKey || event.metaKey) {
       event.preventDefault()
@@ -764,16 +491,15 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
       return
     }
 
-    if (selected && (target === selected || selected.contains(target))) {
-      event.preventDefault()
-      startDrag(event, null)
+    select(target)
+    if (selected && ownText(selected)) {
+      // Made editable before the browser handles this press, so the caret lands where it was clicked.
+      event.stopPropagation()
+      api.editText(true)
       return
     }
-
     event.preventDefault()
     event.stopPropagation()
-    select(target)
-    startDrag(event, null)
   }
 
   // A wireframe is an editable drawing while it is open in this canvas, not a
@@ -856,12 +582,10 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
       api.nudge(step, 0)
     } else if (event.key === 'ArrowUp') {
       event.preventDefault()
-      if (event.altKey) api.move(-1)
-      else api.nudge(0, -step)
+      api.nudge(0, -step)
     } else if (event.key === 'ArrowDown') {
       event.preventDefault()
-      if (event.altKey) api.move(1)
-      else api.nudge(0, step)
+      api.nudge(0, step)
     } else if (event.key === 'Delete' || event.key === 'Backspace') {
       event.preventDefault()
       api.remove()
@@ -872,10 +596,10 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
   }
 
   const onScroll = () => { updateOverlay() }
+  // Words typed into the canvas are an edit the moment they are typed, so Save is offered straight away.
+  const onInput = () => { if (doc.body.getAttribute('data-wf-editing') === 'text') touched() }
 
   doc.addEventListener('mousedown', onMouseDown, true)
-  doc.addEventListener('mousemove', onMouseMove, true)
-  doc.addEventListener('mouseup', onMouseUp, true)
   doc.addEventListener('click', onActivate, true)
   doc.addEventListener('auxclick', onActivate, true)
   doc.addEventListener('submit', onSubmit, true)
@@ -883,6 +607,7 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
   doc.addEventListener('mouseover', onOver, true)
   doc.addEventListener('mouseout', onOut, true)
   doc.addEventListener('keydown', onKeyDown, true)
+  doc.addEventListener('input', onInput, true)
   doc.defaultView?.addEventListener('scroll', onScroll, true)
   doc.defaultView?.addEventListener('resize', onScroll, true)
 
@@ -891,25 +616,6 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
     selections: () => Array.from(selectedNodes),
     parent() {
       if (selected?.parentElement) select(selected.parentElement)
-    },
-    move(delta) {
-      if (!selected?.parentElement) return
-      let sibling = delta < 0
-        ? selected.previousElementSibling
-        : selected.nextElementSibling
-      // A free-positioned item owns the invisible slot immediately before it.
-      // Never treat that editor-only slot as a real drawing-layer sibling.
-      while (sibling?.hasAttribute('data-wf-flow-slot')) {
-        sibling = delta < 0 ? sibling.previousElementSibling : sibling.nextElementSibling
-      }
-      if (!sibling) return
-      snapshot(`Reordered <${label(selected)}>`)
-      if (delta < 0) sibling.before(selected)
-      else sibling.after(selected)
-      selected.scrollIntoView({ block: 'nearest' })
-      touched()
-      updateOverlay()
-      notifyMetrics()
     },
     nudge(dx, dy) {
       if (!selected) return
@@ -957,13 +663,6 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
       updateOverlay()
       notifyMetrics()
     },
-    setDragMode(mode) {
-      dragMode = mode === 'flow' ? 'flow' : 'free'
-      notifyMetrics()
-    },
-    getDragMode() {
-      return dragMode
-    },
     getMetrics,
     duplicate() {
       if (!selected?.parentElement) return
@@ -1006,15 +705,6 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
       select(next)
       touched()
     },
-    wider(step) {
-      if (!selected) return
-      snapshot(`Resized <${label(selected)}>`)
-      const now = parseFloat(selected.style.width) || 100
-      selected.style.width = `${Math.max(10, Math.min(100, now + step))}%`
-      touched()
-      updateOverlay()
-      notifyMetrics()
-    },
     align(how) {
       if (!selected) return
       snapshot(`Aligned <${label(selected)}> ${how}`)
@@ -1023,12 +713,6 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
       if (how === 'left') selected.style.marginLeft = ''
       if (how === 'right') selected.style.marginRight = ''
       selected.style.textAlign = how === 'center' ? 'center' : ''
-      if (how === 'full') {
-        selected.style.width = '100%'
-        selected.style.marginLeft = ''
-        selected.style.marginRight = ''
-        selected.style.display = 'block'
-      }
       touched()
       updateOverlay()
       notifyMetrics()
@@ -1097,13 +781,22 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
     },
     editText(on) {
       if (!selected) return
+      if (!on && doc.body.getAttribute('data-wf-editing') !== 'text') return
       selected.contentEditable = on ? 'true' : 'false'
       doc.body.setAttribute('data-wf-editing', on ? 'text' : '')
       if (on) {
         snapshot(`Typed in <${label(selected)}>`)
+        typedFrom = selected.innerHTML
         selected.focus()
       } else {
-        touched()
+        if (typedFrom !== null && selected.innerHTML === typedFrom) {
+          // Clicked into the text and left it unchanged: not an edit, so not an undo step either.
+          undoStack.pop()
+          editLog.pop()
+        } else {
+          touched()
+        }
+        typedFrom = null
         updateOverlay()
       }
     },
@@ -1150,8 +843,6 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
     saved() { dirty = false; editLog.length = 0; onDirty?.(false) },
     detach() {
       doc.removeEventListener('mousedown', onMouseDown, true)
-      doc.removeEventListener('mousemove', onMouseMove, true)
-      doc.removeEventListener('mouseup', onMouseUp, true)
       doc.removeEventListener('click', onActivate, true)
       doc.removeEventListener('auxclick', onActivate, true)
       doc.removeEventListener('submit', onSubmit, true)
@@ -1159,11 +850,11 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
       doc.removeEventListener('mouseover', onOver, true)
       doc.removeEventListener('mouseout', onOut, true)
       doc.removeEventListener('keydown', onKeyDown, true)
+      doc.removeEventListener('input', onInput, true)
       doc.defaultView?.removeEventListener('scroll', onScroll, true)
       doc.defaultView?.removeEventListener('resize', onScroll, true)
       doc.getElementById('__wf_overlay')?.remove()
       doc.getElementById('__wf_hud')?.remove()
-      doc.getElementById('__wf_drop_line')?.remove()
     },
   }
   return api

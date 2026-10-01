@@ -9,6 +9,7 @@ import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
 import { Button, TextArea } from '../ui'
 import { cn } from '@/lib/utils'
+import SrsActivity from './SrsActivity'
 
 export default function PlanReview({ projectId, onGenerated, onGenerating, onCancel }) {
   const addLog = useStore(s => s.addLog)
@@ -263,17 +264,7 @@ export default function PlanReview({ projectId, onGenerated, onGenerating, onCan
 function GenerationPreview({ title, message, seconds }) {
   return (
     <div className="grid min-h-0 flex-1 place-items-center p-5 sm:p-8">
-      <section className="relative grid aspect-[16/9] w-full max-w-[880px] place-items-center overflow-hidden rounded-2xl border border-line bg-panel shadow-xl">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_35%,rgba(191,185,255,.16),transparent_40%)]" />
-        <div className="relative max-w-md px-6 text-center">
-          <span className="mx-auto grid size-14 place-items-center rounded-2xl border border-line bg-panel2 shadow-sm">
-            <Loader2 className="size-6 animate-spin text-accent" />
-          </span>
-          <h2 className="mt-5 font-display text-[20px] font-bold text-ink">{title}</h2>
-          <p className="mt-2 text-[12px] leading-relaxed text-muted">{message}</p>
-          <p className="mt-4 text-[10.5px] font-medium text-muted2">{seconds ? `${seconds}s · ` : ''}Live updates are in the chat stream.</p>
-        </div>
-      </section>
+      <SrsActivity title={title} message={message} seconds={seconds} />
     </div>
   )
 }
