@@ -124,26 +124,51 @@ def _carry_routes(steps: list[dict]) -> None:
         step["route"] = backward or forward
 
 
-def journey_problems(doc: dict) -> list[str]:
-    """What is wrong with the SRS's own `step_routes`: a missing or extra route, a route that is no page, a page the role cannot open."""
+def trim_step_routes(doc: dict) -> int:
+    """Drop `step_routes` beyond a workflow's steps: a route for a step that does not exist names nothing."""
+    trimmed = 0
+    for flow in doc.get("business_workflows") or []:
+        if isinstance(flow, dict) and isinstance(flow.get("step_routes"), list):
+            extra = len(flow["step_routes"]) - len(flow.get("steps") or [])
+            if extra > 0:
+                flow["step_routes"] = flow["step_routes"][:len(flow.get("steps") or [])]
+                trimmed += extra
+    return trimmed
+
+
+def journey_issues(doc: dict) -> list[dict[str, Any]]:
+    """Every step whose SRS route is missing, is no page, or is a page the workflow's role cannot open — one row per step."""
     pages = _pages_of(doc)
     known = {_route_key(page["route"]) for page in pages}
-    problems: list[str] = []
+    issues: list[dict[str, Any]] = []
     for number, flow in enumerate(doc.get("business_workflows") or [], 1):
         if not isinstance(flow, dict):
             continue
         name = str(flow.get("workflow_name") or f"Workflow {number}")
-        steps = [str(step) for step in flow.get("steps") or []]
-        given = [str(route or "") for route in flow.get("step_routes") or []]
-        if len(given) != len(steps):
-            problems.append(f'"{name}" has {len(steps)} steps but {len(given)} step_routes')
-        allowed = {_route_key(page["route"]) for page in open_to(doc, flow.get("who"), pages)}
-        for index, route in enumerate(given[:len(steps)], 1):
-            if _route_key(route) not in known:
-                problems.append(f'"{name}" step {index} is on {route or "no page"}, which is not a page')
+        who = str(flow.get("who") or "")
+        given = [str(route or "").strip() for route in flow.get("step_routes") or []]
+        allowed = {_route_key(page["route"]) for page in open_to(doc, who, pages)}
+        for index, step in enumerate(flow.get("steps") or [], 1):
+            route = given[index - 1] if index <= len(given) else ""
+            if not route:
+                why = "has no route"
+            elif _route_key(route) not in known:
+                why = f"is on {route}, which is not a page"
             elif _route_key(route) not in allowed:
-                problems.append(f'"{name}" step {index} is on {route}, which {flow.get("who") or "its role"} cannot open')
-    return problems
+                why = f"is on {route}, which {who or 'its role'} cannot open"
+            else:
+                continue
+            issues.append({"workflow": name, "who": who, "step": index, "text": str(step), "route": route,
+                           "problem": f'"{name}" step {index} {why}'})
+    return issues
+
+
+def journey_problems(doc: dict) -> list[str]:
+    """What is wrong with the SRS's own `step_routes`, as sentences."""
+    extra = [f'"{flow.get("workflow_name")}" has {len(flow["step_routes"]) - len(flow.get("steps") or [])} step_routes '
+             f"more than steps" for flow in doc.get("business_workflows") or []
+             if isinstance(flow, dict) and len(flow.get("step_routes") or []) > len(flow.get("steps") or [])]
+    return extra + [issue["problem"] for issue in journey_issues(doc)]
 
 
 def journey_contract_for(doc: dict) -> dict[str, Any]:

@@ -1,16 +1,33 @@
-# Correct the SRS JSON
+# Fix the SRS with edits
 
-Return exactly one complete JSON object with the same outer shape as the
-provided SRS. Return JSON only: no explanation, markdown fence, tool call,
-`write_file`, or `replace_text` instruction.
+The SRS below was reviewed and the findings list what must change. Fix every
+finding with the smallest edits that resolve it. Do not return the SRS again:
+return only the edits, and change nothing a finding does not ask for.
 
-Preserve every correct requirement, field, identifier, page, table, workflow,
-decision and constraint. Make only the smallest changes needed to resolve the
-findings. Do not introduce any capability, role, screen, record, integration,
-or policy that is not present in the approved plan. Keep every functional
-requirement atomic and testable, and ensure every functional requirement has
-exactly one traceability row. Ensure all planned workflows, screens and records
-remain covered.
+Return JSON only — no explanation, markdown fence or tool call:
+
+```json
+{"edits": [
+  {"op": "set", "path": "functional_requirements[id=FR-012].requirement", "value": "The system shall ..."},
+  {"op": "add", "path": "requirement_traceability_matrix", "value": {"requirement_id": "FR-031", "...": "..."}},
+  {"op": "remove", "path": "non_functional_requirements[id=NFR-009]"}
+]}
+```
+
+- `set` replaces the value at `path` (a field, or a whole list item).
+- `add` appends `value` to the list `path` names.
+- `remove` deletes the field or list item at `path`.
+- A path is dot-separated keys from the top of the SRS JSON shown below. Pick a
+  list item by one of its own identifying fields — `[id=FR-012]`,
+  `[requirement_id=FR-012]`, `[route=/orders]`, `[table_name=orders]`,
+  `[workflow_name=...]`, `[role_key=...]` — and by position (`[0]`) only when
+  the item has no such field.
+- A new item carries every field its neighbours carry, with a new unique id.
+
+Keep every requirement atomic and testable, every functional requirement with
+exactly one traceability row, and every planned workflow, screen and record
+covered. Do not introduce any capability, role, screen, record, integration or
+policy that is not in the approved plan.
 
 ## Findings to fix
 

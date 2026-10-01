@@ -24,7 +24,7 @@ from typing import Any
 
 from server_modules import bus, config, journeys, llm, mermaid, prompts, reference_staging, store
 from server_modules.session import ProjectSession, RunCancelled, session_for
-from server_modules.validation import completeness
+from server_modules.validation import completeness, json_edits
 from server_modules.validation import corpus as corpus_rules
 from server_modules.validation import review as review_rules
 from server_modules.validation import srs_schema
@@ -234,58 +234,89 @@ def _write_document(session: ProjectSession, project: str, record: dict,
     return envelope
 
 
-def _journey_routes_validator(doc: dict, names: set[str]):
-    """Check a model's corrected `step_routes` against the SRS's own pages and roles before any of it is kept."""
-    def check(data: Any) -> dict[str, list[str]]:
-        rows = data.get("workflows") if isinstance(data, dict) else data
+def _journey_edits_validator(doc: dict, issues: list[dict]):
+    """Check the model's route for each wrong step against the SRS's own pages and roles before any of it is kept.
+
+    Only the steps that were wrong may change; an edit to any other step is ignored, so a correct route is never touched.
+    """
+    wrong = {(issue["workflow"], issue["step"]) for issue in issues}
+
+    def check(data: Any) -> list[tuple[str, int, str]]:
+        rows = data.get("edits") if isinstance(data, dict) else data
         if not isinstance(rows, list):
-            raise ValueError('return {"workflows": [{"workflow_name": "...", "step_routes": ["/..."]}]}')
-        answer = {str(row.get("workflow_name") or ""): [str(route or "") for route in row.get("step_routes") or []]
-                  for row in rows if isinstance(row, dict)}
+            raise ValueError('return {"edits": [{"workflow_name": "...", "step": 1, "route": "/..."}]}')
+        edits = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                key = (str(row.get("workflow_name") or ""), int(row.get("step")))
+            except (TypeError, ValueError):
+                continue
+            if key in wrong:
+                edits.append((key[0], key[1], str(row.get("route") or "").strip()))
         trial = copy.deepcopy(doc)
-        for flow in trial.get("business_workflows") or []:
-            if isinstance(flow, dict) and str(flow.get("workflow_name") or "") in names:
-                flow["step_routes"] = answer.get(str(flow.get("workflow_name") or ""), [])
-        problems = [problem for problem in journeys.journey_problems(trial)
-                    if any(problem.startswith(f'"{name}"') for name in names)]
-        if problems:
-            raise ValueError("these step routes are still wrong:\n- " + "\n- ".join(problems[:20]))
-        return answer
+        _apply_journey_edits(trial, edits)
+        left = [issue["problem"] for issue in journeys.journey_issues(trial)
+                if (issue["workflow"], issue["step"]) in wrong]
+        if left:
+            raise ValueError("these steps are still wrong — give a route for each:\n- " + "\n- ".join(left[:20]))
+        return edits
     return check
+
+
+def _apply_journey_edits(doc: dict, edits: list[tuple[str, int, str]]) -> None:
+    flows = {str(flow.get("workflow_name") or ""): flow for flow in doc.get("business_workflows") or []
+             if isinstance(flow, dict)}
+    for name, step, route in edits:
+        flow = flows.get(name)
+        if not flow or not 1 <= step <= len(flow.get("steps") or []):
+            continue
+        routes = list(flow.get("step_routes") or [])
+        routes += [""] * (len(flow.get("steps") or []) - len(routes))
+        routes[step - 1] = route
+        flow["step_routes"] = routes
 
 
 def _validate_journeys(project: str, envelope: dict) -> dict:
     """Every workflow step on a page its role can open, checked and fixed before anything downstream reads the journeys.
 
-    The SRS writes `step_routes` itself. A wrong one — a route that is no page, a page the role cannot open, one too many
-    or too few — goes back to the model once, with the exact problems; whatever is still wrong after that is taken from
-    the page each step names, among the pages its role can open, or the page the person is already on. Never a reason
-    to fail the specification.
+    The SRS writes `step_routes` itself. Only the steps that are wrong — no route, a route that is no page, a page the
+    role cannot open — go back to the model, which answers with a route for each of those steps and nothing else; every
+    other step and the rest of the specification stay exactly as they are. Whatever is still wrong after that is taken
+    from the page the step names, among the pages its role can open, or the page the person is already on. Never a
+    reason to fail the specification.
     """
     doc = envelope["srs_document"]
-    problems = journeys.journey_problems(doc)
-    if problems:
-        names = {problem.split('"')[1] for problem in problems if problem.startswith('"')}
-        bus.log(project, "WARN", f"{len(problems)} journey step route(s) to correct in {len(names)} workflow(s).")
+    journeys.trim_step_routes(doc)
+    issues = journeys.journey_issues(doc)
+    if issues:
+        names = sorted({issue["workflow"] for issue in issues})
+        bus.log(project, "WARN", f"{len(issues)} journey step route(s) to correct in {len(names)} workflow(s); "
+                                 "fixing only those steps.")
         pages = "\n".join(
             f"- `{page['route']}` — {page['page_name']} — "
             + (("signed in: " + (", ".join(sorted(page["roles"])) or "any signed-in role")) if page["login_required"]
                else "no sign-in")
             for page in journeys._pages_of(doc))
+        marked = {(issue["workflow"], issue["step"]): issue for issue in issues}
         workflows = "\n\n".join(
-            f"### {flow.get('workflow_name')} — {flow.get('who') or 'anyone'}\n"
-            + "\n".join(f"{index}. {step}" for index, step in enumerate(flow.get("steps") or [], 1))
+            f"### {flow.get('workflow_name')} — {flow.get('who') or 'anyone'}\n" + "\n".join(
+                f"{index}. {step} — "
+                + (f"**WRONG: {marked[(str(flow.get('workflow_name') or ''), index)]['problem']}**"
+                   if (str(flow.get("workflow_name") or ""), index) in marked
+                   else f"on `{(flow.get('step_routes') or [''] * index)[index - 1]}`")
+                for index, step in enumerate(flow.get("steps") or [], 1))
             for flow in doc.get("business_workflows") or []
             if isinstance(flow, dict) and str(flow.get("workflow_name") or "") in names)
         try:
-            answer = llm.complete_json(
+            edits = llm.complete_json(
                 system=prompts.load("srs/system"),
-                user=prompts.load("srs/journey-routes", pages=pages, workflows=workflows,
-                                  problems="\n".join(f"- {problem}" for problem in problems[:40])),
-                validator=_journey_routes_validator(doc, names), label="srs_journey_routes", attempts=2)
-            for flow in doc.get("business_workflows") or []:
-                if isinstance(flow, dict) and str(flow.get("workflow_name") or "") in answer:
-                    flow["step_routes"] = answer[str(flow.get("workflow_name") or "")]
+                user=prompts.load("srs/journey-routes", pages=pages, workflows=workflows),
+                validator=_journey_edits_validator(doc, issues), label="srs_journey_routes", attempts=2)
+            _apply_journey_edits(doc, edits)
+            bus.log(project, "INFO", f"Corrected {len(edits)} journey step route(s): "
+                                     + "; ".join(f'"{name}" step {step} → {route}' for name, step, route in edits)[:400])
         except Exception as exc:  # noqa: BLE001 - the page names below still place every step
             bus.log(project, "WARN", f"Could not correct the journey routes with the model ({str(exc)[:160]}); "
                                      "placing those steps by the pages they name.")
@@ -1173,6 +1204,15 @@ def _close_gaps(session: ProjectSession, project: str, envelope: dict,
     return envelope
 
 
+def _repair_edits_validator(envelope: dict):
+    """Apply a repair's edits to a copy of the SRS and accept it only when the result is still a valid SRS."""
+    def check(data: Any) -> tuple[dict, int]:
+        edits = data.get("edits") if isinstance(data, dict) else data
+        repaired = {**envelope, "srs_document": json_edits.apply_edits(envelope["srs_document"], edits)}
+        return srs_schema.srs_validator(repaired), len(edits)
+    return check
+
+
 def _review_loop(session: ProjectSession, project: str, envelope: dict,
                  approved: dict) -> dict:
     """Audit the draft against the standards, and send it back while that helps."""
@@ -1253,20 +1293,22 @@ def _review_loop(session: ProjectSession, project: str, envelope: dict,
             return envelope
 
         previous = len(blocking)
-        bus.log(project, "WARN", f"{len(blocking)} blocking finding(s) — rewriting.")
+        bus.log(project, "WARN", f"{len(blocking)} blocking finding(s) — fixing them with edits.")
         try:
-            repaired = llm.complete_json(
+            # The model answers with edits to the parts the findings name, never the whole document again: much less
+            # to write, and nothing that was right can be lost on the way.
+            repaired, applied = llm.complete_json(
                 system=prompts.load("srs/system"),
                 user=prompts.load("srs/repair",
                                   findings=review_rules.findings_text(verdict),
                                   plan=json.dumps(approved, ensure_ascii=False, indent=2),
-                                  document=json.dumps(envelope, ensure_ascii=False, indent=2)),
-                validator=srs_schema.srs_validator, label="srs_review_repair")
-            repaired["srs_document"]["diagrams"] = doc.get("diagrams") or []
+                                  document=json.dumps(doc, ensure_ascii=False, indent=2)),
+                validator=_repair_edits_validator(envelope), label="srs_review_repair")
             envelope = repaired
             session.write_record(*DOCUMENT, data=envelope)
+            bus.log(project, "INFO", f"{applied} edit(s) applied to the specification.")
         except Exception as exc:  # noqa: BLE001
-            bus.log(project, "WARN", f"The rewrite failed ({exc}); keeping the draft.")
+            bus.log(project, "WARN", f"The repair failed ({exc}); keeping the draft.")
             review_rules.stamp(doc, "stalled", round_no + 1, "a repair round failed", verdict)
             return envelope
     return envelope
