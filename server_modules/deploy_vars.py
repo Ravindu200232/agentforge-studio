@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 from . import config
 
@@ -26,6 +27,7 @@ _RESERVED = {"PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "HOME", "USER
              "GH_TOKEN", "GITHUB_TOKEN", "AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}
 MAX_VARIABLES = 50
 MAX_BYTES = 8192
+_LOOPBACK = {"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"}
 
 
 def valid_name(name: str) -> str:
@@ -79,13 +81,16 @@ def secret_values() -> list[str]:
             secret = bool(_SECRET_NAME.search(str(name)))
         if secret and isinstance(value, str) and len(value) >= 8:
             found.append(value)
-    return found
+    database = config.setting("deploy_mongodb_uri", "") or ""
+    return [*found, database] if database else found
 
 
-# What a question may ask the studio to try before it accepts a value. Nothing currently offers a
-# live check (the Supabase connection a build gets is already verified by `supabase_connect.py`
-# fetching real keys, not typed in and checked after the fact).
-CHECKS: tuple[str, ...] = ()
+# What a question may ask the studio to try before it accepts a value. Supabase needs none - the
+# connection a build gets is already verified by `supabase_connect.py` fetching real keys, not typed
+# in and checked after the fact. A MongoDB connection string is typed in (by hand, or by
+# `mongo_connect.py` once an Atlas account is linked), so it is the one value worth trying for real
+# before it is kept - a typo or an unreachable cluster is far cheaper to catch here than mid-deploy.
+CHECKS: tuple[str, ...] = ("mongodb",)
 
 
 def accept(question: dict, value: str) -> str:
@@ -100,6 +105,12 @@ def accept(question: dict, value: str) -> str:
     value = str(value or "")
     if not value.strip():
         return "Type a value first."
+    if question.get("check") == "mongodb":
+        from . import mongo_check
+
+        result = mongo_check.check(value)
+        if not result.get("ok"):
+            return str(result.get("message") or "That connection string could not be used.")
     try:
         save(name, value, secret=bool(question.get("secret", True)))
     except ValueError as exc:
@@ -107,9 +118,37 @@ def accept(question: dict, value: str) -> str:
     return ""
 
 
+def check_database_uri(uri: str, allow_local: bool = False) -> str:
+    """The production database connection string, or why it cannot be one (a hosted app cannot reach this computer).
+
+    `allow_local` exists only for a build's own short-lived local test database, never for a saved production value.
+    """
+    uri = str(uri or "").strip()
+    if not uri:
+        return ""
+    parsed = urlparse(uri)
+    if parsed.scheme not in ("mongodb", "mongodb+srv"):
+        raise ValueError("a MongoDB connection string starts with mongodb:// or mongodb+srv://")
+    if allow_local:
+        return uri
+    hosts = (parsed.netloc.rsplit("@", 1)[-1]).split(",")
+    for host in hosts:
+        name = host.strip("[]").rsplit(":", 1)[0].strip("[]").lower() if not host.startswith("[") else host.strip("[]").lower()
+        if not name or name in _LOOPBACK or name.endswith((".local", ".localhost")):
+            raise ValueError("that address points at this computer: a deployed application cannot reach it. "
+                             "Use a database that is reachable from the internet (for example MongoDB Atlas), "
+                             "never a local MongoDB.")
+    return uri
+
+
 def environment() -> dict[str, str]:
     """What a deployment run's commands are given, beyond its project's own Supabase connection
     (see `supabase_connect.env_for`, merged in separately since it is per-project, not a studio-wide
     setting): every variable the customer saved here by name, overriding that connection's own values
-    if they chose to point production at a different Supabase project."""
-    return {str(name): str(value) for name, value in (config.setting("deploy_env", {}) or {}).items()}
+    if they chose to point production at a different Supabase project, plus the saved production
+    MongoDB connection string (`deploy_mongodb_uri`), when this project uses one."""
+    env = {str(name): str(value) for name, value in (config.setting("deploy_env", {}) or {}).items()}
+    database = str(config.setting("deploy_mongodb_uri", "") or "")
+    if database:
+        env.setdefault("MONGODB_URI", database)
+    return env

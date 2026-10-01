@@ -30,7 +30,7 @@ from prototype_agent import prototype as prototyper
 from qa_agent import verify as qa
 from srs_agent import document as srs_document
 
-from . import bus, changes, cli_monitor, cli_signin, config, deploy_vars, github_device, jobs, live, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions
+from . import bus, changes, cli_monitor, cli_signin, config, deploy_vars, github_device, jobs, live, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, workspace_picker
 from .session import session_for
 
 Handler = Callable[[dict[str, Any]], Any]
@@ -180,6 +180,8 @@ def read_settings(_ctx: dict) -> Any:
     for key in ("github_token", "vercel_token", "netlify_token", "azure_credentials", "supabase_client_secret"):
         deploy[f"{key}_set"] = bool(saved.get(key))
         deploy[f"{key}_hint"] = str(saved.get(key) or "")[-4:] if saved.get(key) else ""
+    deploy["deploy_mongodb_uri_set"] = bool(saved.get("deploy_mongodb_uri"))
+    deploy["deploy_mongodb_uri_hint"] = str(saved.get("deploy_mongodb_uri") or "")[-4:] if saved.get("deploy_mongodb_uri") else ""
     return {**{k: v for k, v in saved.items() if not any(word in k for word in
                                                          ("token", "api_key", "credentials", "secret", "mongodb_uri", "deploy_env"))},
             "admin": True, "local_num_ctx": saved.get("context") or saved.get("local_num_ctx") or 0,
@@ -222,6 +224,11 @@ def write_settings(ctx: dict) -> Any:
     patch = {k: v for k, v in ctx.items() if not k.startswith("_") and k != "deploy_env"}
     if patch.get("ollama_api_key") == "****":
         patch.pop("ollama_api_key")
+    if "deploy_mongodb_uri" in patch:
+        # The same address rule a value question enforces (deploy_vars.accept): saved directly here or
+        # typed into the question's private box, a loopback address is refused either way, not just
+        # whichever path happens to run the check.
+        patch["deploy_mongodb_uri"] = deploy_vars.check_database_uri(patch["deploy_mongodb_uri"])
     if "mcp_servers" in patch:
         patch["mcp_servers"] = _merge_mcp_servers(patch["mcp_servers"], config.setting("mcp_servers"))
     for alias in ("agent_model", "planner_model", "builder_model", "design_model"):
@@ -521,6 +528,12 @@ def decide(ctx: dict) -> Any:
 # projects
 # =========================================================================
 
+@route("POST", r"/workspace/pick")
+def pick_workspace(_ctx: dict) -> Any:
+    """Let the local desktop customer select an empty project folder in Explorer."""
+    return {"path": workspace_picker.choose_folder()}
+
+
 @route("GET", r"/projects")
 def list_projects(_ctx: dict) -> Any:
     return store.listing()
@@ -538,8 +551,13 @@ def delete_project(ctx: dict) -> Any:
     # after the response without keeping the Delete button spinning.
     preview_runtime.stop(project)
     drop(project)
-    store.delete(project)
     workspace = config.workspace_for(project)
+    external_workspace = config.has_custom_workspace(project)
+    store.delete(project)
+    # A folder the customer explicitly selected belongs to them. Forget the
+    # Studio project, but never move or recursively delete that local folder.
+    if external_workspace:
+        return {"ok": True, "cleanup": "kept"}
     cleanup = workspace
     moved = False
     if workspace.exists():
@@ -602,11 +620,12 @@ def project_session(ctx: dict) -> Any:
     project = _project(ctx)
     session = session_for(project)
     agent = session._agent  # noqa: SLF001 - the status line is about this object
+    focused = bus.latest_memory(project) if agent is None else {}
     return {"project": project, "stage": session.stage,
-            "model": agent.model if agent else config.setting("model", ""),
-            "context": agent.context if agent else 0,
-            "used": agent.context_usage() if agent else 0,
-            "tools": agent.tool_call_count if agent else 0}
+            "model": agent.model if agent else focused.get("model") or config.setting("model", ""),
+            "context": agent.context if agent else int(focused.get("limit") or focused.get("context") or 0),
+            "used": agent.context_usage() if agent else int(focused.get("used") or focused.get("tokens") or 0),
+            "tools": agent.tool_call_count if agent else int(focused.get("tools") or 0)}
 
 
 @route("GET", r"/stream/(?P<project>[^/]+)")
@@ -692,6 +711,14 @@ def runtime_restart(ctx: dict) -> Any:
     project = _project(ctx)
     preview_runtime.stop(project)
     return preview_runtime.open_preview(project)
+
+
+@route("POST", r"/runtime/(?P<project>[^/]+)/stop")
+def runtime_stop(ctx: dict) -> Any:
+    """Stop only this project's managed preview; parallel projects stay live."""
+    project = _project(ctx)
+    preview_runtime.stop(project)
+    return preview_runtime.status(project)
 
 
 @route("POST", r"/live/(?P<project>[^/]+)")

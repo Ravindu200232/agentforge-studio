@@ -27,8 +27,8 @@ export function AttachButtons({ attach, disabled, label = 'Attach', cell }) {
   const picker = useRef(null)
   const recorder = useRecorder(file => attach.add([file]))
 
-  const cellClass = 'inline-flex h-8 items-center gap-1.5 rounded-xl border border-black/10 bg-black/[.05] '
-                  + 'px-2.5 text-[11px] font-medium text-ink shadow-sm transition-all hover:bg-black/[.10] hover:border-black/20 hover:text-ink '
+  const cellClass = 'grid size-8 place-items-center rounded-xl border border-black/10 bg-black/[.05] '
+                  + 'text-[11px] font-medium text-ink shadow-sm transition-all hover:bg-black/[.10] hover:border-black/20 hover:text-ink '
                   + 'disabled:pointer-events-none disabled:opacity-40'
 
   return (
@@ -43,15 +43,17 @@ export function AttachButtons({ attach, disabled, label = 'Attach', cell }) {
       {cell ? (<>
         <button disabled={disabled} className={cellClass}
                 onClick={() => picker.current?.click()}
+                aria-label="Attach a PDF, document, screenshot or image"
                 title="Attach a PDF, document, screenshot or image">
-          <Paperclip className="size-2.5 shrink-0 text-accent" /> PDF / image
+          <Paperclip className="size-3 shrink-0 text-accent" />
         </button>
         <button disabled={disabled} onClick={recorder.toggle}
                 className={cn(cellClass, recorder.recording && 'border-accent bg-accent text-ink')}
+                aria-label={recorder.recording ? 'Stop recording' : 'Describe the app by voice'}
                 title={recorder.recording ? 'Stop recording' : 'Describe the app by voice'}>
           {recorder.recording
-            ? <><Square className="size-2.5 shrink-0 fill-current" /> Stop</>
-            : <><Mic className="size-2.5 shrink-0 text-accent" /> Voice</>}
+            ? <Square className="size-3 shrink-0 fill-current" />
+            : <Mic className="size-3 shrink-0 text-accent" />}
         </button>
         {recorder.recording && (
           <span className="flex items-center rounded-none bg-accent px-2

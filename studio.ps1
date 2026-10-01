@@ -28,6 +28,20 @@ if (Test-Path -LiteralPath $bundled) {
     $env:PYTHONPATH = "$root\.deps;$root\src;$root\srs-agent;$root\prototype-agent;$root\builder-agent;$root\qa-agent;$root\deploy-agent;$root"
 }
 
+# The desktop runtime supplies Python, but not this project's optional SDKs.
+# Keep them project-local so a first launch cannot leave Next.js running alone
+# and turn every API request (including sign-in) into a confusing HTTP 500.
+& $python -c "import ollama, httpx, pydantic, cryptography" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'Installing missing backend Python dependencies...'
+    & $python -m pip install --target "$root\.deps" `
+        'ollama>=0.6.2,<1' 'httpx>=0.27,<1' 'pydantic>=2.6,<3' 'cryptography>=42,<48'
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error 'Backend dependencies could not be installed. Check your Internet connection, then run studio.bat again.'
+        exit 2
+    }
+}
+
 if (-not (Test-Path -LiteralPath "$root\studio\node_modules")) {
     Write-Host 'Installing the studio dependencies (first run only)...'
     Push-Location "$root\studio"

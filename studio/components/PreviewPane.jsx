@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Monitor, Tablet, Smartphone, MousePointerClick, Pencil, Undo2, RotateCw,
   ChevronLeft, ChevronRight, Globe, Eraser, Rocket, Layers, Loader2, Play,
+  ExternalLink, Square,
 } from 'lucide-react'
 import { useStore } from '@/lib/store'
 import { api, API } from '@/lib/api'
@@ -66,10 +67,13 @@ export default function PreviewPane({ hidden, onBuild }) {
   const [pencilOn, setPencilOn] = useState(false)
   const [path, setPath] = useState('/')
   const [iframeLoading, setIframeLoading] = useState(true)
+  const [previewStopped, setPreviewStopped] = useState(false)
   const trail = useRef(['/'])
   const at = useRef(0)
   const jumping = useRef(false)
   const [nav, setNav] = useState({ back: false, forward: false })
+
+  useEffect(() => { setPreviewStopped(false) }, [project])
 
   // The app's own address as seen from this browser: its local one here, the
   // published one from a phone or another computer (lib/preview.js).
@@ -116,13 +120,13 @@ export default function PreviewPane({ hidden, onBuild }) {
   // Reset loading state and auto-start project if stopped
   useEffect(() => {
     setIframeLoading(true)
-    if (hidden || !project || busy || drawing || !hasBuiltApp) return
+    if (hidden || !project || busy || drawing || !hasBuiltApp || previewStopped) return
     if (!runtime || runtime?.status === 'stopped') {
       api.open(project).then(res => {
         useStore.getState().setRuntime(res)
       }).catch(() => {})
     }
-  }, [project, hidden, hasBuiltApp])
+  }, [project, hidden, hasBuiltApp, previewStopped])
 
   // Safety fallback for iframe loading state once status is running
   useEffect(() => {
@@ -402,6 +406,7 @@ export default function PreviewPane({ hidden, onBuild }) {
   async function reloadPreview(fromRoot = false) {
     const f = frameRef.current
     if (!f) return
+    setPreviewStopped(false)
     setIframeLoading(true)
     // An iframe mounted before startup may still be about:blank or a browser
     // error document. Reloading that document never reaches the ready app.
@@ -413,6 +418,23 @@ export default function PreviewPane({ hidden, onBuild }) {
     } catch (error) { 
       addLog('WARN', `Could not reopen app: ${error.message}`)
       setIframeLoading(false)
+    }
+  }
+
+  async function stopPreview() {
+    if (!project || drawing) return
+    setPreviewStopped(true)
+    setPickOn(false)
+    setPencilOn(false)
+    try {
+      const result = await api.stopPreview(project)
+      useStore.getState().setRuntime(result)
+      if (frameRef.current) frameRef.current.src = 'about:blank'
+      setIframeLoading(false)
+      addLog('INFO', 'Preview stopped. Other project previews keep running.')
+    } catch (error) {
+      setPreviewStopped(false)
+      addLog('WARN', `Could not stop preview: ${error.message}`)
     }
   }
 
@@ -456,25 +478,26 @@ export default function PreviewPane({ hidden, onBuild }) {
   const shownPath = tests.running && e2eLive?.route ? e2eLive.route : path
 
   return (
-    <div className={cn('flex min-h-0 flex-1 flex-col bg-[#F2F0EF]', hidden && 'hidden')}>
-      <div className="flex h-[54px] shrink-0 items-center gap-3 border-b border-black/10 bg-[#F2F0EF] px-4 backdrop-blur-2xl">
-        <div className="flex items-center gap-1 rounded-xl border border-black/10 bg-black/[.03] p-1 shadow-sm">
+    <div className={cn('flex min-h-0 flex-1 flex-col bg-panel', hidden && 'hidden')}>
+      {/* App preview uses the same compact editing rail as the prototype. */}
+      <div className="flex h-[48px] shrink-0 items-center gap-2 border-b border-line/70 bg-panel px-3 backdrop-blur-2xl">
+        <div className="flex items-center gap-0.5 rounded-xl border border-line/80 bg-panel/90 p-0.5 shadow-sm">
           <Cell tip={nav.back ? 'Back' : 'Nothing to go back to'}
-                disabled={!nav.back} onClick={() => step(-1)} className="rounded-lg px-2.5 text-ink">
-            <ChevronLeft className="size-3.5" />
+                disabled={!nav.back} onClick={() => step(-1)} className="rounded-lg px-2">
+            <ChevronLeft className="size-3" />
           </Cell>
           <Cell tip={nav.forward ? 'Forward' : 'Nothing to go forward to'}
-                disabled={!nav.forward} onClick={() => step(1)} className="rounded-lg px-2.5 text-ink">
-            <ChevronRight className="size-3.5" />
+                disabled={!nav.forward} onClick={() => step(1)} className="rounded-lg px-2">
+            <ChevronRight className="size-3" />
           </Cell>
-          <Cell tip="Reload the preview" onClick={reloadPreview} className="rounded-lg px-2.5 text-ink">
-            <RotateCw className={cn("size-3.5", iframeLoading && "animate-spin text-accent")} />
+          <Cell tip="Reload the preview" onClick={reloadPreview} className="rounded-lg px-2">
+            <RotateCw className={cn("size-3", iframeLoading && "animate-spin text-accent")} />
           </Cell>
         </div>
 
-        <div className="flex min-w-0 flex-1 items-center gap-2.5 rounded-xl border border-black/10 bg-black/[.04] px-4 py-2 text-[12px] text-ink shadow-inner">
-          <Globe className="size-3.5 shrink-0 text-accent" />
-          <span className="truncate font-mono text-[11.5px] font-medium text-ink">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-[10px] border border-line bg-panel2/50 px-3 py-1.5 text-[11px] text-muted">
+          <Globe className="size-3 shrink-0 text-accent" />
+          <span className="truncate font-mono text-[10.5px] font-medium text-ink">
             {drawing ? `the drawing — ${shownPath.split('/').pop() || 'index.html'}`
                      : previewUrl ? `${new URL(previewUrl).host}${shownPath === '/' ? '' : shownPath}`
                      : publishing === 'working' ? 'publishing an address for this app…'
@@ -486,76 +509,91 @@ export default function PreviewPane({ hidden, onBuild }) {
         {!drawing && (canResume ? (
           <button onClick={onBuild}
                   title="Resume the paused build from its saved project state"
-                  className="inline-flex items-center gap-1.5 rounded-full border border-[#BFB9FF]/35 bg-[#BFB9FF] px-3 py-1 text-[11px] font-semibold text-ink transition-colors hover:bg-[#BFB9FF]">
-            <Play className="size-3" /> <span>Resume</span>
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-1 text-[10.5px] font-semibold text-ink transition-all disabled:pointer-events-none disabled:opacity-50">
+            <Play className="size-2.5" /> <span>Resume</span>
           </button>
         ) : planning ? (
-          <div className="flex items-center gap-1.5 rounded-full border border-[#BFB9FF]/30 bg-[#BFB9FF] px-3 py-1 text-[11px] font-semibold text-ink">
-            <Loader2 className="size-3 animate-spin" />
+          <div className="flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-1 text-[10.5px] font-semibold text-ink">
+            <Loader2 className="size-2.5 animate-spin text-accent" />
             <span>Planning</span>
           </div>
         ) : runtime?.status === 'running' && !iframeLoading ? (
-          <div className="flex items-center gap-1.5 rounded-full border border-[#22C55E]/30 bg-[#22C55E]/10 px-3 py-1 text-[11px] font-semibold text-ink shadow-[0_0_12px_rgba(34,197,94,0.15)]">
-            <span className="size-1.5 rounded-full bg-[#22C55E]" />
+          <div className="flex items-center gap-1.5 rounded-lg border border-ok/30 bg-panel px-3 py-1 text-[10.5px] font-semibold text-ink">
+            <span className="size-1.5 rounded-full bg-ok" />
             <span>Running</span>
           </div>
         ) : (runtime?.status === 'starting' || iframeLoading) ? (
-          <div className="flex items-center gap-1.5 rounded-full border border-[#BFB9FF]/30 bg-[#BFB9FF] px-3 py-1 text-[11px] font-semibold text-ink">
-            <Loader2 className="size-3 animate-spin" />
+          <div className="flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-1 text-[10.5px] font-semibold text-ink">
+            <Loader2 className="size-2.5 animate-spin text-accent" />
             <span>Starting</span>
           </div>
         ) : null)}
+
+        {!drawing && ['running', 'starting'].includes(runtime?.status) && (
+          <Cell tip="Stop this preview only; other project previews keep running"
+                onClick={stopPreview} className="rounded-lg text-bad hover:bg-bad/10">
+            <Square className="size-3" />
+          </Cell>
+        )}
 
         {/* The drawing is judged here, in the preview, so this is where it is
             accepted. Sending it back is typed in the chat like anything else. */}
         {drawing && (
           <button onClick={approveDrawing}
-                  className="shrink-0 rounded-xl bg-[#BFB9FF] px-4 py-2 text-[12px] font-semibold text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)] transition-all hover:bg-[#9B94E8] active:scale-95">
+                  className="shrink-0 rounded-lg border border-line bg-panel px-3 py-1 text-[10.5px] font-semibold text-ink transition-all active:scale-95">
             Build this
           </button>
         )}
 
-        <div className="hidden items-center gap-1 rounded-xl border border-black/10 bg-black/[.03] p-1 shadow-sm md:flex">
+        {previewUrl && (
+          <a href={previewUrl} target="_blank" rel="noreferrer"
+             title="Open app preview in a full browser window"
+             className="grid size-7 place-items-center rounded-lg border border-line/80 bg-panel text-ink hover:bg-ink/[.06]">
+            <ExternalLink className="size-3" />
+          </a>
+        )}
+
+        <div className="hidden items-center gap-0.5 rounded-xl border border-line/80 bg-panel/80 p-0.5 shadow-sm md:flex">
           {VIEWPORTS.map(({ id, label, Icon }) => (
             <Cell key={id} tip={label} side="left" on={vp === id}
-                  onClick={() => setVp(id)} className="rounded-lg px-2.5 text-ink">
-              <Icon className="size-3.5" />
+                  onClick={() => setVp(id)} className="rounded-lg px-2">
+              <Icon className="size-3" />
             </Cell>
           ))}
         </div>
 
-        <div className="flex items-center gap-1 rounded-xl border border-black/10 bg-black/[.03] p-1 shadow-sm">
+        <div className="flex items-center gap-0.5 rounded-xl border border-line/80 bg-panel/80 p-0.5 shadow-sm">
           <Cell tip="Click elements in the preview to attach them to your message"
-                side="left" on={pickOn} onClick={togglePick} className="rounded-lg text-ink">
-            <MousePointerClick className="size-3.5" />
+                side="left" on={pickOn} onClick={togglePick} className="rounded-lg">
+            <MousePointerClick className="size-3" />
           </Cell>
           <Cell tip="Draw on the preview to attach a marked-up screenshot"
-                side="left" on={pencilOn} onClick={togglePencil} className="rounded-lg text-ink">
-            <Pencil className="size-3.5" />
+                side="left" on={pencilOn} onClick={togglePencil} className="rounded-lg">
+            <Pencil className="size-3" />
           </Cell>
           <Cell tip={selection.length
                        ? `Clear ${selection.length} attachment${selection.length === 1 ? '' : 's'}`
                        : 'Nothing attached yet'}
                 side="left" disabled={!selection.length}
-                onClick={() => { clearSelection(); clearStrokes() }} className="rounded-lg text-ink">
-            <Eraser className="size-3.5" />
+                onClick={() => { clearSelection(); clearStrokes() }} className="rounded-lg">
+            <Eraser className="size-3" />
           </Cell>
           <Cell tip={undo ? `Undo the last edit (${undo.files.join(', ')})`
                           : 'Nothing to undo yet'}
-                side="left" disabled={!undo} onClick={undoLast} className="rounded-lg text-ink">
-            <Undo2 className="size-3.5" />
+                side="left" disabled={!undo} onClick={undoLast} className="rounded-lg">
+            <Undo2 className="size-3" />
           </Cell>
         </div>
       </div>
 
-      <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[#F2F0EF] p-3">
+      <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-panel p-3">
         <canvas ref={canvasRef}
                 className={cn('absolute z-[8]', pencilOn ? 'block' : 'hidden')}
                 style={{ pointerEvents: pencilOn ? 'auto' : 'none',
                          cursor: pencilOn ? 'crosshair' : 'default' }} />
 
         {(pickOn || pencilOn) && (
-          <p className="pointer-events-none absolute inset-x-0 bottom-7 z-[9] mx-auto w-fit rounded-full border border-black/15 bg-[#F2F0EF]/95 px-4 py-2 text-[11px] font-medium text-ink shadow-2xl backdrop-blur-xl">
+          <p className="pointer-events-none absolute inset-x-0 bottom-7 z-[9] mx-auto w-fit rounded-full border border-black/15 bg-panel/95 px-4 py-2 text-[11px] font-medium text-ink shadow-2xl backdrop-blur-xl">
             {pencilOn ? 'Draw around what you mean — it attaches to the chat'
                       : 'Click anything — it attaches to the chat'}
           </p>
@@ -563,17 +601,17 @@ export default function PreviewPane({ hidden, onBuild }) {
 
         {tests.running && e2eLive && <LiveE2EOverlay event={e2eLive} />}
 
-        <div className="relative flex h-full min-h-0 flex-1 w-full items-center justify-center overflow-hidden rounded-2xl border border-black/10 bg-[#F2F0EF] shadow-2xl">
-          <div className={cn("relative h-full w-full max-w-full overflow-hidden bg-[#F2F0EF]", width && "border-x border-black/10 shadow-2xl")}
+        <div className="relative flex h-full min-h-0 flex-1 w-full items-center justify-center overflow-hidden rounded-2xl border border-black/10 bg-panel shadow-2xl">
+          <div className={cn("relative h-full w-full max-w-full overflow-hidden bg-panel", width && "border-x border-black/10 shadow-2xl")}
                style={{ width: width ? width + 'px' : '100%' }}>
             <iframe ref={frameRef} id="frame" title="preview" src="about:blank"
                     onLoad={() => setIframeLoading(false)}
-                    className={cn("absolute inset-0 block h-full w-full border-0 bg-[#F2F0EF] transition-opacity duration-300",
+                    className={cn("absolute inset-0 block h-full w-full border-0 bg-panel transition-opacity duration-300",
                       ((iframeLoading || runtime?.status === 'starting') && !isE2EActive) ? "opacity-0 pointer-events-none" : "opacity-100")} />
 
             {/* Smooth Bolt.new loading animation */}
             {((iframeLoading || runtime?.status === 'starting') && !isE2EActive) && (
-              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#F2F0EF] p-6 text-center">
+              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-panel p-6 text-center">
                 <div className="absolute inset-x-0 top-0 h-[2px] overflow-hidden bg-black/5">
                   <div className="h-full w-full bg-gradient-to-r from-accent via-accent to-cyan-400 animate-pulse" />
                 </div>
@@ -601,8 +639,16 @@ export default function PreviewPane({ hidden, onBuild }) {
               </div>
             )}
 
-            {!canResume && !isAppBuilt && !runtime?.working && runtime?.status !== 'starting' && runtime?.status !== 'running' ? (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-[#F2F0EF] p-8 text-center" role="status">
+            {previewStopped ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-panel p-8 text-center" role="status">
+                <Square className="size-7 text-muted2" />
+                <p className="font-semibold text-ink">Preview stopped</p>
+                <button onClick={() => reloadPreview(true)} className="rounded-lg border border-line bg-panel px-4 py-2 text-sm font-semibold text-ink hover:border-accent/50">
+                  Start preview
+                </button>
+              </div>
+            ) : !canResume && !isAppBuilt && !runtime?.working && runtime?.status !== 'starting' && runtime?.status !== 'running' ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-panel p-8 text-center" role="status">
                 <div className="grid size-16 place-items-center rounded-2xl border border-accent/20 bg-accent text-ink shadow-xl">
                   <Rocket className="size-8 text-ink" />
                 </div>
@@ -630,7 +676,7 @@ export default function PreviewPane({ hidden, onBuild }) {
                 </div>
               </div>
             ) : canResume ? (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#F2F0EF] p-8 text-center" role="status">
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-panel p-8 text-center" role="status">
                 <div className="grid size-14 place-items-center rounded-2xl border border-accent/20 bg-accent text-ink">
                   <Play className="size-7" />
                 </div>
@@ -641,7 +687,7 @@ export default function PreviewPane({ hidden, onBuild }) {
                 </button>
               </div>
             ) : runtime?.status === 'failed' ? (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#F2F0EF] p-8 text-center" role="status">
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-panel p-8 text-center" role="status">
                 <p className="font-semibold text-rose-400">App could not start</p>
                 <p className="max-w-lg text-sm text-muted">{runtime?.error || 'Failed to start runtime.'}</p>
                 <button onClick={() => reloadPreview()} className="rounded-xl bg-accent px-5 py-2 text-sm font-semibold text-ink hover:bg-accent">

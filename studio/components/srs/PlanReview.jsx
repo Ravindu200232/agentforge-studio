@@ -8,7 +8,6 @@ import {
 import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
 import { Button, TextArea } from '../ui'
-import SrsActivity from './SrsActivity'
 import { cn } from '@/lib/utils'
 
 export default function PlanReview({ projectId, onGenerated, onGenerating, onCancel }) {
@@ -119,8 +118,16 @@ export default function PlanReview({ projectId, onGenerated, onGenerating, onCan
     })
   }
 
-  if (phase === 'loading' && !state) return <SrsActivity phase="reviewing" seconds={waited} message="Turning the interview into a clear plan you can approve…" />
-  if (phase === 'generating') return <SrsActivity phase="generating" seconds={waited} message="Writing the specification, traceability and diagrams…" />
+  if (phase === 'loading' && !state) return <GenerationPreview
+    title="Generating your plan"
+    message="Turning the interview into a clear plan you can approve…"
+    seconds={waited}
+  />
+  if (phase === 'generating') return <GenerationPreview
+    title="Writing your specification"
+    message="The specification is being prepared. Follow each update in the chat stream."
+    seconds={waited}
+  />
 
   const body = state?.plan || {}
   const open = (body.open_questions || []).filter(q => String(q?.question || '').trim())
@@ -147,7 +154,7 @@ export default function PlanReview({ projectId, onGenerated, onGenerating, onCan
       <div className="mb-6 flex items-center gap-3">
         <button onClick={onCancel} className="grid size-9 place-items-center rounded-none border border-black/10 bg-black/[.04] text-muted transition hover:bg-black/[.08] hover:text-ink"><ArrowLeft className="size-4" /></button>
         <div>
-          <p className="font-display text-[11px] font-bold uppercase tracking-[.18em] text-[#BFB9FF]">Plan review</p>
+          <p className="font-display text-[11px] font-bold uppercase tracking-[.18em] text-accent">Plan review</p>
           <p className="mt-0.5 text-[13px] text-muted">Check the structure before the specification is written.</p>
         </div>
         <span className="flex-1" />
@@ -168,7 +175,7 @@ export default function PlanReview({ projectId, onGenerated, onGenerating, onCan
       <section className="overflow-hidden rounded-none border border-line bg-panel p-7 text-ink shadow-sm">
         <div className="flex flex-wrap items-start gap-6">
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[.18em] text-[#BFB9FF]"><Sparkles className="size-3.5" /> Product blueprint</div>
+            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[.18em] text-accent"><Sparkles className="size-3.5" /> Product blueprint</div>
             <h2 className="mt-3 font-display text-[30px] font-bold tracking-tight text-ink">{body.app_name || 'Your app'}</h2>
             <p className="mt-2 max-w-[680px] text-[13.5px] leading-relaxed text-muted">{body.product_intent || 'Your interview has been turned into an implementation plan.'}</p>
             {body.customer_notes && <p className="mt-3 max-w-[680px] text-[12px] italic leading-relaxed text-muted2">“{body.customer_notes}”</p>}
@@ -193,7 +200,7 @@ export default function PlanReview({ projectId, onGenerated, onGenerating, onCan
         </Section>}
 
         {features.length > 0 && <Section icon={ShieldCheck} title="Feature promise" subtitle="Everything the finished app must actually do">
-          <div className="space-y-2">{features.map((f, i) => <div key={i} className="flex gap-3 rounded-none border border-line bg-panel2/40 px-3 py-2.5"><span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-none bg-[#22C55E]/15 border border-[#22C55E]/25 text-ink"><Check className="size-3" /></span><p className="text-[12px] leading-relaxed text-ink">{f}</p></div>)}</div>
+          <div className="space-y-2">{features.map((f, i) => <div key={i} className="flex gap-3 rounded-none border border-line bg-panel2/40 px-3 py-2.5"><span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-none bg-ok/15 border border-ok/25 text-ink"><Check className="size-3" /></span><p className="text-[12px] leading-relaxed text-ink">{f}</p></div>)}</div>
         </Section>}
       </div>
 
@@ -215,34 +222,34 @@ export default function PlanReview({ projectId, onGenerated, onGenerating, onCan
       )}
 
       {open.length > 0 && (
-        <section className="mt-5 rounded-none border border-[#BFB9FF]/30 bg-[#F2F0EF] p-5 shadow-xl backdrop-blur-xl">
-          <div className="flex items-start gap-3"><span className="grid size-9 place-items-center rounded-none bg-[#BFB9FF] text-ink shadow-[0_4px_12px_0_rgba(191, 185, 255,0.24)]"><MessageCircleMore className="size-4" /></span><div><p className="text-[14px] font-bold text-ink">{blocking.length ? `${blocking.length} details still matter` : 'A few optional details'}</p><p className="mt-0.5 text-[11.5px] text-muted">Answer them like a conversation. The planner rewrites only the relevant part.</p></div></div>
+        <section className="mt-5 rounded-none border border-accent/30 bg-panel p-5 shadow-xl backdrop-blur-xl">
+          <div className="flex items-start gap-3"><span className="grid size-9 place-items-center rounded-none bg-accent text-ink shadow-[0_4px_12px_0_rgba(191, 185, 255,0.24)]"><MessageCircleMore className="size-4" /></span><div><p className="text-[14px] font-bold text-ink">{blocking.length ? `${blocking.length} details still matter` : 'A few optional details'}</p><p className="mt-0.5 text-[11.5px] text-muted">Answer them like a conversation. The planner rewrites only the relevant part.</p></div></div>
           <div className="mx-auto mt-5 max-w-[760px] space-y-5">
             {open.map((q, i) => <div key={q.question || i}>
-              <div className="flex items-end gap-3"><span className="grid size-7 place-items-center rounded-none bg-accent border border-accent/30 text-[9px] font-bold text-ink">AF</span><div className="max-w-[78%] rounded-none rounded-none border border-line bg-[#F2F0EF] px-4 py-3 text-[12.5px] leading-relaxed text-ink shadow-sm">{q.question}</div></div>
-              {(q.options || []).length > 0 && <div className="ml-10 mt-2.5 flex flex-wrap gap-2">{q.options.map(opt => { const on = (replies[q.question] || '').trim() === opt; return <button key={opt} disabled={phase === 'revising'} onClick={() => setReplies(r => ({ ...r, [q.question]: on ? '' : opt }))} className={cn('rounded-full px-3.5 py-1.5 text-[11.5px] font-medium transition', on ? 'bg-[#BFB9FF] text-ink border border-[#BFB9FF] shadow-[0_4px_12px_0_rgba(191, 185, 255,0.24)]' : 'border border-black/10 bg-black/[.05] text-ink hover:bg-black/[.1] hover:text-ink')}>{opt}</button> })}</div>}
-              <div className="ml-auto mt-2 max-w-[72%] rounded-none rounded-none border border-line bg-[#F2F0EF] px-3.5 py-2.5 shadow-sm"><TextArea rows={2} value={replies[q.question] || ''} placeholder="Your answer…" disabled={phase === 'revising'} onChange={e => setReplies(r => ({ ...r, [q.question]: e.target.value }))} className="w-full resize-none bg-transparent text-[12px] leading-relaxed text-ink outline-none placeholder:text-muted2" /></div>
+              <div className="flex items-end gap-3"><span className="grid size-7 place-items-center rounded-none bg-accent border border-accent/30 text-[9px] font-bold text-ink">AF</span><div className="max-w-[78%] rounded-none rounded-none border border-line bg-panel px-4 py-3 text-[12.5px] leading-relaxed text-ink shadow-sm">{q.question}</div></div>
+              {(q.options || []).length > 0 && <div className="ml-10 mt-2.5 flex flex-wrap gap-2">{q.options.map(opt => { const on = (replies[q.question] || '').trim() === opt; return <button key={opt} disabled={phase === 'revising'} onClick={() => setReplies(r => ({ ...r, [q.question]: on ? '' : opt }))} className={cn('rounded-full px-3.5 py-1.5 text-[11.5px] font-medium transition', on ? 'bg-accent text-ink border border-accent shadow-[0_4px_12px_0_rgba(191, 185, 255,0.24)]' : 'border border-black/10 bg-black/[.05] text-ink hover:bg-black/[.1] hover:text-ink')}>{opt}</button> })}</div>}
+              <div className="ml-auto mt-2 max-w-[72%] rounded-none rounded-none border border-line bg-panel px-3.5 py-2.5 shadow-sm"><TextArea rows={2} value={replies[q.question] || ''} placeholder="Your answer…" disabled={phase === 'revising'} onChange={e => setReplies(r => ({ ...r, [q.question]: e.target.value }))} className="w-full resize-none bg-transparent text-[12px] leading-relaxed text-ink outline-none placeholder:text-muted2" /></div>
             </div>)}
           </div>
-          <div className="mt-5 flex justify-end"><Button variant="solid" className="rounded-none bg-[#BFB9FF] hover:bg-[#9B94E8] text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)]" disabled={!answeredCount || phase === 'revising'} onClick={() => generate(composeAnswers(open, replies, revision))}>{phase === 'revising' ? <><Loader2 className="size-3 animate-spin" /> Updating…</> : <><Check className="size-3" /> Apply {answeredCount} answer{answeredCount === 1 ? '' : 's'}</>}</Button></div>
+          <div className="mt-5 flex justify-end"><Button variant="solid" className="rounded-none bg-accent hover:bg-press text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)]" disabled={!answeredCount || phase === 'revising'} onClick={() => generate(composeAnswers(open, replies, revision))}>{phase === 'revising' ? <><Loader2 className="size-3 animate-spin" /> Updating…</> : <><Check className="size-3" /> Apply {answeredCount} answer{answeredCount === 1 ? '' : 's'}</>}</Button></div>
         </section>
       )}
 
-      <section className="mt-5 rounded-none border border-line bg-[#F2F0EF] p-5 shadow-xl backdrop-blur-xl">
-        <div className="flex items-center gap-2"><PencilLine className="size-4 text-[#BFB9FF]" /><p className="text-[12.5px] font-semibold text-ink">Change anything in the plan</p></div>
-        <TextArea value={revision} rows={3} placeholder="For example: add a wishlist, rename the admin area, or change the checkout flow…" onChange={e => setRevision(e.target.value)} className="mt-3 w-full resize-none rounded-none border border-black/10 bg-black/[.03] px-4 py-3 text-[12.5px] leading-relaxed text-ink outline-none focus:border-[#BFB9FF]/50 placeholder:text-muted2 caret-[#BFB9FF]" />
+      <section className="mt-5 rounded-none border border-line bg-panel p-5 shadow-xl backdrop-blur-xl">
+        <div className="flex items-center gap-2"><PencilLine className="size-4 text-accent" /><p className="text-[12.5px] font-semibold text-ink">Change anything in the plan</p></div>
+        <TextArea value={revision} rows={3} placeholder="For example: add a wishlist, rename the admin area, or change the checkout flow…" onChange={e => setRevision(e.target.value)} className="mt-3 w-full resize-none rounded-none border border-black/10 bg-black/[.03] px-4 py-3 text-[12.5px] leading-relaxed text-ink outline-none focus:border-accent/50 placeholder:text-muted2 caret-accent" />
         <div className="mt-3 flex justify-end"><Button variant="outline" className="rounded-none border-line bg-black/[.05] text-ink hover:bg-black/[.1] hover:text-ink" disabled={!revision.trim() || phase === 'revising'} onClick={() => generate(revision.trim())}>{phase === 'revising' ? <><Loader2 className="size-3 animate-spin" /> Updating…</> : 'Update plan'}</Button></div>
       </section>
 
       {error && <p className="mt-4 rounded-none border border-red-500/30 bg-red-500/10 px-4 py-3 text-[12px] text-red-300">{error}</p>}
 
-      <div className="sticky bottom-4 mt-6 rounded-none border border-line bg-[#F2F0EF] p-4 shadow-2xl backdrop-blur-2xl">
+      <div className="sticky bottom-4 mt-6 rounded-none border border-line bg-panel p-4 shadow-2xl backdrop-blur-2xl">
         <div className="flex flex-wrap items-center gap-3">
           <div className="min-w-0 flex-1">
             <p className="font-display text-[13px] font-bold text-ink">{settled ? 'This plan is ready for your approval.' : (why || 'A required detail is still missing.')}</p>
             <p className="mt-0.5 text-[11px] text-muted2">Nothing is built from this plan until you approve it.</p>
           </div>
-          <button disabled={!settled || phase === 'revising'} onClick={accept} className="inline-flex h-11 items-center gap-2 rounded-none bg-[#BFB9FF] px-6 text-[12.5px] font-semibold text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)] transition hover:bg-[#9B94E8] disabled:opacity-40">
+          <button disabled={!settled || phase === 'revising'} onClick={accept} className="inline-flex h-11 items-center gap-2 rounded-none bg-accent px-6 text-[12.5px] font-semibold text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)] transition hover:bg-press disabled:opacity-40">
             <Check className="size-4" />{hasSrs && !dirty ? 'Open specification' : hasSrs ? 'Rewrite specification' : 'Approve & write SRS'}
           </button>
         </div>
@@ -251,11 +258,31 @@ export default function PlanReview({ projectId, onGenerated, onGenerating, onCan
   )
 }
 
+/** One calm generation state. Detailed work belongs in the shared chat, not a
+ * second animated checklist that competes with it. */
+function GenerationPreview({ title, message, seconds }) {
+  return (
+    <div className="grid min-h-0 flex-1 place-items-center p-5 sm:p-8">
+      <section className="relative grid aspect-[16/9] w-full max-w-[880px] place-items-center overflow-hidden rounded-2xl border border-line bg-panel shadow-xl">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_35%,rgba(191,185,255,.16),transparent_40%)]" />
+        <div className="relative max-w-md px-6 text-center">
+          <span className="mx-auto grid size-14 place-items-center rounded-2xl border border-line bg-panel2 shadow-sm">
+            <Loader2 className="size-6 animate-spin text-accent" />
+          </span>
+          <h2 className="mt-5 font-display text-[20px] font-bold text-ink">{title}</h2>
+          <p className="mt-2 text-[12px] leading-relaxed text-muted">{message}</p>
+          <p className="mt-4 text-[10.5px] font-medium text-muted2">{seconds ? `${seconds}s · ` : ''}Live updates are in the chat stream.</p>
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function Section({ icon: Icon, title, subtitle, children }) {
   return (
-    <section className="rounded-none border border-line bg-[#F2F0EF] p-5 shadow-xl backdrop-blur-xl">
+    <section className="rounded-none border border-line bg-panel p-5 shadow-xl backdrop-blur-xl">
       <div className="mb-4 flex items-start gap-3">
-        <span className="grid size-9 place-items-center rounded-none bg-[#BFB9FF] border border-[#BFB9FF]/20 text-ink"><Icon className="size-4" /></span>
+        <span className="grid size-9 place-items-center rounded-none bg-accent border border-accent/20 text-ink"><Icon className="size-4" /></span>
         <div><p className="font-display text-[13.5px] font-bold text-ink">{title}</p><p className="mt-0.5 text-[11px] text-muted2">{subtitle}</p></div>
       </div>
       {children}

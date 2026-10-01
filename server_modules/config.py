@@ -13,6 +13,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 PROMPTS = ROOT / "prompts"
+TEMPLATES = ROOT / "templates"
 WORKSPACES = ROOT / "workspaces"
 STATE = ROOT / ".agentforge-server"
 SETTINGS_FILE = STATE / "settings.json"
@@ -27,6 +28,7 @@ API_PREFIX = "/__agentforge/api"
 
 # Where the project's own record lives, inside each workspace.
 RECORD_DIR = ".agentforge"
+RUNTIME_TEMPLATE = TEMPLATES / "project-runtime.json"
 
 DEFAULTS: dict[str, Any] = {
     "ollama_host": os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
@@ -42,6 +44,10 @@ DEFAULTS: dict[str, Any] = {
     # source of truth and agent_think is kept only for older readers.
     "thinking_level": "",
     "mongodb_uri": "",
+    # The production MongoDB connection string a MongoDB-stack deployment uses (deploy_vars.py,
+    # mongo_check.py) - studio-wide like the tokens below, never the short-lived local test database
+    # `mongodb_uri` above runs builds and tests against.
+    "deploy_mongodb_uri": "",
     # Every other value the customer saved for a deployment run, by name (see deploy_vars.py). A
     # generated app's own Supabase project is a separate, per-project record (supabase_connect.py),
     # not a studio-wide setting like this.
@@ -64,6 +70,14 @@ DEFAULTS: dict[str, Any] = {
     "supabase_oauth_refresh_token": "",
     "supabase_oauth_expires_at": 0,
     "supabase_org": "",
+    # The one MongoDB Atlas Service Account this studio is connected as (server_modules/mongo_connect.py):
+    "mongodb_client_id": "",
+    "mongodb_client_secret": "",
+    "mongodb_oauth_access_token": "",
+    "mongodb_oauth_expires_at": 0,
+    "mongodb_org": "",
+    "mongodb_atlas_group_id": "",
+    "mongodb_atlas_cluster_name": "",
     "aws_start_url": "",
     "aws_sso_region": "",
     "aws_profile": "",
@@ -167,13 +181,73 @@ def thinking_encourages_tools(saved: dict[str, Any] | None = None) -> bool:
     return thinking(saved) in ("low", "high", "xhigh")
 
 
-def workspace_for(project: str) -> Path:
-    """One directory per project, always inside `workspaces/`."""
+def _default_workspace(project: str) -> Path:
+    """The Studio-managed location used when a customer has not picked one."""
     safe = "".join(c for c in str(project) if c.isalnum() or c in "-_") or "project"
     path = (WORKSPACES / safe).resolve()
     if not path.is_relative_to(WORKSPACES.resolve()):
         raise ValueError("project name escapes the workspace root")
     return path
+
+
+def validate_workspace_choice(value: str | Path) -> Path:
+    """Accept one user-picked empty folder without exposing Studio's own files.
+
+    A new build writes many files and may install dependencies.  Selecting a
+    drive root, the Studio installation, or a folder that already contains
+    work would make that promise unsafe, so the folder browser can only hand
+    over a writable empty folder outside those protected locations.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("choose a folder")
+    try:
+        path = Path(raw).expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("that folder is no longer available") from exc
+    if not path.is_dir():
+        raise ValueError("choose a folder, not a file")
+    if path == path.parent:
+        raise ValueError("choose a folder inside a drive, not the drive itself")
+    protected = (ROOT.resolve(), WORKSPACES.resolve(), STATE.resolve())
+    if any(path == folder for folder in protected):
+        raise ValueError("choose a new folder outside AgentForge's own files")
+    if not os.access(path, os.W_OK):
+        raise ValueError("AgentForge cannot write to that folder")
+    try:
+        if any(path.iterdir()):
+            raise ValueError("choose an empty folder so an existing project is never overwritten")
+    except OSError as exc:
+        raise ValueError("AgentForge cannot read that folder") from exc
+    return path
+
+
+def _custom_workspace(project: str) -> Path | None:
+    """Read a validated, per-project location without importing `store`.
+
+    `store` itself depends on this module, therefore the project record is
+    read through the same small JSON helper instead of creating a circular
+    import. Older records simply have no `workspace_path` and use the default.
+    """
+    rows = _read(PROJECTS_FILE, {})
+    record = rows.get(project) if isinstance(rows, dict) else None
+    raw = record.get("workspace_path") if isinstance(record, dict) else ""
+    if not raw:
+        return None
+    try:
+        path = Path(str(raw)).expanduser().resolve()
+    except OSError:
+        return None
+    return path if path.is_dir() else None
+
+
+def has_custom_workspace(project: str) -> bool:
+    return _custom_workspace(project) is not None
+
+
+def workspace_for(project: str) -> Path:
+    """The user-picked workspace, or the Studio-managed project directory."""
+    return _custom_workspace(project) or _default_workspace(project)
 
 
 def record_dir(project: str) -> Path:
@@ -198,10 +272,14 @@ SCAFFOLD_DIRS = (
 
 def scaffold_workspace(project: str) -> Path:
     """The project's workspace, with its predictable empty stage-folder
-    skeleton, so a read tool can find its way around before any stage has run."""
+    skeleton and managed runtime template, so a read tool can find its way
+    around before any stage has run."""
     workspace = workspace_for(project)
     workspace.mkdir(parents=True, exist_ok=True)
     record = workspace / RECORD_DIR
     for relative in SCAFFOLD_DIRS:
         (record / relative).mkdir(parents=True, exist_ok=True)
+    runtime = record / "runtime.json"
+    if not runtime.exists() and RUNTIME_TEMPLATE.is_file():
+        runtime.write_text(RUNTIME_TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
     return workspace

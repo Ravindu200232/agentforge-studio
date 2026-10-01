@@ -12,10 +12,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent / "assets" / "templates"
 STACK_GUIDES = {
     "nextjs-supabase": "nextjs-supabase.md",
-    "nextjs-microservices-supabase": "nextjs-microservices-supabase.md",
+    "nextjs-mongo": "nextjs-mongo.md",
     "vite-supabase": "vite-supabase.md",
-    "vite-microservices-supabase": "vite-microservices-supabase.md",
+    "vite-mongo": "vite-mongo.md",
     "remix-supabase": "remix-supabase.md",
+    "mern-microservices": "mern-microservices.md",
 }
 TEST_GUIDES = ("vitest.md", "playwright.md", "visual.md", "axe.md", "lighthouse.md", "zap.md")
 # Not about one app: mistakes every build of every stack has made, and the scaffold's

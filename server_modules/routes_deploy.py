@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlparse
 
 from deploy_agent import deploy as deployer
 
-from . import config, store
+from . import config, mongo_check, mongo_connect, store
 
 Handler = Callable[[dict[str, Any]], Any]
 
@@ -98,6 +98,50 @@ def provider_status(body: dict) -> Any:
         except ValueError:
             pass
     return answer
+
+
+@route("POST", r"/mongodb/status")
+def mongodb_status(body: dict) -> Any:
+    """Try a connection string for real, the same check a value question runs before it accepts one
+    (deploy_vars.accept). An empty `uri` tests the saved production value instead of a typed one, the
+    same shape `provider_status`'s `HostedCredential` card already uses for Netlify's and Azure's own
+    tokens - so this Row's "Test connection" button needs nothing special to work the same way."""
+    uri = str(body.get("uri") or "").strip()
+    saved = bool(not uri and config.setting("deploy_mongodb_uri", ""))
+    try:
+        result = mongo_check.check(uri)
+    except Exception as exc:  # noqa: BLE001 - a check that cannot run is reported, not a 500
+        result = {"ok": False, "stage": "error", "message": str(exc)[:300]}
+    return {"ok": True, "connected": bool(result.get("ok")), "using_saved": saved,
+            "message": result.get("message", ""), "stage": result.get("stage", ""),
+            "warnings": result.get("warnings") or []}
+
+
+@route("GET", r"/mongodb/account/status")
+def mongodb_account_status(_body: dict) -> Any:
+    return {"ok": True, **mongo_connect.status()}
+
+
+@route("POST", r"/mongodb/account/save")
+def mongodb_account_save(body: dict) -> Any:
+    """A Service Account's Client ID and Secret, tried for real (a token exchange) before saving -
+    the same "verify before accept" rule every credential in this studio follows."""
+    result = mongo_connect.save_account(str(body.get("client_id") or ""), str(body.get("client_secret") or ""))
+    return {"ok": True, **result}
+
+
+@route("POST", r"/mongodb/account/forget")
+def mongodb_account_forget(_body: dict) -> Any:
+    mongo_connect.forget_account()
+    return {"ok": True}
+
+
+@route("POST", r"/mongodb/provision")
+def mongodb_provision(_body: dict) -> Any:
+    """Create (or reuse) the studio's one Atlas cluster and point deploy_mongodb_uri at it. Slow
+    (a few minutes) - the caller already runs this through the Deploy panel's job queue, same as
+    everything else here that takes real time."""
+    return {"ok": True, **mongo_connect.ensure_cluster()}
 
 
 # --- one run ----------------------------------------------------------------

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { Check, Loader2, Sparkles } from 'lucide-react'
 
 const PLAN_STEPS = [
@@ -29,45 +29,38 @@ const SRS_STEPS = [
 
 export default function SrsActivity({ phase = 'planning', message = '', seconds = 0 }) {
   const steps = useMemo(() => phase === 'generating' ? SRS_STEPS : phase === 'reviewing' ? REVIEW_STEPS : PLAN_STEPS, [phase])
-  const [shown, setShown] = useState(1)
+  const stream = useRef(null)
 
   useEffect(() => {
-    setShown(1)
-    const timer = setInterval(() => setShown(n => Math.min(steps.length, n + 1)), 8000)
-    return () => clearInterval(timer)
-  }, [phase, steps.length])
+    const node = stream.current
+    if (node) node.scrollTop = node.scrollHeight
+  }, [message, phase])
 
-  const rows = steps.slice(0, shown).slice(-5)
   return (
-    <section className="mt-6 overflow-hidden rounded-none border border-black/75 bg-black/68 shadow-[0_22px_64px_rgba(31,42,69,.09)] backdrop-blur-xl dark:border-black/[.05] dark:bg-black/[.035]">
-      <div className="grid min-h-[430px] gap-0 lg:grid-cols-[.86fr_1.14fr]">
-        <div className="flex flex-col p-6">
-          <div className="flex items-center gap-2.5">
-            <span className="grid size-9 place-items-center rounded-none bg-accent text-ink"><Sparkles className="size-4" /></span>
-            <div><p className="text-[13px] font-semibold text-ink">SRS agent activity</p><p className="text-[10.5px] text-muted">{message || 'Working through the specification pipeline…'}{seconds ? ` · ${seconds}s` : ''}</p></div>
-          </div>
-          <div className="mt-7 flex flex-1 flex-col justify-end gap-3">
-            {rows.map(([title, detail], index) => {
-              const absolute = Math.max(0, shown - rows.length) + index
-              const active = absolute === shown - 1 && shown < steps.length
-              const done = absolute < shown - 1 || shown === steps.length
-              return <article key={title} className="max-w-[96%] px-1 py-3.5">
-                <div className="flex items-center gap-2">
-                  <span className={`grid size-6 place-items-center rounded-full ${done ? 'bg-ok-tint text-ok' : 'bg-accent text-ink'}`}>
-                    {done ? <Check className="size-3" /> : <Loader2 className="size-3 animate-spin" />}
-                  </span>
-                  <p className="text-[12px] font-semibold text-ink">{title}</p>
-                </div>
-                <p className="mt-1.5 pl-8 text-[10.5px] leading-relaxed text-muted">{detail}</p>
-              </article>
-            })}
-          </div>
-          <p className="mt-5 border-t border-line/60 pt-4 text-[10px] text-muted"><span className="mr-2 inline-block size-1.5 animate-pulse rounded-full bg-accent" />Activity is paced so long model calls still feel alive instead of frozen.</p>
+    <section className="mt-6 overflow-hidden rounded-2xl border border-line bg-panel shadow-sm">
+      <header className="flex items-center gap-2.5 border-b border-line px-4 py-3">
+        <span className="grid size-8 place-items-center rounded-xl border border-line bg-white text-deep"><Sparkles className="size-3.5" /></span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[12px] font-semibold text-ink">Planner stream</p>
+          <p className="truncate text-[10.5px] text-muted">{message || 'Working through the specification pipeline…'}{seconds ? ` · ${seconds}s` : ''}</p>
         </div>
-        <div className="relative grid min-h-[360px] place-items-center overflow-hidden border-t border-line/55 bg-black/50 p-6 dark:bg-black/10 lg:border-l lg:border-t-0">
-          <span className="absolute left-5 top-5 rounded-full bg-black/82 px-3 py-1.5 text-[10px] font-medium text-muted shadow-sm ring-1 ring-line/60 backdrop-blur dark:bg-black/25">Planner → SRS</span>
-          <img src="/__agentforge/srs-planner.gif" alt="SRS and planner activity" className="h-auto max-h-[390px] w-full max-w-[570px] select-none object-contain" />
-        </div>
+        <span className="size-1.5 animate-pulse rounded-full bg-accent" aria-label="Working" />
+      </header>
+      <div ref={stream} role="log" aria-live="polite" className="max-h-[min(360px,48dvh)] space-y-2 overflow-y-auto p-3 pr-2">
+        <article className="rounded-xl border border-line bg-white px-3 py-2.5 text-[11px] leading-relaxed text-ink">
+          {message || 'Planner is reading the project context.'}
+        </article>
+        {steps.map(([title, detail], index) => (
+          <article key={title} className="flex gap-2.5 rounded-xl border border-line bg-panel px-3 py-2.5">
+            <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border border-line bg-white text-deep">
+              {index === 0 ? <Loader2 className="size-2.5 animate-spin" /> : <Check className="size-2.5" />}
+            </span>
+            <div>
+              <p className="text-[11px] font-semibold text-ink">{title}</p>
+              <p className="mt-0.5 text-[10px] leading-relaxed text-muted">{detail}</p>
+            </div>
+          </article>
+        ))}
       </div>
     </section>
   )

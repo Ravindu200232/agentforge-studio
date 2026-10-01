@@ -24,7 +24,7 @@ from typing import Any, Callable, Iterable, Sequence, TypeVar
 import httpx
 import ollama
 
-from . import config
+from . import bus, config
 
 T = TypeVar("T")
 
@@ -118,6 +118,8 @@ def _model(override: str = "") -> str:
 
 _context_cache: dict[str, int] = {}
 _context_lock = threading.Lock()
+_usage_lock = threading.Lock()
+_usage_by_run: dict[tuple[str, int], dict[str, int]] = {}
 
 
 def _context_for(model: str) -> int:
@@ -151,6 +153,56 @@ def _tools_for(project: str, workspace: Path | None, role: str) -> Any:
                                    web_host=saved.get("ollama_host") or "http://localhost:11434")
 
 
+def _usage_count(response: Any, *names: str) -> int:
+    """Read an exact provider usage field, including hosted API aliases."""
+    for container in (response, getattr(response, "usage", None)):
+        for name in names:
+            value = (container.get(name) if isinstance(container, dict)
+                     else getattr(container, name, None))
+            if isinstance(value, int) and value > 0:
+                return value
+    return 0
+
+
+def _run_started_at(project: str) -> int:
+    """The active run id is the boundary for a focused-call usage total."""
+    for event in reversed(bus.history(project)):
+        if event.get("type") != "run_state":
+            continue
+        if event.get("status") in {"queued", "running"}:
+            return int(event.get("at") or 0)
+        return 0
+    return 0
+
+
+def _focused_usage(project: str, model: str, context: int, role: str) -> Callable[[Any], None] | None:
+    """Report real token counts for focused SRS/prototype calls into chat."""
+    if not project:
+        return None
+
+    def report(response: Any) -> None:
+        prompt = _usage_count(response, "prompt_eval_count", "prompt_tokens", "input_tokens")
+        generated = _usage_count(response, "eval_count", "completion_tokens", "output_tokens")
+        # Do not turn a provider that supplied no accounting into a fake zero.
+        if not prompt and not generated:
+            return
+        started = _run_started_at(project)
+        key = (project, started)
+        with _usage_lock:
+            totals = _usage_by_run.setdefault(key, {"sent": 0, "received": 0})
+            totals["sent"] += prompt
+            totals["received"] += generated
+            sent, received = totals["sent"], totals["received"]
+            stale = [item for item in _usage_by_run if item[0] == project and item != key]
+            for item in stale:
+                _usage_by_run.pop(item, None)
+        bus.memory(project, model, prompt, context, 0, agent=role or bus.DEVELOPER,
+                   turn_started_at=started, turn_input_tokens=sent,
+                   turn_output_tokens=received, context_scope="focused")
+
+    return report
+
+
 def complete(system: str, user: str, model: str = "", think: bool | None = None,
             project: str = "", workspace: Path | None = None, role: str = "") -> str:
     """One call, one answer, no history — and, when `project`/`workspace` are
@@ -161,14 +213,15 @@ def complete(system: str, user: str, model: str = "", think: bool | None = None,
         "model": _model(model),
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
-        "stream": False,
+        "stream": bool(config.setting("cloud")),
     }
     kwargs["think"] = config.thinking_enabled() if think is None else think
     context = _context_for(kwargs["model"])
     if context and not config.setting("cloud"):
         kwargs["options"] = {"num_ctx": context}
     tools = _tools_for(project, workspace, role)
-    message = llm_tools.run_chat(client().chat, kwargs, tools)
+    message = llm_tools.run_chat(client().chat, kwargs, tools,
+                                 on_usage=_focused_usage(project, kwargs["model"], context, role))
     llm_tools.tag_effort(tools, kwargs["think"], "completion")
     text = (getattr(message, "content", "") or "").strip()
     if not text:
@@ -192,7 +245,8 @@ def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     last = ""
     for _ in range(max(1, attempts)):
-        kwargs: dict[str, Any] = {"model": _model(model), "messages": messages, "stream": False}
+        kwargs: dict[str, Any] = {"model": _model(model), "messages": messages,
+                                  "stream": bool(config.setting("cloud"))}
         # Local Ollama supports JSON mode and returns syntactically valid JSON.
         # Ollama Cloud currently does not support constrained output, so keep
         # the existing prompt-and-validator repair path for hosted models.
@@ -205,7 +259,8 @@ def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None
         context = _context_for(kwargs["model"])
         if context and not config.setting("cloud"):
             kwargs["options"] = {"num_ctx": context}
-        message = llm_tools.run_chat(client().chat, kwargs, tools)
+        message = llm_tools.run_chat(client().chat, kwargs, tools,
+                                     on_usage=_focused_usage(project, kwargs["model"], context, role))
         llm_tools.tag_effort(tools, kwargs["think"], label)
         last = ((getattr(message, "content", "") or "")
                 or (getattr(message, "thinking", "") or "")).strip()
@@ -252,13 +307,15 @@ def complete_html(system: str, user: str, model: str = "", minimum: int = 0,
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     last = ""
     for _ in range(max(1, attempts)):
-        kwargs: dict[str, Any] = {"model": _model(model), "messages": messages, "stream": False}
+        kwargs: dict[str, Any] = {"model": _model(model), "messages": messages,
+                                  "stream": bool(config.setting("cloud"))}
         kwargs["think"] = config.thinking_enabled() if think is None else think
         context = _context_for(kwargs["model"])
         if context and not config.setting("cloud"):
             kwargs["options"] = {"num_ctx": context}
         message = llm_tools.run_chat(client().chat, kwargs, tools,
-                                     on_stream_start=on_stream_start, on_stream_token=on_stream_token)
+                                     on_stream_start=on_stream_start, on_stream_token=on_stream_token,
+                                     on_usage=_focused_usage(project, kwargs["model"], context, role))
         llm_tools.tag_effort(tools, kwargs["think"], label)
         last = ((getattr(message, "content", "") or "")
                 or (getattr(message, "thinking", "") or "")).strip()

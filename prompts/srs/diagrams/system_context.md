@@ -1,25 +1,89 @@
-# System Context diagram
+# System Context Diagram — reference-calibrated prompt
 
-**What is a System Context Diagram?**
+A system context diagram is the single high-level view of the product boundary:
+people and external systems surround one opaque product box. It is **not** a
+component diagram, integration catalogue, or workflow.
 
-A system context diagram defines the software boundary and its externally visible relationships with people, external systems, and persistent data.
+## Visual target
 
-## Standard
+Use the supplied Visual Paradigm-style reference as the presentation target:
 
-- ISO/IEC/IEEE 29148:2018
-- Mermaid form: `flowchart TB`
+- one centred, visibly blue system boundary and one opaque product node inside it;
+- simple external people in one clean left column, with external systems in a
+  clean opposing right column rather than scattered around the page;
+- solid, horizontal association lines with short labels; no crossing connectors,
+  no paragraphs on an arrow, and no internal implementation detail;
+- generous white space, dark readable connector lines, black text, and a compact
+  engineering-document composition.
 
-## Exact notation (use these tokens, not approximations)
+Mermaid has no native UML stick figure or 3D system-boundary primitive. Use its
+nearest stable equivalents: a slanted actor node (`actor[/"Role"/]`), a distinct
+external-service node (`service{{"External service"}}`), and an emphasized
+double-border system node (`sys[["Product name"]]`). Do not imitate a shape by
+adding decorative text or fake ASCII art.
 
-- The system itself is exactly one node, visually distinct (thicker border via `classDef system` or a double box), centered: `sys[["TeamTrack"]]`.
-- Human actors sit outside it as rounded or trapezoid nodes: `admin(["Admin"])`.
-- External systems (a payment gateway, an email provider, anything outside this product's own code) sit outside it too, shaped differently from human actors so the two are never confused: `email[/"Email provider"/]`.
-- Persistent data the system itself owns is drawn below or beside it as a cylinder: `db[(Database)]`.
-- Every edge is a labeled arrow naming the actual interaction or data crossing the boundary: `admin -->|manages team via| sys`, `sys -->|sends invite| email`. An unlabeled edge is not acceptable at this diagram level.
-- Nothing inside `sys` is decomposed here — no internal modules, no internal flow. That belongs to the component diagram.
+## Required Mermaid composition
 
-## How to draw it
+- Start with `flowchart LR`. Let the incoming people read left-to-right into the
+  product, and place external integrations on the right.
+- Draw exactly one `subgraph` titled with the product/system boundary. It contains
+  only the single opaque `sys` node; no module, database table, API, or process
+  may appear inside it.
+- Give `sys` a restrained blue fill and strong dark border through `classDef
+  system`; keep all surrounding nodes white or very pale.
+- Use short role labels (`Buyer`, `Seller`, `Support`) and short interaction
+  labels (normally 2–5 words such as `browse catalogue`, `authorise payment`,
+  `delivery updates`). Move detailed business rules to the SRS prose.
+- Combine closely related roles or integrations only when the SRS supports the
+  combined label. Prefer at most 3 role nodes on the left and at most 3
+  integration nodes on the right; for example, combine visitor and shopper as
+  `Buyer`, or support and administration as `Platform staff`, when their
+  context-level relationship is the same. Select the most important supported
+  relationships instead of drawing every SRS detail; the picture must remain
+  readable without zooming.
+- Keep the three role nodes and three integration nodes vertically ordered and
+  aligned as columns. Use no more than 3 short labelled arrows into the system
+  and 6 short labelled arrows to or from integrations. Never add invisible
+  layout links, long prose labels, or crossing loops to force a layout.
+- For a real two-way integration, use two clearly opposite, short labelled
+  arrows. Do not label an edge merely `uses`, `calls`, `data`, or `API`.
+- Omit an owned database unless the SRS needs it at the context boundary. If it
+  is shown, use `db[("Owned data store")]` outside the system box and label the
+  data relationship.
 
-- Start with one central system boundary node and keep implementation detail inside it minimal — it is a single opaque box.
-- Place human actors and external systems outside the boundary, shaped so the two kinds are visually distinguishable.
-- Label every supported interaction or data relationship and omit unsupported integrations the SRS never mentions.
+## Content discipline
+
+Every role, integration and relationship must come from the supplied SRS slice.
+Select the most important supported interactions when the specification contains
+too much detail for one clean figure. Return Mermaid source only.
+
+## Shape-and-layout example — replace every product fact with SRS evidence
+
+```mermaid
+flowchart LR
+    buyer[/"Buyer"/]
+    seller[/"Seller"/]
+    support[/"Support"/]
+
+    subgraph boundary["Marketplace platform"]
+        direction TB
+        sys[["Marketplace platform"]]
+    end
+
+    payment{{"Payment provider"}}
+    courier{{"Courier service"}}
+    identity{{"Identity provider"}}
+
+    buyer -->|"browse and order"| sys
+    seller -->|"list and fulfil"| sys
+    support -->|"moderate and refund"| sys
+    sys -->|"authorise payment"| payment
+    payment -->|"payment outcome"| sys
+    sys -->|"book delivery"| courier
+    courier -->|"delivery updates"| sys
+    sys -->|"verify sign-in"| identity
+    identity -->|"verified identity"| sys
+
+    classDef system fill:#75c5e8,stroke:#111827,stroke-width:2.5px,color:#111827
+    class sys system
+```

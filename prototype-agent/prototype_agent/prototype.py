@@ -94,7 +94,7 @@ def asset(project: str, name: str) -> tuple[bytes, str]:
 def _write_kit(session: ProjectSession, project: str, root: Any, made: dict[str, Any], routes_out: list[dict]) -> None:
     """The shared kit and what goes with it, into the prototype folder, announced as files in the chat."""
     files = {"assets/app.css": made["kit"]["assets/app.css"], "assets/app.js": made["kit"]["assets/app.js"],
-             "assets/flow.js": made["flow_js"], "kit/shell.html": made["kit"]["shell.html"]}
+             "assets/flow.js": made["flow_js"], "assets/seed.js": made["seed_js"], "kit/shell.html": made["kit"]["shell.html"]}
     if made["ideas"]:
         files["kit/ideas.md"] = made["ideas"]
     files["demo-accounts.json"] = json.dumps({"sign_in": made["sign_in"], "accounts": made["accounts"]}, ensure_ascii=False, indent=2)
@@ -188,9 +188,17 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
         (root / "routes.json").unlink(missing_ok=True)
         checkpoint_path.unlink(missing_ok=True)
 
-    premium_skill_path, = reference_staging.stage(
-        session.workspace, f"{config.RECORD_DIR}/{PROTOTYPE_DIR}/skills/premium-frontend",
-        {"SKILL.md": prompts.skill("prototype", "premium-frontend")})
+    # The visual rule set is made fresh for this project by the model from the
+    # selected colours, fonts, images and wireframe functionality. It replaces
+    # the former one-size-fits-all frontend skill without changing the
+    # customer's saved design selection.
+    project_skill = prototype_brief.draw_project_skill(
+        doc, spec, customization, structures, routes_out,
+        project=project, workspace=session.workspace,
+    )
+    project_skill_path, = reference_staging.stage(
+        session.workspace, f"{config.RECORD_DIR}/{PROTOTYPE_DIR}/skills/project-design",
+        {"SKILL.md": project_skill})
 
     bus.phase(project, "prototype:kit", "Designing the shared look",
               detail="Reading the approved wireframes, images and flow, then drawing the shared design system.")
@@ -201,6 +209,7 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
             "sign_in": checkpoint.get("sign_in") or "",
             "accounts": checkpoint.get("accounts") or [],
             "images": checkpoint.get("images") or [],
+            "seed": checkpoint.get("seed") or {},
             "kit": {name: path.read_text(encoding="utf-8") for name, path in kit_paths.items()},
             "flow_js": (root / "assets" / "flow.js").read_text(encoding="utf-8")
                        if (root / "assets" / "flow.js").is_file() else "",
@@ -210,7 +219,7 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
         bus.progress(project, "Preparing the shared prototype design", 2, agent=bus.DESIGNER)
         made = prototype_brief.prepare(doc, spec, customization, routes_out, structures, say,
                                        project=project, workspace=session.workspace,
-                                       premium_skill_path=premium_skill_path)
+                                       project_skill_path=project_skill_path)
         _write_kit(session, project, root, made, routes_out)
         checkpoint = {
             "fingerprint": fingerprint,
@@ -220,20 +229,25 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
             "sign_in": made["sign_in"],
             "accounts": made["accounts"],
             "images": made["images"],
+            "seed": made["seed"],
         }
         checkpoint_path.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8")
     system = (prompts.load("prototype/system")
-              + "\n\n## Premium frontend design skill\n\n"
-              + f"Read `{premium_skill_path}` yourself with your `read_file` tool.")
+              + "\n\n## Project design skill\n\n"
+              + f"After understanding the wireframe blueprint, read `{project_skill_path}` "
+                "and apply its project-specific visual direction.")
 
     # What every screen needs and does not change per page: staged once, read
     # by each page's own call, rather than pasted into every one of them.
     context_dir = f"{config.RECORD_DIR}/{PROTOTYPE_DIR}/context"
-    srs_subset_path, uploaded_images_path, kit_reference_path = reference_staging.stage(
+    srs_subset_path, uploaded_images_path, kit_reference_path, journeys_path = reference_staging.stage(
         session.workspace, context_dir, {
             "srs-subset.json": json.dumps(context, ensure_ascii=False),
             "uploaded-images.json": json.dumps(uploaded_images, ensure_ascii=False),
-            "kit-reference.json": json.dumps(prototype_brief.kit_reference(made["kit"]), ensure_ascii=False),
+            "kit-reference.json": json.dumps(prototype_brief.kit_reference(made["kit"], doc), ensure_ascii=False),
+            # Every approved journey, in full — not just this page's own slice — so a page can see the
+            # whole path it sits on and send its primary action to the journey's real next step.
+            "journeys.json": json.dumps(made["flow"]["journeys"], ensure_ascii=False),
         })
 
     def draw(item: tuple[dict, dict]) -> dict:
@@ -259,10 +273,35 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
         requirements_path, = reference_staging.stage(
             session.workspace, context_dir, {f"requirements-{slug}.json":
                 json.dumps(requirements, ensure_ascii=False)}, fresh=False)
-        brief = {"page": page, "route_map": nav,
+        # Put the wireframe-derived functional context first in the model
+        # request. It establishes what the screen must do before any visual
+        # sources (theme, typography, images or kit) are considered.
+        wireframe_context: dict[str, Any] = {}
+        if wireframe_source is not None:
+            # The source HTML often carries grey boxes and other low-fidelity
+            # styling. Stage only the stripped functional blueprint, so the
+            # approved design decides the finished visual UI.
+            blueprint = structures.get(str(page["route"]), "").strip()
+            if not blueprint:
+                raise ValueError(
+                    f"approved wireframe {page['route']} has no readable functional blueprint; "
+                    "redraw or edit that wireframe before generating the prototype"
+                )
+            blueprint_path, = reference_staging.stage(
+                session.workspace, context_dir, {f"blueprint-{slug}.html":
+                    blueprint}, fresh=False)
+            wireframe_context = {
+                # Supplying the stripped markup directly means this binding
+                # context is available before any optional file-read turn.
+                "wireframe_blueprint": blueprint,
+                "functional_blueprint_path": blueprint_path,
+                "approved_prototype_plan": approved_execution_plan,
+            }
+        brief = {**wireframe_context, "page": page, "route_map": nav,
                  "design_spec_path": f"{config.RECORD_DIR}/design/design-spec.json",
                  "product_context_path": srs_subset_path, "customer_direction": direction,
                  "flow": prototype_brief.page_flow(made["flow"], str(page["route"])),
+                 "journeys_path": journeys_path,
                  "kit_shell_path": f"{config.RECORD_DIR}/{PROTOTYPE_DIR}/kit/shell.html",
                  "kit_reference_path": kit_reference_path,
                  "demo_accounts": made["accounts"],
@@ -271,18 +310,7 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
                  "ideas_from_the_web": made["ideas"],
                  "requirements_path": requirements_path}
         if wireframe_source is not None:
-            # The source HTML often carries grey boxes and other low-fidelity
-            # styling. Stage only the stripped functional blueprint, so the
-            # approved design decides the finished visual UI.
-            blueprint_path, = reference_staging.stage(
-                session.workspace, context_dir, {f"blueprint-{slug}.html":
-                    structures.get(str(page["route"]), "")}, fresh=False)
-            brief.update({"approved_prototype_plan": approved_execution_plan,
-                          "functional_blueprint_path": blueprint_path,
-                          "selected_design_md_path": customization.get("design_md_path", ""),
-                          "selected_design_md_workspace_path":
-                              customization.get("design_md_workspace_path", ""),
-                          "customizer_prompt": customization.get("customizer_prompt", ""),
+            brief.update({"customizer_prompt": customization.get("customizer_prompt", ""),
                           "customizer_selection": customization.get("customizer_spec", {})})
         user = json.dumps(brief, ensure_ascii=False)
         weight = len(page.get("sections") or []) + len(page.get("functions") or [])
@@ -296,12 +324,35 @@ def _draw_focused(project: str, spec: dict[str, Any], direction: str,
         # path in this file safe to stream: never two screens competing for
         # the studio's one live-file buffer at once.
         writer = bus.StreamWriter(project, agent=bus.DESIGNER)
-        html = llm.complete_html(system, user, minimum=minimum,
-                                 label=f"prototype {row['route']}", attempts=3,
-                                 think=False, project=project, workspace=session.workspace,
-                                 role=bus.DESIGNER,
-                                 on_stream_start=lambda: writer.start(relative),
-                                 on_stream_token=writer.token)
+        route_issues: list[str] = []
+        html = ""
+        # A bad route makes a clickable prototype fail at the first click.
+        # Validate only navigation and let the model correct a rejected page
+        # before any artifact is published.
+        for attempt in range(2):
+            request = user if not route_issues else (
+                user + "\n\n## Route correction required\n"
+                + "Your previous page used invalid prototype navigation: "
+                + "; ".join(route_issues)
+                + ". Return a complete corrected HTML page. Use only route_map values."
+            )
+            # attempts=3, not 1: this call hands the model several `_path` files to
+            # read, and a single shot silently drops complete_html()'s own repair
+            # round — the exact failure d7d95a2 fixed and documented ("no complete
+            # HTML document" on 21/21 pages until this was raised from 1 to 3). The
+            # two-pass loop above is a *different* retry, for route correctness
+            # after a valid page is already in hand; it is not a substitute.
+            html = llm.complete_html(system, request, minimum=minimum,
+                                     label=f"prototype {row['route']}", attempts=3,
+                                     think=False, project=project, workspace=session.workspace,
+                                     role=bus.DESIGNER,
+                                     on_stream_start=lambda: writer.start(relative),
+                                     on_stream_token=writer.token)
+            route_issues = prototype_brief.route_problems(html, routes_out)
+            if not route_issues:
+                break
+        if route_issues:
+            raise ValueError("route validation failed: " + "; ".join(route_issues))
         if session.cancelled:
             raise RunCancelled(project)
         html = prototype_brief.ensure_assets(html)
@@ -376,6 +427,8 @@ def _generate(project: str, direction: str,
         # handoff instead, while every available wireframe is still honoured.
         source = {str(p["route"]): srs_document.wireframe_html(project, str(p["route"]))
                   for p in grid if p.get("has_html")}
+        if not source:
+            raise ValueError("no approved wireframes are ready; draw at least one wireframe before generating the prototype")
     session.begin("prototype", role=bus.DESIGNER)
     if from_wireframes:
         bus.sync_state(project, "running", "Drawing the approved prototype",

@@ -1,0 +1,17 @@
+# Vite + MongoDB scaffold
+
+Stack ID: `vite-mongo`. Root `package.json` is an npm workspace of `server/` and `client/`. `server/` is an Express app and the *only* thing that talks to MongoDB (`server/src/db.js`) and the only door into it (`server/src/app.js`'s routes, behind `/api`); add routes there and Mongoose schemas under `server/src/models/`. `client/` is the Vite React UI; `client/src/api.js` is the one place it calls `/api` - relative URLs only, so the same bundle works from the dev proxy and from the built server. `test/helpers/db.js` (shared at the repo root) is what a server test that touches MongoDB connects through. Read `README.template.md`, the existing files and `.env.example` before changing them. Replace the placeholder home screen and the placeholder `/api/health` route, not the working runner configuration. Preserve the Tailwind/PostCSS pipeline when editing CSS or package dependencies.
+
+Local preview is the Vite client at `127.0.0.1:5174`; the server listens at `127.0.0.1:4100` and is the only thing MongoDB-reachable. The client proxies `/api` to the server in development; after `npm run build`, `server/src/app.js` serves the built client directly from the same process and port, so `npm start` alone is a complete production run. Do not use port 3001 (reserved for Next.js preview) or 5173 (reserved for mern-microservices' client).
+
+## The database is real, not local
+
+`server/src/db.js`'s fallback (`mongodb://127.0.0.1:27017/...`) exists only so `npm test` and local development have something to connect to on this machine. It is never what a deployed application uses. Before this app can be deployed, `MONGODB_URI` must be a real, internet-reachable connection string (MongoDB Atlas or any host that is not this computer) - if it is not already set, ask for it as a value-only question (`.agentforge/build/question.json`, `"variable": "MONGODB_URI"`, `"secret": true`, `"check": "mongodb"`, explaining it must not be `localhost`/`127.0.0.1`); the studio tries it for real before accepting it. Never invent or default to a loopback address for this variable.
+
+## Authentication and sign-in
+
+Build real session-based authentication with `bcryptjs` (password hashing) and `jose` (signed, httpOnly session cookies) - never roll a custom hash or a token scheme of your own. If the project selected the Google (or another) sign-in plugin, `.agentforge/PLUGIN.md` names its environment variables; wire it into `server/`, alongside, not instead of, email/password sign-in, using a well-supported Node OAuth library rather than a hand-rolled redirect/token exchange.
+
+## File and image uploads
+
+If the project selected an image-uploads plugin (Cloudinary, S3, or another), `.agentforge/PLUGIN.md` names its environment variables and how to use them - integrate exactly that provider from `server/`, never a locally-written file as the production answer. With no plugin selected, a feature that genuinely needs file storage still needs a real provider; ask about it the same way a missing credential is asked for, rather than silently writing to local disk.

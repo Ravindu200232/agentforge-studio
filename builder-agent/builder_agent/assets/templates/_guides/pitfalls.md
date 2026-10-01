@@ -6,7 +6,7 @@ These are not about any one product. They are the mistakes that cost every build
 
 - Build the complete application first. Testing is handled by the later focused phases. Do not re-run a layer after its current result is recorded unless affected code changed or it failed.
 - Use the scaffold's runners, do not write your own: `npm run qa:e2e`, `qa:visual`, `qa:a11y`, `qa:perf`, `qa:security`. Each builds nothing and starts nothing by hand: it starts the built app on a free port, runs the layer, stops only its own server. Run `npm run build` first, and again only after **app** code changed.
-- Never start dev/production servers yourself, never `taskkill /IM node` / `Stop-Process -Name node`. The Studio owns the preview (port 3001 for the Next.js stacks, 5173 for Remix and Vite); if it is stale it is restarted for you after the build.
+- Never start dev/production servers yourself, never `taskkill /IM node` / `Stop-Process -Name node`. The Studio owns every preview and assigns each project its own loopback port; if it is stale it is restarted for that project after the build.
 - Unit-test important business rules and complete critical paths in the focused unit phase. Do not use per-file inventory or 100% coverage as a completion gate.
 - Delete throwaway diagnostic scripts before finishing. Keep the ones you cite in the report.
 - Timestamps in `report.json` come from a command (`node -p "new Date().toISOString()"`), never from memory: a typed time was hours off (local time labelled UTC).
@@ -33,7 +33,7 @@ These are not about any one product. They are the mistakes that cost every build
 - Every generated app has its own real Supabase project (created once when the stack was chosen; see `.env.example`, `lib/supabase.js`) — the old shared local default let apps clobber each other. **Never** truncate or delete against the real project's URL from a test.
 - Suites using `test/helpers/db.js` share that one local Postgres, so they run one after another (`fileParallelism: false` is set). Do not turn it back on.
 - Set test environment variables (secrets, URLs) in a setup module imported before the code under test (`vitest.env.js`), and never "restore" them by deleting them in `afterAll` — that breaks the next file.
-- Data your E2E journeys create outlives the run: give it a unique prefix and delete it in `afterAll`, or the next run (and the seeded counts) drift. `_testing/scripts/with-server.mjs` truncates the real project's tables before and after each QA run for exactly this reason — do not also hand-roll cleanup that fights it.
+- Data your E2E journeys create outlives the run: give it a unique prefix and delete it in `afterAll`, or the next run (and the existing counts) drift. `_testing/scripts/with-server.mjs` only owns the temporary test server; it never resets or seeds the connected Supabase project. Never make a QA wrapper truncate a real project's tables.
 - Every table an app reads or writes needs a Row Level Security policy before it holds real data; a missing one is a security bug, not a missing feature (most true on the Vite-only stacks, which have no server to fall back on).
 
 ## Vitest

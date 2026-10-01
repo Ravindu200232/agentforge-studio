@@ -97,14 +97,14 @@ export function tone(value) {
 }
 
 const TONE = {
-  ok: 'bg-[#22C55E]/15 text-ink ring-[#22C55E]/30',
-  bad: 'bg-[#FF5630]/15 text-[#B91C1C] ring-[#FF5630]/30',
-  warn: 'bg-[#FFAB00]/15 text-[#92400E] ring-[#FFAB00]/30',
-  run: 'bg-[#1877F2]/15 text-[#1D4ED8] ring-[#1877F2]/30',
-  mute: 'bg-black/[.06] text-[#57534E] ring-black/10',
+  ok: 'bg-ok/15 text-ink ring-ok/30',
+  bad: 'bg-bad/15 text-bad ring-bad/30',
+  warn: 'bg-warn/15 text-bad ring-warn/30',
+  run: 'bg-info/15 text-ok ring-info/30',
+  mute: 'bg-black/[.06] text-muted ring-black/10',
 }
-export const TONE_TEXT = { ok: 'text-ink', bad: 'text-[#B91C1C]', warn: 'text-[#92400E]', run: 'text-[#1D4ED8]', mute: 'text-[#57534E]' }
-export const TONE_FILL = { ok: '#22C55E', bad: '#FF5630', warn: '#FFAB00', run: '#1877F2', mute: '#637381' }
+export const TONE_TEXT = { ok: 'text-ink', bad: 'text-bad', warn: 'text-bad', run: 'text-ok', mute: 'text-muted' }
+export const TONE_FILL = { ok: 'var(--green)', bad: 'var(--red)', warn: 'var(--yellow)', run: 'var(--info)', mute: 'var(--muted2)' }
 
 // ---- running a command ----------------------------------------------------------------------------------------
 
@@ -211,7 +211,7 @@ export function Pill({ tone: kind = 'mute', children, className }) {
 
 /** A status word as a coloured pill, its colour chosen from its meaning. */
 export function Status({ value }) {
-  return value == null || value === '' ? <span className="text-[#637381]">—</span> : <Pill tone={tone(value)}>{String(value)}</Pill>
+  return value == null || value === '' ? <span className="text-muted2">—</span> : <Pill tone={tone(value)}>{String(value)}</Pill>
 }
 
 export function Terminal({ lines, running, error }) {
@@ -220,8 +220,8 @@ export function Terminal({ lines, running, error }) {
   useEffect(() => { const el = view.current; if (el && bottom.current) el.scrollTop = el.scrollHeight }, [lines])
   return (
     <div ref={view} onScroll={e => { const el = e.currentTarget; bottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40 }}
-         className="max-h-[62vh] min-h-[200px] overflow-auto rounded-xl bg-[#F2F0EF] px-3.5 py-3">
-      {error && <p className="mb-2 text-[12px] text-[#FF5630]">{error}</p>}
+         className="max-h-[62vh] min-h-[200px] overflow-auto rounded-xl bg-panel px-3.5 py-3">
+      {error && <p className="mb-2 text-[12px] text-bad">{error}</p>}
       <pre className="whitespace-pre-wrap break-words font-mono text-[11.5px] leading-[1.55] text-ink">
         {lines.length ? lines.join('\n') : (running ? 'Waiting for the first line…' : '(no output)')}
       </pre>
@@ -245,10 +245,10 @@ export function View({ project, item, title, about, icon: Icon, children, wide }
   return (
     <section className={cn('mx-auto space-y-3', wide ? 'max-w-[1180px]' : 'max-w-[980px]')}>
       <header className="flex flex-wrap items-start gap-3">
-        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#BFB9FF] text-ink"><Head className="size-4" /></span>
+        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-accent text-ink"><Head className="size-4" /></span>
         <div className="min-w-0 flex-1">
           <h2 className="text-[15px] font-semibold text-ink">{title}</h2>
-          {about && <p className="mt-0.5 max-w-[640px] text-[11.5px] leading-relaxed text-[#6B7280]">{about}</p>}
+          {about && <p className="mt-0.5 max-w-[640px] text-[11.5px] leading-relaxed text-muted">{about}</p>}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Pill tone={kind}>{cmd.running || cmd.refreshing ? <Loader2 className="size-3 animate-spin" /> : cmd.status === 'done' ? <Check className="size-3" /> : null}
@@ -256,7 +256,7 @@ export function View({ project, item, title, about, icon: Icon, children, wide }
           <div className="flex overflow-hidden rounded-lg ring-1 ring-inset ring-black/10">
             {['formatted', 'raw'].map(name => (
               <button key={name} type="button" onClick={() => setMode(name)}
-                      className={cn('px-2.5 py-1 text-[11px] font-semibold capitalize', mode === name ? 'bg-[#BFB9FF] text-ink' : 'text-muted hover:bg-black/5')}>{name}</button>
+                      className={cn('px-2.5 py-1 text-[11px] font-semibold capitalize', mode === name ? 'bg-accent text-ink' : 'text-muted hover:bg-black/5')}>{name}</button>
             ))}
           </div>
           {cmd.running
@@ -271,11 +271,11 @@ export function View({ project, item, title, about, icon: Icon, children, wide }
         : failed ? <Failed cmd={cmd} />
         : (children({ json: cmd.json, text: cmd.text, lines: cmd.lines, cmd }) || <Unreadable text={cmd.text} />)}
 
-      <footer className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-[#637381]">
+      <footer className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-muted2">
         <code className="min-w-0 max-w-full truncate font-mono" title={cmd.display}>$ {cmd.display}</code>
         {!item.follow && (
           <label className="ml-auto flex cursor-pointer items-center gap-1.5">
-            <input type="checkbox" checked={cmd.auto} onChange={e => cmd.setAuto(e.target.checked)} className="accent-[#BFB9FF]" />
+            <input type="checkbox" checked={cmd.auto} onChange={e => cmd.setAuto(e.target.checked)} className="accent-[var(--accent)]" />
             refresh every {REFRESH_MS / 1000} s{cmd.updated ? ` · updated ${ago(cmd.updated)}` : ''}
           </label>
         )}
@@ -294,7 +294,7 @@ const Ctl = ({ onClick, disabled, children }) => (
 
 function Skeleton() {
   return (
-    <div className="space-y-2 rounded-2xl border border-black/[.07] bg-[#F2F0EF] p-4">
+    <div className="space-y-2 rounded-2xl border border-black/[.07] bg-panel p-4">
       {[70, 92, 55, 80].map((w, i) => <div key={i} className="h-3 animate-pulse rounded bg-black/[.07]" style={{ width: `${w}%` }} />)}
     </div>
   )
@@ -302,8 +302,8 @@ function Skeleton() {
 
 function Failed({ cmd }) {
   return (
-    <div className="space-y-2.5 rounded-2xl border border-[#FF5630]/25 bg-[#FF5630]/[.06] p-4">
-      <p className="flex items-center gap-2 text-[12.5px] font-semibold text-[#B91C1C]"><CircleAlert className="size-4" />
+    <div className="space-y-2.5 rounded-2xl border border-bad/25 bg-bad/[.06] p-4">
+      <p className="flex items-center gap-2 text-[12.5px] font-semibold text-bad"><CircleAlert className="size-4" />
         {cmd.status === 'timeout' ? 'It did not finish in time.' : 'The tool reported a problem.'}</p>
       <Terminal lines={cmd.lines} running={false} error={cmd.error} />
     </div>
@@ -312,8 +312,8 @@ function Failed({ cmd }) {
 
 function Unreadable({ text }) {
   return (
-    <div className="space-y-2 rounded-2xl border border-black/[.07] bg-[#F2F0EF] p-4">
-      <p className="text-[11.5px] text-[#6B7280]">This answer is not in a form this page can lay out. It is shown as printed.</p>
+    <div className="space-y-2 rounded-2xl border border-black/[.07] bg-panel p-4">
+      <p className="text-[11.5px] text-muted">This answer is not in a form this page can lay out. It is shown as printed.</p>
       <pre className="max-h-[50vh] overflow-auto whitespace-pre-wrap break-words font-mono text-[11.5px] text-ink">{text || '(no output)'}</pre>
     </div>
   )
@@ -323,10 +323,10 @@ function Unreadable({ text }) {
 
 export function Card({ title, right, children, className, pad = true }) {
   return (
-    <div className={cn('overflow-hidden rounded-2xl border border-black/[.07] bg-[#F2F0EF] shadow-[0_12px_24px_-12px_rgba(0,0,0,0.35)]', className)}>
+    <div className={cn('overflow-hidden rounded-2xl border border-black/[.07] bg-panel shadow-[0_12px_24px_-12px_rgba(0,0,0,0.35)]', className)}>
       {(title || right) && (
         <div className="flex items-center gap-2 border-b border-black/[.06] px-4 py-2.5">
-          <h3 className="flex-1 text-[11px] font-semibold uppercase tracking-[.12em] text-[#6B7280]">{title}</h3>
+          <h3 className="flex-1 text-[11px] font-semibold uppercase tracking-[.12em] text-muted">{title}</h3>
           {right}
         </div>
       )}
@@ -339,7 +339,7 @@ export function Empty({ title = 'Nothing here', hint }) {
   return (
     <div className="rounded-2xl border border-dashed border-black/10 px-6 py-10 text-center">
       <p className="text-[13px] font-semibold text-ink">{title}</p>
-      {hint && <p className="mx-auto mt-1 max-w-[420px] text-[11.5px] leading-relaxed text-[#6B7280]">{hint}</p>}
+      {hint && <p className="mx-auto mt-1 max-w-[420px] text-[11.5px] leading-relaxed text-muted">{hint}</p>}
     </div>
   )
 }
@@ -348,10 +348,10 @@ export function Stats({ items }) {
   return (
     <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
       {items.filter(Boolean).map((row, i) => (
-        <div key={i} className="rounded-xl border border-black/[.07] bg-[#F2F0EF] px-3.5 py-3">
-          <p className="text-[10px] font-semibold uppercase tracking-[.12em] text-[#6B7280]">{row.label}</p>
+        <div key={i} className="rounded-xl border border-black/[.07] bg-panel px-3.5 py-3">
+          <p className="text-[10px] font-semibold uppercase tracking-[.12em] text-muted">{row.label}</p>
           <p className={cn('mt-1 font-semibold', String(row.value).length > 13 ? 'break-all text-[13px] leading-snug' : 'truncate text-[18px]', TONE_TEXT[row.tone] || 'text-ink')} title={String(row.value)}>{row.value}</p>
-          {row.sub && <p className="mt-0.5 truncate text-[10.5px] text-[#637381]">{row.sub}</p>}
+          {row.sub && <p className="mt-0.5 truncate text-[10.5px] text-muted2">{row.sub}</p>}
         </div>
       ))}
     </div>
@@ -360,21 +360,21 @@ export function Stats({ items }) {
 
 export function Chips({ items, tone: kind = 'mute' }) {
   const list = (Array.isArray(items) ? items : [items]).filter(item => item != null && item !== '')
-  return list.length ? <span className="flex flex-wrap gap-1">{list.map((item, i) => <Pill key={i} tone={kind}>{String(item)}</Pill>)}</span> : <span className="text-[#637381]">—</span>
+  return list.length ? <span className="flex flex-wrap gap-1">{list.map((item, i) => <Pill key={i} tone={kind}>{String(item)}</Pill>)}</span> : <span className="text-muted2">—</span>
 }
 
 export const Link = ({ href, children }) => (
-  <a href={href} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-1 text-[#1D4ED8] hover:underline">
+  <a href={href} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-1 text-deep hover:underline">
     <span className="truncate">{children ?? href}</span><ExternalLink className="size-2.5 shrink-0" />
   </a>
 )
 
 /** One value, shown by its kind: date, link, status, mono, chips, bytes, duration, yes/no, or text. */
 export function Value({ v, kind }) {
-  if (v == null || v === '' || (Array.isArray(v) && !v.length)) return <span className="text-[#637381]">—</span>
+  if (v == null || v === '' || (Array.isArray(v) && !v.length)) return <span className="text-muted2">—</span>
   switch (kind) {
     case 'date': return <span title={stamp(v)}>{ago(v) || String(v)}</span>
-    case 'datetime': return <span>{stamp(v)} <span className="text-[#637381]">· {ago(v)}</span></span>
+    case 'datetime': return <span>{stamp(v)} <span className="text-muted2">· {ago(v)}</span></span>
     case 'link': return <Link href={String(v).startsWith('http') ? v : `https://${v}`}>{String(v).replace(/^https?:\/\//, '')}</Link>
     case 'status': return <Status value={v} />
     case 'mono': return <code className="break-all font-mono text-[11px] text-ink">{String(v)}</code>
@@ -382,11 +382,11 @@ export function Value({ v, kind }) {
     case 'bytes': return <span>{bytes(v)}</span>
     case 'duration': return <span>{duration(v)}</span>
     case 'yesno': return <Pill tone={v ? 'ok' : 'mute'}>{v ? 'Yes' : 'No'}</Pill>
-    case 'json': return <code className="break-all font-mono text-[10.5px] text-[#6B7280]">{JSON.stringify(v)}</code>
+    case 'json': return <code className="break-all font-mono text-[10.5px] text-muted">{JSON.stringify(v)}</code>
     default:
       if (typeof v === 'boolean') return <Pill tone={v ? 'ok' : 'mute'}>{v ? 'Yes' : 'No'}</Pill>
       if (Array.isArray(v)) return <Chips items={v.map(x => (typeof x === 'object' ? JSON.stringify(x) : x))} />
-      if (typeof v === 'object') return <code className="break-all font-mono text-[10.5px] text-[#6B7280]">{JSON.stringify(v)}</code>
+      if (typeof v === 'object') return <code className="break-all font-mono text-[10.5px] text-muted">{JSON.stringify(v)}</code>
       return <span className="break-words">{String(v)}</span>
   }
 }
@@ -398,7 +398,7 @@ export function Facts({ items, all, columns = 2 }) {
     <dl className={cn('grid gap-x-8 gap-y-3', columns === 1 ? 'grid-cols-1' : 'sm:grid-cols-2')}>
       {rows.map(([label, value, kind]) => (
         <div key={label} className="min-w-0">
-          <dt className="text-[10px] font-semibold uppercase tracking-[.12em] text-[#637381]">{label}</dt>
+          <dt className="text-[10px] font-semibold uppercase tracking-[.12em] text-muted2">{label}</dt>
           <dd className="mt-0.5 text-[12.5px] text-ink"><Value v={value} kind={kind} /></dd>
         </div>
       ))}
@@ -421,16 +421,16 @@ export function Table({ rows, columns, empty = 'Nothing here.', filter, limit = 
     <Card pad={false}>
       {(filter ?? list.length > 8) && (
         <div className="flex items-center gap-2 border-b border-black/[.06] px-3 py-2">
-          <Search className="size-3 text-[#637381]" />
+          <Search className="size-3 text-muted2" />
           <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Filter…"
-                 className="min-w-0 flex-1 bg-transparent text-[12px] text-ink outline-none placeholder:text-[#637381]" />
-          <span className="font-mono text-[10.5px] text-[#637381]">{shown.length}{shown.length !== list.length ? ` of ${list.length}` : ''}</span>
+                 className="min-w-0 flex-1 bg-transparent text-[12px] text-ink outline-none placeholder:text-muted2" />
+          <span className="font-mono text-[10.5px] text-muted2">{shown.length}{shown.length !== list.length ? ` of ${list.length}` : ''}</span>
         </div>
       )}
       <div className="overflow-x-auto">
         <table className="w-full min-w-[520px] border-collapse text-left text-[12px]">
           <thead>
-            <tr className="border-b border-black/[.06] text-[10px] uppercase tracking-[.1em] text-[#637381]">
+            <tr className="border-b border-black/[.06] text-[10px] uppercase tracking-[.1em] text-muted2">
               {columns.map(col => <th key={col.label} className="whitespace-nowrap px-3.5 py-2 font-semibold">{col.label}</th>)}
             </tr>
           </thead>
@@ -470,23 +470,23 @@ export function LogView({ lines, follow }) {
       <div className="flex flex-wrap items-center gap-2 border-b border-black/[.06] px-3 py-2">
         {[['all', 'All'], ['bad', `Errors ${counts.bad}`], ['warn', `Warnings ${counts.warn}`]].map(([id, name]) => (
           <button key={id} type="button" onClick={() => setLevel(id)}
-                  className={cn('rounded-md px-2 py-0.5 text-[11px] font-semibold', level === id ? 'bg-[#BFB9FF] text-ink' : 'text-muted hover:bg-black/5')}>{name}</button>
+                  className={cn('rounded-md px-2 py-0.5 text-[11px] font-semibold', level === id ? 'bg-accent text-ink' : 'text-muted hover:bg-black/5')}>{name}</button>
         ))}
         <span className="flex-1" />
-        <Search className="size-3 text-[#637381]" />
+        <Search className="size-3 text-muted2" />
         <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search the log…"
-               className="w-[180px] bg-transparent text-[12px] text-ink outline-none placeholder:text-[#637381]" />
-        <span className="font-mono text-[10.5px] text-[#637381]">{shown.length} lines</span>
+               className="w-[180px] bg-transparent text-[12px] text-ink outline-none placeholder:text-muted2" />
+        <span className="font-mono text-[10.5px] text-muted2">{shown.length} lines</span>
       </div>
       <div ref={view} onScroll={e => { const el = e.currentTarget; bottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40 }}
-           className="max-h-[60vh] overflow-auto bg-[#F2F0EF] py-1.5">
+           className="max-h-[60vh] overflow-auto bg-panel py-1.5">
         {shown.map((row, i) => (
           <div key={i} className="flex gap-3 px-3.5 py-[1px] font-mono text-[11.5px] leading-[1.5] hover:bg-black/[.03]">
-            {row.time && <span className="w-[92px] shrink-0 text-[#637381]">{row.time.replace(/^\d{4}-\d{2}-\d{2}T/, '').replace(/Z$/, '')}</span>}
-            <span className={cn('min-w-0 whitespace-pre-wrap break-words', row.kind === 'bad' ? 'text-[#B91C1C]' : row.kind === 'warn' ? 'text-[#92400E]' : 'text-ink')}>{row.body}</span>
+            {row.time && <span className="w-[92px] shrink-0 text-muted2">{row.time.replace(/^\d{4}-\d{2}-\d{2}T/, '').replace(/Z$/, '')}</span>}
+            <span className={cn('min-w-0 whitespace-pre-wrap break-words', row.kind === 'bad' || row.kind === 'warn' ? 'text-bad' : 'text-ink')}>{row.body}</span>
           </div>
         ))}
-        {!shown.length && <p className="px-4 py-6 text-center text-[12px] text-[#637381]">Nothing matches.</p>}
+        {!shown.length && <p className="px-4 py-6 text-center text-[12px] text-muted2">Nothing matches.</p>}
       </div>
     </Card>
   )
@@ -507,7 +507,7 @@ export function Flow({ steps, title }) {
               {step.sub && <p className="mt-0.5 break-words text-[10.5px] opacity-80">{step.sub}</p>}
             </div>
             {i < list.length - 1 && (
-              <svg width="34" height="14" viewBox="0 0 34 14" className="mx-0.5 shrink-0 text-[#637381]" aria-hidden="true">
+              <svg width="34" height="14" viewBox="0 0 34 14" className="mx-0.5 shrink-0 text-muted2" aria-hidden="true">
                 <path d="M2 7h26M23 2l6 5-6 5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             )}
@@ -530,7 +530,7 @@ export function Bars({ items, format = String, title }) {
             <span className="h-3 flex-1 overflow-hidden rounded bg-black/[.05]">
               <span className="block h-full rounded" style={{ width: `${Math.max(2, ((Number(row.value) || 0) / max) * 100)}%`, background: TONE_FILL[row.tone || 'run'] }} />
             </span>
-            <span className="w-[64px] shrink-0 text-right font-mono text-[10.5px] text-[#6B7280]">{format(row.value)}</span>
+            <span className="w-[64px] shrink-0 text-right font-mono text-[10.5px] text-muted">{format(row.value)}</span>
           </div>
         ))}
       </div>
@@ -546,15 +546,15 @@ export function Timeline({ events, title }) {
         <span className="absolute bottom-4 left-[22px] top-4 w-px bg-black/10" />
         {events.map((event, i) => (
           <li key={i} className="relative flex gap-3 py-1.5 pl-6">
-            <span className="absolute left-[4px] top-[11px] size-[9px] rounded-full ring-4 ring-[#F2F0EF]" style={{ background: TONE_FILL[event.tone || 'mute'] }} />
+            <span className="absolute left-[4px] top-[11px] size-[9px] rounded-full ring-4 ring-panel" style={{ background: TONE_FILL[event.tone || 'mute'] }} />
             <div className="min-w-0 flex-1">
               <p className="flex flex-wrap items-center gap-1.5 text-[12.5px] text-ink">
                 <span className="min-w-0 break-words">{event.title}</span>
                 {(event.badges || []).map((badge, j) => <Pill key={j} tone={badge.tone || 'mute'}>{badge.label}</Pill>)}
               </p>
-              {event.sub && <p className="mt-0.5 break-words text-[11px] text-[#6B7280]">{event.sub}</p>}
+              {event.sub && <p className="mt-0.5 break-words text-[11px] text-muted">{event.sub}</p>}
             </div>
-            {event.time && <span className="shrink-0 pt-0.5 font-mono text-[10.5px] text-[#637381]" title={stamp(event.time)}>{ago(event.time)}</span>}
+            {event.time && <span className="shrink-0 pt-0.5 font-mono text-[10.5px] text-muted2" title={stamp(event.time)}>{ago(event.time)}</span>}
           </li>
         ))}
       </ol>
@@ -575,15 +575,15 @@ export function CommitGraph({ commits, title }) {
         <span className="absolute bottom-5 left-[27px] top-5 w-px bg-black/10" />
         {commits.map((commit, i) => (
           <li key={commit.short + i} className="relative flex gap-3 py-2 pl-12 pr-4 hover:bg-black/[.02]">
-            <span className="absolute left-[22px] top-[15px] size-[11px] rounded-full ring-4 ring-[#F2F0EF]" style={{ background: i === 0 ? TONE_FILL.ok : TONE_FILL.run }} />
+            <span className="absolute left-[22px] top-[15px] size-[11px] rounded-full ring-4 ring-panel" style={{ background: i === 0 ? TONE_FILL.ok : TONE_FILL.run }} />
             <div className="min-w-0 flex-1">
               <p className="flex flex-wrap items-center gap-1.5 text-[12.5px] text-ink">
                 <span className="min-w-0 break-words font-medium">{commit.subject}</span>
                 {(commit.refs || []).map(ref => <Pill key={ref} tone={/^HEAD/.test(ref) ? 'ok' : /^tag:/.test(ref) ? 'warn' : /origin\//.test(ref) ? 'run' : 'mute'}>{ref}</Pill>)}
               </p>
-              <p className="mt-0.5 text-[11px] text-[#6B7280]">{commit.author} · <span title={stamp(commit.date)}>{ago(commit.date)}</span></p>
+              <p className="mt-0.5 text-[11px] text-muted">{commit.author} · <span title={stamp(commit.date)}>{ago(commit.date)}</span></p>
             </div>
-            <code className="shrink-0 pt-0.5 font-mono text-[11px] text-[#1D4ED8]">{commit.short}</code>
+            <code className="shrink-0 pt-0.5 font-mono text-[11px] text-deep">{commit.short}</code>
           </li>
         ))}
       </ol>
@@ -594,7 +594,7 @@ export function CommitGraph({ commits, title }) {
 /** One bar split into shares, with a key: `{ label, value }`, coloured in turn. */
 export function StackedBar({ items, title, format = String }) {
   const total = items.reduce((sum, row) => sum + (Number(row.value) || 0), 0) || 1
-  const colours = ['#BFB9FF', '#22C55E', '#FFAB00', '#FF5630', '#8B5CF6', '#00B8D9', '#637381']
+  const colours = ['var(--accent)', 'var(--green)', 'var(--yellow)', 'var(--red)', 'var(--accent)', 'var(--info)', 'var(--muted2)']
   return (
     <Card title={title}>
       <div className="flex h-3 overflow-hidden rounded-full bg-black/[.05]">
@@ -604,7 +604,7 @@ export function StackedBar({ items, title, format = String }) {
         {items.map((row, i) => (
           <span key={row.label} className="flex items-center gap-1.5 text-[11.5px] text-ink">
             <span className="size-2 rounded-full" style={{ background: colours[i % colours.length] }} />{row.label}
-            <span className="font-mono text-[10.5px] text-[#6B7280]">{Math.round(((Number(row.value) || 0) / total) * 100)}%</span>
+            <span className="font-mono text-[10.5px] text-muted">{Math.round(((Number(row.value) || 0) / total) * 100)}%</span>
           </span>
         ))}
       </div>
@@ -626,6 +626,6 @@ export function Auto({ json, empty = 'Nothing to show.' }) {
   const nested = Object.entries(json).filter(([, value]) => value && typeof value === 'object' && !scalars.some(([key]) => value === json[key]))
   return (<>
     {scalars.length > 0 && <Card><Facts items={scalars.map(([key, value]) => [human(key), value, /_at$|At$|date/i.test(key) ? 'datetime' : /url$/i.test(key) ? 'link' : /state|status/i.test(key) ? 'status' : undefined])} /></Card>}
-    {nested.map(([key, value]) => <div key={key} className="space-y-2"><h3 className="px-1 text-[11px] font-semibold uppercase tracking-[.12em] text-[#6B7280]">{human(key)}</h3><Auto json={value} /></div>)}
+    {nested.map(([key, value]) => <div key={key} className="space-y-2"><h3 className="px-1 text-[11px] font-semibold uppercase tracking-[.12em] text-muted">{human(key)}</h3><Auto json={value} /></div>)}
   </>)
 }

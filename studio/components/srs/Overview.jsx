@@ -100,7 +100,7 @@ const Chip = ({ children, tone = 'mute' }) => {
 
 function Block({ n, title, icon: Icon, count, hint, children }) {
   return (
-    <section className="rounded-none border border-black/10 bg-[#F2F0EF] p-5 sm:p-6">
+    <section className="rounded-none border border-black/10 bg-panel p-5 sm:p-6">
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-black/10 pb-3">
         {Icon && <Icon className="size-4 shrink-0 self-center text-muted2" />}
         <span className="font-mono text-[11px] text-muted2">{n}</span>
@@ -171,7 +171,7 @@ export default function Overview({ srs, onSelectView }) {
     <div className="mx-auto max-w-[1040px] space-y-5 pb-16 text-ink">
 
       {/* Header — identity only. Every chip is a field. */}
-      <header className="rounded-none border border-black/10 bg-[#F2F0EF] p-6">
+      <header className="rounded-none border border-black/10 bg-panel p-6">
         <h2 className="text-[24px] font-black tracking-tight text-ink">
           {text(doc.document_title) || `${projectName} — Software Requirements Specification`}
         </h2>

@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  FolderUp, Settings, Download, ExternalLink, Search, Play, Trash2,
-  PanelLeftClose, PanelLeftOpen, Home, LayoutGrid, Star, Clock,
+  FolderUp, Settings, Download, ExternalLink, Search, Trash2,
+  PanelLeftClose, PanelLeftOpen, Home, LayoutGrid,
   BookOpen, FileText, Activity, ChevronDown, CreditCard, LogOut,
   X, Menu, Plus,
 } from 'lucide-react'
@@ -18,12 +18,16 @@ export default function Sidebar({
   onImport,
   onSettings,
   onZip,
-  onResume,
   onDeleted,
   screen = 'home',
   onScreenChange,
   user = null,
   onLogout = null,
+  workspaceTabs = [],
+  currentView = '',
+  currentStageTab = '',
+  buildAllowed = false,
+  onViewChange,
   mobileOpen = false,
   onMobileClose = null,
 }) {
@@ -33,10 +37,11 @@ export default function Sidebar({
   const busyProject = useStore(z => z.busyProject)
   const busy = useStore(z => z.busy)
   const persist = useStore(z => z.persist)
-  const starred = useStore(z => z.starred)
   const addLog = useStore(z => z.addLog)
 
-  const [collapsed, setCollapsed] = useState(false)
+  // Desktop starts as the compact Codex/ChatGPT-style icon rail.  The brand
+  // button expands it when somebody needs the full project list and labels.
+  const [collapsed, setCollapsed] = useState(true)
   const folderRef = useRef(null)
   const [q, setQ] = useState('')
   const [confirming, setConfirming] = useState('')
@@ -106,8 +111,8 @@ export default function Sidebar({
       String(p.name || '').toLowerCase().includes(needle))
   }, [projects, q])
 
-  const dot = { live: 'bg-[#22C55E]', busy: 'bg-[#FFAB00]', connecting: 'bg-[#1877F2]' }[status]
-    || 'bg-[#FF5630]'
+  const dot = { live: 'bg-ok', busy: 'bg-warn', connecting: 'bg-info' }[status]
+    || 'bg-bad'
 
   const renderBody = (isMobile = false) => (
     <>
@@ -134,7 +139,7 @@ export default function Sidebar({
           className={cn(
             'flex items-center gap-3 rounded-xl px-3 py-2 font-medium transition-all text-left',
             screen === 'home'
-              ? 'bg-black/[.06] text-ink font-semibold'
+              ? 'text-deep font-semibold'
               : 'text-muted hover:bg-ink/[.05] hover:text-ink'
           )}
         >
@@ -150,7 +155,7 @@ export default function Sidebar({
           className={cn(
             'flex items-center justify-between rounded-xl px-3 py-2 font-medium transition-all text-left',
             screen === 'projects'
-              ? 'bg-black/[.06] text-ink font-semibold'
+              ? 'text-deep font-semibold'
               : 'text-muted hover:bg-ink/[.05] hover:text-ink'
           )}
         >
@@ -160,7 +165,7 @@ export default function Sidebar({
           </div>
           <span className={cn(
             "rounded-full px-2 py-0.5 font-mono text-[10px]",
-            screen === 'projects' ? "bg-[#BFB9FF] text-ink font-bold" : "bg-panel2 text-muted"
+            screen === 'projects' ? "bg-accent text-ink font-bold" : "bg-panel2 text-muted"
           )}>
             {projects.length}
           </span>
@@ -177,38 +182,6 @@ export default function Sidebar({
           <span>Settings</span>
         </button>
 
-        {/* Both open the Projects screen on a shelf of their own. "Shared with
-            you" used to sit here too and was removed: accounts on this server
-            are isolated by design - `auth_db` says nothing is shared between
-            them - so it was a door onto a room that cannot exist. */}
-        <button
-          onClick={() => {
-            useStore.getState().setProjectFilter('starred')
-            onScreenChange?.('projects')
-            if (isMobile) onMobileClose?.()
-          }}
-          className="flex items-center justify-between rounded-xl px-3 py-1.5 text-left text-muted hover:bg-ink/[.05] hover:text-ink">
-          <div className="flex items-center gap-3">
-            <Star className="size-4 shrink-0 text-muted2" />
-            <span>Starred</span>
-          </div>
-          {starred.length > 0 && (
-            <span className="rounded-full bg-panel2 px-2 py-0.5 font-mono text-[10px] text-muted">
-              {starred.length}
-            </span>
-          )}
-        </button>
-
-        <button
-          onClick={() => {
-            useStore.getState().setProjectFilter('recent')
-            onScreenChange?.('projects')
-            if (isMobile) onMobileClose?.()
-          }}
-          className="flex items-center gap-3 rounded-xl px-3 py-1.5 text-left text-muted hover:bg-ink/[.05] hover:text-ink">
-          <Clock className="size-4 shrink-0 text-muted2" />
-          <span>Recently viewed</span>
-        </button>
       </nav>
 
       {/* Secondary Resources & Status */}
@@ -249,8 +222,8 @@ export default function Sidebar({
                 <div className="truncate text-[12.5px] font-semibold text-ink" title={title}>{title}</div>
               </div>
               {working ? (
-                <span className="flex items-center gap-1.5 rounded-full bg-[#BFB9FF] px-2 py-0.5 text-[10px] font-semibold text-ink">
-                  <span className="size-1.5 rounded-full bg-[#BFB9FF] animate-pulse" />
+                <span className="flex items-center gap-1.5 rounded-full bg-accent px-2 py-0.5 text-[10px] font-semibold text-ink">
+                  <span className="size-1.5 rounded-full bg-accent animate-pulse" />
                   working
                 </span>
               ) : (
@@ -259,7 +232,7 @@ export default function Sidebar({
                     onScreenChange?.('projects')
                     if (isMobile) onMobileClose?.()
                   }}
-                  className="text-[11px] font-medium text-[#BFB9FF] hover:underline"
+                  className="text-[11px] font-medium text-accent hover:underline"
                 >
                   Change
                 </button>
@@ -286,7 +259,7 @@ export default function Sidebar({
         {/* Account Menu Popover */}
         {accountOpen && (
           <div
-            className="absolute bottom-full left-3 mb-2 w-56 rounded-2xl border border-line bg-[#F2F0EF] p-1.5 shadow-[0_20px_40px_-4px_rgba(0,0,0,0.48)] backdrop-blur-2xl z-50 animate-in fade-in zoom-in-95"
+            className="absolute bottom-full left-3 mb-2 w-56 rounded-2xl border border-line bg-panel p-1.5 shadow-[0_20px_40px_-4px_rgba(0,0,0,0.48)] backdrop-blur-2xl z-50 animate-in fade-in zoom-in-95"
           >
             <button
               onClick={() => { setAccountOpen(false); onSettings?.(); if (isMobile) onMobileClose?.() }}
@@ -301,14 +274,6 @@ export default function Sidebar({
             >
               <FolderUp className="size-4 text-ink" />
               <span>Import project folder</span>
-            </button>
-            <button
-              onClick={() => { setAccountOpen(false); onResume?.(); if (isMobile) onMobileClose?.() }}
-              disabled={!project || status === 'busy'}
-              className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium text-ink hover:bg-ink/[.06] disabled:opacity-40 disabled:pointer-events-none transition-colors"
-            >
-              <Play className="size-4 text-muted2" />
-              <span>Resume build</span>
             </button>
             <button
               onClick={() => { setAccountOpen(false); onZip?.(); if (isMobile) onMobileClose?.() }}
@@ -331,7 +296,7 @@ export default function Sidebar({
                 <div className="my-1 border-t border-line" />
                 <button
                   onClick={() => { setAccountOpen(false); onLogout?.(); if (isMobile) onMobileClose?.() }}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium text-[#FF5630] hover:bg-[#FF5630]/10 hover:text-[#FF5630] transition-colors"
+                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium text-bad hover:bg-bad/10 hover:text-bad transition-colors"
                 >
                   <LogOut className="size-4" />
                   <span>Sign out</span>
@@ -346,7 +311,7 @@ export default function Sidebar({
           className="flex w-full items-center justify-between gap-2.5 rounded-xl p-1.5 hover:bg-ink/[.06] transition-colors group"
         >
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#BFB9FF] font-bold text-[13px] text-ink shadow-sm transition-transform group-hover:scale-105">
+            <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-accent font-bold text-[13px] text-ink shadow-sm transition-transform group-hover:scale-105">
               {initial}
             </div>
             <div className="min-w-0 text-left">
@@ -375,7 +340,7 @@ export default function Sidebar({
       )}>
         <header className="flex items-center justify-between border-b border-line px-4 py-3">
           <div className="flex items-center gap-2.5">
-            <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#BFB9FF] ring-1 ring-[#BFB9FF]/20 shadow-sm overflow-hidden">
+            <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-accent ring-1 ring-accent/20 shadow-sm overflow-hidden">
               <img src="/__agentforge/agentforge-mark.png" alt="AgentForge" width={22} height={22} className="size-5 object-contain" />
             </div>
             <span className="font-display text-[14.5px] font-bold tracking-tight text-ink">
@@ -400,20 +365,26 @@ export default function Sidebar({
     return (
       <>
         {renderMobileDrawer()}
-        <aside className="hidden md:flex w-[52px] shrink-0 flex-col items-center gap-2 overflow-hidden h-full border-r border-line bg-panel py-3">
-          <Tip text="Show the sidebar" side="right">
+        <aside className="hidden md:flex w-[56px] shrink-0 flex-col items-center gap-1.5 overflow-hidden h-full border-r border-line bg-panel px-2 py-3">
+          <Tip text="Expand navigation" side="right">
             <button onClick={() => setCollapsed(false)}
-                    className="grid size-9 place-items-center rounded-xl text-muted transition-colors hover:bg-raised hover:text-ink">
-              <PanelLeftOpen className="size-4" />
+                    className="grid size-9 place-items-center overflow-hidden rounded-xl bg-panel2 text-muted transition-colors hover:bg-raised hover:text-ink">
+              <img src="/__agentforge/agentforge-mark.png" alt="Expand navigation" width={24} height={24} className="size-6 object-contain" />
             </button>
           </Tip>
-          <span className={cn('size-2 shrink-0 rounded-full', dot)} title={statusText} />
-          <span className="my-1 h-px w-6 bg-line" />
+          <span className="my-1 h-px w-7 bg-line" />
+
+          <Tip text="New project" side="right">
+            <button onClick={() => { useStore.getState().resetSrs(); useStore.getState().reset(null); onScreenChange?.('home') }}
+                    className="grid size-9 place-items-center rounded-xl text-muted transition-colors hover:bg-raised hover:text-ink">
+              <Plus className="size-[17px]" />
+            </button>
+          </Tip>
 
           <Tip text="Home" side="right">
             <button onClick={() => onScreenChange?.('home')}
                     className={cn('grid size-9 place-items-center rounded-xl transition-colors',
-                      screen === 'home' ? 'bg-[#BFB9FF] text-ink font-semibold' : 'text-muted hover:bg-raised hover:text-ink')}>
+                      screen === 'home' ? 'text-deep font-semibold' : 'text-muted hover:bg-raised hover:text-ink')}>
               <Home className="size-4" />
             </button>
           </Tip>
@@ -421,97 +392,44 @@ export default function Sidebar({
           <Tip text="All Projects" side="right">
             <button onClick={() => onScreenChange?.('projects')}
                     className={cn('grid size-9 place-items-center rounded-xl transition-colors',
-                      screen === 'projects' ? 'bg-[#BFB9FF] text-ink font-semibold' : 'text-muted hover:bg-raised hover:text-ink')}>
+                      screen === 'projects' ? 'text-deep font-semibold' : 'text-muted hover:bg-raised hover:text-ink')}>
               <LayoutGrid className="size-4" />
             </button>
           </Tip>
 
+          {screen === 'workspace' && project && workspaceTabs.length > 0 && (
+            <>
+              <span className="my-1 h-px w-7 bg-line" />
+              {workspaceTabs.map(({ id, label, Icon }) => {
+                const selected = currentView === id
+                const current = currentStageTab === id
+                const unavailable = !buildAllowed && ['preview', 'testing', 'deploy'].includes(id)
+                return (
+                  <Tip key={id} text={unavailable ? 'Complete the prototype first' : label} side="right">
+                    <button type="button" onClick={() => onViewChange?.(id)} disabled={unavailable}
+                            aria-label={label} aria-pressed={selected}
+                            className={cn('grid size-9 place-items-center rounded-xl transition-colors disabled:cursor-not-allowed disabled:opacity-30',
+                              selected ? 'text-deep' : 'text-muted hover:bg-raised hover:text-ink')}>
+                      <Icon className={cn('size-4', current ? 'text-ok' : selected ? 'text-deep' : 'text-muted2')} />
+                    </button>
+                  </Tip>
+                )
+              })}
+            </>
+          )}
+
+          <span className="my-1 h-px w-7 bg-line" />
+
+          <Tip text={`Status: ${status}`} side="right">
+            <span className={cn('my-0.5 size-2 shrink-0 rounded-full', dot)} title={statusText} />
+          </Tip>
+          <span className="flex-1" />
           <Tip text="Settings" side="right">
             <button onClick={onSettings}
-                    className="grid size-9 place-items-center rounded-xl text-muted transition-colors hover:bg-raised hover:text-ink">
+                    className="mt-auto grid size-9 place-items-center rounded-xl text-muted transition-colors hover:bg-raised hover:text-ink">
               <Settings className="size-3.5" />
             </button>
           </Tip>
-          <Tip text="Resume this build where it stopped" side="right">
-            <button onClick={onResume} disabled={!project || status === 'busy'}
-                    className="grid size-9 place-items-center rounded-xl text-muted transition-colors hover:bg-raised hover:text-ink disabled:pointer-events-none disabled:opacity-30">
-              <Play className="size-3.5" />
-            </button>
-          </Tip>
-          <span className="flex-1" />
-          {project && (
-            <span className="max-h-[220px] [writing-mode:vertical-rl] truncate text-[10px] font-semibold text-muted2"
-                  title={project}>
-              {project}
-            </span>
-          )}
-
-          {/* Collapsed Account Avatar Button with Popover */}
-          <div className="relative mt-auto" ref={accountMenuRef}>
-            {accountOpen && (
-              <div
-                className="absolute bottom-0 left-full ml-3 w-56 rounded-2xl border border-line bg-panel p-1.5 shadow-[0_20px_40px_-4px_rgba(0,0,0,0.48)] backdrop-blur-2xl z-50 animate-in fade-in zoom-in-95"
-              >
-                <button
-                  onClick={() => { setAccountOpen(false); onSettings?.() }}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium text-ink hover:bg-ink/[.06] transition-colors"
-                >
-                  <Settings className="size-4 text-muted2" />
-                  <span>Settings</span>
-                </button>
-                <button
-                  onClick={() => { setAccountOpen(false); folderRef.current?.click() }}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium text-ink hover:bg-ink/[.06] transition-colors"
-                >
-                  <FolderUp className="size-4 text-muted2" />
-                  <span>Import project folder</span>
-                </button>
-                <button
-                  onClick={() => { setAccountOpen(false); onResume?.() }}
-                  disabled={!project || status === 'busy'}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium text-ink hover:bg-ink/[.06] disabled:opacity-40 disabled:pointer-events-none transition-colors"
-                >
-                  <Play className="size-4 text-muted2" />
-                  <span>Resume build</span>
-                </button>
-                <button
-                  onClick={() => { setAccountOpen(false); onZip?.() }}
-                  disabled={!project}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium text-ink hover:bg-black/[.06] hover:text-ink disabled:opacity-40 disabled:pointer-events-none transition-colors"
-                >
-                  <Download className="size-4 text-ink" />
-                  <span>Download project as zip</span>
-                </button>
-                <button
-                  onClick={() => { setAccountOpen(false); openInNewTab() }}
-                  disabled={!project}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium text-ink hover:bg-black/[.06] hover:text-ink disabled:opacity-40 disabled:pointer-events-none transition-colors"
-                >
-                  <ExternalLink className="size-4 text-ink" />
-                  <span>Open in new tab</span>
-                </button>
-                {onLogout && (
-                  <>
-                    <div className="my-1 border-t border-line" />
-                    <button
-                      onClick={() => { setAccountOpen(false); onLogout?.() }}
-                      className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium text-[#FF5630] hover:bg-[#FF5630]/10 hover:text-[#FF5630] transition-colors"
-                    >
-                      <LogOut className="size-4" />
-                      <span>Sign out</span>
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-            <button
-              onClick={() => setAccountOpen(v => !v)}
-              title={`Account: ${displayName}`}
-              className="flex size-8 items-center justify-center rounded-lg bg-[#BFB9FF] font-bold text-[13px] text-ink shadow-sm transition-transform hover:scale-105 active:scale-95"
-            >
-              {initial}
-            </button>
-          </div>
         </aside>
       </>
     )
@@ -524,7 +442,7 @@ export default function Sidebar({
         {/* Top Header: Brand and Controls */}
         <header className="grid grid-cols-[auto_1fr_auto] items-center gap-3 border-b border-line px-4 py-3">
           <div className="flex items-center gap-2.5">
-            <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#BFB9FF] ring-1 ring-[#BFB9FF]/20 shadow-sm overflow-hidden">
+            <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-accent ring-1 ring-accent/20 shadow-sm overflow-hidden">
               <img src="/__agentforge/agentforge-mark.png" alt="AgentForge"
                    width={22} height={22}
                    className="size-5 object-contain" />

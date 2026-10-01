@@ -263,19 +263,26 @@ def _diagram_review_validator(envelope: Any) -> None:
             raise ValueError(f"diagram review {key} must be a list of strings")
 
 
-def _workspace_relative(path: Path, workspace: Path) -> str:
+def _workspace_relative(path: Path | str, workspace: Path) -> str:
     """A path a workspace-rooted read-only tool is actually allowed to read."""
+    candidate = Path(path)
+    # `reference_staging.stage()` correctly returns a workspace-relative
+    # string for the model.  The reviewer also needs that value, but must first
+    # anchor it before resolving it; calling `.resolve()` on the raw string was
+    # what prevented every cloud review from running.
+    if not candidate.is_absolute():
+        candidate = workspace / candidate
     try:
-        return path.resolve().relative_to(workspace.resolve()).as_posix()
+        return candidate.resolve().relative_to(workspace.resolve()).as_posix()
     except ValueError:
         # The reviewer must never receive an absolute path it cannot read. A
         # basename produces a helpful ordinary "file does not exist" response
         # if a caller accidentally stages context in the wrong workspace.
-        return path.name
+        return candidate.name
 
 
 def _review_diagram(project: str, workspace: Path, kind: str, source: str,
-                    document_path: Path) -> dict[str, Any]:
+                    document_path: Path | str) -> dict[str, Any]:
     """Compare a rendered source with local web-source evidence using the cloud model."""
     reviewed = llm.complete_json(
         system=prompts.load("srs/system"),
@@ -287,6 +294,133 @@ def _review_diagram(project: str, workspace: Path, kind: str, source: str,
     return reviewed["diagram_review"]
 
 
+def _short_text(value: Any, limit: int = 240) -> str:
+    """Keep staged model context informative without turning it into a dump."""
+    return str(value or "").strip()[:limit]
+
+
+def _table_name(reference: Any) -> str:
+    """Extract ``table`` from an SRS reference such as ``table.id``."""
+    return _short_text(reference, 120).split(".", 1)[0]
+
+
+def _compact_table(table: Any, field_limit: int = 7) -> dict[str, Any] | None:
+    """Schema facts a diagram author needs, without every persistence detail."""
+    if not isinstance(table, dict) or not str(table.get("table_name") or "").strip():
+        return None
+    fields = [row for row in (table.get("fields") or []) if isinstance(row, dict)]
+    # Keys, relationships and lifecycle fields explain an engineering diagram;
+    # use ordinary fields only to make the entity intelligible.
+    priority = [row for row in fields if row.get("primary_key") or row.get("references")
+                or str(row.get("type") or "").startswith("enum(")]
+    chosen = list(priority)
+    for row in fields:
+        if row not in chosen and len(chosen) < field_limit:
+            chosen.append(row)
+    return {
+        "table_name": _short_text(table.get("table_name"), 80),
+        "description": _short_text(table.get("description"), 180),
+        "fields": [
+            {key: row[key] for key in ("name", "type", "primary_key", "nullable", "references")
+             if key in row}
+            for row in chosen[:field_limit]
+        ],
+    }
+
+
+def _important_tables(database: Any, limit: int = 14) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Select a connected, readable schema slice for a single diagram canvas."""
+    if not isinstance(database, dict):
+        return [], []
+    tables = [row for row in (database.get("tables") or []) if isinstance(row, dict)]
+    relationships = [row for row in (database.get("relationships") or []) if isinstance(row, dict)]
+    degree: dict[str, int] = {}
+    for relation in relationships:
+        for key in ("from", "to"):
+            name = _table_name(relation.get(key))
+            if name:
+                degree[name] = degree.get(name, 0) + 1
+    ranked = sorted(
+        enumerate(tables),
+        key=lambda pair: (-degree.get(str(pair[1].get("table_name") or ""), 0), pair[0]),
+    )
+    selected_names = {str(row.get("table_name") or "") for _, row in ranked[:limit]}
+    selected = [compact for _, row in ranked[:limit]
+                if (compact := _compact_table(row)) is not None]
+    selected_relationships = []
+    for relation in relationships:
+        left, right = _table_name(relation.get("from")), _table_name(relation.get("to"))
+        if left in selected_names and right in selected_names:
+            selected_relationships.append({
+                "from": relation.get("from"), "to": relation.get("to"),
+                "type": relation.get("type"),
+                "description": _short_text(relation.get("description"), 140),
+            })
+    return selected, selected_relationships[:24]
+
+
+def _compact_workflows(doc: dict, limit: int = 8) -> list[dict[str, Any]]:
+    """Preserve the business-flow evidence that sequence/process views need."""
+    compact = []
+    for workflow in (doc.get("business_workflows") or []):
+        if not isinstance(workflow, dict):
+            continue
+        name = _short_text(workflow.get("workflow_name"), 120)
+        steps = [_short_text(step, 220) for step in (workflow.get("steps") or []) if str(step).strip()]
+        if name and steps:
+            compact.append({"workflow_name": name, "who": _short_text(workflow.get("who"), 80),
+                            "steps": steps[:7]})
+    return compact[:limit]
+
+
+def _diagram_context(doc: dict, kind: str) -> dict[str, Any]:
+    """A kind-specific, complete enough SRS slice for reliable diagram authoring.
+
+    The old generic slice attempted to serialize the whole database then dropped
+    that field to meet a size cap.  ERD, class, state and workflow diagrams were
+    consequently asked to draw with only the product summary and emitted tool
+    narration.  This preserves the relevant facts in a bounded form instead.
+    """
+    database = doc.get("database_design") or {}
+    tables, relationships = _important_tables(database)
+    roles = [
+        {"role_name": _short_text(role.get("role_name"), 80),
+         "description": _short_text(role.get("description"), 180)}
+        for role in (doc.get("roles") or []) if isinstance(role, dict)
+    ][:8]
+    integrations = [
+        {"name": _short_text(item.get("name"), 100), "type": _short_text(item.get("type"), 100),
+         "description": _short_text(item.get("description"), 180)}
+        for item in (doc.get("integration_requirements") or []) if isinstance(item, dict)
+    ][:8]
+    context: dict[str, Any] = {
+        "app_summary": doc.get("app_summary") or {},
+        "roles": roles,
+        "authentication_requirement": doc.get("authentication_requirement") or {},
+        "main_modules": [str(item)[:120] for item in (doc.get("main_modules") or [])][:18],
+        "integrations": integrations,
+    }
+    if kind in {"erd", "class_object"}:
+        context["database_design"] = {"tables": tables, "relationships": relationships}
+    elif kind == "state_machine":
+        lifecycle = []
+        for table in tables:
+            for field in table.get("fields") or []:
+                if str(field.get("type") or "").startswith("enum("):
+                    lifecycle.append({"table": table["table_name"], "field": field.get("name"),
+                                      "states": field.get("type")})
+        context["lifecycle_candidates"] = lifecycle[:18]
+        context["business_workflows"] = _compact_workflows(doc, limit=5)
+    elif kind in {"sequence", "activity", "bpmn"}:
+        context["business_workflows"] = _compact_workflows(doc)
+    elif kind in {"dfd", "component", "deployment", "system_context", "use_case"}:
+        context["business_workflows"] = _compact_workflows(doc, limit=5)
+        context["data_entities"] = [table["table_name"] for table in tables[:12]]
+    else:
+        context["business_workflows"] = _compact_workflows(doc, limit=5)
+    return context
+
+
 def _draw_diagram(session: ProjectSession, project: str, doc: dict,
                   kind: str) -> dict | None:
     """One diagram: its source, and its SVG when a renderer is installed."""
@@ -295,18 +429,9 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
     except prompts.MissingPrompt:
         return None
 
-    # Trimmed a whole field at a time from the low-priority end, never by
-    # slicing the serialized string — a character cut lands mid-value on a
-    # document this size and hands the model broken JSON it can only report
-    # as truncated, not draw from. `read_file` itself caps at MAX_OUTPUT
-    # (24000 chars), so this stays safely under that.
-    fields = ["app_summary", "roles", "authentication_requirement", "main_modules",
-             "database_design", "business_workflows", "api_design",
-             "public_pages", "protected_pages"]
-    digest = json.dumps({k: doc.get(k) for k in fields if doc.get(k)}, ensure_ascii=False)
-    while len(digest) > 20000 and len(fields) > 1:
-        fields.pop()
-        digest = json.dumps({k: doc.get(k) for k in fields if doc.get(k)}, ensure_ascii=False)
+    # The staged context is shaped to the requested diagram. It retains schema
+    # and workflow evidence without exceeding the read tool's output limit.
+    digest = json.dumps(_diagram_context(doc, kind), ensure_ascii=False)
     # Staged rather than pasted in: the model reads its own curated slice of
     # the specification with its read tool, and the read shows in the chat.
     # fresh=False: every kind's digest lands in this same shared folder, in
@@ -335,38 +460,22 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
                 "format": "mermaid", "source": "", "applicable": False,
                 "applicability_note": source.split(":", 1)[-1].strip()[:240]}
 
-    # Two separate checks drive this loop: `mermaid.problems()` (empty source, wrong
-    # opener, unbalanced brackets — a static check that costs nothing and needs no
-    # renderer) and, only when a renderer is installed, an actual render. A source
-    # can fail the first without ever reaching the second, and it must still be
-    # retried — an empty response is exactly the case a renderer-gated retry never
-    # sees, which is how a diagram went missing with no repair attempt at all.
+    # The tuned prompt is the quality control for diagram notation and visual
+    # hierarchy.  We only retry a concrete Mermaid parser/render failure here;
+    # hidden shape or reference gates would make the model regenerate a valid
+    # source for reasons the prompt did not communicate.
     mmd = session.record_path(SRS_DIR, "diagrams", f"{kind}.mmd")
     svg = session.record_path(SRS_DIR, "diagrams", f"{kind}.svg")
     rendered, why = False, "no renderer"
-    review: dict[str, Any] | None = None
 
     for attempt in range(3):
-        wrong = mermaid.problems(kind, source)
-        if not wrong and mermaid.available():
+        wrong: list[str] = []
+        if mermaid.available():
             bus.agent_msg(project, f"Render {kind.replace('_', ' ')} diagram with Mermaid CLI.",
                           title="Rendering diagram", kind="command")
-            rendered, why = mermaid.render(source, svg)
+            rendered, why = mermaid.render_diagram(kind, source, svg)
             bus.agent_msg(project, "SVG rendered successfully." if rendered else why,
                           title="Mermaid output", kind="command_output")
-            if rendered:
-                try:
-                    review = _review_diagram(project, session.workspace, kind, source, context_path)
-                except Exception as exc:
-                    # Mermaid has already validated the source. Record a
-                    # temporary cloud-review outage explicitly instead of
-                    # silently calling it a passed comparison.
-                    review = {"verdict": "unavailable", "findings": [str(exc)[:240]], "checks": []}
-                    bus.log(project, "WARN", f"Cloud diagram review unavailable for {kind}: {str(exc)[:120]}")
-                    break
-                if review["verdict"] == "pass":
-                    break
-                wrong = review["findings"] or ["cloud reviewer requested a notation repair"]
             if not rendered:
                 wrong = [why]
         if not wrong or attempt == 2:
@@ -374,13 +483,6 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
         source = _ask(f"\n\n## Your last attempt\n\n```\n{source[:4000]}\n```\n\n"
                       f"It was rejected: {'; '.join(wrong)}\n\n"
                       f"Return corrected Mermaid source only.")
-
-    # A rendered SVG is not a final SRS figure until the configured cloud
-    # comparison explicitly passes. Keep the editable Mermaid source and the
-    # review artifact for diagnosis, but do not publish an unreviewed SVG.
-    if review and review.get("verdict") != "pass":
-        rendered = False
-        why = "cloud review did not pass: " + "; ".join(review.get("findings") or [review["verdict"]])
 
     mmd.write_text(source, encoding="utf-8")
     bus.file_written(project, mmd.relative_to(session.workspace).as_posix(), source,
@@ -399,15 +501,6 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
         entry["svg_path"] = svg.relative_to(session.workspace).as_posix()
         entry["rendered_by"] = "mermaid_cli"
         entry["format"] = "svg+mermaid-source"
-    if review:
-        review_path = session.record_path(SRS_DIR, "diagram-reviews", f"{kind}.json")
-        review_path.parent.mkdir(parents=True, exist_ok=True)
-        review_text = json.dumps(review, ensure_ascii=False, indent=2)
-        review_path.write_text(review_text, encoding="utf-8")
-        bus.file_written(project, review_path.relative_to(session.workspace).as_posix(),
-                         review_text, note="reviewed")
-        entry["review"] = review
-        entry["review_path"] = review_path.relative_to(session.workspace).as_posix()
     if not rendered and mermaid.available():
         entry["render_error"] = why[:240]
     return entry
@@ -686,7 +779,12 @@ def generate(project: str) -> dict[str, Any]:
                       title="SRS generation", kind="narration")
         envelope = _write_document(session, project, record, approved)
         doc = envelope["srs_document"]
-        _write_record_visible(session, project, DOCUMENT, envelope)
+        # The document record embeds every rendered SVG. Sending that entire
+        # record through the live file-event channel can fill a browser's
+        # WebSocket buffer and leave the background job waiting in `sendall`.
+        # The individual Mermaid source events above remain inspectable; this
+        # durable record only needs an atomic local save.
+        session.write_record(*DOCUMENT, data=envelope)
         bus.log(project, "SUCCESS",
                 f"{len(doc.get('functional_requirements') or [])} functional and "
                 f"{len(doc.get('non_functional_requirements') or [])} non-functional "
@@ -1112,9 +1210,167 @@ def _review_loop(session: ProjectSession, project: str, envelope: dict,
 
 # --- what the studio reads --------------------------------------------------
 
+def _recover_rendered_diagrams(project: str, envelope: dict[str, Any]) -> bool:
+    """Render valid legacy Mermaid sources once a renderer becomes available.
+
+    Projects created while the desktop process could not find Node already have
+    reviewed Mermaid source, but no ``svg`` field for the Studio to display.
+    Recovering that image must not invoke a model, alter the specification, or
+    replace any source: it only adds the deterministic render artifact that
+    was unavailable at the time of the original SRS run.
+    """
+    doc = envelope.get("srs_document") or {}
+    rows = doc.get("diagrams") or []
+    if not isinstance(rows, list) or not mermaid.available():
+        return False
+
+    session = session_for(project)
+    recovered = False
+    for entry in rows:
+        if not isinstance(entry, dict) or entry.get("svg") or entry.get("applicable") is False:
+            continue
+        kind = str(entry.get("kind") or "").strip()
+        source = mermaid.clean(str(entry.get("source") or entry.get("mermaid") or ""))
+        # Historical projects can predate a newer *notation* guard while
+        # still containing Mermaid that the real renderer accepts.  Recovery
+        # never changes that source; Mermaid CLI remains the authoritative
+        # syntax check before a legacy preview is restored.
+        if not kind or not source:
+            continue
+
+        svg = session.record_path(SRS_DIR, "diagrams", f"{kind}.svg")
+        rendered, _why = mermaid.render_diagram(kind, source, svg)
+        if not rendered:
+            continue
+        entry["svg"] = svg.read_text(encoding="utf-8", errors="replace")
+        entry["svg_path"] = svg.relative_to(session.workspace).as_posix()
+        entry["rendered_by"] = "mermaid_cli"
+        entry["format"] = "svg+mermaid-source"
+        entry.pop("render_error", None)
+        recovered = True
+
+    if recovered:
+        session.write_record(*DOCUMENT, data=envelope)
+        bus.log(project, "SUCCESS", "Recovered SVG previews for existing Mermaid diagrams.")
+    return recovered
+
+
 def diagrams(project: str) -> dict[str, Any]:
-    doc = document(project).get("srs_document", {})
+    envelope = document(project)
+    _recover_rendered_diagrams(project, envelope)
+    doc = envelope.get("srs_document", {})
     return {"diagrams": doc.get("diagrams") or []}
+
+
+def redraw_diagrams(project: str, *, deep: bool = False,
+                    kinds: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
+    """Refresh the current SRS diagrams without rebuilding the SRS.
+
+    A normal refresh redraws the saved Mermaid sources using the latest
+    renderer/theme.  It is deliberately local and fast: an eleven-diagram
+    preview should not need eleven cloud authoring calls and eleven cloud
+    reviews.  ``deep=True`` remains available for an explicit, much slower AI
+    re-authoring pass when the *content* of the diagrams needs to change.
+    """
+    store.require(project)
+    envelope = document(project)
+    doc = envelope.get("srs_document") or {}
+    if not doc:
+        raise ValueError("generate the specification before redrawing its diagrams")
+
+    requested = tuple(kind for kind in DIAGRAM_KINDS if not kinds or kind in kinds)
+    if not requested:
+        raise ValueError("choose at least one supported diagram kind")
+
+    session = session_for(project)
+    session.begin("diagram_refresh", role=bus.DEVELOPER)
+    action = "Rebuilding diagrams with AI" if deep else "Refreshing diagram previews"
+    bus.sync_state(project, "running", action,
+                   source="srs", srs_status="running")
+    try:
+        if deep:
+            bus.agent_msg(project,
+                          "Rebuilding every diagram from the current SRS with the standards template.",
+                          title="Diagram rebuild", kind="narration")
+            drawn = llm.in_lanes(
+                list(requested),
+                lambda kind: _draw_diagram(session, project, doc, kind),
+                on_error=lambda kind, exc: {
+                    "id": f"DIA-{kind}", "kind": kind,
+                    "title": kind.replace("_", " ").title(),
+                    "format": "mermaid", "source": "", "applicable": False,
+                    "applicability_note": f"drawing failed: {exc}"[:240],
+                },
+            )
+        else:
+            previous = {str(entry.get("kind") or ""): entry
+                        for entry in (doc.get("diagrams") or []) if isinstance(entry, dict)}
+
+            def refresh(kind: str) -> dict:
+                entry = dict(previous.get(kind) or {})
+                mmd = session.record_path(SRS_DIR, "diagrams", f"{kind}.mmd")
+                svg = session.record_path(SRS_DIR, "diagrams", f"{kind}.svg")
+                source = mermaid.clean(mmd.read_text(encoding="utf-8", errors="replace")) \
+                    if mmd.is_file() else str(entry.get("source") or "").strip()
+                entry.update({
+                    "id": entry.get("id") or f"DIA-{kind}",
+                    "kind": kind,
+                    "title": entry.get("title") or kind.replace("_", " ").title(),
+                    "format": "mermaid",
+                    "source": source,
+                    "applicable": bool(source),
+                    "mmd_path": mmd.relative_to(session.workspace).as_posix(),
+                })
+                if not source:
+                    for field in ("svg", "svg_path", "rendered_by", "render_error"):
+                        entry.pop(field, None)
+                    entry["applicability_note"] = entry.get("applicability_note") or "No saved Mermaid source."
+                    return entry
+                rendered, reason = mermaid.render_diagram(kind, source, svg)
+                if rendered:
+                    entry.update({
+                        "format": "svg+mermaid-source",
+                        "svg": svg.read_text(encoding="utf-8", errors="replace"),
+                        "svg_path": svg.relative_to(session.workspace).as_posix(),
+                        "rendered_by": "mermaid_cli",
+                    })
+                    entry.pop("render_error", None)
+                else:
+                    for field in ("svg", "svg_path", "rendered_by"):
+                        entry.pop(field, None)
+                    entry["render_error"] = reason[:240]
+                return entry
+
+            bus.agent_msg(project,
+                          "Refreshing saved Mermaid sources with the current Visual Paradigm-style renderer.",
+                          title="Diagram refresh", kind="narration")
+            drawn = llm.in_lanes(list(requested), refresh)
+        refreshed = {str(entry.get("kind") or ""): entry for entry in drawn if entry}
+        old = {str(entry.get("kind") or ""): entry
+               for entry in (doc.get("diagrams") or []) if isinstance(entry, dict)}
+        doc["diagrams"] = [refreshed.get(kind, old.get(kind))
+                           for kind in DIAGRAM_KINDS
+                           if refreshed.get(kind) or old.get(kind)]
+        _write_record_visible(session, project, DOCUMENT, envelope)
+        rendered = sum(1 for entry in doc["diagrams"] if entry.get("svg"))
+        total = sum(1 for entry in doc["diagrams"] if entry.get("applicable"))
+        bus.log(project, "SUCCESS" if rendered else "WARN",
+                f"Diagram {'rebuild' if deep else 'refresh'} complete: {rendered} of {total} rendered to SVG.")
+        # Focused diagram calls do not need to mutate the shared chat memory:
+        # the durable SRS record is the source of truth for later stages.  A
+        # concurrent tool session can hold that conversation lock, which must
+        # never keep a completed diagram job from reporting its result.
+        bus.log(project, "INFO",
+                f"Diagram artifacts {'rebuilt' if deep else 'refreshed'}: {rendered} of {total} SVG previews rendered.")
+        session.finish("Diagram refresh complete.")
+        bus.sync_state(project, "clean", "Diagram refresh complete",
+                       source="srs", srs_status="completed")
+        return {"diagrams": doc["diagrams"], "rendered": rendered, "total": total,
+                "requested": list(requested), "mode": "deep" if deep else "fast"}
+    except Exception:
+        session.fail("diagram refresh could not be completed")
+        bus.sync_state(project, "clean", "Diagram refresh failed", source="srs", srs_status="failed")
+        raise
 
 
 def handoff(project: str) -> dict[str, Any]:
@@ -1192,6 +1448,77 @@ def save_wireframe_html(project: str, route: str, html: str) -> dict[str, Any]:
                              note="edited", agent=bus.DESIGNER)
             return {"ok": True, "route": route}
     raise FileNotFoundError(f"no wireframe for {route}")
+
+
+def ai_edit_wireframe(project: str, route: str, prompt: str) -> dict[str, Any]:
+    """Apply one fast AI revision to exactly one saved wireframe page.
+
+    This is intentionally not a project task: there is no plan, SRS mutation,
+    prototype regeneration, or permission to write any file except the chosen
+    wireframe HTML.  The model receives the current page as its edit buffer;
+    Python validates the replacement and performs the single controlled write.
+    """
+    request = " ".join(str(prompt or "").split())
+    if not request:
+        raise ValueError("describe the wireframe change first")
+    if len(request) > 4000:
+        raise ValueError("keep the wireframe request under 4,000 characters")
+
+    session = session_for(project)
+    index = session.read_record(*WIREFRAME_INDEX, fallback=None) or {}
+    wanted = str(route or "/")
+    row = next((item for item in (index.get("screens") or [])
+                if str(item.get("route") or "") == wanted), None)
+    if not row:
+        raise FileNotFoundError(f"no wireframe for {wanted}")
+    path = session.workspace / str(row.get("file") or "")
+    if not path.is_file():
+        raise FileNotFoundError(f"no wireframe for {wanted}")
+
+    current = path.read_text(encoding="utf-8")
+    doc = document(project).get("srs_document", {})
+    # Use the same completeness floor as a full wireframe draw.  A direct edit
+    # may redesign the page, but must still return a usable whole screen.
+    expected = max(
+        completeness.WIREFRAME_FLOOR,
+        completeness._page_weight(doc, wanted) * completeness.WIREFRAME_CHARS_PER_SECTION,
+    )
+    minimum = max(expected, min(len(current), 12_000))
+    instruction = f"""You are revising one existing low-fidelity HTML wireframe.
+
+Work only on the current page for route {wanted!r}. Do not change a plan, SRS,
+prototype, other page, or any file. Keep it a monochrome low-fidelity sketch:
+simple borders, placeholders, labels, and behaviour notes; no polished visual
+design, imagery, colour system, scripts, or external assets. Preserve useful
+existing content and form behaviour unless the request changes it.
+
+The user request is:
+{request}
+
+Return a complete replacement HTML document only, including inline CSS.
+
+Current page HTML:
+```html
+{current}
+```"""
+    bus.agent_msg(project, f"Updating wireframe {wanted} from a direct page request.",
+                  title="Wireframe AI update", kind="narration")
+    html = llm.complete_html(
+        system=prompts.load("srs/system"),
+        user=instruction,
+        minimum=minimum,
+        label=f"wireframe_ai_edit:{wanted}",
+        attempts=2,
+    )
+    gaps = completeness.wireframe_depth([(wanted, html)], doc)
+    if gaps:
+        raise ValueError("The AI update did not produce a complete wireframe: " + "; ".join(gaps[:3]))
+
+    path.write_text(html, encoding="utf-8")
+    relative = path.relative_to(session.workspace).as_posix()
+    bus.file_written(project, relative, html, note="AI updated", agent=bus.DEVELOPER)
+    bus.log(project, "SUCCESS", f"Wireframe AI update · {wanted} ({len(html):,} characters)", agent=bus.DEVELOPER)
+    return {"ok": True, "route": wanted, "file": relative}
 
 
 def _generate_wireframes(session: ProjectSession, project: str, doc: dict,

@@ -300,6 +300,9 @@ class ProjectSession:
         self._agent: Agent | None = None
         self._model = ""
         self._thinking_level = ""
+        self._turn_started_at = 0
+        self._turn_prompt_base = 0
+        self._turn_completion_base = 0
         # Stage notes recorded before anything opened the conversation — the
         # interview runs long before a tool-using stage creates the agent.
         self._pending_notes: list[str] = []
@@ -348,6 +351,12 @@ class ProjectSession:
             if answer:
                 bus.agent_msg(self.project, answer, title="Agent update", kind="narration",
                               agent=self.role)
+        elif text.startswith("[thinking]"):
+            bus.agent_state(self.project, "thinking", thinking=True, agent=self.role)
+        elif text.startswith("[usage]"):
+            # This is emitted only after the provider has returned its exact
+            # counters for a response.  It keeps the visual meter truthful.
+            self.report_memory()
         elif text.startswith("[progress] ") or text.startswith("[context] "):
             bus.log(self.project, "INFO", text, agent=self.role)
         else:
@@ -400,6 +409,7 @@ class ProjectSession:
                     web_host=saved.get("ollama_host") or "http://localhost:11434",
                     protected_app_root=config.ROOT,
                     mcp_servers=saved.get("mcp_servers") or None,
+                    on_summarize=self._archive_summary,
                 )
                 self._agent.tools = StudioTools(
                     self.workspace, client,
@@ -472,6 +482,34 @@ class ProjectSession:
                 f"Picked the conversation back up ({len(kept)} earlier turns).",
                 agent=self.role)
 
+    def _archive_path(self) -> Path:
+        return self.record / "context-archive.jsonl"
+
+    def _archive_summary(self, old: list[dict]) -> None:
+        """Keep what context compression is about to delete, somewhere that never gets trimmed.
+
+        The live conversation has to fit the active model's window, so `_summarize_history()`
+        condenses older turns into a short `memory_summary` and deletes the originals from
+        `self.messages` — correct for keeping the conversation usable, but without this it is
+        also the one point where the project's own history (the interview's exact answers, the
+        SRS's exact wording, an earlier stage's exact decision) becomes unrecoverable. This
+        appends the deleted turns, verbatim, to one growing file per project, so the detail
+        survives model switches and long projects even though the working conversation does not
+        carry it forward turn by turn.
+        """
+        if self._is_discarded() or not old:
+            return
+        try:
+            self._archive_path().parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps({"at": time.time(), "stage": self.stage, "model": self._model,
+                               "messages": old}, ensure_ascii=False, default=str)
+            with self._archive_path().open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except (OSError, TypeError, ValueError):
+            # Same posture as save_context(): a line that cannot be written is not a
+            # reason to break the turn that is already in progress.
+            pass
+
     def save_context(self) -> None:
         if self._agent is None or self._is_discarded():
             return
@@ -501,6 +539,10 @@ class ProjectSession:
         stage_evidence.begin(self.project, stage)
         self.stage = stage
         self.role = role
+        self._turn_started_at = int(time.time() * 1000)
+        existing = self._agent
+        self._turn_prompt_base = int(getattr(existing, "prompt_tokens", 0) or 0)
+        self._turn_completion_base = int(getattr(existing, "completion_tokens", 0) or 0)
         bus.run_state(self.project, "running", run_id=run_id or stage, agent=role)
         bus.phase(self.project, stage, stage.replace("_", " ").title(), status="active")
 
@@ -557,8 +599,13 @@ class ProjectSession:
         agent = self._agent
         if not agent:
             return
+        prompt_total = int(getattr(agent, "prompt_tokens", 0) or 0)
+        completion_total = int(getattr(agent, "completion_tokens", 0) or 0)
         bus.memory(self.project, agent.model, agent.context_usage(),
-                   agent.context or 0, agent.tool_call_count, agent=self.role)
+                   agent.context or 0, agent.tool_call_count, agent=self.role,
+                   turn_started_at=int(getattr(self, "_turn_started_at", 0) or 0),
+                   turn_input_tokens=max(0, prompt_total - int(getattr(self, "_turn_prompt_base", 0) or 0)),
+                   turn_output_tokens=max(0, completion_total - int(getattr(self, "_turn_completion_base", 0) or 0)))
 
     def note(self, text: str, role: str = "") -> None:
         """Record something into the project's memory without asking the model.
@@ -826,10 +873,24 @@ class ProjectSession:
 
     def write_record(self, *parts: str, data: Any) -> Path:
         path = self.record_path(*parts)
-        if path.suffix == ".json":
-            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        else:
-            path.write_text(str(data), encoding="utf-8")
+        payload = (json.dumps(data, ensure_ascii=False, indent=2)
+                   if path.suffix == ".json" else str(data))
+        # Readers run in separate HTTP threads.  Replacing a fully-written
+        # sibling is atomic, unlike writing straight into the live JSON file,
+        # so a refresh can never parse an incomplete interview (or any other
+        # project record) while another request is saving it.
+        temporary = path.with_name(f".{path.name}.{threading.get_ident()}.{time.time_ns()}.tmp")
+        temporary.write_text(payload, encoding="utf-8")
+        try:
+            os.replace(temporary, path)
+        finally:
+            # os.replace removes it on success.  Keep a failed save from
+            # accumulating hidden files without ever touching the last good
+            # record.
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
         return path
 
 

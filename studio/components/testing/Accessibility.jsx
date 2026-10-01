@@ -41,7 +41,7 @@ export default function Accessibility({ qa }) {
         {page.passedRules != null && <span className="text-[11px] text-muted">{page.passedRules} rules passed · {(page.incomplete || []).length} needs review</span>}
       </div>
       {page.reason && <p className="mt-2 text-xs text-muted">{page.reason}</p>}
-      {(page.violations || []).map(v => <div key={v.id} className="mt-3 rounded-none border border-[#FF5630]/30 p-3">
+      {(page.violations || []).map(v => <div key={v.id} className="mt-3 rounded-none border border-bad/30 p-3">
         <p className="text-xs font-semibold text-ink">{v.impact || 'unknown'} · {v.id} — {v.description}</p>
         {(v.nodes || []).map((node, j) => <p key={j} className="mt-1 break-all font-mono text-[11px] text-muted">{(node.target || []).join(' ')} · {node.summary}</p>)}
         {v.helpUrl && <a href={v.helpUrl} target="_blank" rel="noreferrer" className="text-[11px] text-accent underline">Rule guidance</a>}

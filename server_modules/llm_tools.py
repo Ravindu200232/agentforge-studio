@@ -143,7 +143,8 @@ class ReadOnlyTools:
 
 
 def _stream_chat(chat: Callable[..., Any], kwargs: dict[str, Any],
-                 on_token: Callable[[str], None]) -> Any:
+                 on_token: Callable[[str], None],
+                 on_usage: Callable[[Any], None] | None = None) -> Any:
     """One `chat(**kwargs, stream=True)` call, forwarding each content delta
     to `on_token` as it arrives, returning the same shape a non-streamed call
     returns (one assembled message) so every caller downstream — the tool-call
@@ -156,7 +157,9 @@ def _stream_chat(chat: Callable[..., Any], kwargs: dict[str, Any],
     content: list[str] = []
     thinking: list[str] = []
     calls: list[Any] = []
+    final = None
     for chunk in chat(**{**kwargs, "stream": True}):
+        final = chunk
         delta = chunk.message
         if delta.content:
             content.append(delta.content)
@@ -165,6 +168,8 @@ def _stream_chat(chat: Callable[..., Any], kwargs: dict[str, Any],
             thinking.append(delta.thinking)
         if delta.tool_calls:
             calls.extend(delta.tool_calls)
+    if final is not None and on_usage is not None:
+        on_usage(final)
     return ollama.Message(role="assistant", content="".join(content),
                           thinking="".join(thinking) or None, tool_calls=calls or None)
 
@@ -172,7 +177,8 @@ def _stream_chat(chat: Callable[..., Any], kwargs: dict[str, Any],
 def run_chat(chat: Callable[..., Any], kwargs: dict[str, Any],
              tools: "ReadOnlyTools | None", max_rounds: int = MAX_TOOL_ROUNDS,
              on_stream_start: Callable[[], None] | None = None,
-             on_stream_token: Callable[[str], None] | None = None) -> Any:
+             on_stream_token: Callable[[str], None] | None = None,
+             on_usage: Callable[[Any], None] | None = None) -> Any:
     """Drive one `chat(**kwargs)` call through read-only tool round trips.
 
     Returns the final message. `chat` is the caller's own bound `client().chat`,
@@ -190,11 +196,17 @@ def run_chat(chat: Callable[..., Any], kwargs: dict[str, Any],
     content, never a stale tool-round narration.
     """
     def call(round_kwargs: dict[str, Any]) -> Any:
-        if on_stream_token is None:
-            return chat(**round_kwargs).message
+        # Cloud's terminal stream is where it reliably provides token counts.
+        # A caller may also ask to stream visible text. In both cases preserve
+        # the same assembled Message contract for the read-only tool loop.
+        if on_stream_token is None and not round_kwargs.get("stream"):
+            response = chat(**round_kwargs)
+            if on_usage is not None:
+                on_usage(response)
+            return response.message
         if on_stream_start is not None:
             on_stream_start()
-        return _stream_chat(chat, round_kwargs, on_stream_token)
+        return _stream_chat(chat, round_kwargs, on_stream_token or (lambda _token: None), on_usage)
 
     model = kwargs.get("model")
     if tools is None or model in _UNSUPPORTED_MODELS:

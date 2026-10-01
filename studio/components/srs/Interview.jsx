@@ -9,6 +9,7 @@ import { useStore } from '@/lib/store'
 import { TYPE_ANOTHER } from '@/lib/srs-constants'
 import { useAttachments } from '@/lib/use-attachments'
 import { AttachButtons, AttachList } from './Attachments'
+import AgentChat from '../AgentChat'
 import { Button, TextArea } from '../ui'
 import { cn } from '@/lib/utils'
 
@@ -45,7 +46,9 @@ export default function Interview({ projectId, onDone, onCancel }) {
   }
 
   useEffect(() => { refresh() }, [projectId])
-  useEffect(() => { tail.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }) }, [state.question?.id, state.answers?.length, pending])
+  useEffect(() => {
+    tail.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [state.question?.id, state.answers?.length, pending])
   useEffect(() => { if (typing) composer.current?.focus() }, [typing])
 
   const q = state.question
@@ -161,7 +164,7 @@ export default function Interview({ projectId, onDone, onCancel }) {
   )
 
   return (
-    <div className="srs-messenger flex min-h-0 flex-1 flex-col bg-[#F2F0EF] text-ink">
+    <div className="srs-messenger flex min-h-0 flex-1 flex-col bg-panel text-ink">
       <header className="flex shrink-0 items-center gap-3 border-b border-black/10 px-7 py-4 backdrop-blur-md">
         <button onClick={onCancel} className="grid size-9 place-items-center rounded-none border border-black/10 bg-black/[.04] text-muted transition hover:bg-black/[.08] hover:text-ink">
           <ArrowLeft className="size-4" />
@@ -189,6 +192,11 @@ export default function Interview({ projectId, onDone, onCancel }) {
         </button>
       </header>
 
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/* The same durable stream used by SRS, wireframe, prototype, build,
+            QA and deploy. Interview controls stay in the work pane. */}
+        <AgentChat projectTitle="Plan conversation" readOnly className="hidden lg:flex lg:w-[360px]" />
+
       <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
         <div className="mx-auto max-w-[820px] py-4">
           <div className="mb-7 flex justify-center">
@@ -197,19 +205,21 @@ export default function Interview({ projectId, onDone, onCancel }) {
             </span>
           </div>
 
-          {history.map(({ row, answer: a }, i) => (
-            <div key={row.id || i} className="mb-7">
-              <Message side="left" label="AgentForge">{row.question}</Message>
-              <Message side="right" label="You">{said(a)}</Message>
-            </div>
-          ))}
+          <div className="lg:hidden">
+            {history.map(({ row, answer: a }, i) => (
+              <div key={row.id || i} className="mb-7">
+                <Message side="left" label="AgentForge">{row.question}</Message>
+                <Message side="right" label="You">{said(a)}</Message>
+              </div>
+            ))}
 
-          {pending && (
-            <div className="mb-7 animate-in fade-in duration-200">
-              <Message side="left" label="AgentForge">{pending.question}</Message>
-              <Message side="right" label="You">{pending.answer}</Message>
-            </div>
-          )}
+            {pending && (
+              <div className="mb-7 animate-in fade-in duration-200">
+                <Message side="left" label="AgentForge">{pending.question}</Message>
+                <Message side="right" label="You">{pending.answer}</Message>
+              </div>
+            )}
+          </div>
 
           {phase === 'sending' && (
             <div className="mb-5 flex items-center gap-2.5 rounded-none border border-black/10 bg-black/[.04] px-4 py-3 text-[12px] text-muted">
@@ -256,7 +266,7 @@ export default function Interview({ projectId, onDone, onCancel }) {
                       }}
                       className={cn('rounded-full px-4 py-2 text-[12px] font-medium transition-all shadow-sm disabled:opacity-45 text-left',
                         chosen
-                          ? 'bg-[#BFB9FF] text-ink border border-[#BFB9FF] shadow-[0_4px_12px_0_rgba(191, 185, 255,0.24)]'
+                          ? 'bg-accent text-ink border border-accent shadow-[0_4px_12px_0_rgba(191, 185, 255,0.24)]'
                           : 'border border-black/10 bg-black/[.05] text-ink hover:bg-black/[.1] hover:text-ink hover:border-black/20'
                       )}
                     >
@@ -282,7 +292,7 @@ export default function Interview({ projectId, onDone, onCancel }) {
           )}
 
           {phase !== 'sending' && (
-            <div className="ml-auto mt-2 max-w-[690px] rounded-none border border-line bg-[#F2F0EF] p-4 shadow-2xl backdrop-blur-2xl transition-all focus-within:border-[#BFB9FF]/50 focus-within:shadow-[0_15px_40px_rgba(191, 185, 255,.15)]">
+            <div className="ml-auto mt-2 max-w-[690px] rounded-none border border-line bg-panel p-4 shadow-2xl backdrop-blur-2xl transition-all focus-within:border-accent/50 focus-within:shadow-[0_15px_40px_rgba(191, 185, 255,.15)]">
               {options.length > 0 && (
                 <div className="mb-2 px-1 text-[11px] font-medium text-muted2">
                   Or type your own answer / extra details:
@@ -309,7 +319,7 @@ export default function Interview({ projectId, onDone, onCancel }) {
                 <button
                   disabled={phase === 'sending' || (!text.trim() && !attach.items.length && !picked.length)}
                   onClick={submitAnswer}
-                  className="inline-flex h-9 items-center gap-2 rounded-none bg-[#BFB9FF] px-4 text-[12px] font-semibold text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)] transition hover:bg-[#9B94E8] disabled:opacity-40 cursor-pointer"
+                  className="inline-flex h-9 items-center gap-2 rounded-none bg-accent px-4 text-[12px] font-semibold text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)] transition hover:bg-press disabled:opacity-40 cursor-pointer"
                 >
                   <ArrowRight className="size-3.5" /> Send
                 </button>
@@ -321,13 +331,14 @@ export default function Interview({ projectId, onDone, onCancel }) {
           <div ref={tail} />
         </div>
       </div>
+      </div>
 
       <footer className="shrink-0 border-t border-line bg-panel/90 px-6 py-3 backdrop-blur-xl">
         <div className="mx-auto flex max-w-[820px] items-center gap-2 text-[11px] text-muted">
           <Sparkles className="size-3.5 text-accent" /> Your answers become the implementation contract. You can review the full plan before anything is built.
           <span className="flex-1" />
           <button disabled={answered === 0} onClick={draftPlanNow} className="inline-flex items-center gap-1.5 rounded-none border border-line bg-panel2/80 px-3.5 py-1.5 font-medium text-ink transition hover:bg-raised disabled:opacity-40 cursor-pointer">
-            <FileText className="size-3 text-[#FFAB00]" /> Review plan
+            <FileText className="size-3 text-warn" /> Review plan
           </button>
         </div>
       </footer>
@@ -340,7 +351,7 @@ function Message({ side, label, current, children }) {
   return (
     <div className={cn('flex items-end gap-3', right && 'justify-end')}>
       {!right && (
-        <span className="grid size-8 shrink-0 place-items-center rounded-none bg-[#BFB9FF] border border-[#BFB9FF]/30 text-[11px] font-bold text-ink shadow-sm">
+        <span className="grid size-8 shrink-0 place-items-center rounded-none bg-accent border border-accent/30 text-[11px] font-bold text-ink shadow-sm">
           AF
         </span>
       )}
@@ -348,10 +359,10 @@ function Message({ side, label, current, children }) {
         <div className="mb-1.5 px-1 text-[9.5px] font-bold uppercase tracking-[.14em] text-muted2">{label}</div>
         <div className={cn('inline-block rounded-none px-4 py-3.5 text-left text-[13px] leading-relaxed shadow-sm',
           right
-            ? 'rounded-none bg-[#BFB9FF] border border-[#BFB9FF]/35 text-ink font-medium'
+            ? 'rounded-none bg-accent border border-accent/35 text-ink font-medium'
             : current
-              ? 'rounded-none bg-[#F2F0EF] border border-accent/40 ring-1 ring-accent/20 text-ink'
-              : 'rounded-none bg-[#F2F0EF]/90 border border-black/10 text-ink'
+              ? 'rounded-none bg-panel border border-accent/40 ring-1 ring-accent/20 text-ink'
+              : 'rounded-none bg-panel/90 border border-black/10 text-ink'
         )}>
           {children}
         </div>

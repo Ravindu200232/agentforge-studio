@@ -7,7 +7,7 @@ A data flow diagram shows how named information enters the system, is transforme
 ## Standard
 
 - Yourdon/DeMarco-style DFD (Mermaid approximation for stores)
-- Mermaid form: `flowchart LR`
+- Mermaid form: `flowchart TB`
 
 ## Exact notation (use these tokens, not approximations)
 
@@ -23,3 +23,9 @@ A data flow diagram shows how named information enters the system, is transforme
 - Start with external entities, numbered verb–noun processes, and approved data stores from the database design.
 - Label every arrow with the actual data being moved rather than a control-flow action.
 - Never connect entity-to-entity or entity-to-store directly, and avoid black-hole or miracle processes.
+- Draw one coherent Level-1 view: use a small numbered set of major transformations in reading order, place external entities at the perimeter and data stores near their consuming processes. Do not turn a DFD into a control-flow or database-schema diagram.
+- Keep the Level-1 view readable on one landscape canvas like the reference: use exactly 4 major processes, 4–5 data stores, and at most 4 external entities total (people and providers together). Combine related operations into one transformation; do not model every screen, field, status, endpoint, or actor as its own node.
+- Data-flow labels are concise noun phrases of 2–6 words (for example `order details`, `payment result`, `tracking update`); never copy a full requirement sentence into an edge label.
+- Use a balanced top-to-bottom composition with the four processes in a compact central reading sequence, external entities on the left/right perimeter, and stores directly below their owning process. Give a process one outgoing hand-off to the next process instead of drawing long return loops across the canvas; avoid crossing edges and do not exceed a 3:1 width-to-height ratio.
+- Declare the four numbered processes first and connect them only as `p1 --> p2 --> p3 --> p4`, so Mermaid preserves a compact top-to-bottom centre. Attach each external entity to one owning process only. A store normally belongs to one process; `orders` may serve payment and fulfilment. Never draw a browse process writing catalogue data back to its product or shop store.
+- Use `classDef` to preserve the reference palette: external entities pale yellow `#F8EE9C`, processes light blue `#75C5E8`, stores white with dark `#111827` outlines, dark arrow labels, and no gradients, shadows, icons, or decorative legends.

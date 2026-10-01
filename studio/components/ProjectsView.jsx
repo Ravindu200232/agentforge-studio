@@ -65,9 +65,9 @@ function ProjectVisualThumbnail({ project, name }) {
   }
 
   return (
-    <div ref={containerRef} className="relative h-full w-full overflow-hidden bg-[#F2F0EF]">
+    <div ref={containerRef} className="relative h-full w-full overflow-hidden bg-panel">
       {!loaded && (
-        <div className="absolute inset-0 flex items-center justify-center bg-[#F2F0EF]/90 backdrop-blur-sm z-[1]">
+        <div className="absolute inset-0 flex items-center justify-center bg-panel/90 backdrop-blur-sm z-[1]">
           <div className="flex items-center gap-2 text-[11px] text-muted2">
             <span className="size-2.5 animate-spin rounded-full border-2 border-accent border-t-transparent" />
             <span>Loading preview…</span>
@@ -207,6 +207,25 @@ export default function ProjectsView({
           </div>
 
           <div className="flex items-center justify-between sm:justify-start gap-2.5 overflow-x-auto no-scrollbar">
+            <div className="flex items-center rounded-xl border border-line bg-panel2/40 p-1 text-[12px] shrink-0">
+              {[
+                { id: '', label: 'All projects', count: projects.length },
+                { id: 'starred', label: 'Starred', count: starred.length, Icon: Star },
+                { id: 'recent', label: 'Recent', count: recent.length, Icon: Calendar },
+              ].map(option => {
+                const active = shelf === option.id
+                return (
+                  <button key={option.id || 'all-projects'} type="button" onClick={() => setShelf(option.id)} aria-pressed={active}
+                          className={cn('inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11.5px] font-medium whitespace-nowrap transition-colors',
+                            active ? 'text-deep' : 'text-muted hover:text-ink')}>
+                    {option.Icon && <option.Icon className="size-3.5" />}
+                    <span>{option.label}</span>
+                    <span className="font-mono text-[10px] opacity-60">({option.count})</span>
+                  </button>
+                )
+              })}
+            </div>
+
             {/* Filter Pills */}
             <div className="flex items-center rounded-xl border border-line bg-panel2/40 p-1 text-[12px] shrink-0">
               {[
@@ -299,15 +318,15 @@ export default function ProjectsView({
                       {/* Type Badge */}
                       <div className="absolute left-3 top-3 z-10">
                         {isProto ? (
-                          <span className="inline-flex items-center gap-1 rounded-md bg-purple-500 px-2 py-0.5 text-[10.5px] font-semibold text-ink backdrop-blur-md border border-purple-500/30">
+                          <span className="inline-flex items-center gap-1 rounded-md border border-purple-500/45 bg-panel/95 px-2 py-0.5 text-[10.5px] font-semibold text-purple-600 backdrop-blur-md">
                             <Layers className="size-3" /> Prototype
                           </span>
                         ) : isSpec ? (
-                          <span className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 text-[10.5px] font-semibold text-ink backdrop-blur-md border border-amber-500/30">
+                          <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/45 bg-panel/95 px-2 py-0.5 text-[10.5px] font-semibold text-amber-700 backdrop-blur-md">
                             <FileText className="size-3" /> SRS Spec
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 rounded-md bg-blue-500 px-2 py-0.5 text-[10.5px] font-semibold text-ink backdrop-blur-md border border-blue-500/30">
+                          <span className="inline-flex items-center gap-1 rounded-md border border-blue-500/45 bg-panel/95 px-2 py-0.5 text-[10.5px] font-semibold text-blue-600 backdrop-blur-md">
                             <Globe className="size-3" /> Full App
                           </span>
                         )}
@@ -362,7 +381,7 @@ export default function ProjectsView({
                             aria-pressed={starred.includes(name)}
                             className={cn('cursor-pointer p-1 transition-colors',
                               starred.includes(name)
-                                ? 'text-[#FFAB00]'
+                                ? 'text-warn'
                                 : 'text-muted2 opacity-70 hover:text-ink sm:opacity-0 group-hover:opacity-100')}
                           >
                             <Star className={cn('size-3.5', starred.includes(name) && 'fill-current')} />

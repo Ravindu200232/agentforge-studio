@@ -2,14 +2,15 @@
 
 Create one responsive design system and shell used by every prototype page.
 
-Use the approved design tokens, selected design direction and Premium Frontend Design Engineer skill below. Include practical high-fidelity styles for layout, navigation, cards, forms, tables, buttons, status, dialogs, menus, alerts, loading and responsive behavior. Keep it polished, intentional and production-like; never create wireframe placeholders or a generic corporate UI.
+Use the approved design tokens, selected design direction and project design skill below. Include practical high-fidelity styles for layout, navigation, cards, forms, tables, buttons, status, dialogs, menus, alerts, loading and responsive behavior. Keep it polished, intentional and production-like; never create wireframe placeholders or a generic corporate UI.
 
 The JavaScript must:
 - resolve every `data-go` route from `window.PROTOTYPE.routes`;
 - normalise app links to route-map sibling filenames (`rooms.html`), including when a page contains an accidental `fileC:/`, `file:///`, Windows absolute path or root-relative route;
 - show role-specific elements and user details;
-- support sign-in/sign-out when accounts exist;
-- wire menus, dialogs, tabs, filters, form validation, toasts and theme switching.
+- support sign-in/sign-out when accounts exist, the signed-in account persisting across pages;
+- wire menus, dialogs, tabs, filters, form validation, toasts and theme switching;
+- implement `PROTOTYPE.db`: a small, generic client-side database over `window.PROTOTYPE.seed` (written by `assets/seed.js`, loaded before this script — an object of `{table name: [rows...]}`, each row carrying a stable `id`). On first load, when nothing is saved yet, copy `window.PROTOTYPE.seed` into `localStorage` under one key for this prototype; from then on every read and write goes through that saved copy, so what a page creates, edits or deletes is still there on every other page and after a reload. Provide `PROTOTYPE.db.list(table, filter?)`, `.get(table, id)`, `.create(table, row)` (fills in a fresh `id` when the row has none), `.update(table, id, patch)` and `.remove(table, id)`. It must work for whatever tables `window.PROTOTYPE.seed` happens to hold — never hardcode a table or a field name here; that is for the pages to decide.
 
 The shell must use the route map, keep shared navigation consistent, include the literal `<!-- page content -->` marker, and contain working `data-go="/route"` links. The shell and kit must use sibling relative filenames resolved from the route map, never filesystem or root-relative app URLs.
 
@@ -24,10 +25,8 @@ something to go read. After those two reads, answer — do not keep exploring.
 Read `{{design_spec_path}}` yourself with your `read_file` tool — the approved
 design tokens are not pasted in here.
 
-## Premium frontend skill
-Read `{{premium_frontend_skill_path}}` yourself with your `read_file` tool.
-
-{{design_md}}
+## Project design skill
+Read `{{project_design_skill_path}}` yourself with your `read_file` tool.
 
 {{customizer}}
 
@@ -39,6 +38,9 @@ Read `{{premium_frontend_skill_path}}` yourself with your `read_file` tool.
 
 ## Main journeys
 {{journeys}}
+
+## Data
+This prototype's own sample database (`window.PROTOTYPE.seed`) is written by `assets/seed.js`, which loads before this script — build `PROTOTYPE.db` over it exactly as described above.
 
 ## Reference ideas
 {{ideas}}

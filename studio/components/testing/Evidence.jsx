@@ -24,11 +24,11 @@ export default function Evidence({ qa }) {
   const evidence = qa?.report?.evidence
   if (qa?.recovered) return (
     <div className="space-y-4">
-      <div className="rounded-none border border-line bg-[#F2F0EF] p-5 shadow-xl backdrop-blur-xl">
+      <div className="rounded-none border border-line bg-panel p-5 shadow-xl backdrop-blur-xl">
         <Badge tone="mute">Saved artifacts · partial evidence</Badge>
         <p className="mt-3 text-[12px] text-ink">{qa.provenance}</p>
       </div>
-      <div className="overflow-hidden rounded-none border border-line bg-[#F2F0EF] shadow-xl backdrop-blur-xl">
+      <div className="overflow-hidden rounded-none border border-line bg-panel shadow-xl backdrop-blur-xl">
         <Table>
           <thead><TR><TH>Evidence</TH><TH>Source</TH><TH>What was saved</TH></TR></thead>
           <tbody>
@@ -39,7 +39,7 @@ export default function Evidence({ qa }) {
         </Table>
       </div>
       {qa.report?.unit?.coverage && (
-        <div className="rounded-none border border-line bg-[#F2F0EF] p-5 shadow-xl backdrop-blur-xl">
+        <div className="rounded-none border border-line bg-panel p-5 shadow-xl backdrop-blur-xl">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">Saved source coverage · informational, no percentage requirement</p>
           <p className="mt-2 text-[13px] font-medium text-ink">{Object.entries(qa.report.unit.coverage).filter(([, v]) => typeof v?.pct === 'number').map(([k, v]) => `${k}: ${v.pct}%`).join(' · ')}</p>
         </div>
@@ -59,7 +59,7 @@ export default function Evidence({ qa }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3.5 rounded-none border border-line bg-[#F2F0EF] p-5 shadow-xl backdrop-blur-xl">
+      <div className="flex flex-wrap items-center gap-3.5 rounded-none border border-line bg-panel p-5 shadow-xl backdrop-blur-xl">
         <Badge tone={evidence.ready ? 'ok' : 'bad'}>
           {evidence.ready ? 'every required layer proved' : 'evidence incomplete'}
         </Badge>
@@ -72,14 +72,14 @@ export default function Evidence({ qa }) {
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <div className="rounded-none border border-line bg-[#F2F0EF] p-5 shadow-xl backdrop-blur-xl">
+        <div className="rounded-none border border-line bg-panel p-5 shadow-xl backdrop-blur-xl">
           <p className="text-[11px] font-semibold uppercase tracking-[.16em] text-muted">
             Unit source coverage
           </p>
           {unit ? (
             <>
               <p className={cn('mt-1.5 font-display text-[26px] font-bold tracking-tight',
-                unit.required === false ? 'text-muted' : unit.status === 'passed' ? 'text-ink' : 'text-rose-400')}>
+                unit.required === false ? 'text-muted' : unit.status === 'passed' ? 'text-ok' : 'text-rose-400')}>
                 {unit.status === 'missing' ? 'no report' : unit.status}
               </p>
               <p className="mt-1 text-[11.5px] text-muted">
@@ -94,14 +94,14 @@ export default function Evidence({ qa }) {
           ) : <Empty>Not measured.</Empty>}
         </div>
 
-        <div className="rounded-none border border-line bg-[#F2F0EF] p-5 shadow-xl backdrop-blur-xl">
+        <div className="rounded-none border border-line bg-panel p-5 shadow-xl backdrop-blur-xl">
           <p className="text-[11px] font-semibold uppercase tracking-[.16em] text-muted">
             Requirement coverage (E2E)
           </p>
           {e2e ? (
             <>
               <p className={cn('mt-1.5 font-display text-[26px] font-bold tracking-tight',
-                e2e.status === 'passed' ? 'text-ink' : 'text-rose-400')}>
+                e2e.status === 'passed' ? 'text-ok' : 'text-rose-400')}>
                 {e2e.covered}/{e2e.total}
               </p>
               <p className="mt-1 text-[11.5px] text-muted">
@@ -113,7 +113,7 @@ export default function Evidence({ qa }) {
       </div>
 
       {scope?.requirements?.length > 0 && (
-        <div className="overflow-hidden rounded-none border border-line bg-[#F2F0EF] p-5 shadow-xl backdrop-blur-xl">
+        <div className="overflow-hidden rounded-none border border-line bg-panel p-5 shadow-xl backdrop-blur-xl">
           <h3 className="mb-1 text-[13px] font-bold tracking-wide text-ink">
             What this run promised to prove
           </h3>
@@ -121,7 +121,7 @@ export default function Evidence({ qa }) {
             Sealed before the tests ran, so the scope cannot be narrowed once a
             flow turns out to be hard.
           </p>
-          <div className="overflow-x-auto rounded-none border border-black/5 bg-black/20">
+          <div className="overflow-x-auto rounded-none border border-line bg-panel">
             <Table>
               <thead><TR><TH>id</TH><TH>behaviour</TH><TH>evidence needed</TH></TR></thead>
               <tbody>
@@ -150,13 +150,13 @@ export default function Evidence({ qa }) {
       )}
 
       {suites.length > 0 && (
-        <div className="overflow-hidden rounded-none border border-line bg-[#F2F0EF] p-5 shadow-xl backdrop-blur-xl">
+        <div className="overflow-hidden rounded-none border border-line bg-panel p-5 shadow-xl backdrop-blur-xl">
           <h3 className="mb-1 text-[13px] font-bold tracking-wide text-ink">What actually ran</h3>
           <p className="mb-3 text-[11px] text-muted">
             Command exit status and browser journey outcomes. A pass recorded
             before the last edit shows as <b className="text-ink">outdated</b>, not as missing.
           </p>
-          <div className="overflow-x-auto rounded-none border border-black/5 bg-black/20">
+          <div className="overflow-x-auto rounded-none border border-line bg-panel">
             <Table>
               <thead>
                 <TR><TH>layer</TH><TH>suite</TH><TH>result</TH><TH>command</TH><TH>covers</TH></TR>
@@ -196,9 +196,9 @@ export default function Evidence({ qa }) {
       )}
 
       {(evidence.visuals || []).length > 0 && (
-        <div className="overflow-hidden rounded-none border border-line bg-[#F2F0EF] p-5 shadow-xl backdrop-blur-xl">
+        <div className="overflow-hidden rounded-none border border-line bg-panel p-5 shadow-xl backdrop-blur-xl">
           <h3 className="mb-2 text-[13px] font-bold tracking-wide text-ink">Screens reviewed</h3>
-          <div className="overflow-x-auto rounded-none border border-black/5 bg-black/20">
+          <div className="overflow-x-auto rounded-none border border-line bg-panel">
             <Table>
               <thead><TR><TH>view</TH><TH>width</TH><TH>result</TH><TH>findings</TH></TR></thead>
               <tbody>
@@ -217,7 +217,7 @@ export default function Evidence({ qa }) {
       )}
 
       {limitations.length > 0 && (
-        <div className="overflow-hidden rounded-none border border-line bg-[#F2F0EF] p-5 shadow-xl backdrop-blur-xl">
+        <div className="overflow-hidden rounded-none border border-line bg-panel p-5 shadow-xl backdrop-blur-xl">
           <h3 className="mb-1 text-[13px] font-bold tracking-wide text-ink">Recorded as unverified</h3>
           <p className="mb-3 text-[11px] text-muted">
             Not passes. These are the things the run could not prove here, with

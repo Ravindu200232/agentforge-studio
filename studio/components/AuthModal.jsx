@@ -75,14 +75,14 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 p-4 backdrop-blur-md animate-in fade-in duration-200">
       <div
-        className="relative w-full max-w-[440px] rounded-3xl border border-[rgba(145,158,171,0.2)] bg-[#F2F0EF] p-7 shadow-[0_0_2px_0_rgba(145,158,171,0.2),0_24px_48px_0_rgba(0,0,0,0.24)] backdrop-blur-2xl transition-all"
+        className="relative w-full max-w-[440px] rounded-3xl border border-line bg-panel p-7 shadow-[0_0_2px_0_rgba(145,158,171,0.2),0_24px_48px_0_rgba(0,0,0,0.24)] backdrop-blur-2xl transition-all"
         role="dialog"
         aria-modal="true"
       >
         {/* Close Button */}
         <button
           onClick={handleClose}
-          className="absolute right-5 top-5 flex size-8 items-center justify-center rounded-xl text-[#6B7280] hover:bg-[rgba(145,158,171,0.08)] hover:text-ink transition-colors"
+          className="absolute right-5 top-5 flex size-8 items-center justify-center rounded-xl text-muted hover:bg-raised hover:text-ink transition-colors"
           aria-label="Close"
         >
           <X className="size-4" />
@@ -91,18 +91,18 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
         {/* Brand Logo */}
         <div className="flex flex-col items-center justify-center pt-2">
           <div className="flex items-center gap-2">
-            <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#BFB9FF] ring-1 ring-[#BFB9FF]/30">
+            <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-accent ring-1 ring-accent/30">
               <img src="/__agentforge/agentforge-mark.png" alt="AgentForge" className="size-5 object-contain" />
             </div>
             <span className="font-display text-[22px] font-bold italic tracking-tight text-ink">
-              agentforge<span className="text-[#BFB9FF] font-normal">.ai</span>
+              agentforge<span className="text-accent font-normal">.ai</span>
             </span>
           </div>
         </div>
 
         {/* Error Alert */}
         {activeError && (
-          <div className="mt-4 flex items-center gap-2 rounded-xl border border-[#FF5630]/30 bg-[#FF5630]/10 px-3.5 py-2.5 text-[12.5px] text-[#FF5630]">
+          <div className="mt-4 flex items-center gap-2 rounded-xl border border-bad/30 bg-bad/10 px-3.5 py-2.5 text-[12.5px] text-bad">
             <AlertCircle className="size-4 shrink-0" />
             <span>{activeError}</span>
           </div>
@@ -111,7 +111,7 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
         {/* Screen 1: Method Selection (Matching media_1789153674897.png) */}
         {screen === 'methods' && (
           <div className="mt-5 text-center">
-            <p className="px-3 text-[13px] leading-relaxed text-[#6B7280]">
+            <p className="px-3 text-[13px] leading-relaxed text-muted">
               Sign in to reach your own projects, specifications and deployments.
               Each account sees only its own.
             </p>
@@ -121,23 +121,23 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
               <button
                 type="button"
                 onClick={() => go('signin')}
-                className="flex h-11 w-full items-center justify-center gap-3 rounded-xl border border-[rgba(145,158,171,0.16)] bg-[#F2F0EF]/50 px-4 font-display text-[13px] font-semibold text-ink shadow-sm transition-all hover:border-[rgba(145,158,171,0.28)] hover:bg-[#E3E1E0]/60"
+                className="flex h-11 w-full items-center justify-center gap-3 rounded-xl border border-line bg-panel/50 px-4 font-display text-[13px] font-semibold text-ink shadow-sm transition-all hover:border-[rgba(145,158,171,0.28)] hover:bg-raised/60"
               >
-                <Mail className="size-4 text-[#6B7280]" />
+                <Mail className="size-4 text-muted" />
                 <span>Sign in with email and password</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => go('signup')}
-                className="flex h-11 w-full items-center justify-center gap-3 rounded-xl border border-[rgba(145,158,171,0.16)] bg-[#F2F0EF]/50 px-4 font-display text-[13px] font-semibold text-ink shadow-sm transition-all hover:border-[rgba(145,158,171,0.28)] hover:bg-[#E3E1E0]/60"
+                className="flex h-11 w-full items-center justify-center gap-3 rounded-xl border border-line bg-panel/50 px-4 font-display text-[13px] font-semibold text-ink shadow-sm transition-all hover:border-[rgba(145,158,171,0.28)] hover:bg-raised/60"
               >
-                <User className="size-4 text-[#6B7280]" />
+                <User className="size-4 text-muted" />
                 <span>Create an account</span>
               </button>
             </div>
 
-            <p className="mt-6 text-[11px] text-[#6B7280]/70">
+            <p className="mt-6 text-[11px] text-muted/70">
               By signing in, you accept the{' '}
               <a href="#" className="text-ink underline hover:text-ink">Terms of Service</a>{' '}
               and acknowledge our{' '}
@@ -156,28 +156,28 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
             <form onSubmit={handleSubmit} className="mt-5 space-y-3.5">
               {mode === 'signup' && (
                 <div>
-                  <label className="mb-1 block text-[11.5px] font-medium text-[#6B7280]">
+                  <label className="mb-1 block text-[11.5px] font-medium text-muted">
                     Full name
                   </label>
                   <div className="relative flex items-center">
-                    <User className="pointer-events-none absolute left-3 size-4 text-[#6B7280]/60" />
+                    <User className="pointer-events-none absolute left-3 size-4 text-muted/60" />
                     <input
                       type="text"
                       value={formName}
                       onChange={e => setFormName(e.target.value)}
                       placeholder="Ravindu"
-                      className="h-10 w-full rounded-xl border border-[rgba(145,158,171,0.2)] bg-[#F2F0EF] pl-9 pr-3 text-[13px] text-ink placeholder:text-[#6B7280]/40 focus:border-[#BFB9FF] focus:ring-1 focus:ring-[#BFB9FF] focus:outline-none transition-colors"
+                      className="h-10 w-full rounded-xl border border-line bg-panel pl-9 pr-3 text-[13px] text-ink placeholder:text-muted/40 focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none transition-colors"
                     />
                   </div>
                 </div>
               )}
 
               <div>
-                <label className="mb-1 block text-[11.5px] font-medium text-[#6B7280]">
+                <label className="mb-1 block text-[11.5px] font-medium text-muted">
                   {mode === 'signup' ? 'Username *' : 'Email or username *'}
                 </label>
                 <div className="relative flex items-center">
-                  <User className="pointer-events-none absolute left-3 size-4 text-[#6B7280]/60" />
+                  <User className="pointer-events-none absolute left-3 size-4 text-muted/60" />
                   <input
                     type="text"
                     required
@@ -185,25 +185,25 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
                     value={formLogin}
                     onChange={e => setFormLogin(e.target.value)}
                     placeholder={mode === 'signup' ? 'ravindu2232' : 'Enter email or username'}
-                    className="h-10 w-full rounded-xl border border-[rgba(145,158,171,0.2)] bg-[#F2F0EF] pl-9 pr-3 text-[13px] text-ink placeholder:text-[#6B7280]/40 focus:border-[#BFB9FF] focus:ring-1 focus:ring-[#BFB9FF] focus:outline-none transition-colors"
+                    className="h-10 w-full rounded-xl border border-line bg-panel pl-9 pr-3 text-[13px] text-ink placeholder:text-muted/40 focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none transition-colors"
                   />
                 </div>
               </div>
 
               {mode === 'signup' && (
                 <div>
-                  <label className="mb-1 block text-[11.5px] font-medium text-[#6B7280]">
+                  <label className="mb-1 block text-[11.5px] font-medium text-muted">
                     Email address *
                   </label>
                   <div className="relative flex items-center">
-                    <Mail className="pointer-events-none absolute left-3 size-4 text-[#6B7280]/60" />
+                    <Mail className="pointer-events-none absolute left-3 size-4 text-muted/60" />
                     <input
                       type="email"
                       required
                       value={formEmail}
                       onChange={e => setFormEmail(e.target.value)}
                       placeholder="user@example.com"
-                      className="h-10 w-full rounded-xl border border-[rgba(145,158,171,0.2)] bg-[#F2F0EF] pl-9 pr-3 text-[13px] text-ink placeholder:text-[#6B7280]/40 focus:border-[#BFB9FF] focus:ring-1 focus:ring-[#BFB9FF] focus:outline-none transition-colors"
+                      className="h-10 w-full rounded-xl border border-line bg-panel pl-9 pr-3 text-[13px] text-ink placeholder:text-muted/40 focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none transition-colors"
                     />
                   </div>
                 </div>
@@ -211,28 +211,28 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
 
               <div>
                 <div className="mb-1 flex items-center justify-between">
-                  <label className="text-[11.5px] font-medium text-[#6B7280]">
+                  <label className="text-[11.5px] font-medium text-muted">
                     Password *
                   </label>
                   {mode === 'signin' && (
                     <button
                       type="button"
                       onClick={() => setLocalError('Please contact support to reset your password.')}
-                      className="text-[11px] text-[#BFB9FF] hover:underline"
+                      className="text-[11px] text-accent hover:underline"
                     >
                       Forgot password?
                     </button>
                   )}
                 </div>
                 <div className="relative flex items-center">
-                  <Lock className="pointer-events-none absolute left-3 size-4 text-[#6B7280]/60" />
+                  <Lock className="pointer-events-none absolute left-3 size-4 text-muted/60" />
                   <input
                     type="password"
                     required
                     value={formPassword}
                     onChange={e => setFormPassword(e.target.value)}
                     placeholder="••••••••"
-                    className="h-10 w-full rounded-xl border border-[rgba(145,158,171,0.2)] bg-[#F2F0EF] pl-9 pr-3 text-[13px] text-ink placeholder:text-[#6B7280]/40 focus:border-[#BFB9FF] focus:ring-1 focus:ring-[#BFB9FF] focus:outline-none transition-colors"
+                    className="h-10 w-full rounded-xl border border-line bg-panel pl-9 pr-3 text-[13px] text-ink placeholder:text-muted/40 focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none transition-colors"
                   />
                 </div>
               </div>
@@ -241,7 +241,7 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
                 <button
                   type="submit"
                   disabled={loading}
-                  className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#BFB9FF] font-display text-[13px] font-semibold text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)] transition-all hover:bg-[#9B94E8] active:scale-95 disabled:pointer-events-none disabled:opacity-50"
+                  className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-accent font-display text-[13px] font-semibold text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)] transition-all hover:bg-press active:scale-95 disabled:pointer-events-none disabled:opacity-50"
                 >
                   {loading && <Loader2 className="size-4 animate-spin" />}
                   <span>{mode === 'signin' ? 'Sign in' : 'Create account'}</span>
@@ -250,7 +250,7 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
                 <button
                   type="button"
                   onClick={() => { setScreen('methods'); clearError(); setLocalError('') }}
-                  className="flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-[rgba(145,158,171,0.16)] bg-[#F2F0EF]/50 text-[13px] font-medium text-[#6B7280] hover:bg-[#E3E1E0]/60 hover:text-ink transition-all"
+                  className="flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-line bg-panel/50 text-[13px] font-medium text-muted hover:bg-raised/60 hover:text-ink transition-all"
                 >
                   <ArrowLeft className="size-3.5" />
                   <span>Back</span>
@@ -258,13 +258,13 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
               </div>
             </form>
 
-            <div className="mt-5 text-center text-[12.5px] text-[#6B7280]">
+            <div className="mt-5 text-center text-[12.5px] text-muted">
               {mode === 'signin' ? (
                 <>
                   Don't have an account?{' '}
                   <button
                     onClick={() => { setMode('signup'); clearError(); setLocalError('') }}
-                    className="font-semibold text-[#BFB9FF] hover:underline"
+                    className="font-semibold text-accent hover:underline"
                   >
                     Sign up
                   </button>
@@ -274,7 +274,7 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
                   Already have an account?{' '}
                   <button
                     onClick={() => { setMode('signin'); clearError(); setLocalError('') }}
-                    className="font-semibold text-[#BFB9FF] hover:underline"
+                    className="font-semibold text-accent hover:underline"
                   >
                     Sign in
                   </button>
@@ -282,7 +282,7 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
               )}
             </div>
 
-            <p className="mt-5 text-center text-[11px] text-[#6B7280]/70">
+            <p className="mt-5 text-center text-[11px] text-muted/70">
               By signing in, you accept the{' '}
               <a href="#" className="text-ink underline hover:text-ink">Terms of Service</a>{' '}
               and acknowledge our{' '}

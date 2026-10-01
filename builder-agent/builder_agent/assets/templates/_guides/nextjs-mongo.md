@@ -1,0 +1,17 @@
+# Next.js + MongoDB scaffold
+
+Stack ID: `nextjs-mongo`. The root `package.json` runs Next.js; `app/` owns pages and layouts; `app/api/` owns HTTP endpoints; `lib/db.js` owns MongoDB access; `test/` holds Vitest tests; `e2e/` holds Playwright, axe and screenshot tests. `scripts/` holds seed/setup utilities. Read `README.template.md`, the existing files and `.env.example` before changing them. Replace the placeholder home screen, not the working runner configuration. Keep server-only credentials out of client components. Add route files, data models (as Mongoose schemas under `models/`), validation, authentication and role enforcement for every approved requirement. Preserve the Tailwind/PostCSS pipeline when editing CSS or package dependencies.
+
+The Studio assigns this project's local preview an isolated loopback port. Do not hard-code a port or reuse another project's preview address: the Studio supplies `PORT` when it launches the app. Keep the selected stack's port rather than reusing another stack's preview address.
+
+## The database is real, not local
+
+`lib/db.js`'s fallback (`mongodb://127.0.0.1:27017/...`) exists only so `npm test` and local development have something to connect to on this machine. It is never what a deployed application uses. Before this app can be deployed, `MONGODB_URI` must be a real, internet-reachable connection string (MongoDB Atlas or any host that is not this computer) - if it is not already set, ask for it as a value-only question (`.agentforge/build/question.json`, `"variable": "MONGODB_URI"`, `"secret": true`, `"check": "mongodb"`, explaining it must not be `localhost`/`127.0.0.1`); the studio tries it for real before accepting it. Never invent or default to a loopback address for this variable.
+
+## Authentication and sign-in
+
+Build real session-based authentication with `bcryptjs` (password hashing) and `jose` (signed, httpOnly session cookies) - never roll a custom hash or a token scheme of your own. If the project selected the Google (or another) sign-in plugin, `.agentforge/PLUGIN.md` names its environment variables; wire it alongside, not instead of, email/password sign-in, using the official OAuth library for Next.js that is already idiomatic for this stack (for example `next-auth`/Auth.js with a MongoDB adapter).
+
+## File and image uploads
+
+If the project selected an image-uploads plugin (Cloudinary, S3, or another), `.agentforge/PLUGIN.md` names its environment variables and how to use them - integrate exactly that provider, never a locally-written file as the production answer. With no plugin selected, a feature that genuinely needs file storage still needs a real provider; ask about it the same way a missing credential is asked for, rather than silently writing to local disk.

@@ -77,7 +77,7 @@ export default function PlanReading({ plan, className }) {
 
         if (block.kind === 'code') {
           return (
-            <pre key={i} className="overflow-x-auto rounded-xl border border-black/10 bg-[#F2F0EF] p-3 font-mono text-[11px] leading-relaxed text-ink shadow-inner">
+            <pre key={i} className="overflow-x-auto rounded-xl border border-black/10 bg-panel p-3 font-mono text-[11px] leading-relaxed text-ink shadow-inner">
               {block.text}
             </pre>
           )

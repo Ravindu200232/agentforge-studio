@@ -145,14 +145,18 @@ class DeployFlowCase(unittest.TestCase):
         return {"status": "complete", "text": "Live at https://app.example.com", "rounds": 2}
 
 
-SUPABASE_STACKS = ("nextjs-supabase", "nextjs-microservices-supabase", "vite-supabase",
-                   "vite-microservices-supabase", "remix-supabase")
+SUPABASE_STACKS = ("nextjs-supabase", "vite-supabase", "remix-supabase")
+MONGO_STACKS = ("nextjs-mongo", "vite-mongo", "mern-microservices")
+ALL_STACKS = SUPABASE_STACKS + MONGO_STACKS
+# vite-mongo's Express server and mern-microservices' gateway/services need a real, long-running
+# process - never a static or serverless-functions-only target.
+RESTRICTED_STACKS = ("vite-mongo", "mern-microservices")
 
 
 class StackTests(DeployFlowCase):
     def test_every_target_has_its_pages_and_every_stack_a_page_of_its_own(self):
         for target in deploy.SKILLS_FOR:
-            for stack in SUPABASE_STACKS:
+            for stack in ALL_STACKS:
                 with mock.patch.object(deploy, "stack_of", lambda project, s=stack: s):
                     paths = deploy.stage_skills(PROJECT, target)
                     self.assertEqual(paths[0], f"{SKILLS}/core/SKILL.md")
@@ -160,23 +164,30 @@ class StackTests(DeployFlowCase):
                     for path in paths:
                         self.assertGreater(len((self.workspace / path).read_text(encoding="utf-8")), 400, path)
 
-    def test_every_supabase_stack_can_go_to_every_target(self):
-        # Unlike the old Mongo-based MERN microservices stack (restricted to AWS/Azure because its
-        # services needed container hosting), the Supabase microservices variants run their services
-        # as Edge Functions on Supabase's own infrastructure, independent of where the frontend is
-        # hosted - so every stack here can go anywhere.
-        for stack in SUPABASE_STACKS:
+    def test_every_supabase_and_nextjs_mongo_stack_can_go_to_every_target(self):
+        # These render their own server-rendered or serverless routes (or, for the Supabase SPA, need
+        # no server at all) - nothing about them needs a fixed address or a long-running process only
+        # some targets provide, so every one of them can go anywhere.
+        for stack in (*SUPABASE_STACKS, "nextjs-mongo"):
             self.assertEqual(set(deploy.allowed_targets(stack)), set(deploy.SKILLS_FOR))
 
-    def test_the_microservices_stack_page_says_to_ask_about_edge_functions(self):
-        page = " ".join(prompts.skill("deployment", "stack-nextjs-microservices-supabase").split())
-        for words in ("verified Supabase Auth JWT", "supabase functions deploy", "no internal networking"):
+    def test_server_backed_mongo_stacks_are_restricted_to_real_server_hosting(self):
+        for stack in RESTRICTED_STACKS:
+            allowed = set(deploy.allowed_targets(stack))
+            self.assertEqual(allowed, {"aws_ec2", "aws_ecs", "azure"} & set(deploy.SKILLS_FOR))
+            self.assertNotIn("vercel", allowed)
+            self.assertNotIn("netlify", allowed)
+            self.assertNotIn("github", allowed)
+
+    def test_the_microservices_stack_page_says_how_to_deploy_separate_instances(self):
+        page = " ".join(prompts.skill("deployment", "stack-mern-microservices").split())
+        for words in ("cloud map", "one fargate task definition per package", "only the gateway"):
             self.assertIn(words.lower(), page.lower())
 
     def test_every_skill_page_carries_the_questions_the_customer_may_decide(self):
         for slug in ("core", "vercel", "netlify", "aws", "aws-ec2", "aws-ecs", "azure", "github",
                      "stack-nextjs-supabase", "stack-remix-supabase", "stack-vite-supabase",
-                     "stack-nextjs-microservices-supabase", "stack-vite-microservices-supabase"):
+                     "stack-nextjs-mongo", "stack-vite-mongo", "stack-mern-microservices"):
             self.assertRegex(prompts.skill("deployment", slug), r"(?i)questions? to ask|how to ask", slug)
 
 

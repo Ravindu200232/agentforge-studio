@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Check, Cpu, Database, Keyboard,
   LayoutGrid, Loader2, Network, Palette, Plug, SlidersHorizontal, X, Link2,
+  Download, ExternalLink, FolderUp, LogOut,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Modal } from './ui'
@@ -155,7 +156,7 @@ function ModelPicker({ meta, onSaved }) {
   )
 }
 
-export default function SettingsModal({ onClose, onSaved }) {
+export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpenInNewTab, onLogout }) {
   const theme = useStore(s => s.theme)
   const setTheme = useStore(s => s.setTheme)
   const user = useAuthStore(s => s.user)
@@ -164,6 +165,7 @@ export default function SettingsModal({ onClose, onSaved }) {
   const project = useStore(s => s.project)
 
   const [activeTab, setActiveTab] = useState('general')
+  const folderRef = useRef(null)
 
   // Real server settings — loaded via api.settings()
   const [host, setHost] = useState('')
@@ -252,11 +254,11 @@ export default function SettingsModal({ onClose, onSaved }) {
                     className={cn(
                       'shrink-0 sm:w-full flex items-center gap-2 sm:gap-2.5 px-2.5 py-1.5 rounded-xl text-left text-[12px] whitespace-nowrap transition-all',
                       active
-                        ? 'bg-[#BFB9FF] text-ink font-semibold shadow-sm'
+                        ? 'bg-accent text-ink font-semibold shadow-sm'
                         : 'text-muted hover:text-ink hover:bg-ink/[.06] font-medium'
                     )}
                   >
-                    <item.Icon className={cn('size-3.5 shrink-0', active ? 'text-[#BFB9FF]' : 'text-muted2')} />
+                    <item.Icon className={cn('size-3.5 shrink-0', active ? 'text-accent' : 'text-muted2')} />
                     <span>{item.label}</span>
                   </button>
                 )
@@ -267,7 +269,7 @@ export default function SettingsModal({ onClose, onSaved }) {
           {/* User profile footer */}
           <div className="hidden sm:block pt-2 border-t border-line">
             <div className="flex items-center gap-2.5 px-2 py-2 rounded-xl bg-ink/[.04] border border-line">
-              <div className="size-7 rounded-full bg-[#BFB9FF] flex items-center justify-center text-[12px] font-bold text-ink shrink-0 shadow-md shadow-[#BFB9FF]/25">
+              <div className="size-7 rounded-full bg-accent flex items-center justify-center text-[12px] font-bold text-ink shrink-0 shadow-md shadow-[var(--accent)]/25">
                 {initial}
               </div>
               <div className="min-w-0 flex-1">
@@ -318,7 +320,7 @@ export default function SettingsModal({ onClose, onSaved }) {
             <button
               onClick={onClose}
               title="Close"
-              className="rounded-xl p-1.5 text-[#6B7280] hover:bg-[rgba(145,158,171,0.08)] hover:text-ink transition-all shrink-0"
+              className="rounded-xl p-1.5 text-muted hover:bg-raised hover:text-ink transition-all shrink-0"
             >
               <X className="size-4" />
             </button>
@@ -337,6 +339,8 @@ export default function SettingsModal({ onClose, onSaved }) {
                   yours alone — they are under <b className="text-ink">Integrations</b>.
                 </p>
                 <MongoState mongo={meta?.mongo} />
+                <WorkspaceActions project={project} folderRef={folderRef} onImport={onImport}
+                                  onZip={onZip} onOpenInNewTab={onOpenInNewTab} onLogout={onLogout} />
               </div>
             )}
 
@@ -391,9 +395,9 @@ export default function SettingsModal({ onClose, onSaved }) {
                   <div className="flex items-center gap-2 text-[11.5px]">
                     <span className={cn(
                       'size-2 rounded-full',
-                      cloudOn ? 'bg-[#22C55E] shadow-[0_0_6px_rgba(34,197,94,0.6)]'
-                      : tone === 'bad' ? 'bg-[#FF5630]'
-                      : 'bg-[#FFAB00]'
+                      cloudOn ? 'bg-ok shadow-[0_0_6px_rgba(34,197,94,0.6)]'
+                      : tone === 'bad' ? 'bg-bad'
+                      : 'bg-warn'
                     )} />
                     <span className="text-muted font-mono">{note}</span>
                   </div>
@@ -407,6 +411,8 @@ export default function SettingsModal({ onClose, onSaved }) {
                     Save Settings
                   </button>
                 </div>
+                <WorkspaceActions project={project} folderRef={folderRef} onImport={onImport}
+                                  onZip={onZip} onOpenInNewTab={onOpenInNewTab} onLogout={onLogout} />
               </div>
             )}
 
@@ -424,7 +430,7 @@ export default function SettingsModal({ onClose, onSaved }) {
                         <div className="text-[13px] font-medium text-ink">{svc.name}</div>
                         <div className="text-[11.5px] text-muted mt-0.5">{svc.desc}</div>
                       </div>
-                      <span className="rounded-lg bg-[#22C55E]/15 border border-[#22C55E]/20 px-2.5 py-0.5 text-[11px] font-semibold text-ink">
+                      <span className="rounded-lg bg-ok/15 border border-ok/20 px-2.5 py-0.5 text-[11px] font-semibold text-ink">
                         {svc.status}
                       </span>
                     </div>
@@ -472,18 +478,18 @@ export default function SettingsModal({ onClose, onSaved }) {
                   <p className="text-[11.5px] text-muted mb-4">Material Kit Dark is the default design system for AgentForge Studio.</p>
                   <div className="max-w-[340px]">
                     <div
-                      className="relative rounded-xl border-2 border-[#BFB9FF] bg-[#F2F0EF] p-4 text-left shadow-[0_0_20px_rgba(191, 185, 255,0.18)] ring-1 ring-[#BFB9FF]/40"
+                      className="relative rounded-xl border-2 border-accent bg-panel p-4 text-left shadow-[0_0_20px_rgba(191, 185, 255,0.18)] ring-1 ring-accent/40"
                     >
                       <div className="flex gap-1.5 mb-3">
-                        <span className="size-2.5 rounded-full bg-[#BFB9FF]" />
-                        <span className="size-2.5 rounded-full bg-[#BFB9FF]" />
-                        <span className="size-2.5 rounded-full bg-[#22C55E]" />
+                        <span className="size-2.5 rounded-full bg-accent" />
+                        <span className="size-2.5 rounded-full bg-accent" />
+                        <span className="size-2.5 rounded-full bg-ok" />
                       </div>
                       <div className="text-[12.5px] font-semibold text-ink">Material Kit Dark</div>
-                      <div className="text-[11px] text-[#6B7280] mt-0.5">
+                      <div className="text-[11px] text-muted mt-0.5">
                         Active theme (Default)
                       </div>
-                      <div className="absolute top-3 right-3 size-5 rounded-full bg-[#BFB9FF] flex items-center justify-center text-ink shadow-sm">
+                      <div className="absolute top-3 right-3 size-5 rounded-full bg-accent flex items-center justify-center text-ink shadow-sm">
                         <Check className="size-3" />
                       </div>
                     </div>
@@ -523,7 +529,7 @@ export default function SettingsModal({ onClose, onSaved }) {
             {/* ── SHORTCUTS ── */}
             {activeTab === 'shortcuts' && (
               <div className="max-w-[700px]">
-                <div className="rounded-2xl border border-[rgba(145,158,171,0.16)] bg-[#F2F0EF] divide-y divide-[rgba(145,158,171,0.12)]">
+                <div className="rounded-2xl border border-line bg-panel divide-y divide-[rgba(145,158,171,0.12)]">
                   {[
                     { key: 'Ctrl + Enter', action: 'Submit prompt and start build' },
                     { key: 'Escape',       action: 'Close modal or dropdown' },
@@ -531,7 +537,7 @@ export default function SettingsModal({ onClose, onSaved }) {
                   ].map((s, i) => (
                     <div key={i} className="flex items-center justify-between px-4 py-3.5">
                       <span className="text-[12.5px] text-ink">{s.action}</span>
-                      <kbd className="rounded-lg border border-[rgba(145,158,171,0.2)] bg-[#F2F0EF] px-2.5 py-1 font-mono text-[11px] text-ink font-medium">
+                      <kbd className="rounded-lg border border-line bg-panel px-2.5 py-1 font-mono text-[11px] text-ink font-medium">
                         {s.key}
                       </kbd>
                     </div>
@@ -544,6 +550,43 @@ export default function SettingsModal({ onClose, onSaved }) {
         </main>
       </div>
     </Modal>
+  )
+}
+
+function WorkspaceActions({ project, folderRef, onImport, onZip, onOpenInNewTab, onLogout }) {
+  return (
+    <section className="rounded-2xl border border-line bg-panel p-4 shadow-sm">
+      <input ref={folderRef} type="file" hidden webkitdirectory="" directory="" multiple
+             onChange={event => {
+               const files = event.target.files
+               event.target.value = ''
+               if (files?.length) onImport?.(files)
+             }} />
+      <h3 className="text-[13px] font-semibold text-ink">Workspace actions</h3>
+      <p className="mt-1 text-[11.5px] text-muted">Import a project or manage the open workspace.</p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <button type="button" onClick={() => folderRef.current?.click()}
+                className="inline-flex items-center gap-2 rounded-xl border border-line px-3 py-2 text-left text-[11.5px] font-medium text-ink hover:bg-raised">
+          <FolderUp className="size-3.5 text-muted2" /> Import project folder
+        </button>
+        <button type="button" disabled={!project} onClick={onZip}
+                className="inline-flex items-center gap-2 rounded-xl border border-line px-3 py-2 text-left text-[11.5px] font-medium text-ink hover:bg-raised disabled:cursor-not-allowed disabled:opacity-40">
+          <Download className="size-3.5 text-muted2" /> Download project ZIP
+        </button>
+        <button type="button" disabled={!project} onClick={onOpenInNewTab}
+                className="inline-flex items-center gap-2 rounded-xl border border-line px-3 py-2 text-left text-[11.5px] font-medium text-ink hover:bg-raised disabled:cursor-not-allowed disabled:opacity-40">
+          <ExternalLink className="size-3.5 text-muted2" /> Open in new tab
+        </button>
+      </div>
+      {onLogout && (
+        <div className="mt-3 border-t border-line pt-3">
+          <button type="button" onClick={onLogout}
+                  className="inline-flex items-center gap-2 rounded-xl border border-bad/35 px-3 py-2 text-[11.5px] font-medium text-bad hover:bg-raised">
+            <LogOut className="size-3.5" /> Sign out
+          </button>
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -560,14 +603,14 @@ function MongoState({ mongo }) {
     tone = 'text-ink'
   } else if (mongo.downloaded) {
     text = 'mongod downloaded, not running'
-    tone = 'text-[#FFAB00]'
+    tone = 'text-warn'
   } else {
     text = mongo.reason || 'mongod not downloaded yet'
-    tone = mongo.reason ? 'text-[#FF5630]' : 'text-[#6B7280]'
+    tone = mongo.reason ? 'text-bad' : 'text-muted'
   }
   return (
-    <div className="flex items-center gap-2.5 rounded-xl border border-[rgba(145,158,171,0.16)] bg-[#F2F0EF] px-3.5 py-2.5 font-mono text-[11px]">
-      <Database className="size-3.5 shrink-0 text-[#BFB9FF]" />
+    <div className="flex items-center gap-2.5 rounded-xl border border-line bg-panel px-3.5 py-2.5 font-mono text-[11px]">
+      <Database className="size-3.5 shrink-0 text-accent" />
       <span className={tone}>{text}</span>
     </div>
   )

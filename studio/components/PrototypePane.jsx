@@ -14,8 +14,10 @@ import {
 } from 'lucide-react'
 import { useStore } from '@/lib/store'
 import { api, API } from '@/lib/api'
+import { send } from '@/lib/ws'
 import { watchFrame } from '@/lib/console-log'
 import { attachPicker, pickedFrom, pickLabel, frameDoc } from '@/lib/picker'
+import { editorFor } from '@/lib/visual-editor'
 import VisualInspector from './VisualInspector'
 import { Tip } from './ui'
 import { cn } from '@/lib/utils'
@@ -293,15 +295,79 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
       setInspectedElement(e.target)
       setInspectedDoc(d)
     }
+    const selectElement = node => {
+      const prev = d.querySelector('.__vf_selected')
+      if (prev) prev.classList.remove('__vf_selected')
+      if (node?.classList) node.classList.add('__vf_selected')
+      setInspectedElement(node || null)
+      setInspectedDoc(node ? d : null)
+    }
+    const keydown = (e) => {
+      const selected = d.querySelector('.__vf_selected')
+      if (!selected) return
+      if (e.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return
+      const modifier = e.ctrlKey || e.metaKey
+      const key = e.key.toLowerCase()
+      const editor = editorFor(d)
+      const changed = () => d.defaultView?.dispatchEvent(new CustomEvent('agentforge:inspector-change'))
+      if (modifier && key === 'z') {
+        e.preventDefault()
+        e.shiftKey ? editor.redo() : editor.undo()
+        changed()
+        return
+      }
+      if (modifier && key === 'y') {
+        e.preventDefault(); editor.redo(); changed(); return
+      }
+      if (modifier && key === 'd') {
+        e.preventDefault()
+        selectElement(editor.duplicate(selected))
+        changed()
+        return
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault()
+        editor.remove(selected)
+        selectElement(null)
+        changed()
+        return
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        d.defaultView?.dispatchEvent(new CustomEvent('agentforge:open-content-tool'))
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault(); selectElement(null); return
+      }
+      const amount = e.shiftKey ? 10 : 1
+      const movement = { ArrowLeft: [-amount, 0], ArrowRight: [amount, 0], ArrowUp: [0, -amount], ArrowDown: [0, amount] }[e.key]
+      if (!movement) return
+      e.preventDefault()
+      const [x, y] = movement
+      const before = { position: selected.style.position, left: selected.style.left, top: selected.style.top }
+      editor.perform(() => {
+        if (d.defaultView?.getComputedStyle(selected).position === 'static') selected.style.position = 'relative'
+        selected.style.left = `${Math.round((parseFloat(selected.style.left) || 0) + x)}px`
+        selected.style.top = `${Math.round((parseFloat(selected.style.top) || 0) + y)}px`
+      }, () => {
+        selected.style.position = before.position
+        selected.style.left = before.left
+        selected.style.top = before.top
+      }, `Moved <${selected.tagName.toLowerCase()}> with keyboard`)
+      changed()
+    }
 
     d.addEventListener('mouseover', hover, true)
     d.addEventListener('mouseout', leave, true)
     d.addEventListener('click', click, true)
+    d.addEventListener('keydown', keydown, true)
 
     visualDetachRef.current = () => {
       d.removeEventListener('mouseover', hover, true)
       d.removeEventListener('mouseout', leave, true)
       d.removeEventListener('click', click, true)
+      d.removeEventListener('keydown', keydown, true)
       const hi = d.querySelectorAll('.__vf_hi, .__vf_selected')
       hi.forEach(el => el.classList.remove('__vf_hi', '__vf_selected'))
       const st = d.getElementById(STYLE_ID)
@@ -493,18 +559,29 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
         protoEditorRef.current.editText(false)
         setFigmaTyping(false)
       }
-      const base = baseFileName(currentFile)
-      const serializedHtml = protoEditorRef.current.serialize()
-      await api.saveFile(
+      const base = baseFileName(currentFile) || 'index.html'
+      const selected = protoEditorRef.current.selected?.()
+      const preview = String(selected?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160)
+      const position = figmaMetrics ? ` at X ${figmaMetrics.x}px and Y ${figmaMetrics.y}px` : ''
+      const target = figmaPicked ? `<${figmaPicked}>` : 'the selected element'
+      const request = `On prototype page ${base}, reposition ${target}${position}.`
+        + (preview ? ` It contains: “${preview}”.` : '')
+        + ' Apply this position change in the source, preserve the rest of the page, and return the updated prototype.'
+      const state = useStore.getState()
+      send({
+        type: 'agent_update',
         project,
-        `.agentforge/prototype/${base || 'index.html'}`,
-        serializedHtml,
-        `Figma layout edit in ${base || 'index.html'}`
-      )
-      protoEditorRef.current.saved()
+        route: '/prototype',
+        agent: 'designer',
+        model: state.models.design || state.models.agent,
+        think: state.think,
+        thinking_level: state.thinkingLevel,
+        prompt: request,
+      })
+      state.setBusy(true)
       setFigmaDirty(false)
       setSaveProtoSuccess(true)
-      addLog?.('SUCCESS', `Saved ${base || 'index.html'} directly to prototype HTML`)
+      addLog?.('INFO', `Sent ${target} position request to the AI for ${base}`)
       setTimeout(() => setSaveProtoSuccess(false), 3000)
     } catch (err) {
       addLog?.('WARN', `Could not save prototype: ${err.message}`)
@@ -614,26 +691,26 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
   return (
     <div className={cn('flex min-h-0 flex-1 flex-col bg-transparent', hidden && 'hidden')}>
       {/* Top Navbar */}
-      <div className="flex h-[54px] shrink-0 items-center gap-3 border-b border-line/70 bg-black/72 px-4 backdrop-blur-2xl dark:bg-black/[.03]">
+      <div className="flex h-[48px] shrink-0 items-center gap-2 border-b border-line/70 bg-panel px-3 backdrop-blur-2xl">
         {/* Navigation buttons */}
-        <div className="flex items-center gap-1 rounded-full border border-line/80 bg-panel/90 p-1 shadow-sm">
+        <div className="flex items-center gap-0.5 rounded-xl border border-line/80 bg-panel/90 p-0.5 shadow-sm">
           <Cell tip={nav.back ? 'Back' : 'Nothing to go back to'}
-                disabled={!nav.back} onClick={() => step(-1)} className="rounded-full px-3">
-            <ChevronLeft className="size-3.5" />
+                disabled={!nav.back} onClick={() => step(-1)} className="rounded-lg px-2">
+            <ChevronLeft className="size-3" />
           </Cell>
           <Cell tip={nav.forward ? 'Forward' : 'Nothing to go forward to'}
-                disabled={!nav.forward} onClick={() => step(1)} className="rounded-full px-3">
-            <ChevronRight className="size-3.5" />
+                disabled={!nav.forward} onClick={() => step(1)} className="rounded-lg px-2">
+            <ChevronRight className="size-3" />
           </Cell>
-          <Cell tip="Reload prototype" onClick={reload} className="rounded-full px-3">
-            <RotateCw className="size-3.5" />
+          <Cell tip="Reload prototype" onClick={reload} className="rounded-lg px-2">
+            <RotateCw className="size-3" />
           </Cell>
         </div>
 
         {/* Prototype tag & current file */}
-        <div className="flex min-w-0 flex-1 items-center gap-2 rounded-[14px] bg-black/[.035] px-4 py-2 text-[12px] text-muted ring-1 ring-black/[.045] dark:bg-black/[.045] dark:ring-white/[.06]">
-          <Layers className="size-3.5 shrink-0 text-purple-500" />
-          <span className="truncate font-mono text-[11.5px] text-ink font-medium">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-[10px] border border-line bg-panel2/50 px-3 py-1.5 text-[11px] text-muted">
+          <Layers className="size-3 shrink-0 text-purple-500" />
+          <span className="truncate font-mono text-[10.5px] text-ink font-medium">
             {project} / {currentFile}
           </span>
         </div>
@@ -644,9 +721,9 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
             onClick={handleBuildAppNow}
             disabled={isBusy || !actionEnabled}
             title={resumePrototype ? 'Resume the interrupted prototype generation' : 'Build full application from this prototype'}
-            className="inline-flex items-center gap-1.5 rounded-full bg-[#BFB9FF] px-3.5 py-1.5 text-[11.5px] font-semibold text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)] transition-all hover:bg-[#9B94E8] active:scale-95 disabled:pointer-events-none disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-1 text-[10.5px] font-semibold text-ink transition-all active:scale-95 disabled:pointer-events-none disabled:opacity-50"
           >
-            <Rocket className="size-3" /> {isBusy ? 'Generating…' : resumePrototype ? 'Resume Prototype' : 'Build App Now'}
+            <Rocket className="size-2.5" /> {isBusy ? 'Generating…' : resumePrototype ? 'Resume Prototype' : 'Build App Now'}
           </button>
         )}
 
@@ -655,71 +732,63 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
           target="_blank"
           rel="noreferrer"
           title="Open prototype in full browser window"
-          className="grid size-8 place-items-center rounded-lg border border-line/80 bg-panel text-ink hover:bg-ink/[.06]"
+          className="grid size-7 place-items-center rounded-lg border border-line/80 bg-panel text-ink hover:bg-ink/[.06]"
         >
-          <ExternalLink className="size-3.5" />
+          <ExternalLink className="size-3" />
         </a>
 
         {/* Viewports */}
-        <div className="hidden items-center gap-1 rounded-full border border-line/80 bg-panel/80 p-1 shadow-sm md:flex">
+        <div className="hidden items-center gap-0.5 rounded-xl border border-line/80 bg-panel/80 p-0.5 shadow-sm md:flex">
           {VIEWPORTS.map(({ id, label, Icon }) => (
             <Cell key={id} tip={label} side="left" on={vp === id}
-                  onClick={() => setVp(id)} className="rounded-full px-3">
-              <Icon className="size-3.5" />
+                  onClick={() => setVp(id)} className="rounded-lg px-2">
+              <Icon className="size-3" />
             </Cell>
           ))}
         </div>
 
         {/* Select & Pencil Tools */}
-        <div className="flex items-center gap-1 rounded-full border border-line/80 bg-panel/80 p-1 shadow-sm">
+        <div className="flex items-center gap-0.5 rounded-xl border border-line/80 bg-panel/80 p-0.5 shadow-sm">
           <Cell tip="Click prototype elements to attach them to chat"
-                side="left" on={pickOn} onClick={togglePick} className="rounded-full">
-            <MousePointerClick className="size-3.5" />
+                side="left" on={pickOn} onClick={togglePick} className="rounded-lg">
+            <MousePointerClick className="size-3" />
           </Cell>
           <Cell tip="Draw on prototype to attach a marked-up screenshot"
-                side="left" on={pencilOn} onClick={togglePencil} className="rounded-full">
-            <Pencil className="size-3.5" />
+                side="left" on={pencilOn} onClick={togglePencil} className="rounded-lg">
+            <Pencil className="size-3" />
           </Cell>
           <Cell tip={selection.length
                        ? `Clear ${selection.length} attachment${selection.length === 1 ? '' : 's'}`
                        : 'Nothing attached yet'}
                 side="left" disabled={!selection.length}
-                onClick={() => { clearSelection(); clearStrokes() }} className="rounded-full">
-            <Eraser className="size-3.5" />
+                onClick={() => { clearSelection(); clearStrokes() }} className="rounded-lg">
+            <Eraser className="size-3" />
           </Cell>
           <Cell tip={undo ? `Undo the last edit (${undo.files.join(', ')})`
                           : 'Nothing to undo yet'}
-                side="left" disabled={!undo} onClick={undoLast} className="rounded-full">
-            <Undo2 className="size-3.5" />
+                side="left" disabled={!undo} onClick={undoLast} className="rounded-lg">
+            <Undo2 className="size-3" />
           </Cell>
         </div>
 
-        {/* Visual Quick Inspector (Zero-LLM Direct Editor) */}
-        <div className="flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/[.08] p-1 shadow-sm">
-          <Cell tip="Visual Inspector: click any element to live-edit text, colors, layout & move without LLM"
-                side="left" on={visualEditOn} onClick={toggleVisualEdit} className={cn("rounded-full", visualEditOn && "!bg-emerald-600 !text-ink shadow-sm")}>
-            <SlidersHorizontal className={cn("size-3.5", visualEditOn ? "text-ink" : "text-ink")} />
-          </Cell>
-        </div>
-
-        {/* Figma Move & Position Tool (Zero-LLM Direct Canvas Positioning) */}
-        <div className="flex items-center gap-1 rounded-full border border-[#BFB9FF]/40 bg-[#BFB9FF] p-1 shadow-sm">
+        {/* Position changes are reviewed and written by the designer agent. */}
+        <div className="flex items-center gap-0.5 rounded-xl border border-line bg-panel/80 p-0.5 shadow-sm">
           <Cell
-            tip="Figma Move Tool: Drag elements with cursor, resize handles, nudge with arrows, position like Figma"
+            tip="AI Position Tool: drag an element, then send its position to the designer AI"
             side="left"
             on={figmaMoveOn}
             onClick={toggleFigmaMove}
             disabled={!protoReady || isBusy}
-            className={cn("rounded-full", figmaMoveOn && "!bg-[#BFB9FF] !text-ink shadow-sm")}
+            className="rounded-lg"
           >
-            <Move className={cn("size-3.5", figmaMoveOn ? "text-ink" : "text-[#BFB9FF]")} />
+            <Move className="size-3" />
           </Cell>
         </div>
       </div>
 
-      {/* Figma Design & Position Toolbar */}
+      {/* Position request toolbar */}
       {figmaMoveOn && (
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-black/10 bg-[#F2F0EF]/95 px-3.5 py-2 select-none z-30 shadow-md backdrop-blur-md">
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-black/10 bg-panel/95 px-3.5 py-2 select-none z-30 shadow-md backdrop-blur-md">
           {/* Mode Switcher: Move (Free Drag) vs Flow (Reorder) */}
           <div className="flex items-center rounded-lg bg-black/40 p-0.5 border border-black/10">
             <button
@@ -727,7 +796,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
               onClick={() => setProtoMode('free')}
               title="Move Tool (V): Drag with cursor to freely position anywhere"
               className={cn('flex items-center gap-1 rounded-md px-2 py-1 text-[10.5px] font-medium transition cursor-pointer',
-                figmaDragMode === 'free' ? 'bg-[#BFB9FF] text-ink font-semibold shadow-sm' : 'text-muted hover:text-ink')}
+                figmaDragMode === 'free' ? 'bg-accent text-ink font-semibold shadow-sm' : 'text-muted hover:text-ink')}
             >
               <Move className="size-3" />
               <span>Move</span>
@@ -737,7 +806,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
               onClick={() => setProtoMode('flow')}
               title="Reorder Tool: Drag with cursor to drop between elements"
               className={cn('flex items-center gap-1 rounded-md px-2 py-1 text-[10.5px] font-medium transition cursor-pointer',
-                figmaDragMode === 'flow' ? 'bg-[#BFB9FF] text-ink font-semibold shadow-sm' : 'text-muted hover:text-ink')}
+                figmaDragMode === 'flow' ? 'bg-accent text-ink font-semibold shadow-sm' : 'text-muted hover:text-ink')}
             >
               <ArrowUpDown className="size-3" />
               <span>Reorder</span>
@@ -750,7 +819,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
             <>
               {/* Selected Tag & Dimensions */}
               <span className="flex items-center gap-1 rounded-md bg-black/[.07] px-2 py-1 font-mono text-[10.5px] text-ink border border-black/10">
-                <span className="text-[#BFB9FF] font-semibold">&lt;{figmaPicked}&gt;</span>
+                <span className="text-accent font-semibold">&lt;{figmaPicked}&gt;</span>
                 {figmaMetrics && (
                   <span className="text-muted2 text-[10px] ml-1">
                     {figmaMetrics.w}×{figmaMetrics.h}px
@@ -831,7 +900,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
             </>
           ) : (
             <span className="flex items-center gap-1.5 font-mono text-[11px] text-muted2">
-              <Move className="size-3 text-[#BFB9FF]" />
+              <Move className="size-3 text-accent" />
               <span>Click or drag any element to position freely with cursor · Drag corner handles to resize · Arrow keys to nudge</span>
             </span>
           )}
@@ -846,13 +915,13 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
               disabled={savingProto}
               className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-ink shadow-sm hover:bg-emerald-500 disabled:opacity-50 transition cursor-pointer"
             >
-              {savingProto ? <><Loader2 className="size-3 animate-spin" /> Saving…</> : <><Save className="size-3" /> Save to HTML</>}
+              {savingProto ? <><Loader2 className="size-3 animate-spin" /> Sending…</> : <><Sparkles className="size-3" /> Send to AI</>}
             </button>
           )}
 
           {saveProtoSuccess && (
             <span className="flex items-center gap-1 font-mono text-[11px] text-ink">
-              <Check className="size-3" /> Saved!
+              <Check className="size-3" /> Sent to AI
             </span>
           )}
 
@@ -899,14 +968,22 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
               if (prev) prev.classList.remove('__vf_selected')
               setInspectedElement(null)
             }}
+            onSelect={(node, selectedDoc) => {
+              const activeDoc = selectedDoc || inspectedDoc
+              const previous = activeDoc?.querySelector('.__vf_selected')
+              if (previous) previous.classList.remove('__vf_selected')
+              node?.classList?.add('__vf_selected')
+              setInspectedElement(node)
+              setInspectedDoc(activeDoc)
+            }}
             onLog={(lvl, msg) => addLog(lvl, msg)}
           />
         )}
 
 
-        <div className="relative flex min-h-0 h-full w-full items-start justify-center overflow-hidden bg-[#F2F0EF]">
+        <div className="relative flex min-h-0 h-full w-full items-start justify-center overflow-hidden bg-panel">
           <div
-            className={cn("relative h-full w-full max-w-full overflow-hidden bg-[#F2F0EF]", width && "border-x border-black/10 shadow-2xl")}
+            className={cn("relative h-full w-full max-w-full overflow-hidden bg-panel", width && "border-x border-black/10 shadow-2xl")}
             style={{ width: width ? width + 'px' : '100%' }}
           >
             <iframe
@@ -923,7 +1000,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
             />
 
             {!protoReady && (
-              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#F2F0EF] p-6 text-center select-none">
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-panel p-6 text-center select-none">
                 {/* Glowing top line */}
                 <div className="absolute inset-x-0 top-0 h-[2px] overflow-hidden bg-black/5">
                   <div className="h-full w-full bg-accent animate-pulse" />
@@ -947,7 +1024,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
                   <button
                     type="button"
                     onClick={handleBuildAppNow}
-                    className="mt-4 inline-flex items-center gap-2 rounded-full bg-[#BFB9FF] px-4 py-2 text-[12px] font-semibold text-ink shadow-sm transition hover:bg-[#9B94E8]"
+                    className="mt-4 inline-flex items-center gap-2 rounded-full bg-accent px-4 py-2 text-[12px] font-semibold text-ink shadow-sm transition hover:bg-press"
                   >
                     <RotateCw className="size-3.5" /> Resume Prototype
                   </button>
@@ -977,8 +1054,8 @@ function Cell({ tip, on, className, children, ...rest }) {
     <Tip text={tip}>
       <button {...rest}
               aria-label={tip} aria-pressed={typeof on === 'boolean' ? on : undefined}
-              className={cn('grid h-9 place-items-center px-2 text-ink transition-colors',
-                on ? 'bg-accent text-ink shadow-sm'
+              className={cn('grid h-8 place-items-center px-1.5 text-ink transition-colors',
+                on ? 'text-deep'
                    : 'hover:bg-ink/[.06] dark:hover:bg-black/[.06]',
                 'disabled:pointer-events-none disabled:text-faint', className)}>
         {children}

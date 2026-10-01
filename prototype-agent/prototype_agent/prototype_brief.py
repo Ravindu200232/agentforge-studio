@@ -167,6 +167,94 @@ def accounts_message(accounts: list[dict], routes_out: list[dict], sign_in: str)
     return "\n".join(lines)
 
 
+def _tables_of(doc: dict) -> list[dict]:
+    return [t for t in (doc.get("database_design") or {}).get("tables") or [] if isinstance(t, dict) and t.get("table_name")]
+
+
+def _tables_outline(tables: list[dict]) -> str:
+    blocks = []
+    for table in tables:
+        fields = [f for f in (table.get("fields") or []) if isinstance(f, dict) and f.get("name")]
+        lines = [f"- {f['name']} ({f.get('type', 'string')})" + (" — primary key" if f.get("primary_key") else "")
+                + (f", references {f['references']}" if f.get("references") else "") for f in fields]
+        blocks.append(f"### `{table['table_name']}`\n" + "\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+def _seed_tables(data: Any, tables: list[dict]) -> dict[str, list[dict]]:
+    rows = data.get("tables") if isinstance(data, dict) else data
+    if not isinstance(rows, dict):
+        raise ValueError('return {"tables": {"<table name>": [ {...row...}, ... ]}}')
+    out: dict[str, list[dict]] = {}
+    for table in tables:
+        name = str(table["table_name"])
+        found = rows.get(name)
+        if not isinstance(found, list) or len(found) < 4:
+            raise ValueError(f"table {name!r} needs at least 4 realistic sample rows, as a JSON list")
+        seen: set[str] = set()
+        clean: list[dict] = []
+        for index, row in enumerate(found[:20]):
+            if not isinstance(row, dict):
+                continue
+            rid = str(row.get("id") or f"{name}-{index + 1}").strip() or f"{name}-{index + 1}"
+            while rid in seen:
+                rid = f"{rid}-{index + 1}"
+            seen.add(rid)
+            clean.append({**row, "id": rid})
+        if len(clean) < 4:
+            raise ValueError(f"table {name!r} needs at least 4 realistic sample rows, each a JSON object")
+        out[name] = clean
+    missing = {str(t["table_name"]) for t in tables} - set(out)
+    if missing:
+        raise ValueError("missing tables: " + ", ".join(sorted(missing)))
+    return out
+
+
+def seed_database(doc: dict, accounts: list[dict], say: Say) -> dict[str, list[dict]]:
+    """Realistic sample rows for every table the specification declares, drawn once.
+
+    Every page reads and writes this same data through the shared kit's `PROTOTYPE.db`, instead of each
+    page inventing its own list — the difference between a product that feels real and a slideshow of
+    disconnected screens. `{}` when the specification declares no tables at all.
+    """
+    tables = _tables_of(doc)
+    if not tables:
+        return {}
+    try:
+        seed = llm.complete_json(
+            system="You write realistic sample data for a product's database. Return JSON only.",
+            user=prompts.load("prototype/seed-data",
+                              product=json.dumps(doc.get("app_summary") or {}, ensure_ascii=False),
+                              tables=_tables_outline(tables)),
+            validator=lambda data: _seed_tables(data, tables), label="prototype_seed")
+    except Exception as exc:  # noqa: BLE001 - a prototype with no shared data still draws, just less real
+        say(f"Could not generate sample database rows ({str(exc)[:120]}); pages will have no shared data to work from.")
+        return {}
+    # A table that plainly holds people (users, members, staff...) gets the real demo identities folded
+    # in, so the account someone signs in with is one of that table's own rows, not a stranger to it.
+    for name, rows in seed.items():
+        if not rows or not re.search(r"user|account|member|customer|staff|admin|employee|login|profile", name, re.IGNORECASE):
+            continue
+        email_field = next((key for key in rows[0] if "email" in key.lower()), None)
+        if not email_field:
+            continue
+        name_field = next((key for key in rows[0] if key.lower() in ("name", "full_name", "display_name", "username")), None)
+        known = {str(row.get(email_field, "")).strip().lower() for row in rows}
+        for account in accounts:
+            if account["email"].lower() in known:
+                continue
+            row: dict[str, Any] = {"id": f"{name}-{account['role_key']}", email_field: account["email"]}
+            if name_field:
+                row[name_field] = account["display_name"]
+            rows.append(row)
+    return seed
+
+
+def seed_script(seed: dict[str, list[dict]]) -> str:
+    """`assets/seed.js`: the prototype's starting database rows, read by the kit's own `PROTOTYPE.db`."""
+    return "window.PROTOTYPE = Object.assign(window.PROTOTYPE || {}, " + json.dumps({"seed": seed}, ensure_ascii=False, indent=2) + ");\n"
+
+
 def flow_script(routes_out: list[dict], flow: dict, accounts: list[dict], sign_in: str) -> str:
     """`assets/flow.js`: the route map, the journeys and the demo accounts, as data the kit's script reads."""
     data = {"routes": route_map(routes_out),
@@ -291,24 +379,68 @@ def kit_problems(blocks: dict[str, str], tokens: dict) -> list[str]:
         problems.append(f"the stylesheet does not define the design's tokens as custom properties ({', '.join('--' + n for n in missing)})")
     if js and "PROTOTYPE" not in js:
         problems.append("the script does not use window.PROTOTYPE")
+    if js and not re.search(r"PROTOTYPE\.db\b|\bdb\s*[:.]", js):
+        problems.append("the script does not implement PROTOTYPE.db, the shared local database every page reads and writes through")
     if shell and ("page content" not in shell or "data-go" not in shell):
         problems.append("the shell must hold the `<!-- page content -->` marker and navigation written with data-go")
     return problems
 
 
+def _wireframe_outline(structures: dict[str, str], limit: int = 700) -> str:
+    """Compact functional evidence for the model that writes the project skill."""
+    outlines = []
+    for route, markup in structures.items():
+        text = re.sub(r"<[^>]+>", " ", markup or "")
+        text = re.sub(r"\s+", " ", text).strip()
+        outlines.append(f"{route}: {text[:limit]}")
+    return "\n".join(outlines)
+
+
+def draw_project_skill(doc: dict, spec: dict, customization: dict, structures: dict[str, str],
+                       routes_out: list[dict], project: str, workspace: Path) -> str:
+    """Ask the LLM for the single visual skill this prototype needs right now."""
+    selected = {
+        "app": doc.get("app_summary") or {},
+        "tokens": spec.get("tokens") or {},
+        "theme": spec.get("theme") or {},
+        "customer_direction": customization.get("customizer_prompt") or "",
+        "reference_images": customization.get("uploaded_site_images") or [],
+        "routes": route_map(routes_out),
+    }
+    prompt = prompts.load(
+        "prototype/project-design-skill",
+        selected=json.dumps(selected, ensure_ascii=False, indent=2),
+        wireframes=_wireframe_outline(structures),
+    )
+    # This is intentionally tool-free. The complete wireframe context and the
+    # selected design data are already in the prompt; allowing read tools here
+    # can consume the short focused turn without returning the requested skill.
+    previous = ""
+    for _ in range(2):
+        request = prompt if not previous else (
+            prompt + "\n\nYour previous response was empty or too short. "
+            "Write the complete Markdown skill now; do not call tools or explain it."
+        )
+        skill = llm.complete(
+            system="You create compact, project-specific frontend design skills. Return Markdown only.",
+            user=request, think=False, project=project,
+        ).strip()
+        if len(skill) >= 120:
+            return skill
+        previous = skill
+    raise ValueError("the project design skill was empty")
+
+
 def draw_kit(spec: dict, customization: dict, routes_out: list[dict], flow: dict, sign_in: str, accounts: list[dict], ideas: str,
-             say: Say, project: str, workspace: Path, premium_skill_path: str, attempts: int = 1) -> dict[str, str]:
+             say: Say, project: str, workspace: Path, project_skill_path: str, attempts: int = 1) -> dict[str, str]:
     """The stylesheet, the script and the shell every page shares, drawn once."""
-    design_md_workspace_path = str(customization.get("design_md_workspace_path") or "")
     sign_in_text = (f"The sign-in page is `{sign_in}`. Demo accounts (role, name, email, password, lands on): "
                     + "; ".join(f"{a['role']}, {a['display_name']}, {a['email']}, {a['password']}, {a['lands_on']}" for a in accounts)) if sign_in else "The product has no sign-in."
     user = prompts.load("prototype/kit", design_spec_path=f"{config.RECORD_DIR}/design/design-spec.json",
-                        design_md=(f"Read `{design_md_workspace_path}` yourself — the selected theme's own guidance "
-                                   f"({customization.get('design_md_path')})." if design_md_workspace_path else ""),
                         customizer=(f"### Customer's design direction\n\n{customization['customizer_prompt']}" if customization.get("customizer_prompt") else ""),
                         routes=_routes_text(routes_out), sign_in=sign_in_text, journeys=_journey_text(flow),
                         ideas=ideas or "(none gathered — rely on the design contract and your own judgement)",
-                        premium_frontend_skill_path=premium_skill_path)
+                        project_design_skill_path=project_skill_path)
     if customization.get("uploaded_site_images"):
         user += ("\n\n## User-uploaded site images\n"
                  "Prefer these for their named uses, including the shared logo or favicon. "
@@ -345,9 +477,14 @@ def kit_api(js: str) -> list[str]:
     return sorted(names | {"routes", "accounts", "signIn", "journeys"})
 
 
-def kit_reference(kit: dict[str, str]) -> dict[str, Any]:
-    """What a page must know about the kit to use it as it is: its stylesheet (minus comments) and the script's API."""
-    return {"stylesheet": re.sub(r"/\*.*?\*/", "", kit["assets/app.css"], flags=re.S).strip(), "script_api": kit_api(kit["assets/app.js"])}
+def kit_reference(kit: dict[str, str], doc: dict | None = None) -> dict[str, Any]:
+    """What a page must know about the kit to use it as it is: its stylesheet (minus comments), the script's
+    API, and the product's own data tables (name and field names) so a page reads and writes real data
+    through `PROTOTYPE.db` instead of hardcoding a list of records."""
+    tables = {str(t["table_name"]): [str(f.get("name")) for f in (t.get("fields") or []) if isinstance(f, dict) and f.get("name")]
+              for t in _tables_of(doc or {})}
+    return {"stylesheet": re.sub(r"/\*.*?\*/", "", kit["assets/app.css"], flags=re.S).strip(),
+            "script_api": kit_api(kit["assets/app.js"]), "tables": tables}
 
 
 def page_problems(html: str, kit: dict[str, str], routes: set[str], accounts: list[dict] | None = None) -> list[str]:
@@ -391,12 +528,27 @@ def page_problems(html: str, kit: dict[str, str], routes: set[str], accounts: li
     return problems
 
 
+def route_problems(html: str, routes_out: list[dict]) -> list[str]:
+    """Only navigation faults that must never be published in a prototype."""
+    valid_routes = {str(row.get("route") or "").rstrip("/") or "/" for row in routes_out}
+    valid_files = {str(row.get("file") or "") for row in routes_out}
+    problems: list[str] = []
+    for route in sorted(set(re.findall(r'data-go\s*=\s*"([^"]*)"', html))):
+        if (route.rstrip("/") or "/") not in valid_routes:
+            problems.append(f'data-go="{route}" is not in the route map')
+    for href in sorted(set(re.findall(r'href\s*=\s*"([^"#?]+\.html)"', html))):
+        target = href.replace("\\", "/").split("/")[-1]
+        if target not in valid_files:
+            problems.append(f'href="{href}" is not a generated prototype file')
+    return problems
+
+
 def ensure_assets(html: str) -> str:
     """A page always carries the kit, even if the model left a tag out."""
     if "assets/app.css" not in html:
         html = re.sub(r"</head>", '<link rel="stylesheet" href="assets/app.css">\n</head>', html, count=1, flags=re.IGNORECASE) if re.search(r"</head>", html, re.I) \
             else '<link rel="stylesheet" href="assets/app.css">\n' + html
-    tail = "".join(f'<script src="assets/{name}.js"></script>\n' for name in ("flow", "app") if f"assets/{name}.js" not in html)
+    tail = "".join(f'<script src="assets/{name}.js"></script>\n' for name in ("flow", "seed", "app") if f"assets/{name}.js" not in html)
     if tail:
         html = re.sub(r"</body>", tail + "</body>", html, count=1, flags=re.IGNORECASE) if re.search(r"</body>", html, re.I) else html + "\n" + tail
     return html
@@ -405,7 +557,7 @@ def ensure_assets(html: str) -> str:
 # --- everything, once, before any page ------------------------------------------------------------------------------------
 
 def prepare(doc: dict, spec: dict, customization: dict, routes_out: list[dict], structures: dict[str, str], say: Say,
-           project: str, workspace: Path, premium_skill_path: str) -> dict[str, Any]:
+           project: str, workspace: Path, project_skill_path: str) -> dict[str, Any]:
     """Build the shared flow and kit directly from the approved artifacts.
 
     The wireframes already contain the chosen structure and image references.
@@ -418,8 +570,10 @@ def prepare(doc: dict, spec: dict, customization: dict, routes_out: list[dict], 
     sign_in = sign_in_route(doc)
     accounts = draw_accounts(doc, routes_out, flow, system)
     images: list[dict] = []
+    seed = seed_database(doc, accounts, say)
     kit = draw_kit(spec, customization, routes_out, flow, sign_in, accounts, ideas, say,
-                   project=project, workspace=workspace, premium_skill_path=premium_skill_path,
+                   project=project, workspace=workspace, project_skill_path=project_skill_path,
                    attempts=3)
     return {"ideas": ideas, "flow": flow, "sign_in": sign_in, "accounts": accounts, "images": images, "kit": kit,
-            "flow_js": flow_script(routes_out, flow, accounts, sign_in)}
+            "flow_js": flow_script(routes_out, flow, accounts, sign_in),
+            "seed": seed, "seed_js": seed_script(seed)}

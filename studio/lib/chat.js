@@ -49,6 +49,7 @@ const MUTED = [
   /^\s*\$\s/,                       // the echoed command; the "Ran …" line covers it
   /^\s*(?:HTTP|WS|connection)\b/i,
   /^\s*type:\s/i,
+  /\btool error\s*:/i,              // internal tool retries; the agent recovers or reports a real failure
   /fast refresh|webpack|destination stream closed/i,
 ]
 

@@ -109,7 +109,7 @@ export default function SrsApprovalModal({
               <label key={role}
                 className="flex cursor-pointer items-start gap-2.5 rounded-none border border-line bg-panel2 px-3 py-2.5 transition-colors hover:border-accent">
                 <input type="checkbox" checked={picked.has(role)} disabled={busy}
-                  onChange={() => toggle(role)} className="mt-1 accent-[#BFB9FF]" />
+                  onChange={() => toggle(role)} className="mt-1 accent-[var(--accent)]" />
                 <Icon className="mt-0.5 size-3.5 shrink-0 text-accent" />
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-2">
