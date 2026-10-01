@@ -27,13 +27,42 @@ If any requirement appears missing, contradictory or unclear while building or c
 
 ## When only the customer can settle it
 
-Before asking anything, decide whether this is actually something only the customer can supply. A current API signature, a config option, an error message, a provider's own required setup step — anything you could find out yourself — is a `web_search`/`web_fetch` job, not a question; look it up against the framework's or provider's own official site first, the same as the guides above already tell you to. Ask the customer only what is left after that: a real value or choice that is genuinely not written anywhere in the project, not discoverable by searching, and cannot be safely assumed — which of two acceptable directions to take, or a value only the customer holds (a provider account's own credential, a real password, a business decision with no default). Never invent, hardcode or placeholder a value like that, and never silently skip the work that needs it. Write `.agentforge/build/question.json`, exactly
+Ask the customer, the way the deployment does, whenever the work genuinely needs them. Write each question
+yourself, in plain words about this project, one question at a time, with two to four concrete options and
+your recommendation first. Ask in these situations:
+
+- **You are stuck.** The same failure came back after two honest fixes, or the next step needs something you
+  do not have. Stop and ask with the ways forward you see, instead of looping.
+- **A credential is needed.** An API key, an OAuth client, a mail or payment provider key, a provider account
+  or its own password — something that must be created or supplied by the customer. Ask for it; never invent,
+  hardcode or placeholder it, and never silently skip the work that needs it.
+- **Sign-in accounts are about to be created.** Before seeding the accounts people sign in with, ask once
+  whether to use the prototype's demo accounts (recommended) or the customer's own details — then ask for each
+  value the customer chooses to give (an email, a name, a password), one value per question.
+- **An error you could not fix changes the way forward.** You tried, and searched the framework's or
+  provider's own documentation, and the remaining fixes change the product or the approach — another library
+  or service, a simpler version of a feature, a paid plan. Ask which way to go.
+- **A real business decision has no safe default.**
+
+Before asking, make sure it is not something you can find out yourself: a current API signature, a config
+option, an error message or a provider's own setup step is a `web_search`/`web_fetch` job against the
+framework's or provider's own official site, not a question.
+
+Write `.agentforge/build/question.json`, exactly
 
 ```
 {"question": "...", "why": "...", "options": [{"label": "...", "hint": "..."}], "assumption": "..."}
 ```
 
-and end your reply with the blocked marker. The customer is asked in the chat and this plan continues from exactly where it stopped once they answer — you are not restarted and finished work is not redone. A value only the customer has (a password, a key, a real account detail) is asked for the same way with `"variable": "NAME"` and `"secret": true`: the studio shows a private box, keeps it out of the conversation and tells you only that it was saved. Your commands then receive it in the environment under that name; you never see it. Ask as many times as the build genuinely needs to — there is no cap — but ask only for a real, current blocker, never speculatively.
+and end your reply with the blocked marker. The customer is asked in the chat and this plan continues from
+exactly where it stopped once they answer — you are not restarted and finished work is not redone.
+
+**A password, key, token, secret or connection string is never asked for as plain text.** Ask for it with
+`"variable": "NAME"` (capital letters, digits and underscores, for example `ADMIN_PASSWORD`) and
+`"secret": true`, one value per question: the studio shows a private box that hides what is typed, keeps it
+out of the conversation and tells you only that it was saved. Your commands then receive it in the
+environment under that name; you never see it. Ask as many times as the build genuinely needs — there is no
+cap — but each question must be a real, current need, never speculative.
 
 ## E2E journey contract
 

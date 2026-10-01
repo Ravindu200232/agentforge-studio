@@ -7,7 +7,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Monitor, Tablet, Smartphone, MousePointerClick, Pencil, RotateCw,
   ExternalLink, Globe, Layers, Eraser, Undo2, ChevronLeft, ChevronRight,
-  Sparkles, Rocket, FlaskConical, Loader2, SlidersHorizontal,
+  Sparkles, Rocket, Loader2, SlidersHorizontal,
   AlignLeft, AlignCenter, AlignRight,
   Copy, Trash2, Type,
   RotateCcw as UndoIcon, Save, Check,
@@ -826,10 +826,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
                   <div className="h-full w-full bg-accent animate-pulse" />
                 </div>
 
-                <div className="relative mb-5 grid size-16 place-items-center rounded-none border border-accent/25 bg-accent shadow-[0_0_35px_rgba(191, 185, 255,0.2)]">
-                  <FlaskConical className="size-7 text-ink animate-pulse" />
-                  <Loader2 className="absolute size-10 animate-spin text-ink/40" />
-                </div>
+                <Loader2 className="mb-5 size-10 animate-spin text-accent" />
 
                 <h3 className="font-display text-[16px] font-bold tracking-tight text-ink">
                   {isBusy ? 'Generating HTML Prototype…' : 'No prototype is ready yet'}

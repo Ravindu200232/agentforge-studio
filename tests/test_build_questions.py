@@ -116,6 +116,22 @@ class SettleTests(QuestionFlowCase):
         self.assertEqual(decision["variable"], "STRIPE_SECRET_KEY")
         self.assertTrue(decision["secret"])
 
+    def test_a_secret_asked_for_without_a_variable_still_gets_the_private_box(self):
+        self.session.write_record(*build.QUESTION, data={
+            "question": "What should the admin password be?", "why": "the first sign-in account needs one",
+            "options": [{"label": "Use the prototype's demo password"}], "assumption": "use the demo password"})
+        build._settle(PROJECT, self.session, "run", "req", "plan", {"status": "blocked", "text": ""})
+        decision = bus.pending_decisions()[0]
+        self.assertEqual(decision["variable"], "ADMIN_PASSWORD")
+        self.assertTrue(decision["secret"])
+
+    def test_a_choice_that_only_mentions_a_password_stays_a_plain_question(self):
+        self.session.write_record(*build.QUESTION, data={
+            "question": "Should people sign in with a password or with Google?", "why": "",
+            "options": [{"label": "Password"}, {"label": "Google"}], "assumption": "password"})
+        build._settle(PROJECT, self.session, "run", "req", "plan", {"status": "blocked", "text": ""})
+        self.assertFalse(bus.pending_decisions()[0].get("variable"))
+
     def test_there_is_no_cap_on_how_many_times_a_build_may_ask(self):
         for index in range(12):
             self.session.write_record(*build.QUESTION, data={
