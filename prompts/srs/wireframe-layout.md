@@ -58,3 +58,10 @@ nothing about who may see what, and nothing about how anyone signs in.
 ## Ideas gathered from the web
 
 {{ideas}}
+
+## The wireframe plan — shells, navigation and shared components
+
+Draw the shells, their navigation items (in this order, with these labels) and
+the shared components exactly as the plan sets them out.
+
+{{plan}}

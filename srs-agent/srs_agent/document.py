@@ -601,7 +601,7 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
 
 
 def _page_instruction(project: str, doc: dict, page: dict, docs: dict[str, str], request: str = "",
-                      ideas: str = "", layout: str = "") -> str:
+                      ideas: str = "", layout: str = "", wireframe_plan: str = "") -> str:
     """The prompt one wireframe is drawn from.
 
     The site map and application spec are no longer pasted in: the model reads
@@ -621,6 +621,7 @@ def _page_instruction(project: str, doc: dict, page: dict, docs: dict[str, str],
                                page_contract=json.dumps(wireframe_brief.page_facts(page), ensure_ascii=False, indent=2),
                                ideas=ideas or "(none gathered — draw from the specification and your own judgement)",
                                layout=layout or "(none drawn — keep the shell and the components consistent from the site map)",
+                               wireframe_plan=wireframe_plan or "(no wireframe plan — draw this page from its record and the site map)",
                                plan=wireframe_brief.clean(plan_stage.markdown(project)))
     if request:
         instruction += "\n\n## Approved wireframe request\n\n" + request
@@ -657,7 +658,8 @@ def _draw_page(session: ProjectSession, project: str, doc: dict, page: dict,
     on_token = writer.token if stream else None
 
     instruction = _page_instruction(project, doc, page, docs, request,
-                                    ideas=system.get("ideas", ""), layout=system.get("layout", ""))
+                                    ideas=system.get("ideas", ""), layout=system.get("layout", ""),
+                                    wireframe_plan=_plan_for_page(system.get("plan", ""), route))
     minimum = max(completeness.WIREFRAME_FLOOR,
                   weight * completeness.WIREFRAME_CHARS_PER_SECTION)
     html = llm.complete_html(system=prompts.load("srs/system"), user=instruction,
@@ -690,7 +692,7 @@ def _draw_page(session: ProjectSession, project: str, doc: dict, page: dict,
 
 
 def _wireframe_system(session: ProjectSession, project: str, doc: dict, docs: dict[str, str], fresh: bool,
-                      quiet: bool = False) -> dict[str, Any]:
+                      quiet: bool = False, plan: str = "") -> dict[str, Any]:
     """The web ideas and the shared layout every page is drawn from.
 
     Kept with the project, so redrawing one page reuses them; made anew when every page is drawn again.
@@ -700,7 +702,8 @@ def _wireframe_system(session: ProjectSession, project: str, doc: dict, docs: di
         "layout": session.read_record(SRS_DIR, WIREFRAME_SYSTEM, "layout.html", fallback="") or "",
     }
     made = wireframe_brief.prepare(doc, docs, have,
-                                   (lambda _text: None) if quiet else lambda text: bus.log(project, "INFO", text))
+                                   (lambda _text: None) if quiet else lambda text: bus.log(project, "INFO", text),
+                                   plan=_plan_sections(plan)[0])
     for name, file in (("ideas", "ideas.md"), ("layout", "layout.html")):
         if name in made["new"]:
             path = session.record_path(SRS_DIR, WIREFRAME_SYSTEM, file)
@@ -708,6 +711,75 @@ def _wireframe_system(session: ProjectSession, project: str, doc: dict, docs: di
             if not quiet:
                 bus.file_written(project, path.relative_to(session.workspace).as_posix(), made[name], note="written")
     return made
+
+
+_PLAN_PAGE = re.compile(r"^###\s+`?(/[^`\s]*)`?", re.MULTILINE)
+
+
+def _plan_sections(plan: str) -> tuple[str, dict[str, str]]:
+    """The wireframe plan's shared part, and each page's own part by route."""
+    text = str(plan or "")
+    found = list(_PLAN_PAGE.finditer(text))
+    first = found[0].start() if found else len(text)
+    pages_at = re.search(r"^##\s+Pages\b", text, re.MULTILINE)
+    shared = text[:pages_at.start() if pages_at and pages_at.start() < first else first].strip()
+    sections: dict[str, str] = {}
+    for index, match in enumerate(found):
+        end = found[index + 1].start() if index + 1 < len(found) else len(text)
+        chunk = text[match.start():end]
+        after = re.search(r"^##\s", chunk[3:], re.MULTILINE)
+        sections[match.group(1).rstrip("/") or "/"] = (chunk[:after.start() + 3] if after else chunk).strip()
+    return shared, sections
+
+
+def _plan_for_page(plan: str, route: str) -> str:
+    """What one page is drawn from: the plan's shared part and the page's own part, or the whole plan if it has none."""
+    if not str(plan or "").strip():
+        return ""
+    shared, sections = _plan_sections(plan)
+    own = sections.get(str(route).rstrip("/") or "/")
+    return f"{shared}\n\n{own}".strip() if own else str(plan)[:12000]
+
+
+def _wireframe_plan(session: ProjectSession, project: str, doc: dict, approved: dict, fresh: bool,
+                    quiet: bool = False) -> str:
+    """The plan every wireframe is drawn from, made silently by the project's agent before any page — like the builder's.
+
+    It reads app.md and the site map, then sets out the shells and navigation and, for every route, what the page holds
+    and where each action leads. Kept with the project, so one page redrawn later follows the same plan. A plan that
+    cannot be made never stops the drawing: each page is then drawn from its own record, as before.
+    """
+    saved = "" if fresh else str(session.read_record(SRS_DIR, WIREFRAME_SYSTEM, "plan.md", fallback="") or "")
+    planner = getattr(session, "plan_focused_task", None)
+    if saved.strip() or not callable(planner):
+        return saved
+    routes = "\n".join(
+        f"- `{page['route']}` — {page.get('page_name') or page['route']} — "
+        + (("signed in: " + (", ".join(map(str, page.get("allowed_roles") or [])) or "any signed-in role"))
+           if page.get("login_required") else "no sign-in")
+        + (f" — sections: {', '.join(wireframe_brief.page_lines(page.get('sections')))}" if page.get("sections") else "")
+        + (f" — functions: {', '.join(wireframe_brief.page_lines(page.get('functions')))}" if page.get("functions") else "")
+        for page in _wireframe_pages(doc, approved))
+    flows = "\n".join(
+        f"- {flow['workflow_name']} ({flow.get('who') or 'anyone'}): "
+        + " → ".join(f"{step['step'][:90]} [{step['route']}]" for step in flow["steps"])
+        for flow in journeys.user_journeys_for(doc)) or "(the specification lists no journeys)"
+    if not quiet:
+        bus.phase(project, "wireframes", "Planning the wireframes",
+                  detail="Reading app.md and the site map, then planning every page and how the pages connect.")
+    try:
+        plan = planner(prompts.load("srs/wireframe-plan", routes=routes, journeys=flows), subject="the wireframes")
+    except RunCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the pages can still be drawn from their own records
+        if not quiet:
+            bus.log(project, "WARN", f"Could not plan the wireframes ({str(exc)[:160]}); "
+                                     "drawing each page from its own record.")
+        return ""
+    path = session.write_record(SRS_DIR, WIREFRAME_SYSTEM, "plan.md", data=plan)
+    if not quiet:
+        bus.file_written(project, path.relative_to(session.workspace).as_posix(), plan, note="written")
+    return plan
 
 
 def handoff_docs(session: ProjectSession) -> dict[str, str]:
@@ -1689,11 +1761,14 @@ def _generate_wireframes(session: ProjectSession, project: str, doc: dict,
             return None
 
     try:
-        # Before any page: ideas from the web and the one layout every page starts from (kept when a single page is redrawn).
+        # Before any page: a silent plan of every page, then ideas from the web and the one layout every page starts
+        # from (all kept when a single page is redrawn).
+        plan = _wireframe_plan(session, project, doc, approved, fresh=not route, quiet=quiet)
         if not quiet:
             bus.phase(project, "wireframes", "Preparing the design system",
                       detail="Looking up how products like this lay out their screens, then drawing the shared layout.")
-        system.update(_wireframe_system(session, project, doc, docs, fresh=not route, quiet=quiet))
+        system.update(_wireframe_system(session, project, doc, docs, fresh=not route, quiet=quiet, plan=plan))
+        system["plan"] = plan
         results = llm.in_lanes(selected, draw)
     finally:
         state["drawing"] = False

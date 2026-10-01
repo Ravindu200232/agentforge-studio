@@ -185,18 +185,19 @@ def gather_ideas(app_summary: str, site_map: str, say: Say) -> str:
         return ""
 
 
-def draw_layout(app_summary: str, site_map: str, ideas: str, say: Say) -> str:
-    """The layout every page starts from: its shells and its components, drawn once."""
+def draw_layout(app_summary: str, site_map: str, ideas: str, say: Say, plan: str = "") -> str:
+    """The layout every page starts from: its shells and its components, drawn once, as the wireframe plan sets them out."""
     try:
         return llm.complete_html(system=prompts.load("srs/system"), label="wireframe_layout", minimum=2500,
                                  user=prompts.load("srs/wireframe-layout", app_summary=app_summary, site_map=site_map,
-                                                   ideas=ideas or "(none gathered)"))
+                                                   ideas=ideas or "(none gathered)",
+                                                   plan=plan or "(no wireframe plan — set the shells out from the site map)"))
     except Exception as exc:  # noqa: BLE001
         say(f"Could not draw the shared layout ({str(exc)[:120]}); the pages are drawn from the rules alone.")
         return ""
 
 
-def prepare(doc: dict, docs: dict[str, str], have: dict[str, str], say: Say) -> dict[str, Any]:
+def prepare(doc: dict, docs: dict[str, str], have: dict[str, str], say: Say, plan: str = "") -> dict[str, Any]:
     """The ideas and the layout: what is already kept is reused, what is missing is made. `new` names what was just made."""
     summary = json.dumps(doc.get("app_summary") or {}, ensure_ascii=False)
     site_map = clean(docs.get("sitemap.md", "")).strip()[:8000]
@@ -206,7 +207,7 @@ def prepare(doc: dict, docs: dict[str, str], have: dict[str, str], say: Say) -> 
         if ideas:
             new.append("ideas")
     if not layout:
-        layout = draw_layout(summary, site_map, ideas, say)
+        layout = draw_layout(summary, site_map, ideas, say, plan=plan)
         if layout:
             new.append("layout")
     return {"ideas": ideas, "layout": layout, "new": new}

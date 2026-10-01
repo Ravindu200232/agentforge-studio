@@ -111,6 +111,14 @@ from it:
 
 {{layout}}
 
+## The wireframe plan for this page
+
+This plan was made for the whole product before any page was drawn. Draw every
+item it lists for this page, and send each button and link where it says, so
+the pages connect into the journeys.
+
+{{wireframe_plan}}
+
 ## Approved /plan
 
 {{plan}}
