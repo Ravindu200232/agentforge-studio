@@ -2,8 +2,8 @@
 
 import {useEffect, useState} from 'react'
 import {
-  X, ChevronDown, ChevronUp, Undo2, Redo2, Copy, MoveUp, MoveDown, Trash2, Save, Check,
-  Move, ArrowLeft, ArrowRight, ArrowUp, ArrowDown, AlignLeft, AlignCenter, AlignRight, Maximize2,
+  X, ChevronDown, ChevronUp, Undo2, Redo2, Copy, Trash2, Save, Check,
+  AlignLeft, AlignCenter, AlignRight,
 } from 'lucide-react'
 import {api, API} from '@/lib/api'
 import {editorFor, serializePrototype} from '@/lib/visual-editor'
@@ -101,113 +101,28 @@ export default function VisualInspector({element, doc, project, currentFile, onC
       </div></div>
     {!minimized && <div className="min-h-0 overflow-y-auto overscroll-contain py-3">
       <div className="mb-3 flex flex-wrap gap-1">
-        <button className={buttonClass} onClick={() => run(() => editor.move(element, 'up'))}><MoveUp size={12}/> Up</button>
-        <button className={buttonClass} onClick={() => run(() => editor.move(element, 'down'))}><MoveDown size={12}/> Down</button>
         <button className={buttonClass} onClick={() => run(() => selectNode(editor.duplicate(element)))}><Copy size={12}/> Duplicate</button>
         <button className={buttonClass} onClick={() => style('display', computed.display === 'none' ? '' : 'none')}>Hide / show</button>
         <button className={buttonClass} onClick={() => run(() => editor.remove(element))} aria-label="Delete selected element"><Trash2 size={12}/></button>
         <button className={buttonClass} onClick={() => selectNode(element.parentElement)}>Select parent</button>
       </div>
 
-      {/* Figma Position & Nudge */}
-      <div className="mb-3 rounded-xl border border-line bg-black/[.03] p-2.5 dark:border-black/10 dark:bg-black/[.02]">
-        <div className="mb-2 flex items-center justify-between">
-          <span className="flex items-center gap-1 text-[10.5px] font-semibold text-[#BFB9FF]">
-            <Move className="size-3" /> Figma Position & Alignment
-          </span>
-          {(parseFloat(element.style.left) || parseFloat(element.style.top)) ? (
-            <button
-              type="button"
-              onClick={() => run(() => {
-                element.style.left = ''
-                element.style.top = ''
-              })}
-              className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[9.5px] font-medium text-amber-300 hover:bg-amber-500/30"
-            >
-              Reset Pos
-            </button>
-          ) : null}
-        </div>
-
-        <div className="grid grid-cols-2 gap-2 mb-2 font-mono text-[10px]">
-          <div className="flex items-center justify-between rounded-lg border border-line bg-panel px-2 py-1 dark:border-black/10 dark:bg-black/30">
-            <span className="text-muted font-sans text-[9px] uppercase font-bold">X:</span>
-            <button type="button" onClick={() => run(() => {
-              if (computed.position === 'static') element.style.position = 'relative'
-              const cur = parseFloat(element.style.left) || 0
-              element.style.left = `${Math.round(cur - 5)}px`
-            })} className="px-1 text-muted hover:text-ink">-</button>
-            <span className="font-semibold text-ink dark:text-ink min-w-[28px] text-center">
-              {Math.round(parseFloat(element.style.left) || 0)}px
-            </span>
-            <button type="button" onClick={() => run(() => {
-              if (computed.position === 'static') element.style.position = 'relative'
-              const cur = parseFloat(element.style.left) || 0
-              element.style.left = `${Math.round(cur + 5)}px`
-            })} className="px-1 text-muted hover:text-ink">+</button>
-          </div>
-
-          <div className="flex items-center justify-between rounded-lg border border-line bg-panel px-2 py-1 dark:border-black/10 dark:bg-black/30">
-            <span className="text-muted font-sans text-[9px] uppercase font-bold">Y:</span>
-            <button type="button" onClick={() => run(() => {
-              if (computed.position === 'static') element.style.position = 'relative'
-              const cur = parseFloat(element.style.top) || 0
-              element.style.top = `${Math.round(cur - 5)}px`
-            })} className="px-1 text-muted hover:text-ink">-</button>
-            <span className="font-semibold text-ink dark:text-ink min-w-[28px] text-center">
-              {Math.round(parseFloat(element.style.top) || 0)}px
-            </span>
-            <button type="button" onClick={() => run(() => {
-              if (computed.position === 'static') element.style.position = 'relative'
-              const cur = parseFloat(element.style.top) || 0
-              element.style.top = `${Math.round(cur + 5)}px`
-            })} className="px-1 text-muted hover:text-ink">+</button>
-          </div>
-        </div>
-
-        {/* Nudge D-Pad and Alignments */}
-        <div className="flex items-center justify-between gap-1">
-          <div className="flex items-center rounded-lg border border-line bg-panel p-0.5 dark:border-black/10 dark:bg-black/30">
-            <button type="button" title="Nudge Left (1px)" onClick={() => run(() => {
-              if (computed.position === 'static') element.style.position = 'relative'
-              element.style.left = `${Math.round((parseFloat(element.style.left) || 0) - 1)}px`
-            })} className="p-1 text-muted hover:text-ink"><ArrowLeft className="size-2.5"/></button>
-            <button type="button" title="Nudge Up (1px)" onClick={() => run(() => {
-              if (computed.position === 'static') element.style.position = 'relative'
-              element.style.top = `${Math.round((parseFloat(element.style.top) || 0) - 1)}px`
-            })} className="p-1 text-muted hover:text-ink"><ArrowUp className="size-2.5"/></button>
-            <button type="button" title="Nudge Down (1px)" onClick={() => run(() => {
-              if (computed.position === 'static') element.style.position = 'relative'
-              element.style.top = `${Math.round((parseFloat(element.style.top) || 0) + 1)}px`
-            })} className="p-1 text-muted hover:text-ink"><ArrowDown className="size-2.5"/></button>
-            <button type="button" title="Nudge Right (1px)" onClick={() => run(() => {
-              if (computed.position === 'static') element.style.position = 'relative'
-              element.style.left = `${Math.round((parseFloat(element.style.left) || 0) + 1)}px`
-            })} className="p-1 text-muted hover:text-ink"><ArrowRight className="size-2.5"/></button>
-          </div>
-
-          <div className="flex items-center rounded-lg border border-line bg-panel p-0.5 dark:border-black/10 dark:bg-black/30">
-            <button type="button" title="Align Left" onClick={() => run(() => {
-              element.style.marginLeft = ''
-              element.style.marginRight = 'auto'
-            })} className="p-1 text-muted hover:text-ink"><AlignLeft className="size-2.5"/></button>
-            <button type="button" title="Align Center" onClick={() => run(() => {
-              element.style.marginLeft = 'auto'
-              element.style.marginRight = 'auto'
-              element.style.textAlign = 'center'
-            })} className="p-1 text-muted hover:text-ink"><AlignCenter className="size-2.5"/></button>
-            <button type="button" title="Align Right" onClick={() => run(() => {
-              element.style.marginLeft = 'auto'
-              element.style.marginRight = ''
-            })} className="p-1 text-muted hover:text-ink"><AlignRight className="size-2.5"/></button>
-            <button type="button" title="Full Width" onClick={() => run(() => {
-              element.style.width = '100%'
-              element.style.marginLeft = ''
-              element.style.marginRight = ''
-              element.style.display = 'block'
-            })} className="p-1 text-muted hover:text-ink"><Maximize2 className="size-2.5"/></button>
-          </div>
-        </div>
+      {/* Alignment */}
+      <div className="mb-3 flex items-center gap-1">
+        <span className="mr-1 text-[10.5px] font-semibold text-muted">Align</span>
+        <button type="button" title="Align Left" className={buttonClass} onClick={() => run(() => {
+          element.style.marginLeft = ''
+          element.style.marginRight = 'auto'
+        })}><AlignLeft size={12}/></button>
+        <button type="button" title="Align Center" className={buttonClass} onClick={() => run(() => {
+          element.style.marginLeft = 'auto'
+          element.style.marginRight = 'auto'
+          element.style.textAlign = 'center'
+        })}><AlignCenter size={12}/></button>
+        <button type="button" title="Align Right" className={buttonClass} onClick={() => run(() => {
+          element.style.marginLeft = 'auto'
+          element.style.marginRight = ''
+        })}><AlignRight size={12}/></button>
       </div>
 
       <input aria-label="Find customization tools" placeholder="Find a tool or CSS property…" className={inputClass} value={search} onChange={e => setSearch(e.target.value)}/>
