@@ -801,8 +801,7 @@ export default function Studio() {
               <CodePane hidden={view !== 'code'} />
               {view === 'testing' && <TestingResult key={`testing-${project}`} />}
               {view === 'srs' && (
-                <SrsResult key={`srs-${project}`} specOnly={specOnly}
-                           onBuild={resumeBuild} onApprove={approveSrsAndDraw} />
+                <SrsResult key={`srs-${project}`} onApprove={approveSrsAndDraw} />
               )}
               {view === 'wireframe' && (
                 <div className="min-h-0 flex-1 overflow-y-auto bg-[radial-gradient(circle_at_top_right,rgba(191, 185, 255,.07),transparent_30%)] p-5">

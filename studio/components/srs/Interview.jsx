@@ -222,7 +222,7 @@ export default function Interview({ projectId, onDone, onCancel }) {
           </div>
 
           {phase === 'sending' && (
-            <div className="mb-5 flex items-center gap-2.5 rounded-none border border-black/10 bg-black/[.04] px-4 py-3 text-[12px] text-muted">
+            <div role="status" className="mb-5 flex items-center gap-2.5 py-2 text-[12px] text-muted">
               <Loader2 className="size-3.5 animate-spin text-accent" />
               <span>AgentForge is reviewing your answer and preparing the next step…</span>
             </div>
@@ -392,9 +392,10 @@ function said(a) {
 
 export function Waiting({ children, sub }) {
   return (
-    <div className="flex items-center gap-3.5 rounded-none border border-line bg-panel px-7 py-6 shadow-2xl backdrop-blur-2xl">
-      <Loader2 className="size-5 shrink-0 animate-spin text-accent" />
-      <div><p className="text-[13.5px] font-semibold text-ink">{children}</p>{sub && <p className="mt-1 text-[11px] text-muted">{sub}</p>}</div>
+    <div role="status" aria-live="polite" className="flex flex-col items-center px-6 py-10 text-center">
+      <Loader2 className="size-7 animate-spin text-accent" />
+      <p className="mt-4 font-display text-[18px] font-bold text-ink">{children}</p>
+      {sub && <p className="mt-1.5 text-[12px] text-muted">{sub}</p>}
     </div>
   )
 }

@@ -85,13 +85,9 @@ function Thumbnail({ srsId, page, waiting }) {
         <div className="absolute inset-0 opacity-15 bg-[radial-gradient(var(--accent)_1px,transparent_1px)] [background-size:12px_12px]" />
         {isGenerating ? (
           <div className="relative z-10 flex flex-col items-center gap-2 text-center p-3">
-            <div className="relative flex size-9 items-center justify-center rounded-none bg-accent border border-accent/40 shadow-[0_0_20px_rgba(191, 185, 255,0.3)]">
-              <Sparkles className="size-4 text-ink animate-spin" style={{ animationDuration: '6s' }} />
-              <div className="absolute inset-0 rounded-none border border-accent/40 animate-ping opacity-30" />
-            </div>
+            <Loader2 className="size-5 animate-spin text-accent" />
             <span className="text-[11px] font-semibold text-ink tracking-wide">Drawing wireframe…</span>
             <span className="text-[9px] text-muted2">Synthesizing blueprint layout</span>
-            <div className="absolute inset-x-0 h-0.5 bg-gradient-to-r from-transparent via-accent to-transparent animate-pulse" />
           </div>
         ) : (
           <span className="relative z-10 text-[11px] text-muted2">not drawn yet</span>
@@ -116,13 +112,9 @@ function Thumbnail({ srsId, page, waiting }) {
       />
       {isGenerating && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-panel/75 backdrop-blur-[2px] z-10 transition-all">
-          <div className="relative flex size-9 items-center justify-center rounded-none bg-accent border border-accent/50 shadow-[0_0_20px_rgba(191, 185, 255,0.4)]">
-            <Sparkles className="size-4 text-ink animate-spin" style={{ animationDuration: '6s' }} />
-            <div className="absolute inset-0 rounded-none border border-accent/40 animate-ping opacity-30" />
-          </div>
+          <Loader2 className="size-5 animate-spin text-accent" />
           <span className="mt-2 text-[11px] font-semibold text-ink tracking-wide">Updating…</span>
           <span className="text-[9px] text-muted font-mono">Redrawing wireframe</span>
-          <div className="absolute inset-x-0 h-[2px] bg-gradient-to-r from-transparent via-accent to-transparent animate-pulse" />
         </div>
       )}
     </div>

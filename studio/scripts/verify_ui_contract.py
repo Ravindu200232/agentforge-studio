@@ -143,7 +143,7 @@ required = {
     "a frame never blocks the socket it arrives on":
         ("../qa-agent/qa_agent/browser.py", "def post"),
     "the engine reports thinking": ("../server_modules/builder/bridge.py", '"state": "thinking"'),
-    "SRS planner animation": ("components/srs/SrsActivity.jsx", "/__agentforge/srs-planner.gif"),
+    "SRS planner animation": ("components/srs/SrsActivity.jsx", "animate-spin"),
     "a run can be stopped from the chat": ("components/AgentChat.jsx", "function CancelRun"),
     "each project keeps its own stream": ("lib/store.js", "streams: {}"),
     "a stream outlives the tab that watched it": ("lib/api.js", "saveStream:"),
@@ -233,7 +233,7 @@ forbidden = {
     "team planner picker": ("components/Sidebar.jsx", 'label="Planner"'),
     "team design picker": ("components/Sidebar.jsx", 'label="Design"'),
     "team builder picker": ("components/Sidebar.jsx", 'label="Builder"'),
-    "SRS activity card frame": ("components/srs/SrsActivity.jsx", "rounded-[21px] rounded-bl-[8px]"),
+    "SRS activity has no box of its own": ("components/srs/SrsActivity.jsx", "flex flex-col items-center"),
     # The build screen said in an animation what the chat stream already says
     # in words, and covered the browser while it did.
     "build screen": ("components/PreviewPane.jsx", "BuildOverlay"),

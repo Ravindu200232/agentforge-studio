@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { BookOpen, ClipboardCheck, Compass, Database, FileCode2, FileDown, FileText, Hammer, LayoutList, Loader2, MessageSquare, RefreshCw, ShieldAlert, Users, Workflow } from 'lucide-react'
+import { BookOpen, ClipboardCheck, Compass, Database, FileCode2, FileDown, FileText, LayoutList, Loader2, MessageSquare, RefreshCw, ShieldAlert, Users, Workflow } from 'lucide-react'
 import { api } from '@/lib/api'
 import { diagramRows } from '@/lib/srs-view'
 import { useStore } from '@/lib/store'
@@ -24,7 +24,7 @@ const VIEW_ICONS = {
   risks: ShieldAlert,
 }
 
-export default function SrsResult({ specOnly = false, onBuild, onApprove }) {
+export default function SrsResult({ onApprove }) {
   const project = useStore(s => s.project)
   const busy = useStore(s => s.busy)
   const srsStamp = useStore(s => s.srsStamp[s.project])
@@ -136,14 +136,6 @@ export default function SrsResult({ specOnly = false, onBuild, onApprove }) {
           <Button variant="outline" onClick={load}>
             <RefreshCw className="size-3" /> Refresh
           </Button>
-          {/* Said no to building it at the time. This is where "whenever you
-              like" has to actually be somewhere. */}
-          {specOnly && (
-            <Button variant="solid" disabled={busy} onClick={onBuild}
-                    title="Build the application this specification describes">
-              <Hammer className="size-3" /> Build this app
-            </Button>
-          )}
         </span>
       </div>
       </div>
@@ -179,10 +171,8 @@ export default function SrsResult({ specOnly = false, onBuild, onApprove }) {
           {anything && <View srs={srs} onSelectView={setSub} />}
         </div>
         {updatingSrs && (
-          <div className="absolute inset-0 z-20 overflow-y-auto bg-panel/30 px-5 pb-5">
-            <div className="mx-auto max-w-[980px]">
-              <SrsActivity phase="generating" message="Writing the specification — every file streams in the chat" />
-            </div>
+          <div className="absolute inset-0 z-20 grid place-items-center overflow-y-auto bg-panel/30 px-5">
+            <SrsActivity phase="generating" message="Every file is written in the chat stream as it happens." />
           </div>
         )}
       </div>
