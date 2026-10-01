@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence, TypeVar
@@ -90,6 +91,29 @@ def extract_html(text: str) -> str:
 _local = threading.local()
 
 
+def bind_stop(event: threading.Event | None) -> None:
+    """The Stop of the run working on this thread. Every model call made here - and in the lanes it opens -
+    honours it, so Stop ends a page being drawn or a document being written at once rather than when it is done."""
+    _local.stop = event
+
+
+def _stop_event() -> threading.Event | None:
+    return getattr(_local, "stop", None)
+
+
+def _stopped() -> bool:
+    event = _stop_event()
+    return bool(event is not None and event.is_set())
+
+
+def _wait_for_stop(seconds: float) -> bool:
+    event = _stop_event()
+    if event is None:
+        time.sleep(seconds)
+        return False
+    return event.wait(seconds)
+
+
 def client() -> Any:
     """One Ollama client per thread, so parallel lanes do not share a socket."""
     saved = config.settings()
@@ -104,7 +128,7 @@ def client() -> Any:
         else:
             inner = ollama.Client(host=saved.get("ollama_host") or "http://localhost:11434")
         from .session import RetryingClient
-        _local.client = RetryingClient(inner)
+        _local.client = RetryingClient(inner, cancelled=_stopped, wait_for_cancel=_wait_for_stop)
         _local.key = key
     return _local.client
 
@@ -384,11 +408,15 @@ def in_lanes(items: Sequence[T], work: Callable[[T], Any], lanes: int = LANES,
     if not items:
         return []
     results: list[Any] = [None] * len(items)
+    stop = _stop_event()
 
     def run(index: int, item: T) -> None:
+        _local.stop = stop  # each lane honours the Stop of the run that opened it
         try:
             results[index] = work(item)
         except Exception as exc:  # noqa: BLE001 - reported per item
+            if stop is not None and stop.is_set():
+                raise  # stopped: no item is reported as failed, the run ends
             results[index] = on_error(item, exc) if on_error else None
 
     with ThreadPoolExecutor(max_workers=max(1, lanes)) as pool:

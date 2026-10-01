@@ -216,6 +216,8 @@ export default function AgentChat({ projectTitle = '', readOnly = false, classNa
     if (next) fire(next.payload, next.body, next.shown, next.shots)
   }, [lifecycleStream.busy, project])
 
+  const stopRun = useStopRun(lifecycleStream.busy)
+
   async function submit() {
     const typed = text.trim()
     if (!typed || !project || reading) return
@@ -334,12 +336,9 @@ export default function AgentChat({ projectTitle = '', readOnly = false, classNa
           </div>
           <span className="flex-1" />
           {lifecycleStream.busy && (
-            <>
-              <span className="flex items-center gap-1 text-[10px] font-medium text-muted">
-                <Loader2 className="size-3 animate-spin" /> working
-              </span>
-              <CancelRun />
-            </>
+            <span className="flex items-center gap-1 text-[10px] font-medium text-muted">
+              <Loader2 className="size-3 animate-spin" /> working
+            </span>
           )}
           <button onClick={() => setOpen(false)} title="Hide the agent"
                   className="grid size-7 place-items-center rounded-lg text-muted transition-colors hover:bg-black/[.05] hover:text-ink dark:hover:bg-black/[.06]">
@@ -415,6 +414,7 @@ export default function AgentChat({ projectTitle = '', readOnly = false, classNa
             onChange={e => setText(e.target.value)}
             onKeyDown={e => {
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit() }
+              if (e.key === 'Escape' && lifecycleStream.busy) { e.preventDefault(); stopRun.stop() }
             }}
             className="min-h-8 w-full resize-none bg-transparent px-1.5 py-1 text-[12.5px] leading-relaxed text-ink outline-none placeholder:text-muted2 disabled:opacity-45" />
           <div className="mt-1 flex items-center justify-between px-0.5">
@@ -446,12 +446,22 @@ export default function AgentChat({ projectTitle = '', readOnly = false, classNa
             <div className="flex shrink-0 items-center gap-1">
               <ChatModelControls project={project} agentRole={agentRole} busy={lifecycleStream.busy} />
               <ContextUsage stats={stats} />
-              <button onClick={submit}
-                      disabled={!project || reading || !text.trim()}
-                      title={lifecycleStream.busy ? 'Queue this (Enter)' : 'Send (Enter)'}
-                      className="grid size-7 place-items-center rounded-full bg-raised text-muted shadow-sm transition-all hover:bg-accent hover:text-ink disabled:opacity-30">
-                {reading ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
-              </button>
+              {(!lifecycleStream.busy || text.trim()) && (
+                <button onClick={submit}
+                        disabled={!project || reading || !text.trim()}
+                        title={lifecycleStream.busy ? 'Queue this (Enter)' : 'Send (Enter)'}
+                        className="grid size-7 place-items-center rounded-full bg-raised text-muted shadow-sm transition-all hover:bg-accent hover:text-ink disabled:opacity-30">
+                  {reading ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+                </button>
+              )}
+              {lifecycleStream.busy && (
+                <button onClick={stopRun.stop} disabled={stopRun.stopping}
+                        title={stopRun.stopping ? 'Stopping…' : 'Stop (Esc)'} aria-label="Stop"
+                        className="grid size-7 place-items-center rounded-full bg-ink text-panel shadow-sm transition-all hover:opacity-85 disabled:opacity-60">
+                  {stopRun.stopping ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-2.5 fill-current" />}
+                </button>
+              )}
+              <span role="status" aria-live="polite" className="sr-only">{stopRun.stopping ? 'Stop requested' : ''}</span>
             </div>
           </div>
         </div>
@@ -669,65 +679,33 @@ function Attached({ items, onRemove }) {
   )
 }
 
-/** Prompts confirmation and halts the current active agent run. */
-function CancelRun() {
-  const [asking, setAsking] = useState(false)
-  const [sending, setSending] = useState(false)
+/** Stop, as in Claude: the send button's place while the agent works, one press (or Esc) and it stops - no
+ * confirmation. The run ends at once on the server; the button spins until the studio sees it has. */
+function useStopRun(busy) {
   const [stopping, setStopping] = useState(false)
   const addLog = useStore(s => s.addLog)
-  const busy = useStore(s => s.busy)
 
-  useEffect(() => {
-    if (!busy) {
-      setAsking(false)
-      setSending(false)
-      setStopping(false)
-    }
-  }, [busy])
+  useEffect(() => { if (!busy) setStopping(false) }, [busy])
 
   async function stop() {
-    setSending(true)
+    if (stopping) return
+    setStopping(true)
     try {
       const current = useStore.getState()
       const result = await api.cancelBuild(current.project, current.agentRole)
-      setSending(false)
-      setStopping(result?.status === 'stopping')
-      addLog('INFO', result?.status === 'stopping'
-        ? 'Stop requested — ending the current step now.'
-        : (result?.detail || 'No active run to stop.'))
+      if (result?.status === 'stopping') {
+        addLog('INFO', 'Stop requested — ending the current step now.')
+      } else {
+        setStopping(false)
+        addLog('INFO', result?.detail || 'No active run to stop.')
+      }
     } catch (e) {
+      setStopping(false)
       addLog('WARN', `could not cancel — ${e.message}`)
-      setSending(false)
-      setAsking(false)
     }
   }
 
-  if (!asking) return (
-    <button onClick={() => setAsking(true)} title="Stop this run"
-            className="grid size-7 place-items-center rounded-lg text-muted transition-colors hover:bg-bad/10 hover:text-bad">
-      <Square className="size-3" />
-    </button>
-  )
-
-  if (stopping) return (
-    <span role="status" aria-live="polite" className="rounded-full bg-bad/10 px-2 py-0.5 text-[10px] font-semibold text-bad">
-      Stop requested
-    </span>
-  )
-
-  return (
-    <span className="flex items-center gap-1">
-      <button onClick={stop} disabled={sending}
-              className="inline-flex items-center gap-1 rounded-full bg-bad px-2 py-0.5 text-[10px] font-semibold text-ink disabled:opacity-60">
-        {sending ? <Loader2 className="size-2.5 animate-spin" /> : <Square className="size-2.5" />}
-        {sending ? 'Stopping' : 'Stop'}
-      </button>
-      <button onClick={() => setAsking(false)} disabled={sending}
-              className="rounded-full px-1.5 py-0.5 text-[10px] text-muted hover:text-ink">
-        Keep going
-      </button>
-    </span>
-  )
+  return { stop, stopping }
 }
 
 /** The tiny ring beside the model opens the detailed context meter without

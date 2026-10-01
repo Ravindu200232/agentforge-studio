@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import threading
 import time
@@ -60,6 +61,13 @@ def _transient(exc: Exception) -> bool:
     return isinstance(exc, (ConnectionError, TimeoutError, OSError, httpx.TransportError))
 
 
+class _Failure:
+    """An exception raised on a reading thread, carried to the thread that waits for the reply."""
+
+    def __init__(self, error: BaseException):
+        self.error = error
+
+
 class RetryingClient:
     """The Ollama client, with `chat` retried through a bad minute.
 
@@ -82,12 +90,89 @@ class RetryingClient:
         if self._cancelled and self._cancelled():
             raise RunCancelled("The run was stopped.")
 
+    def _interruptible(self, call: Callable[[], Any]) -> Any:
+        """One blocking model request, waited on so that Stop ends the wait at once.
+
+        A model can take minutes on one reply, and Stop used to wait for all of it. The request runs on its own
+        thread; this one watches for Stop every tenth of a second and walks away from it when pressed. The
+        abandoned request finishes on its own and its answer is thrown away.
+        """
+        if not self._cancelled:
+            return call()
+        box: dict[str, Any] = {}
+        done = threading.Event()
+
+        def work() -> None:
+            try:
+                box["value"] = call()
+            except BaseException as exc:  # noqa: BLE001 - handed back to the waiting thread
+                box["error"] = exc
+            finally:
+                done.set()
+
+        threading.Thread(target=work, name="model-request", daemon=True).start()
+        while not done.wait(0.1):
+            self._raise_if_cancelled()
+        if "error" in box:
+            raise box["error"]
+        return box["value"]
+
+    def _interruptible_stream(self, stream: Any) -> Any:
+        """A streamed reply read on its own thread, so Stop ends it between tokens - or before the first one."""
+        if not self._cancelled or not hasattr(stream, "__iter__"):
+            return stream
+        items: queue.Queue = queue.Queue()
+        stopped = threading.Event()
+        end = object()
+
+        def pump() -> None:
+            try:
+                for chunk in stream:
+                    if stopped.is_set():
+                        break
+                    items.put(chunk)
+            except BaseException as exc:  # noqa: BLE001 - handed back to the reading thread
+                items.put(_Failure(exc))
+            finally:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:  # noqa: BLE001 - the reply is being abandoned anyway
+                        pass
+                items.put(end)
+
+        threading.Thread(target=pump, name="model-stream", daemon=True).start()
+
+        def read() -> Any:
+            try:
+                while True:
+                    try:
+                        item = items.get(timeout=0.1)
+                    except queue.Empty:
+                        self._raise_if_cancelled()
+                        continue
+                    if item is end:
+                        return
+                    if isinstance(item, _Failure):
+                        raise item.error
+                    yield item
+                    self._raise_if_cancelled()
+            finally:
+                stopped.set()
+
+        return read()
+
     def chat(self, **kwargs: Any) -> Any:
         last: Exception | None = None
         for attempt in range(RETRY_ATTEMPTS):
             self._raise_if_cancelled()
             try:
-                return self._inner.chat(**kwargs)
+                if kwargs.get("stream"):
+                    return self._interruptible_stream(self._inner.chat(**kwargs))
+                return self._interruptible(lambda: self._inner.chat(**kwargs))
+            except RunCancelled:
+                raise
             except Exception as exc:  # noqa: BLE001 - re-raised below when it is not transient
                 self._raise_if_cancelled()
                 if not _transient(exc) or attempt == RETRY_ATTEMPTS - 1:
@@ -423,6 +508,8 @@ class ProjectSession:
                     role_of=lambda: self.role,
                     mcp=self._agent.mcp,
                 )
+                # A command running when Stop is pressed is stopped with its process tree, not waited for.
+                self._agent.tools.stop_requested = lambda: self.cancelled
                 self._apply_effort(self._agent, level)
                 self._model = wanted
                 self._thinking_level = level
@@ -537,6 +624,9 @@ class ProjectSession:
         if self._is_discarded():
             raise RunCancelled(self.project)
         self._cancel.clear()
+        from . import llm
+
+        llm.bind_stop(self._cancel)  # the direct model calls this run makes honour its Stop too
         if stage_evidence.was_interrupted(self.project, stage):
             bus.log(self.project, "WARN",
                     f"the previous {stage.replace('_', ' ')} run did not finish "
