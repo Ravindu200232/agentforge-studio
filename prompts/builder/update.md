@@ -4,6 +4,8 @@
 
 Read the files that carry this behavior and change only what the request affects. Preserve the approved design, existing architecture and unrelated behavior.
 
+When the change touches signing in, sessions, roles, a role's dashboard or the navigation, follow `.agentforge/auth/AUTHENTICATION.md` (when it exists): cookie sessions, access checked on the server and in the data, each role's own dashboard and navigation, and the signed-out navigation only for signed-out people. Whatever you change keeps the build's quality bar — access checked on the server, inputs validated, lists paginated, writes atomic, and loading, empty and error states with a way forward.
+
 Testing rules for updates:
 - If no application code or behavior changes, do not add or run tests.
 - If business logic changes, add or update only the unit tests for edited or newly added business-logic files and run only that focused suite; never run the full unit suite.

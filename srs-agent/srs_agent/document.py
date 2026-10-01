@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from server_modules import bus, config, journeys, llm, mermaid, prompts, reference_staging, store
+from server_modules import auth_guide, bus, config, journeys, llm, mermaid, prompts, reference_staging, store
 from server_modules.session import ProjectSession, RunCancelled, session_for
 from server_modules.validation import completeness, json_edits
 from server_modules.validation import corpus as corpus_rules
@@ -601,6 +601,10 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
     return entry
 
 
+_AUTH_PAGE = re.compile(r"log-?in|sign-?in|sign-?up|register|registration|forgot|reset-?password|password-?reset",
+                        re.IGNORECASE)
+
+
 def _page_instruction(project: str, doc: dict, page: dict, docs: dict[str, str], request: str = "",
                       ideas: str = "", layout: str = "", wireframe_plan: str = "") -> str:
     """The prompt one wireframe is drawn from.
@@ -624,6 +628,10 @@ def _page_instruction(project: str, doc: dict, page: dict, docs: dict[str, str],
                                layout=layout or "(none drawn — keep the shell and the components consistent from the site map)",
                                wireframe_plan=wireframe_plan or "(no wireframe plan — draw this page from its record and the site map)",
                                plan=wireframe_brief.clean(plan_stage.markdown(project)))
+    if auth_guide.needed(doc) and _AUTH_PAGE.search(route + " " + str(page.get("page_name") or "")):
+        guide = auth_guide.stage(session_for(project).workspace)
+        instruction += (f"\n\n## Signing in\n\nThis page is part of signing in. Read `{guide}` yourself and draw "
+                        "everything its sections 3 and 5 give this page, its error states included.")
     if request:
         instruction += "\n\n## Approved wireframe request\n\n" + request
     return instruction
@@ -754,6 +762,7 @@ def _wireframe_plan(session: ProjectSession, project: str, doc: dict, approved: 
     planner = getattr(session, "plan_focused_task", None)
     if saved.strip() or not callable(planner):
         return saved
+    guide = auth_guide.staged_for(session.workspace, doc)
     routes = "\n".join(
         f"- `{page['route']}` — {page.get('page_name') or page['route']} — "
         + (("signed in: " + (", ".join(map(str, page.get("allowed_roles") or [])) or "any signed-in role"))
@@ -769,7 +778,10 @@ def _wireframe_plan(session: ProjectSession, project: str, doc: dict, approved: 
         bus.phase(project, "wireframes", "Planning the wireframes",
                   detail="Reading app.md and the site map, then planning every page and how the pages connect.")
     try:
-        plan = planner(prompts.load("srs/wireframe-plan", routes=routes, journeys=flows), subject="the wireframes")
+        plan = planner(prompts.load("srs/wireframe-plan", routes=routes, journeys=flows,
+                                    auth=(f"- `{guide}` — how signing in, roles, each role's dashboard and the "
+                                          "signed-in and signed-out navigation work\n") if guide else ""),
+                       subject="the wireframes")
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001 - the pages can still be drawn from their own records

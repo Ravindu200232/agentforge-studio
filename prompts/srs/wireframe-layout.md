@@ -9,7 +9,10 @@ complete HTML document and nothing else — no commentary, no markdown fence.
 **The shells.** Read the site map and draw the shells the product needs: usually
 a light one for the pages people see first and a working one, with navigation,
 for the rest — but draw as many as the site map really calls for, and one if one
-is enough. Mark each shell with a comment, `<!-- shell: name — used by: which
+is enough. When people sign in, the public shell is the signed-out one (Sign in,
+and Sign up when people may create their own account) and each role that signs
+in has its own shell, with only that role's destinations and an account menu
+holding the person's name and Sign out. Mark each shell with a comment, `<!-- shell: name — used by: which
 pages -->`, and draw it whole:
 
 - the header or app bar, the navigation, a sidebar if this kind of product suits

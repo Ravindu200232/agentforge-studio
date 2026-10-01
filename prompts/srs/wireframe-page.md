@@ -63,7 +63,9 @@ from it:
 - Use the shell that fits this page (the layout marks each shell with a comment)
   and keep its header, navigation, sidebar and footer exactly as drawn: same
   items, same order, same labels, same size, same position. Only the active item
-  changes.
+  changes. A public page uses the signed-out shell; a signed-in page uses the
+  shell of its role — never a Sign in link on a signed-in page, never an account
+  menu on a signed-out one.
 - Reuse its buttons, inputs, tables, cards, tabs and status marks as they are.
   Shared components never change dimensions, spacing or placement from page to
   page; only the content of the page's own area is new.

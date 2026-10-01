@@ -97,8 +97,20 @@ def can_open(doc: dict, role: dict) -> tuple[list[dict], list[dict]]:
 
 # --- the flow ----------------------------------------------------------------------------------------------------------
 
+_PUBLIC_ROLES = {"visitor", "guest", "anonymous", "public", "anyone", "everyone", "all"}
+
+
+def signed_in_page(page: dict) -> bool:
+    """Whether a page is for signed-in people: its record says so, or, with no flag, only signing-in roles open it."""
+    if "login_required" in page:
+        return bool(page.get("login_required"))
+    roles = {_norm(role) for role in _items(page.get("allowed_roles"))}
+    return bool(roles) and not roles & _PUBLIC_ROLES
+
+
 def route_map(routes_out: list[dict]) -> list[dict]:
-    return [{"route": r["route"], "file": r["file"], "name": r["name"], "roles": r.get("roles") or []} for r in routes_out]
+    return [{"route": r["route"], "file": r["file"], "name": r["name"], "roles": r.get("roles") or [],
+             "signedIn": bool(r.get("signed_in"))} for r in routes_out]
 
 
 def flow_of(doc: dict, routes_out: list[dict]) -> dict[str, Any]:
@@ -155,8 +167,16 @@ def sign_in_text(accounts: list[dict], sign_in: str, routes_out: list[dict]) -> 
              "no submit handler for it in app.js. Each role has its own first page below, and flow.js sends it there.",
              "- Wherever the signed-in person shows, write `<span data-user=\"name\"></span>` (or `\"email\"`, `\"role\"`); a "
              "sign-out control carries `data-sign-out`.",
+             "- Two navigation states. Anything only a signed-in person sees — the signed-in navigation, the account menu, \"Go to my "
+             "dashboard\" — carries `data-auth=\"in\"`; anything only a signed-out person sees — Sign in, Sign up, \"Create account\" — "
+             "carries `data-auth=\"out\"`. A public page carries both headers, the public one marked `data-auth=\"out\"` and the "
+             "signed-in one `data-auth=\"in\"`; a signed-in page carries only its role's navigation. flow.js shows the right one.",
              "- An element only some roles use carries `data-roles=\"role_key\"` (comma-separated for several); when someone is "
              "signed in, flow.js hides it from the other roles.",
+             "- Each role's first page below is that role's own dashboard: draw it as its real home — a greeting with the person's "
+             "name, that role's own figures, what is waiting on them and shortcuts to its main tasks — with that role's sample data.",
+             "- The sign-in form shows its error in an element marked `data-sign-in-error` with the `hidden` attribute; flow.js "
+             "reveals it after a wrong attempt.",
              "- `window.PROTOTYPE.user()`, `.login(email, password)`, `.loginAs(role)`, `.logout()` and `.canOpen(route)` are "
              "there if app.js needs them.", "", "The demo accounts:", ""]
     lines += [f"- **{a['role']}** (`{a['role_key']}`) — {a['email']} / {a['password']} — opens "
@@ -321,6 +341,7 @@ DEMO_SESSION = r'''
   };
   function here() { return decodeURIComponent(window.location.pathname.split('/').pop() || 'index.html'); }
   function onSignIn() { return !!(P.signIn && P.signIn.file === here()); }
+  function page() { return (P.routes || []).filter(function (r) { return r && r.file === here(); })[0] || null; }
   function demoLogin() {
     var list = accounts();
     if (!list.length) return;
@@ -357,7 +378,21 @@ DEMO_SESSION = r'''
   }
   function signedIn() {
     var user = P.user();
+    var row = page();
+    // No guards: a signed-in page opened while signed out still shows as its role sees it.
+    var state = user || (row && row.signedIn) ? 'in' : 'out';
+    if (!document.getElementById('agentforge-hidden')) {
+      var style = document.createElement('style');
+      style.id = 'agentforge-hidden';
+      style.textContent = '[hidden]{display:none!important}';
+      (document.head || document.documentElement).appendChild(style);
+    }
     document.documentElement.setAttribute('data-signed-in', user ? (user.roleKey || user.role) : '');
+    document.documentElement.setAttribute('data-session', state);
+    document.querySelectorAll('[data-auth]').forEach(function (el) {
+      var want = String(el.getAttribute('data-auth') || '').trim().toLowerCase();
+      if (want === 'in' || want === 'out') el.hidden = want !== state;
+    });
     document.querySelectorAll('[data-user]').forEach(function (el) {
       if (!user) return;
       var field = el.getAttribute('data-user') || 'name';
@@ -365,13 +400,16 @@ DEMO_SESSION = r'''
       if (value) el.textContent = value;
     });
     document.querySelectorAll('[data-roles]').forEach(function (el) {
-      if (!user) return;
+      if (!user) { if (state === 'out') el.hidden = true; return; }
       var roles = el.getAttribute('data-roles').toLowerCase().split(/[\s,]+/).filter(Boolean);
       var mine = [user.roleKey, user.role].map(function (v) { return String(v || '').toLowerCase(); });
       if (roles.length && !roles.some(function (r) { return mine.indexOf(r) >= 0; })) el.hidden = true;
     });
   }
-  document.addEventListener('DOMContentLoaded', function () { demoLogin(); signedIn(); });
+  // flow.js loads at the end of the body: switch the page before it is painted, and again once it is complete.
+  function ready() { demoLogin(); signedIn(); }
+  ready();
+  document.addEventListener('DOMContentLoaded', ready);
   document.addEventListener('click', function (event) {
     var as = event.target.closest && event.target.closest('[data-login-as]');
     if (as) { event.preventDefault(); event.stopImmediatePropagation(); P.loginAs(as.getAttribute('data-login-as')); return; }
@@ -394,6 +432,7 @@ DEMO_SESSION = r'''
       note.className = 'form-error';
       form.appendChild(note);
     }
+    note.hidden = false;
     note.textContent = 'That email and password do not match a demo account. Use a Demo login button.';
   }, true);
 })();

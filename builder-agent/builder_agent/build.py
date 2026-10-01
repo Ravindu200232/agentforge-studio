@@ -6,7 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from server_modules import bus, changes, deploy_vars, plugins, prompts, reference_staging, store, supabase_connect
+from server_modules import (auth_guide, bus, changes, deploy_vars, plugins, prompts, reference_staging, store,
+                            supabase_connect)
 from server_modules.qa_report import summary_counts
 from server_modules.session import RunCancelled, session_for
 from server_modules.validation import build_report
@@ -351,6 +352,13 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
                                               scaffold.build_guide_files(stack))
         request += ("\n\n## Stack build guides\n\nRead these yourself before planning:\n"
                    + reference_staging.as_bullets(guide_paths))
+        auth = auth_guide.staged_for(session.workspace, srs_document.document(project).get("srs_document", {}))
+        if auth:
+            request += ("\n\n## Authentication, roles and navigation\n\n"
+                        f"Read `{auth}` yourself before planning. It is the standard this app's sign-up, sign-in, cookie "
+                        "sessions, role-based access, role dashboards and signed-in and signed-out navigation are built and "
+                        "tested to (its section 7 is for the real application). The specification decides which roles and "
+                        "pages exist; this file decides how they behave.")
         from prototype_agent import design as design_stage
         customization = design_stage.approved_customization(project)
         if customization:

@@ -25,6 +25,30 @@ The SRS defines data, permissions and business behaviour. The mapped prototype H
 
 If any requirement appears missing, contradictory or unclear while building or checking the app, do not guess and do not create another plan. Keep the current single plan, reopen the approved plan plus the relevant SRS handoff section, mapped prototype HTML/shared asset and current output application file, then correct only the affected work and continue from the current phase. Repeat this targeted read whenever memory is uncertain. Do not restart completed phases or reread unrelated files.
 
+## Quality bar
+
+Build it the way a senior team ships a product people depend on, in every part of it:
+
+- **Security.** Every page, API route and server action checks on the server who is calling and what their role
+  may do, and the data layer enforces it again (Row Level Security, or every query scoped to the signed-in
+  user). Every input is validated on the server with a schema; queries are parameterised; no secret reaches
+  client code or a `NEXT_PUBLIC_`/`VITE_` variable; uploads are checked for type and size; every response
+  carries security headers; an error never shows a stack trace, a query or whether an account exists.
+- **Performance.** Render on the server where the stack can. Paginate every list — never load a whole table;
+  fetch independent data in parallel, never one query per row; index the columns you filter, sort and join on.
+  Images carry their dimensions and load lazily below the first screen; client bundles stay small, with no heavy
+  library for what a few lines do.
+- **Reliability.** A write that changes several records is atomic (a transaction or one database function). A
+  repeated submit never creates a duplicate: the button is disabled while sending and the write is idempotent.
+  Every call to another service has a timeout and a clear error, and a missing optional setting is reported,
+  not a crash.
+- **Availability.** A failure stays where it happened: an error page or boundary per area with a retry, a real
+  not-found page, and a health route the deployment can check. A provider that is down gives a message, never a
+  blank page.
+- **Flow.** Every action gives feedback — a pending state, a success message, an error beside the field — and
+  leads somewhere sensible. Every list and form has its loading, empty and error states; no page is a dead end;
+  back and refresh keep working.
+
 ## When only the customer can settle it
 
 Ask the customer, the way the deployment does, whenever the work genuinely needs them. Ask **in the middle of

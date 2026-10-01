@@ -110,5 +110,35 @@ class WireframePlanTests(unittest.TestCase):
         self.assertIn('"Send" → `/request/[id]/done`', text)
 
 
+    def test_a_product_with_sign_in_plans_with_the_authentication_guide(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(document.bus, "phase"), mock.patch.object(document.bus, "file_written"):
+            session = Session(Path(folder))
+            document._wireframe_plan(session, "prj", DOC, {}, fresh=True)
+            request, _subject = session.planned[0]
+            self.assertIn("`.agentforge/auth/AUTHENTICATION.md`", request)
+            self.assertIn("one signed-in shell per role", request)
+            self.assertTrue((Path(folder) / ".agentforge" / "auth" / "AUTHENTICATION.md").is_file())
+
+    def test_a_product_without_sign_in_plans_without_it(self):
+        public = {**DOC, "protected_pages": []}
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(document.bus, "phase"), mock.patch.object(document.bus, "file_written"):
+            session = Session(Path(folder))
+            document._wireframe_plan(session, "prj", public, {}, fresh=True)
+            self.assertNotIn("AUTHENTICATION.md", session.planned[0][0])
+            self.assertFalse((Path(folder) / ".agentforge" / "auth").exists())
+
+    def test_a_sign_in_page_is_drawn_from_the_guide(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(document.plan_stage, "markdown", return_value="APPROVED PLAN"), \
+             mock.patch.object(document, "session_for", return_value=Session(Path(folder))):
+            sign_in = document._page_instruction("prj", DOC, {"route": "/login", "page_name": "Sign in"}, {"app.md": "x"})
+            other = document._page_instruction("prj", DOC, DOC["public_pages"][1], {"app.md": "x"})
+        self.assertIn("## Signing in", sign_in)
+        self.assertIn("`.agentforge/auth/AUTHENTICATION.md`", sign_in)
+        self.assertNotIn("## Signing in", other)
+
+
 if __name__ == "__main__":
     unittest.main()
