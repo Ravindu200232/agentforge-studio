@@ -1,7 +1,7 @@
 /** Verify that progress stays monotonic across every backend flow. */
-import { advance, displayPct, emptyProgress, CEILING } from '../lib/progress-model.js'
-import { e2eStageSummary } from '../lib/e2e-rate.js'
-import { WORK_STAGES, stageIndex, stagesFor } from '../lib/work-stages.js'
+import { advance, displayPct, emptyProgress, CEILING } from '../../studio/lib/progress-model.js'
+import { e2eStageSummary } from '../../studio/lib/e2e-rate.js'
+import { WORK_STAGES, stageIndex, stagesFor } from '../../studio/lib/work-stages.js'
 
 const FLOWS = [
   [15, 40, 65, 78, 88, 95, 100],   // feature

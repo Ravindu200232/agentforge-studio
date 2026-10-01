@@ -1,5 +1,5 @@
 /** Verify opt-in upload keys stay exact and collision-free. */
-import { keyFromName, uniqueKey, uploadMap } from '../lib/picture-keys.js'
+import { keyFromName, uniqueKey, uploadMap } from '../../studio/lib/picture-keys.js'
 
 let fail = 0
 const is = (got, want, what) => {

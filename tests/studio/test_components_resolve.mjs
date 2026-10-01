@@ -15,7 +15,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
+const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '../../studio')
 
 // Lower-case names are HTML elements; a dotted name resolves through its root,
 // which is checked on its own.

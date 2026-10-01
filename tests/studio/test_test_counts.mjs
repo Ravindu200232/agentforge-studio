@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 
-const source = fs.readFileSync(new URL('../lib/test-counts.js', import.meta.url), 'utf8')
+const source = fs.readFileSync(new URL('../../studio/lib/test-counts.js', import.meta.url), 'utf8')
 const mod = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
 
 const cases = Array.from({ length: 100 }, (_, i) => ({ title: `case ${i + 1}`, status: 'passed' }))
@@ -31,8 +31,8 @@ if (legacy.passed !== 7 || legacy.failed !== 2 || legacy.total !== 10 || legacy.
 }
 
 const consumers = [
-  ['Preview/Testing tab', '../app/page.jsx'],
-  ['Deployment gate', '../components/deploy/DeployPanel.jsx'],
+  ['Preview/Testing tab', '../../studio/app/page.jsx'],
+  ['Deployment gate', '../../studio/components/deploy/DeployPanel.jsx'],
 ]
 for (const [label, rel] of consumers) {
   const body = fs.readFileSync(new URL(rel, import.meta.url), 'utf8')

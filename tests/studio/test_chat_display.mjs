@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
-const helperSource = await readFile(new URL('../lib/chat-display.js', import.meta.url), 'utf8')
+const helperSource = await readFile(new URL('../../studio/lib/chat-display.js', import.meta.url), 'utf8')
 const helper = await import(`data:text/javascript;base64,${Buffer.from(helperSource).toString('base64')}`)
 
 assert.equal(
@@ -20,11 +20,11 @@ assert.deepEqual(
   ],
 )
 
-const chatSource = await readFile(new URL('../components/AgentChat.jsx', import.meta.url), 'utf8')
+const chatSource = await readFile(new URL('../../studio/components/AgentChat.jsx', import.meta.url), 'utf8')
 assert.match(chatSource, /\['command', 'command_output'\]\.includes\(turn\.kind\)[\s\S]*?<pre[\s\S]*?>\{turn\.text\}<\/pre>/)
 assert.match(chatSource, /<ReadableAgentText text=\{turn\.text\} \/>/)
 
-const turnsSource = await readFile(new URL('../lib/chat.js', import.meta.url), 'utf8')
+const turnsSource = await readFile(new URL('../../studio/lib/chat.js', import.meta.url), 'utf8')
 const { chatTurns } = await import(`data:text/javascript;base64,${Buffer.from(turnsSource).toString('base64')}`)
 const stages = chatTurns([], [
   { at: 1, kind: 'narration', title: 'SRS generation', text: 'Writing requirements.' },

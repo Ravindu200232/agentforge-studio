@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
+const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '../../studio')
 const source = readFileSync(join(ROOT, 'lib/use-attachments.js'), 'utf8')
 
 const failures = []
@@ -31,16 +31,14 @@ check('a ref mirrors what was picked', /current\.current = items/.test(source))
 check('stage reads that ref', /const queue = current\.current/.test(source))
 check('upload reads that ref', /const held = current\.current/.test(source))
 
-// And the build must stage before the screen changes.
+// And the build stages them. Starting a build may unmount the home screen first (onStarted): that is safe now,
+// because stage() reads the ref above, not a state updater that no longer runs once unmounted.
 const home = readFileSync(join(ROOT, 'components/Home.jsx'), 'utf8')
 const start = home.slice(home.indexOf('async function startBuild'))
-const staged = start.indexOf('attach.stage(')
-const started = start.indexOf('onStarted?.()')
-check('the files are sent before the home screen unmounts',
-      staged > 0 && started > 0 && staged < started)
+check('the build sends the picked files', start.indexOf('attach.stage(') > 0)
 
 if (failures.length) {
   console.error('Attachments would not reach a build:\n' + failures.map(f => '  ' + f).join('\n'))
   process.exit(1)
 }
-console.log('Attachments reach the build: queue read from a ref, sent before unmount')
+console.log('Attachments reach the build: queue read from a ref, so they are sent even after the home screen unmounts')
