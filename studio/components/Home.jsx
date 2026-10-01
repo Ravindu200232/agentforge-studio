@@ -23,6 +23,9 @@ import SrsReview from './srs/SrsReview'
 import SrsActivity from './srs/SrsActivity'
 import { displaySrsLanguages, SRS_LANGUAGES } from '@/lib/languages'
 import { TIERS, tierDisplayName } from '@/lib/models'
+import { DEFAULT_STACK, stackNeeds } from '@/lib/stacks'
+
+const CONNECTION_NAMES = { supabase: 'Supabase', mongodb: 'MongoDB' }
 
 function attachToken() {
   const raw = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`
@@ -37,6 +40,8 @@ export default function Home({
   onRequireAuth = null,
   onSignIn = null,
   onSignUp = null,
+  onSettings = null,
+  connectionsVersion = 0,
 }) {
   const s = useStore()
   const { images, think, models, srsId, srsPhase } = s
@@ -58,6 +63,23 @@ export default function Home({
   const [pluginsOpen, setPluginsOpen] = useState(false)
   const [languageOptions, setLanguageOptions] = useState(SRS_LANGUAGES)
   const box = useRef(null)
+
+  // The account connections a build of the chosen stack needs (`stacks.js` `needs`). Start waits
+  // for them, the way the Deploy panel waits for its accounts. null = still being checked. They are
+  // made in Settings › Integrations, so they are read again when Settings closes and on focus.
+  const [connections, setConnections] = useState({ supabase: null, mongodb: null })
+  useEffect(() => {
+    let live = true
+    const check = () => Promise.all([
+      api.supabaseOauthStatus().then(d => Boolean(d?.connected)).catch(() => false),
+      api.settings().then(d => Boolean(d?.deploy?.deploy_mongodb_uri_set)).catch(() => false),
+    ]).then(([supabase, mongodb]) => { if (live) setConnections({ supabase, mongodb }) })
+    check()
+    window.addEventListener('focus', check)
+    return () => { live = false; window.removeEventListener('focus', check) }
+  }, [connectionsVersion])
+  const needs = stackNeeds(stack)
+  const missing = needs.filter(need => connections[need] !== true)
   const langRef = useRef(null)
   const planning = useRef(false)
   const attach = useAttachments()
@@ -161,6 +183,8 @@ export default function Home({
   function submit() {
     const hasBrief = prompt.trim() || attach.items.length
     if (!hasBrief) return box.current?.focus()
+    // Ctrl/Cmd+Enter reaches here without the Start button, so the same rule holds here.
+    if (missing.length) return
     setWorkspacePath('')
     setWorkspaceError('')
     setLocationDialog(true)
@@ -253,7 +277,7 @@ export default function Home({
       const created = await api.srs('/projects', {
         idea: idea || 'See the attached files.',
         language: languageOptions.find(item => item.code === srsLanguage)?.name || srsLanguage,
-        stack: stack || 'nextjs-mongo',
+        stack: stack || DEFAULT_STACK,
         workspace_path: workspace || undefined,
       })
       const id = created.project.id
@@ -533,11 +557,29 @@ export default function Home({
                       </div>
                     )}
                   </div>
+
+                  {/* What this stack builds on: connected, or one click from Settings › Integrations. */}
+                  {needs.map(need => {
+                    const name = CONNECTION_NAMES[need] || need
+                    const state = connections[need]
+                    return state ? (
+                      <span key={need} className="inline-flex h-8 items-center gap-1 rounded-xl border border-ok/35 px-2.5 text-[11px] font-medium text-ok">
+                        <Check className="size-3 shrink-0" aria-hidden="true" /> {name} connected
+                      </span>
+                    ) : (
+                      <button key={need} type="button" disabled={state === null}
+                              onClick={() => onSettings?.('integrations')}
+                              title={`Connect ${name} in Settings › Integrations`}
+                              className="inline-flex h-8 items-center gap-1 rounded-xl border border-bad/35 px-2.5 text-[11px] font-medium text-bad transition-colors hover:bg-bad/10 disabled:opacity-60">
+                        {state === null ? `Checking ${name}…` : <>{name} not connected · <span className="underline">Connect</span></>}
+                      </button>
+                    )
+                  })}
                 </div>
 
                 {/* Right Action: Clean Bolt-style Submit Button */}
                 <button
-                  disabled={!prompt.trim() || !builderModel.trim()}
+                  disabled={!prompt.trim() || !builderModel.trim() || missing.length > 0}
                   onClick={() => {
                     if (!user && onRequireAuth) {
                       onRequireAuth()

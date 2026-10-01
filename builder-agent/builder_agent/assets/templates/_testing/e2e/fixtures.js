@@ -25,9 +25,20 @@ export const test = base.extend({
       if (status && allowed.has(Number(status))) return
       problems.push(`console error: ${text}`)
     })
+    // Every call this test's page made to the app's own API, and what it answered. The Testing
+    // view links each one to its handler as E2E evidence; a unit test only links what it imports.
+    let origin = ''
+    try { origin = new URL(testInfo.project.use?.baseURL || process.env.BASE_URL).origin } catch { /* any origin */ }
+    const apiCalls = new Set()
     page.on('response', response => {
       const status = response.status()
       if (status >= 500 && !allowed.has(status)) problems.push(`HTTP ${status} ${response.url()}`)
+      try {
+        const url = new URL(response.url())
+        if ((!origin || url.origin === origin) && /^\/api(\/|$)/.test(url.pathname)) {
+          apiCalls.add(`${response.request().method()} ${url.pathname} ${status}`)
+        }
+      } catch { /* not a URL of the app */ }
     })
     // When the Studio started this run, what the browser shows appears in its preview.
     // Watching must never change a test's outcome: it is best-effort and swallows its own errors.
@@ -36,6 +47,10 @@ export const test = base.extend({
       await use(page)
     } finally {
       await stopLive().catch(() => {})
+      if (apiCalls.size) {
+        await testInfo.attach('api-calls', { body: JSON.stringify([...apiCalls]), contentType: 'application/json' })
+          .catch(() => {})
+      }
     }
     expect(problems, 'the page reported problems').toEqual([])
   },

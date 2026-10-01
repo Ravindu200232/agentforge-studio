@@ -13,6 +13,10 @@ module.exports = {
   reactStrictMode: false,
 
   allowedDevOrigins: ['127.0.0.1', 'localhost', ...EXTRA_DEV_ORIGINS],
+  // The API rewrite below is a proxy, and its default 30 s timeout answers a fake
+  // "500 Internal Server Error" while the backend is still working - a model turn
+  // (the next interview question) or a PDF render routinely takes longer.
+  experimental: { proxyTimeout: 600_000 },
   async rewrites() {
     return {
       beforeFiles: [

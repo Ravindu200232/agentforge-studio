@@ -363,8 +363,10 @@ def _apply_turn(data: dict[str, Any], turn: dict[str, Any], source: str) -> None
         entry["source"] = source
         entry["updated_at"] = now
 
-    contradiction = turn.get("contradiction") or {}
-    if contradiction.get("found"):
+    contradiction = turn.get("contradiction")
+    # The validator does not shape this field; a bare "yes" or `true` here used to raise and turn
+    # the whole question into an HTTP 500.
+    if isinstance(contradiction, dict) and contradiction.get("found"):
         data["contradictions"].append({
             "id": f"c{len(data['contradictions']) + 1}",
             "category": contradiction.get("category"),
@@ -465,7 +467,12 @@ def _next_question(project: str) -> dict[str, Any]:
                           asked=index - 1,
                           budget=budget),
         validator=_turn_validator(set(cats)),
-        label="interview:turn")
+        label="interview:turn",
+        # `project` reports this turn's context to the chat's meter. The read tools come only
+        # with attached files: the prompt then tells the model to read them, which it cannot
+        # do without a workspace, and a turn with nothing to read stays a fast tool-less call.
+        project=project,
+        workspace=session.workspace if session.read_record("attachments.json", fallback=[]) else None)
 
     _apply_turn(data, turn, source=f"turn:{index}")
 

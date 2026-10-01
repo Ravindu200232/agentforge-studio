@@ -120,6 +120,18 @@ _context_cache: dict[str, int] = {}
 _context_lock = threading.Lock()
 _usage_lock = threading.Lock()
 _usage_by_run: dict[tuple[str, int], dict[str, int]] = {}
+# The largest single request each project's focused calls have needed. The interview, the SRS and
+# the wireframes are many independent calls of very different sizes, so "this request's" size jumps
+# up and down and read as the context being lost; the largest so far only ever holds or grows.
+_peak_by_project: dict[str, int] = {}
+
+
+def _peak_seed(project: str) -> int:
+    """After a restart, start from the largest focused figure already recorded, not from zero."""
+    for event in reversed(bus.history(project)):
+        if event.get("type") == "memory" and event.get("context_scope") == "focused":
+            return int(event.get("used") or 0)
+    return 0
 
 
 def _context_for(model: str) -> int:
@@ -188,6 +200,7 @@ def _focused_usage(project: str, model: str, context: int, role: str) -> Callabl
             return
         started = _run_started_at(project)
         key = (project, started)
+        seed = _peak_seed(project) if project not in _peak_by_project else 0
         with _usage_lock:
             totals = _usage_by_run.setdefault(key, {"sent": 0, "received": 0})
             totals["sent"] += prompt
@@ -196,7 +209,9 @@ def _focused_usage(project: str, model: str, context: int, role: str) -> Callabl
             stale = [item for item in _usage_by_run if item[0] == project and item != key]
             for item in stale:
                 _usage_by_run.pop(item, None)
-        bus.memory(project, model, prompt, context, 0, agent=role or bus.DEVELOPER,
+            largest = max(_peak_by_project.get(project, seed), prompt)
+            _peak_by_project[project] = largest
+        bus.memory(project, model, largest, context, 0, agent=role or bus.DEVELOPER,
                    turn_started_at=started, turn_input_tokens=sent,
                    turn_output_tokens=received, context_scope="focused")
 

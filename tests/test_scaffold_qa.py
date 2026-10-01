@@ -1,6 +1,7 @@
 """The builder copies a selected scaffold without replacing existing work."""
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 import subprocess
@@ -555,6 +556,31 @@ class ReportShapeEvidenceTests(unittest.TestCase):
         result = collect(self.workspace, qa)
         self.assertEqual(result["summary"], {"pass": 1, "fail": 1, "warn": 0})
         self.assertEqual(result["summaryText"], "Every layer passed.")
+
+    def test_api_calls_an_e2e_test_made_link_it_to_the_handler_that_answered(self):
+        for rel, body in (("app/api/cart/route.js", "export async function POST() {}"),
+                          ("app/api/orders/new/route.js", "export async function GET() {}"),
+                          ("app/api/orders/[id]/route.js", "export async function GET() {}"),
+                          ("app/api/untouched/route.js", "export async function GET() {}")):
+            (self.workspace / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.workspace / rel).write_text(body, encoding="utf-8")
+        calls = ["POST /api/cart 200", "GET /api/orders/new 200", "GET /api/orders/42 403", "POST /api/cart 200"]
+        attachment = {"name": "api-calls", "contentType": "application/json",
+                      "body": base64.b64encode(json.dumps(calls).encode()).decode()}
+        self.write("test-results/results.json", {"suites": [{"file": "journeys.spec.js", "title": "journeys.spec.js", "specs": [
+            {"title": "[UJ-001] a shopper orders", "file": "journeys.spec.js", "tests": [
+                {"projectName": "desktop", "results": [{"status": "passed", "attachments": [attachment]}]}]}]}]})
+        rows = {row["route"]: row["tests"] for row in collect(self.workspace, {"project": "x"})["contracts"]}
+        link = rows["/api/cart"][0]
+        self.assertEqual((link["kind"], link["file"], link["status"], link["calls"]),
+                         ("e2e", "journeys.spec.js", "passed", ["POST 200"]))
+        self.assertEqual(rows["/api/orders/new"][0]["calls"], ["GET 200"])   # the static route wins
+        self.assertEqual(rows["/api/orders/[id]"][0]["calls"], ["GET 403"])
+        self.assertEqual(rows["/api/untouched"], [])
+
+    def test_the_e2e_fixture_attaches_the_api_calls_each_test_made(self):
+        fixtures = (scaffold.ROOT / "_testing/e2e/fixtures.js").read_text(encoding="utf-8")
+        self.assertIn("testInfo.attach('api-calls'", fixtures)
 
     def test_the_server_wrapper_keeps_each_runs_results(self):
         runner = (scaffold.ROOT / "_testing/scripts/with-server.mjs").read_text(encoding="utf-8")

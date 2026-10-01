@@ -753,7 +753,7 @@ function ContextUsage({ stats }) {
       <Dropdown open={open} onClose={() => setOpen(false)} className="bottom-full right-0 mb-2 w-[344px] p-3 context-window-card">
         <div role="dialog" aria-label="Context-window usage">
           <div className="flex items-center justify-between gap-3 text-[12px]">
-            <span className="context-window-title font-medium">{focused ? 'Current model context' : 'Context window'}</span>
+            <span className="context-window-title font-medium">{focused ? 'Largest model context so far' : 'Context window'}</span>
             <span className="context-window-value font-mono tabular-nums">
               {stats.limit ? `${compact(stats.tokens)} / ${compact(stats.limit)} (${Math.round(percent)}%)`
                 : `${compact(stats.tokens)} tokens`}
@@ -765,7 +765,7 @@ function ContextUsage({ stats }) {
                     style={{ width: `${percent}%` }} />
             </div>
             <p className="mt-2 text-[11px] text-muted">{focused
-              ? 'This focused generation reads the shown current-request context.'
+              ? 'The biggest single request this project’s interview, SRS and wireframes have sent so far. Each of those steps rebuilds its context from the saved project files, so nothing is lost between them.'
               : `${compact(remaining)} remains before older detail is compacted automatically.`}</p>
           </> : <p className="mt-2 text-[11px] text-muted">The provider reported usage but not its context-window capacity.</p>}
           <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 border-t border-line pt-3 font-mono text-[10px] text-muted2">
