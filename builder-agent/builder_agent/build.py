@@ -79,8 +79,24 @@ def _private_value(question: dict[str, Any]) -> dict[str, Any]:
     return {**question, "variable": name, "secret": True}
 
 
+_SUPABASE_VALUE = re.compile(r"\b(url|keys?|password|anon|service[ _-]?role|credentials?|project ref|ref|connection"
+                             r"|token|secret)\b", re.IGNORECASE)
+AUTO_ANSWERS = 2
+
+
+def _asks_for_supabase(question: dict[str, Any]) -> bool:
+    """Whether a question asks the customer for a Supabase value — never needed: the project is connected before a build."""
+    if str(question.get("variable") or "").upper().startswith("SUPABASE"):
+        return True
+    text = str(question.get("question") or "")
+    # Asking the customer to give a value ("what is…", "paste…", "enter…"), not a choice such as
+    # "keep the images in Supabase Storage?" - that one is the customer's to answer.
+    return bool(re.search(r"supabase", text, re.IGNORECASE) and _SUPABASE_VALUE.search(text)
+                and _ASKS_FOR_VALUE.search(text))
+
+
 def _settle(project: str, session: Any, mode: str, request: str, plan: str,
-           result: dict[str, Any]) -> dict[str, Any]:
+           result: dict[str, Any], auto_answered: int = 0) -> dict[str, Any]:
     """A `run_task`/`execute_approved` outcome: pass a real result through unchanged, or turn a
     genuine question the model raised into a paused, resumable wait instead of a hard failure.
 
@@ -97,6 +113,15 @@ def _settle(project: str, session: Any, mode: str, request: str, plan: str,
     session.write_record(*QUESTION, data={})
     if not question:
         raise ValueError(result.get("text") or "the build was blocked")
+    if _asks_for_supabase(question) and supabase_connect.record(project) and auto_answered < AUTO_ANSWERS:
+        # The customer is never asked for Supabase values: the project was connected before the build started and
+        # every value is already in the environment. Answer for them and carry straight on.
+        bus.log(project, "INFO", "The build asked for Supabase values; this project's Supabase is already connected, "
+                                 "so it was answered automatically and the build continues.")
+        resume = request + "\n" + prompts.load("builder/resume", question=question.get("question", ""),
+                                                answer=prompts.load("builder/supabase-connected").strip())
+        return _settle(project, session, mode, request, plan, session.execute_approved(resume, plan, model=""),
+                       auto_answered + 1)
     asked = changes.check_question({"kind": "question", **_private_value(question)}, True)
     session.write_record(*PENDING, data={"mode": mode, "request": request, "plan": plan, "question": asked})
     _ask(project, asked)

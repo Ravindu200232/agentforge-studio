@@ -14,7 +14,7 @@ Build real session-based authentication at the gateway (`bcryptjs` for password 
 
 ## File and image uploads
 
-If the project selected an image-uploads plugin (Cloudinary, S3, or another), `.agentforge/PLUGIN.md` names its environment variables and how to use them - integrate exactly that provider from whichever service owns the upload, never a locally-written file as the production answer. With no plugin selected, a feature that genuinely needs file storage still needs a real provider; ask about it the same way a missing credential is asked for, rather than silently writing to local disk.
+If the project selected an image-uploads plugin (Cloudinary, S3, or another), `.agentforge/PLUGIN.md` names its environment variables and how to use them - integrate exactly that provider from whichever service owns the upload, never a locally-written file as the production answer. With no plugin selected, a feature that stores images or other uploaded files still needs a real provider: ask the customer once whether to keep them in Supabase Storage ("Yes — Supabase Storage" recommended). This project has its own Supabase project, and `SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are already in the environment of every command and of the preview - never ask the customer for them. On yes, upload from the server with the `@supabase/supabase-js` Storage API into a bucket per kind of file, store the object path in the document, and serve public files by their public URL and private ones through signed URLs. On no, ask which provider to use - never write uploads to the local disk as the production answer.
 
 ## Deployment
 
