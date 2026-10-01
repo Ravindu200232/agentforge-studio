@@ -13,7 +13,7 @@ from typing import Any
 
 from server_modules import auth_guide, changes, mongo_connect, prompts, supabase_connect
 
-MAX_QUESTIONS = 12
+MAX_QUESTIONS = 20
 _REGION = re.compile(r"^[A-Za-z0-9_-]{2,40}$")
 
 

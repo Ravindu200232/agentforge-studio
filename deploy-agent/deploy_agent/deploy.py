@@ -54,7 +54,7 @@ STAGE_PLAN = "deploy_plan"
 STAGE_RUN = "deploy"
 # A deployment has many decisions the customer may make: account, names, layout, region, database, domain,
 # cost, and every choice the target's and the stack's pages list. A guard against an endless interview only.
-MAX_QUESTIONS = 10
+MAX_QUESTIONS = 20
 # How many times a live address that does not hold is handed back to the agent before the run fails.
 REPAIR_ROUNDS = 2
 PROBE_SECONDS = 25
