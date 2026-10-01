@@ -283,7 +283,7 @@ export default function DeployPanel({ onSettings, accountsRevision = 0 }) {
             </div>
           )}
 
-          <DeployResult data={mine} />
+          <DeployResult data={mine} onResumed={refresh} />
         </>)}
       </div>
       </div>
