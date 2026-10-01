@@ -59,19 +59,39 @@ def roles_of(doc: dict) -> list[dict]:
             and not (_names(r) & {"visitor", "guest", "anonymous", "public", "anyone", "everyone"})]
 
 
+def _norm(value: Any) -> str:
+    """A role or page name compared loosely: `store_owner`, `Store Owner` and `store-owner` are one name."""
+    return re.sub(r"[\s_-]+", " ", str(value or "")).strip().lower()
+
+
+def _items(value: Any) -> list[str]:
+    """Names given as a list, or as one string separated by commas, semicolons or bars."""
+    items = value if isinstance(value, (list, tuple, set)) else re.split(r"[,;|\n]+", str(value or ""))
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
 def can_open(doc: dict, role: dict) -> tuple[list[dict], list[dict]]:
-    """The pages a role may open and the ones it may not, from the access matrix when there is one, else from the pages' roles."""
-    names = _names(role)
-    row = next((r for r in (doc.get("role_access_matrix") or []) if isinstance(r, dict) and str(r.get("role") or "").strip().lower() in names), None)
-    allowed_names = {str(p).strip().lower() for p in (row or {}).get("allowed_pages") or []}
+    """The pages a role may open and the ones it may not.
+
+    A page is open to a role when it needs no sign-in, when the page's own roles name it, or when the access matrix lists the page
+    for it by name or by route. Either source is enough: an access matrix that names pages differently from the page list must not
+    take a role's own pages away from it.
+    """
+    names = {_norm(name) for name in _names(role)}
+    row = next((r for r in (doc.get("role_access_matrix") or []) if isinstance(r, dict) and _norm(r.get("role")) in names), None)
+    listed = _items((row or {}).get("allowed_pages"))
+    listed_routes = {route.rstrip("/") or "/" for item in listed for route in re.findall(r"(?<![\w])/[\w\-\[\]/.]*", item)}
+    listed_names = {_norm(item) for item in listed}
     yes, no = [], []
     for page in pages_of(doc):
         label = str(page.get("page_name") or page["route"])
-        roles = {str(r).strip().lower() for r in page.get("allowed_roles") or []}
-        if not page.get("login_required") or (row and label.strip().lower() in allowed_names) or (not row and (names & roles or roles & {"anyone", "all", "everyone"})):
-            yes.append({"route": str(page["route"]), "name": label})
+        route = str(page["route"])
+        roles = {_norm(r) for r in _items(page.get("allowed_roles"))}
+        if (not page.get("login_required") or names & roles or roles & {"anyone", "all", "everyone"}
+                or (route.rstrip("/") or "/") in listed_routes or _norm(label) in listed_names):
+            yes.append({"route": route, "name": label})
         else:
-            no.append({"route": str(page["route"]), "name": label})
+            no.append({"route": route, "name": label})
     return yes, no
 
 
@@ -127,8 +147,12 @@ def sign_in_text(accounts: list[dict], sign_in: str, routes_out: list[dict]) -> 
              "login, and `assets/flow.js` already does all of it:", "",
              "- On the sign-in page draw a polished form marked `<form data-sign-in>` with an email field (`type=\"email\"`) and a "
              "password field (`type=\"password\"`), and directly under it an empty `<div data-demo-login></div>`. flow.js fills that "
-             "block with one \"continue as\" button per role, signs in with one click and opens that role's first page; typing a demo "
-             "email and password works too. Do not write the accounts into the page and do not write your own sign-in script.",
+             "block with one \"continue as\" button per role, signs in with one click and opens that role's own first page; typing a "
+             "demo email and password works too. Do not write the accounts into the page and do not write your own sign-in script.",
+             "- Every other form that signs someone in — a separate sign-in for staff or administrators, a sign-in step inside "
+             "checkout — is built the same way: `<form data-sign-in>` with the empty `<div data-demo-login></div>` under it.",
+             "- Never decide where signing in goes: no `data-next`, redirect, link or `data-go` on a sign-in form or its button, and "
+             "no submit handler for it in app.js. Each role has its own first page below, and flow.js sends it there.",
              "- Wherever the signed-in person shows, write `<span data-user=\"name\"></span>` (or `\"email\"`, `\"role\"`); a "
              "sign-out control carries `data-sign-out`.",
              "- An element only some roles use carries `data-roles=\"role_key\"` (comma-separated for several); when someone is "
@@ -155,9 +179,11 @@ def draw_accounts(doc: dict, routes_out: list[dict], flow: dict, system: str) ->
         slug = re.sub(r"[^a-z0-9]+", ".", key.lower()).strip(".") or f"user{index}"
         yes, no = can_open(doc, role)
         destinations = [str(page["route"]) for page in yes if str(page.get("route")) != sign_in]
-        # A role signs in to its own first page — the dashboard it came for — not to the public home page.
+        # A role signs in to the top of its own area — the dashboard or account page it came for — not to the public home page:
+        # of the signed-in pages it may open, the one with the shortest fixed route.
         own = [route for route in destinations if (protected.get(route) or {}).get("login_required")]
-        lands_on = (own or destinations or [sign_in])[0]
+        lands_on = (min(own, key=lambda route: ("[" in route, len([part for part in route.split("/") if part])))
+                    if own else (destinations or [sign_in])[0])
         out.append({
             "role": label,
             "role_key": key,

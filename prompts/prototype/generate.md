@@ -16,12 +16,14 @@ Your inputs are exactly these files. Read every one of them before you plan, all
 
 ## 2. Plan silently
 
-Plan once, then carry the plan out without asking anything. The plan holds:
+You plan first, with read tools only; the files are written in the next step, where `write_file` is yours. So the plan is just the plan — no note about tools, modes or blockers, and no question to anyone. Plan once, then carry the plan out. The plan holds:
 
 - the shared design system: the tokens as CSS custom properties, the shell (header, navigation, footer), the common components;
 - for every route below, **an inventory of everything its wireframe contains** — every section, heading, text block, field, button, link and its destination, image, table and its columns, card, list, tab, filter, stat and chart — and the sample data each one carries.
 
 **Do not miss a single piece of wireframe content.** Every item in a wireframe's inventory appears on its finished page, in a finished form: nothing dropped, merged away or "simplified". You may add realistic sample data and polish; you may never leave out what the wireframe has.
+
+**States are behaviour, not extra content.** A wireframe often shows several states of one screen — loading, empty, error, success, a later step, a disabled account. Keep every one of them, but as the working page would: the page opens on its main, filled-in state, and each other state sits in the page with the `hidden` attribute until the action that causes it — an empty state when a filter or search finds nothing, an error when a form is sent wrong, a success message or the next step after it is sent right. Nothing that says loading, failed, empty or error is visible when a page first opens.
 
 ## 3. Write the files
 
@@ -48,12 +50,13 @@ Write with `write_file`, in this order:
 - Navigation: every link and button that goes somewhere carries `data-go="/route"` and `href="<file>"` from the route table. Link only to routes in the table and keep every destination the wireframe gives. Never write `fileC:`, `file:///`, `C:/` or a root path such as `/rooms` into a link.
 - Images: the ones the wireframe names, or the uploaded ones below; otherwise a real `https://images.unsplash.com/…` or `https://images.pexels.com/…` photo that fits, or a CSS/SVG illustration. Real `alt` text on every meaningful image.
 - Working interactions: forms validate inline, menus and dialogs open and close, tabs switch, filters and search narrow the data.
-- Responsive from 360px to wide desktop, no horizontal scroll, 44px touch targets, one `<h1>`, semantic landmarks, real `<label>`s, visible focus, 4.5:1 contrast.
+- Responsive from 360px to wide desktop with no horizontal scroll: every split, two-column and sidebar layout becomes one column below 768px (a sidebar becomes a menu button), nothing has a fixed `width` or `min-width` wider than the screen, images are `max-width: 100%`, and a wide table scrolls inside its own container.
+- 44px touch targets, one `<h1>`, semantic landmarks, real `<label>`s, visible focus, 4.5:1 contrast.
 - Every word belongs to the product: no requirement ids, route paths, file names, "wireframe", "prototype", "placeholder" or notes to the reviewer.
 
 ## Sample data — no page is ever empty
 
-Fill every list, table, card grid, feed, chart, stat and detail view with realistic sample data from app.md's data model and this product's domain: believable names, dates, amounts, statuses, addresses and descriptions in the product's language. 5–10 rows for a table or list, real numbers on every stat and chart, and one consistent cast across the product (the same customers, orders, rooms or tickets wherever they appear). Never lorem ipsum, "Item 1", "Sample text" or `TBD`, and no empty state where real content belongs.
+Fill every list, table, card grid, feed, chart, stat and detail view with realistic sample data from app.md's data model and this product's domain: believable names, dates, amounts, statuses, addresses and descriptions in the product's language. 5–10 rows for a table or list, real numbers on every stat and chart, and one consistent cast across the product: a record keeps the same id, name, amounts and status on every page it appears on — when two wireframes disagree about one record, pick one version and use it everywhere — and totals add up. Never lorem ipsum, "Item 1", "Sample text" or `TBD`, and no empty state where real content belongs.
 
 ## Sign-in and roles
 

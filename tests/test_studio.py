@@ -1514,6 +1514,35 @@ class PrototypeFromWireframesTests(unittest.TestCase):
             self.assertEqual([row["file"] for row in saved["routes"]], ["index.html", "login.html", "checkout.html"])
             self.assertTrue(json.loads((prototype / "generation.json").read_text(encoding="utf-8"))["complete"])
 
+    def test_each_demo_role_opens_its_own_pages_and_lands_on_the_top_of_its_area(self):
+        from prototype_agent import prototype_brief
+
+        def protected(route, roles):
+            return {"page_name": route.strip("/").title() or "Home", "route": route,
+                    "login_required": True, "allowed_roles": roles}
+
+        doc = {"authentication_requirement": {"login_required": True, "sign_in_route": "/login"},
+               "roles": [{"role_key": "shopper", "role_name": "Shopper"},
+                         {"role_key": "store_owner", "role_name": "Store Owner"},
+                         {"role_key": "guest", "role_name": "Guest"}],
+               # an access matrix that names the pages differently from the page list
+               "role_access_matrix": [{"role": "Shopper", "allowed_pages": "Storefront and the account area"},
+                                      {"role": "store_owner", "allowed_pages": "/admin/staff"}],
+               "public_pages": [{"page_name": "Home", "route": "/"}, {"page_name": "Sign in", "route": "/login"}],
+               "protected_pages": [protected("/account/orders", ["Shopper"]), protected("/account", ["Shopper"]),
+                                   protected("/admin/products", "Store Owner"), protected("/admin", ["store_owner"]),
+                                   protected("/admin/staff", [])]}
+        routes = [{"route": p["route"], "file": "x.html", "name": p["page_name"]} for p in prototype_brief.pages_of(doc)]
+        accounts = {a["role"]: a for a in prototype_brief.draw_accounts(doc, routes, {"journeys": [], "leads_to": {}}, "")}
+
+        self.assertEqual(set(accounts), {"Shopper", "Store Owner"})
+        self.assertEqual(accounts["Shopper"]["lands_on"], "/account")
+        self.assertEqual(accounts["Store Owner"]["lands_on"], "/admin")
+        owner = {p["route"] for p in accounts["Store Owner"]["can_open"]}
+        self.assertTrue({"/admin", "/admin/products", "/admin/staff"} <= owner)
+        self.assertNotIn("/account", owner)
+        self.assertNotIn("/admin", {p["route"] for p in accounts["Shopper"]["can_open"]})
+
     def test_missing_wireframes_block_approval_before_starting_a_run(self):
         from prototype_agent import prototype as prototyper
         from srs_agent import document as srs_document
