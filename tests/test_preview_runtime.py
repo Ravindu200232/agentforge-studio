@@ -15,6 +15,11 @@ for folder in ("", "src", "srs-agent", "prototype-agent", "builder-agent", "qa-a
         sys.path.insert(0, value)
 
 from server_modules import preview_runtime, prompts, runs  # noqa: E402
+from support import isolate_workspaces  # noqa: E402
+
+
+def setUpModule():
+    isolate_workspaces()
 
 
 class PreviewRuntimeTests(unittest.TestCase):

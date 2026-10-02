@@ -18,7 +18,11 @@ for folder in (".", "src"):
     sys.path.insert(0, str(ROOT / folder))
 
 from server_modules import bus, llm, llm_tools  # noqa: E402
-from support import forget_project  # noqa: E402
+from support import forget_project, isolate_workspaces  # noqa: E402
+
+
+def setUpModule():
+    isolate_workspaces()
 
 
 class FakeMessage:

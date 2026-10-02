@@ -23,6 +23,11 @@ for folder in ("", "src", "srs-agent", "prototype-agent", "builder-agent", "qa-a
         sys.path.insert(0, path)
 
 from server_modules import bus, config, httpd, runs, session  # noqa: E402
+from support import isolate_workspaces  # noqa: E402
+
+
+def setUpModule():
+    isolate_workspaces()
 
 
 def _reset_bus() -> None:

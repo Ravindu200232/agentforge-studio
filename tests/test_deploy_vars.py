@@ -14,7 +14,12 @@ for folder in (".", "src", "srs-agent", "builder-agent", "prototype-agent", "qa-
     sys.path.insert(0, str(ROOT / folder))
 
 from server_modules import bus, changes, config, deploy_vars, httpd, runs, secrets_guard, session, supabase_connect  # noqa: E402
-from support import forget_project  # noqa: E402
+from support import forget_project, isolate_workspaces  # noqa: E402
+
+
+def setUpModule():
+    isolate_workspaces()
+
 
 PROJECT = "prj_deploy_vars_test"
 # A connection string with a password in it, only ever used here as an example of the shape

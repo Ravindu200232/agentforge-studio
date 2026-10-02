@@ -20,6 +20,12 @@ for folder in (".", "builder-agent", "srs-agent", "prototype-agent"):
 
 from builder_agent import build, setup  # noqa: E402
 from server_modules import bus  # noqa: E402
+from support import isolate_workspaces  # noqa: E402
+
+
+def setUpModule():
+    isolate_workspaces()
+
 
 PROJECT = "prj_build_setup_test"
 REAL_BUILD = build._build

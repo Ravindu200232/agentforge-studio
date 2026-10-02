@@ -22,6 +22,12 @@ for folder in (".", "builder-agent"):
 
 from builder_agent import build  # noqa: E402
 from server_modules import bus  # noqa: E402
+from support import isolate_workspaces  # noqa: E402
+
+
+def setUpModule():
+    isolate_workspaces()
+
 
 PROJECT = "prj_build_question_test"
 

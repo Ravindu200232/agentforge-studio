@@ -1,15 +1,25 @@
 """Chat uploads must land in the output app and remain safe across name collisions."""
 
 import base64
+import re
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-import re
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from server_modules import httpd
-from prototype_agent import prototype
+ROOT = Path(__file__).resolve().parent.parent
+for folder in (".", "src", "srs-agent", "builder-agent", "prototype-agent", "qa-agent", "deploy-agent"):
+    sys.path.insert(0, str(ROOT / folder))
+
+from server_modules import httpd  # noqa: E402
+from prototype_agent import prototype  # noqa: E402
+from support import isolate_workspaces  # noqa: E402
+
+
+def setUpModule():
+    isolate_workspaces()
 
 
 class ChatMediaTests(unittest.TestCase):

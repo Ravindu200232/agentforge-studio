@@ -27,7 +27,11 @@ from server_modules import store as project_store  # noqa: E402
 from server_modules.session import extract_json  # noqa: E402
 from server_modules.validation import completeness, plan_rules, review, srs_schema  # noqa: E402
 from srs_agent import document as srs_document  # noqa: E402
-from support import forget_project  # noqa: E402
+from support import forget_project, isolate_workspaces  # noqa: E402
+
+
+def setUpModule():
+    isolate_workspaces()
 
 
 def a_plan(**patch):

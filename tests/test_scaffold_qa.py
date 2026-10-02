@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-for folder in ("builder-agent", "qa-agent"):
+for folder in (".", "builder-agent", "qa-agent"):
     sys.path.insert(0, str(ROOT / folder))
 
 from builder_agent import scaffold  # noqa: E402

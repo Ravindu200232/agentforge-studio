@@ -4,10 +4,13 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import sys
 from pathlib import Path
 from unittest import mock
 
-from server_modules import config, plugins
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from server_modules import config, plugins  # noqa: E402
 
 
 CATALOGUE = {

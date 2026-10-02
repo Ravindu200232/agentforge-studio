@@ -69,13 +69,17 @@ those same files through `write_file` and `replace_text`.
 ## Scaffold-first build and evidence
 
 After prototype approval, the builder installs the selected stack's template —
-Next.js, Vite or Remix on Supabase, plain or with a microservices backend of
-Supabase Edge Functions — from `builder-agent/builder_agent/assets/templates/`
-into an empty project workspace.
-It never overwrites an existing application. Stack and testing guides in
-`_guides/` are passed into the build plan along with the SRS handoff, approved
-design customization and prototype. The build records its installed files in
-`.agentforge/build/scaffold.json`.
+Next.js, Vite or Remix on Supabase, Next.js or Vite on MongoDB, or MERN
+microservices — from `builder-agent/builder_agent/assets/templates/` into an
+empty project workspace.
+It never overwrites an existing application. Before it plans, the builder asks
+what the build needs settled (which database project or cluster, the region,
+the plan tier), and it asks again mid-build when it meets a gap it cannot
+decide alone. The stack and testing guides in `_guides/` and the
+authentication guide (`prompts/shared/authentication.md`) are staged under
+`.agentforge/build/guides/` and passed into the build plan along with the SRS
+handoff, approved design customization and prototype. The build records its
+installed files in `.agentforge/build/scaffold.json`.
 
 QA uses the copied Vitest, Playwright, axe and Lighthouse configuration and the
 ZAP CI example. It saves runner JSON and actual screenshots under the project;
@@ -91,6 +95,7 @@ stage behaves is editing a file:
 | Pack | What it drives |
 |---|---|
 | `shared/engine.md` | the contract every stage runs under |
+| `shared/authentication.md` | sessions, roles and sign-in, read by the wireframes, prototype and builder |
 | `interview/` | the question format, the interview standard, what to cover |
 | `plan/` | the approval plan a customer signs off, and its revisions |
 | `srs/` | the specification, its review and its repairs |
@@ -100,6 +105,7 @@ stage behaves is editing a file:
 | `builder/` | the application build |
 | `testing/` | verification and its evidence |
 | `deployment/` | the deployment pipeline; `deployment/skills/` per target |
+| `changes/` | a change request: its plan, its questions and its execution |
 | `chat/` | a mid-project message from the customer |
 
 The interview has no topic catalogue and no fixed question list. The model picks
@@ -108,7 +114,7 @@ handful and a multi-role system does not.
 
 ## What says no
 
-Three gates stand between a model's output and the next stage. They are the
+Four gates stand between a model's output and the next stage. They are the
 ported `RP-SE-009` rules, and they are the only judgement not delegated:
 
 **The plan's depth floor** (`validation/plan_rules.py`) — every screen has a
@@ -121,11 +127,11 @@ the studio's own views read, with its floors on requirements and roles.
 **Coverage** (`validation/completeness.py`) — the gate the other two cannot see.
 Each artifact can be individually valid while the specification quietly covers a
 third of the product. This one counts the plan against the specification: a
-screen that was promised and dropped, a feature with no requirement, a diagram
-marked "not applicable" while its evidence sits in the document, a wireframe that
-invented its own class names, a prototype link that goes nowhere. Gaps go back to
-the agent as instructions, for two rounds, and what is left is recorded on the
-document.
+screen that was promised and dropped, a record with no table, a feature with no
+requirement, a requirement with no trace. What the plan already states is
+aligned into the document; anything still missing stops the stage and is
+recorded on the document. Each wireframe is also held to a depth floor for the
+sections its screen has, and a page drawn short goes back to the agent.
 
 **The standards review** (`validation/review.py`) — a reviewer audits the draft
 against the requirements skills. Python decides whether it passed, not the model:
@@ -150,6 +156,9 @@ deploy-agent/             deployment and its pipeline record
 src/ollama_terminal/      the engine: conversation, tools, source guard
 prompts/                  every instruction, as markdown
 studio/                   the AgentForge Studio, unchanged
+tests/                    every test: Python at the top, studio checks in tests/studio/
+tools/                    the SRS corpus fetcher
+srs-test-sources/         reference SRS documents and diagram sources
 workspaces/               one directory per project
 ```
 
@@ -161,13 +170,16 @@ sets to match.
 
 ```powershell
 python -m unittest discover -s tests -v
+node --test tests/*.mjs tests/studio/*.mjs
 ```
 
 `test_agent.py` covers the engine — tool round trips, path escapes, plan mode,
 the source guard, and context summarisation including a model that answers in
 `thinking` or returns nothing at all. `test_studio.py` covers the backend — the
 prompt packs, all four validation gates, the event shapes the studio's reducer
-reads, event persistence across a restart, and the route table.
+reads, event persistence across a restart, and the route table. The `.mjs` files
+check the studio's own modules — the wireframe editor, preview addresses, the chat
+display, progress, attachments and uploads — without a browser.
 
 ## What has been run end to end
 

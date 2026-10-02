@@ -2,16 +2,18 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 for folder in (".", "src", "srs-agent", "builder-agent", "prototype-agent", "qa-agent", "deploy-agent"):
     sys.path.insert(0, str(ROOT / folder))
 
-from server_modules import bus  # noqa: E402
+from server_modules import bus, config  # noqa: E402
 from server_modules.session import ProjectSession  # noqa: E402
 
 
@@ -19,6 +21,12 @@ class CompactionProgressTests(unittest.TestCase):
     def setUp(self):
         # A project of its own per test: `bus.forget` retires a project, and a retired one emits nothing.
         self.project = f"prj_compacting_{uuid.uuid4().hex[:8]}"
+        # Its events land in a scratch folder, not beside the real projects.
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        patch = mock.patch.object(config, "WORKSPACES", Path(folder.name))
+        patch.start()
+        self.addCleanup(patch.stop)
         self.events: list[dict] = []
         self.addCleanup(bus.subscribe(self.events.append))
         self.addCleanup(bus.forget, self.project)
