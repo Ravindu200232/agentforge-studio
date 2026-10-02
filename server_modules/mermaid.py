@@ -39,11 +39,16 @@ _STUDIO_ROOT = Path(__file__).resolve().parents[1] / "studio"
 # white canvas, pale blue figures, dark connectors, familiar UML typography,
 # and enough space to inspect the notation.  Diagram-specific source still
 # supplies the UML/BPMN/DFD semantics.
+_FONT = "Arial, Helvetica, sans-serif"
 _VISUAL_CONFIG = {
     "theme": "base",
+    # The same font twice on purpose: the top-level one is what text is measured in and what the SVG's CSS names,
+    # `themeVariables.fontFamily` is what the theme paints with. Set apart, labels were measured in one font and drawn
+    # in a wider one, which cut the last letter off every label.
+    "fontFamily": _FONT,
     "themeVariables": {
         "background": "#ffffff",
-        "fontFamily": "Arial, Helvetica, sans-serif",
+        "fontFamily": _FONT,
         "fontSize": "16px",
         "primaryColor": "#75c5e8",
         "primaryTextColor": "#102a43",
@@ -71,9 +76,18 @@ _VISUAL_CONFIG = {
     "sequence": {"useMaxWidth": False, "wrap": True, "diagramMarginX": 28,
                  "diagramMarginY": 20, "actorMargin": 56, "messageMargin": 44,
                  "noteMargin": 14},
-    "class": {"useMaxWidth": False},
-    "er": {"useMaxWidth": False},
+    "state": {"useMaxWidth": False, "nodeSpacing": 70, "rankSpacing": 90, "padding": 12},
+    "class": {"useMaxWidth": False, "nodeSpacing": 70, "rankSpacing": 90},
+    "er": {"useMaxWidth": False, "nodeSpacing": 70, "rankSpacing": 90},
+    "elk": {"mergeEdges": False, "nodePlacementStrategy": "NETWORK_SIMPLEX"},
 }
+
+# Every kind that is a graph of boxes and labelled edges (a sequence diagram is not laid out by either engine). dagre
+# puts each label at the middle of its own curve, so where edges cross - several components requiring the same
+# interface, a data store read by many processes - the labels pile on top of each other; ELK routes edges around the
+# boxes and labels. Tried first; dagre is the fallback if it fails.
+_ELK_KINDS = frozenset({"component", "deployment", "dfd", "bpmn", "activity", "system_context", "use_case",
+                        "state_machine", "class_object", "erd"})
 
 
 def _node_binaries() -> list[str]:
@@ -180,21 +194,93 @@ def available() -> bool:
     return _find_cli() is not None
 
 
-def render(source: str, out_path: Path, timeout: int = 180) -> tuple[bool, str]:
+_INIT_DIRECTIVE = re.compile(
+    r"^[ \t]*%%\{\s*(?:init|initialize)\s*:\s*(?P<body>\{.*?\})\s*\}%%[ \t]*\r?\n?",
+    re.IGNORECASE | re.DOTALL | re.MULTILINE)
+_FRONTMATTER = re.compile(r"\A\s*---[ \t]*\r?\n(?P<body>.*?)\r?\n---[ \t]*\r?\n", re.DOTALL)
+_STEREOTYPE = re.compile(r"<<[ \t]*([^<>\r\n]+?)[ \t]*>>")
+# What a model's own `%%{init}%%` line may not change: the fonts (see `_FONT`) and how the diagram is laid out.
+# Colours are kept - the ER diagram's orange headers and the DFD's yellow blocks come from there, on purpose.
+_NOT_THE_MODELS = frozenset({"fontFamily", "fontSize", "themeCSS", "layout", "look", "htmlLabels", "securityLevel"})
+
+
+def _own_theme(hit: re.Match) -> str:
+    """The model's `%%{init: …}%%` line, with only its colours left in it (nothing at all if it is not valid JSON)."""
+    body = hit.group("body")
+    try:
+        data = json.loads(body)
+    except ValueError:
+        try:
+            data = json.loads(body.replace("'", '"'))       # Mermaid itself accepts single-quoted JSON here
+        except ValueError:
+            return ""
+
+    def keep(node):
+        if isinstance(node, dict):
+            kept = {key: keep(value) for key, value in node.items() if key not in _NOT_THE_MODELS}
+            return {key: value for key, value in kept.items() if value != {}}     # a group left empty goes too
+        return node
+
+    data = keep(data) if isinstance(data, dict) else {}
+    return "%%{init: " + json.dumps(data, ensure_ascii=False) + "}%%\n" if data else ""
+
+
+def prepare(source: str) -> str:
+    """The source as the renderer is given it.
+
+    - A font or layout the model wrote into the source (`%%{init: …}%%`, a `config:` front matter) is not honoured: the
+      shared `_VISUAL_CONFIG` decides those for every diagram. Left in, the model's `fontFamily` made Mermaid name one
+      font that does not exist ("Helvetica, Arial, sans-serif" as a single quoted name), so labels were measured in
+      one font and painted in another and every one was cut off. Its colours stay.
+    - In a flowchart, `<<component>>` becomes «component»: flowchart labels are HTML, which swallows `<<…>>` as a tag
+      and drew a bare "<>". Class, state and other diagrams keep their `<<enumeration>>`/`<<choice>>` syntax.
+    The saved `.mmd` is not changed; this only shapes what is drawn.
+    """
+    text = str(source or "")
+    front = _FRONTMATTER.match(text)
+    if front and re.search(r"^[ \t]*config[ \t]*:", front.group("body"), re.MULTILINE):
+        text = text[front.end():]
+    text = _INIT_DIRECTIVE.sub(_own_theme, text)
+    if _declaration(text).startswith(("flowchart", "graph")):
+        text = _STEREOTYPE.sub(lambda hit: "«" + hit.group(1) + "»", text)
+    return text
+
+
+def _config(layout: str = "") -> dict:
+    config = json.loads(json.dumps(_VISUAL_CONFIG))
+    if layout:
+        config["layout"] = layout
+    return config
+
+
+def render(source: str, out_path: Path, timeout: int = 180, *, kind: str = "") -> tuple[bool, str]:
     """Draw one Mermaid source to `out_path`.
 
     Returns whether an SVG landed and, when it did not, what Mermaid said about
     it. That message is the only reliable parser there is — a hand-written
     syntax check passes `Member --> (Login)`, which Mermaid rejects — so it goes
     back to the model as the repair instruction.
+
+    A kind in `_ELK_KINDS` is laid out with ELK first; if that fails for any reason but the source itself being
+    rejected, it is drawn again with the default layout, so the better layout never costs a diagram.
     """
     cli = _find_cli()
     if not cli:
         return False, "no mermaid renderer is installed"
-    if not str(source or "").strip():
+    source = prepare(source)
+    if not source.strip():
         return False, "the source is empty"
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    done, why = False, ""
+    for layout in (("elk", "") if kind in _ELK_KINDS else ("",)):
+        done, why = _render_once(cli, source, out_path, _config(layout), timeout)
+        if done or is_syntax_error(why):
+            break
+    return done, why
+
+
+def _render_once(cli: list[str], source: str, out_path: Path, visual: dict, timeout: int) -> tuple[bool, str]:
     with tempfile.TemporaryDirectory() as directory:
         work = Path(directory)
         mmd = work / "diagram.mmd"
@@ -206,7 +292,7 @@ def render(source: str, out_path: Path, timeout: int = 180) -> tuple[bool, str]:
         if browser:
             puppeteer_config["executablePath"] = browser
         config.write_text(json.dumps(puppeteer_config), encoding="utf-8")
-        visual_config.write_text(json.dumps(_VISUAL_CONFIG), encoding="utf-8")
+        visual_config.write_text(json.dumps(visual), encoding="utf-8")
         try:
             done = subprocess.run(
                 [*cli, "-i", str(mmd), "-o", str(out_path), "-b", "white",
@@ -443,7 +529,7 @@ def render_diagram(kind: str, source: str, out_path: Path, timeout: int = 180) -
                 return True, ""
         except (OSError, ValueError) as exc:
             return False, f"the use-case renderer could not draw the SVG: {exc}"
-    return render(source, out_path, timeout=timeout)
+    return render(source, out_path, timeout=timeout, kind=kind)
 
 
 def _context_escape(value: str) -> str:
@@ -693,13 +779,61 @@ OPENERS = {
 }
 
 
+# A line that is only a diagram declaration. Matching the whole line (not "starts with graph") is what keeps a sentence
+# such as "graph of the booking flow" from being taken for the start of a diagram.
+_OPENER_LINE = re.compile(
+    r"^[ \t]*(?:(?:flowchart|graph)(?:[ \t]+(?:TB|TD|BT|RL|LR))?|sequenceDiagram|classDiagram(?:-v2)?"
+    r"|stateDiagram(?:-v2)?|erDiagram)[ \t]*;?[ \t]*\r?$", re.IGNORECASE | re.MULTILINE)
+
+
+_THEME_LINE = re.compile(r"^[ \t]*%%\{.*?\}%%[ \t]*$", re.DOTALL | re.MULTILINE)
+
+
+def _declaration(text: str) -> str:
+    """The diagram declaration a source opens with, lower-cased ('flowchart td'), or '' when it has none."""
+    hit = _OPENER_LINE.search(str(text or ""))
+    return " ".join(hit.group(0).split()).lower() if hit else ""
+
+
 def clean(source: str) -> str:
-    """The Mermaid source out of whatever the model wrapped it in."""
+    """The Mermaid source out of whatever the model wrapped it in.
+
+    A fence is taken off, and so is any prose written before the diagram ("Here is the diagram:"): the source starts
+    at its declaration. A reply with no declaration at all is returned as it is - `has_diagram` is what says it is not
+    a diagram - so `NOT_APPLICABLE: …` still comes through.
+    """
     raw = str(source or "").strip()
     fenced = _FENCE.search(raw)
     if fenced:
         raw = fenced.group(1).strip()
+    hit = _OPENER_LINE.search(raw)
+    if hit and hit.start() > 0:
+        # Prose goes; a `%%{init: …}%%` line before the declaration is the model's colour choice and stays.
+        theme = "".join(line.group(0).rstrip() + "\n" for line in _THEME_LINE.finditer(raw[:hit.start()]))
+        raw = (theme + raw[hit.start():]).strip()
     return raw
+
+
+_DECLARATIONS = {"erd": "erDiagram", "sequence": "sequenceDiagram", "class_object": "classDiagram",
+                 "state_machine": "stateDiagram-v2"}
+
+
+def declaration_for(kind: str) -> str:
+    """What a source of this kind has to open with, in words a model can follow."""
+    return _DECLARATIONS.get(kind, "flowchart LR` or `flowchart TD")
+
+
+def has_diagram(kind: str, source: str) -> bool:
+    """Whether this is Mermaid source of the kind's family at all, rather than words a model wrote instead of it.
+
+    Only the declaration is checked - never the notation - so a diagram that is drawn differently from the standard is
+    still a diagram. Prose, a half-finished thought or the model's reasoning is not.
+    """
+    declaration = _declaration(clean(source))
+    if not declaration:
+        return False
+    wanted = OPENERS.get(kind, ())
+    return declaration.startswith(wanted) if wanted else True
 
 
 def problems(kind: str, source: str) -> list[str]:

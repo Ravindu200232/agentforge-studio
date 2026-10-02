@@ -8,6 +8,7 @@ import {
   HelpCircle, Layers, Lock, Maximize2, Shield, Users, Workflow, XCircle,
 } from 'lucide-react'
 import { Empty } from '../ui'
+import DiagramMissing from './DiagramMissing'
 import DiagramViewer from './DiagramViewer'
 
 const list = (value) => (Array.isArray(value) ? value : [])
@@ -408,7 +409,7 @@ export default function Overview({ srs, onSelectView }) {
             {current && (
               <div className="space-y-3">
                 {current.applicable === false && (
-                  <p className="text-[12px] text-amber-300/90">
+                  <p className="text-[12px] text-amber-700">
                     <AlertTriangle className="mr-1.5 inline size-3.5" />
                     {current.applicabilityNote || 'This diagram does not apply to this product.'}
                   </p>
@@ -420,8 +421,10 @@ export default function Overview({ srs, onSelectView }) {
                       <div className="srs-diagram flex justify-center [&_svg]:h-auto [&_svg]:max-h-[380px] [&_svg]:max-w-full"
                         dangerouslySetInnerHTML={{ __html: current.svg }} />
                     </button>
-                  : <pre className="overflow-x-auto rounded-none border border-black/10 bg-black/40 p-3
-                                    font-mono text-[11px] leading-relaxed text-muted">{current.mermaid}</pre>}
+                  : current.drawable
+                    ? <pre className="overflow-x-auto rounded-none border border-black/10 bg-code p-3
+                                      font-mono text-[11px] leading-relaxed text-muted">{current.mermaid}</pre>
+                    : <DiagramMissing diagram={current} />}
 
                 {current.businessSummary && (
                   <p className="text-[12.5px] leading-relaxed text-ink">{current.businessSummary}</p>

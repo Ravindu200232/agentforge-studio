@@ -29,6 +29,7 @@ from server_modules.validation import corpus as corpus_rules
 from server_modules.validation import review as review_rules
 from server_modules.validation import srs_schema
 
+from . import diagram_fallback
 from . import handoff as handoff_files
 from . import plan as plan_stage
 from . import wireframe_brief
@@ -518,7 +519,14 @@ def _diagram_context(doc: dict, kind: str) -> dict[str, Any]:
 
 def _draw_diagram(session: ProjectSession, project: str, doc: dict,
                   kind: str) -> dict | None:
-    """One diagram: its source, and its SVG when a renderer is installed."""
+    """One diagram: its source, and its SVG when a renderer is installed.
+
+    What is saved is always Mermaid, never words. The first reply is asked for with the read tool (the read shows in
+    the chat). If it is not a diagram - the model narrating its reads ("Let me read…"), or its reasoning - or Mermaid
+    rejects it, the next replies are asked for with no tools and the specification slice in the prompt, so there is
+    nothing to narrate. If the model still returns no diagram, the diagram is drawn straight from the specification's
+    own facts (`diagram_fallback`); a kind with no such facts is reported as not drawn, never saved as text.
+    """
     try:
         guidance = prompts.load(f"srs/diagrams/{kind}")
     except prompts.MissingPrompt:
@@ -526,7 +534,8 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
 
     # The staged context is shaped to the requested diagram. It retains schema
     # and workflow evidence without exceeding the read tool's output limit.
-    digest = json.dumps(_diagram_context(doc, kind), ensure_ascii=False)
+    context = _diagram_context(doc, kind)
+    digest = json.dumps(context, ensure_ascii=False)
     # Staged rather than pasted in: the model reads its own curated slice of
     # the specification with its read tool, and the read shows in the chat.
     # fresh=False: every kind's digest lands in this same shared folder, in
@@ -538,34 +547,45 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
 
     reference = _diagram_reference(kind)
 
-    def _ask(extra: str = "") -> str:
+    def _ask(problem: str = "", previous: str = "") -> str:
+        user = prompts.load("srs/diagram", kind=kind, standard=kind, guidance=guidance,
+                            document=context_path,
+                            reference=reference or "(no external reference found — follow the standard above)")
+        retrying = bool(problem)
+        if retrying:
+            user += "\n\n" + prompts.load(
+                "srs/diagram-retry", kind=kind.replace("_", " "), declaration=mermaid.declaration_for(kind),
+                problem=problem, digest=digest,
+                previous=f"Your rejected source:\n\n```\n{previous[:4000]}\n```\n\n" if previous else "")
+        # The reasoning a model leaves in `thinking` is never a diagram, so it is never taken for one.
         return mermaid.clean(llm.complete(
-            system=prompts.load("srs/system"),
-            user=prompts.load("srs/diagram", kind=kind, standard=kind, guidance=guidance,
-                              document=context_path, reference=reference or "(no external reference found — follow the standard above)")
-            + extra,
-            project=project, workspace=session.workspace))
+            system=prompts.load("srs/system"), user=user, project=project, think=False if retrying else None,
+            workspace=None if retrying else session.workspace, thinking_fallback=False))
 
     bus.agent_msg(project, f"Generating the {kind.replace('_', ' ')} diagram from the specification.",
                   title="SRS diagram", kind="narration")
     source = _ask()
 
-    if source.upper().startswith(NOT_APPLICABLE):
-        return {"id": f"DIA-{kind}", "kind": kind, "title": kind.replace("_", " ").title(),
-                "format": "mermaid", "source": "", "applicable": False,
-                "applicability_note": source.split(":", 1)[-1].strip()[:240]}
-
     # The tuned prompt is the quality control for diagram notation and visual
-    # hierarchy.  We only retry a concrete Mermaid parser/render failure here;
-    # hidden shape or reference gates would make the model regenerate a valid
-    # source for reasons the prompt did not communicate.
+    # hierarchy.  We only retry a reply that is not a diagram at all, or a
+    # concrete Mermaid parser/render failure; hidden shape or reference gates
+    # would make the model regenerate a valid source for reasons the prompt
+    # did not communicate.
     mmd = session.record_path(SRS_DIR, "diagrams", f"{kind}.mmd")
     svg = session.record_path(SRS_DIR, "diagrams", f"{kind}.svg")
     rendered, why = False, "no renderer"
 
     for attempt in range(3):
-        wrong: list[str] = []
-        if mermaid.available():
+        if source.upper().startswith(NOT_APPLICABLE):
+            return {"id": f"DIA-{kind}", "kind": kind, "title": kind.replace("_", " ").title(),
+                    "format": "mermaid", "source": "", "applicable": False,
+                    "applicability_note": source.split(":", 1)[-1].strip()[:240]}
+        wrong = ""
+        if not mermaid.has_diagram(kind, source):
+            why = "the model's reply was not a diagram"
+            wrong = ("That reply was not Mermaid source"
+                     + (f" — it was words, beginning “{source[:80]}”." if source else " — it was empty."))
+        elif mermaid.available():
             bus.agent_msg(project, f"Render {kind.replace('_', ' ')} diagram with Mermaid CLI.",
                           title="Rendering diagram", kind="command")
             rendered, why = mermaid.render_diagram(kind, source, svg)
@@ -575,12 +595,29 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
             # source's fault: rewriting it would only change a good diagram, and the picture is drawn later from
             # the saved source (_recover_rendered_diagrams) once the renderer works.
             if not rendered and mermaid.is_syntax_error(why):
-                wrong = [why]
+                wrong = f"Mermaid rejected it: {why}"
         if not wrong or attempt == 2:
             break
-        source = _ask(f"\n\n## Your last attempt\n\n```\n{source[:4000]}\n```\n\n"
-                      f"It was rejected: {'; '.join(wrong)}\n\n"
-                      f"Return corrected Mermaid source only.")
+        source = _ask(wrong, source if mermaid.has_diagram(kind, source) else "")
+
+    fallback = False
+    no_diagram = not mermaid.has_diagram(kind, source)
+    if no_diagram or (mermaid.available() and not rendered and mermaid.is_syntax_error(why)):
+        drawn = diagram_fallback.build(kind, context)
+        if drawn:
+            source, fallback = drawn, True
+            bus.agent_msg(project, f"The model did not return a {kind.replace('_', ' ')} diagram Mermaid could draw, "
+                                   "so it was drawn directly from the specification.",
+                          title="SRS diagram", kind="narration")
+            rendered, why = False, "no renderer"
+            if mermaid.available():
+                rendered, why = mermaid.render_diagram(kind, source, svg)
+        elif no_diagram:
+            bus.log(project, "WARN", f"Diagram · {kind.replace('_', ' ')} (not drawn — the model returned no diagram)")
+            return {"id": f"DIA-{kind}", "kind": kind, "title": kind.replace("_", " ").title(),
+                    "format": "mermaid", "source": "", "applicable": True, "drawing_failed": True,
+                    "render_error": "The model did not return a diagram and the specification has too little "
+                                    "to draw this one from directly. Redraw it to try again."}
 
     mmd.write_text(source, encoding="utf-8")
     bus.file_written(project, mmd.relative_to(session.workspace).as_posix(), source,
@@ -594,6 +631,8 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
         "format": "mermaid", "source": source, "applicable": True,
         "mmd_path": mmd.relative_to(session.workspace).as_posix(),
     }
+    if fallback:
+        entry["fallback"] = True
     if rendered:
         entry["svg"] = svg.read_text(encoding="utf-8", errors="replace")
         entry["svg_path"] = svg.relative_to(session.workspace).as_posix()
@@ -1419,8 +1458,8 @@ def _recover_rendered_diagrams(project: str, envelope: dict[str, Any]) -> bool:
         # still containing Mermaid that the real renderer accepts.  Recovery
         # never changes that source; Mermaid CLI remains the authoritative
         # syntax check before a legacy preview is restored.
-        if not kind or not source:
-            continue
+        if not kind or not source or not mermaid.has_diagram(kind, source):
+            continue            # nothing to draw, or words that are not a diagram (redrawing them is a model's job)
 
         svg = session.record_path(SRS_DIR, "diagrams", f"{kind}.svg")
         rendered, _why = mermaid.render_diagram(kind, source, svg)
@@ -1496,6 +1535,12 @@ def redraw_diagrams(project: str, *, deep: bool = False,
                 svg = session.record_path(SRS_DIR, "diagrams", f"{kind}.svg")
                 source = mermaid.clean(mmd.read_text(encoding="utf-8", errors="replace")) \
                     if mmd.is_file() else str(entry.get("source") or "").strip()
+                if entry.get("drawing_failed") or (source and not mermaid.has_diagram(kind, source)):
+                    # Words an older run saved as the diagram, or a diagram that was never drawn: re-rendering would only
+                    # fail the same way, so this one kind is drawn afresh.
+                    redrawn = _draw_diagram(session, project, doc, kind)
+                    if redrawn:
+                        return redrawn
                 entry.update({
                     "id": entry.get("id") or f"DIA-{kind}",
                     "kind": kind,
@@ -1534,7 +1579,13 @@ def redraw_diagrams(project: str, *, deep: bool = False,
         refreshed = {str(entry.get("kind") or ""): entry for entry in drawn if entry}
         old = {str(entry.get("kind") or ""): entry
                for entry in (doc.get("diagrams") or []) if isinstance(entry, dict)}
-        doc["diagrams"] = [refreshed.get(kind, old.get(kind))
+        def keep_old(kind: str) -> bool:
+            # A redraw that produced nothing never replaces a diagram that had been drawn.
+            new, was = refreshed.get(kind), old.get(kind)
+            return bool(new and new.get("drawing_failed") and was
+                        and mermaid.has_diagram(kind, str(was.get("source") or "")))
+
+        doc["diagrams"] = [old[kind] if keep_old(kind) else refreshed.get(kind, old.get(kind))
                            for kind in DIAGRAM_KINDS
                            if refreshed.get(kind) or old.get(kind)]
         _write_record_visible(session, project, DOCUMENT, envelope)

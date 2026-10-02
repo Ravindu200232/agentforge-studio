@@ -7,6 +7,7 @@ import {
   Users, Workflow, Zap,
 } from 'lucide-react'
 import { Empty } from '../ui'
+import DiagramMissing from './DiagramMissing'
 import DiagramViewer from './DiagramViewer'
 import Overview from './Overview'
 import { UserJourney, Wireframes } from './Wireframes'
@@ -1450,7 +1451,7 @@ function Diagrams({ srs }) {
         </div>
 
         {!current.applicable && (
-          <div className="mt-4 rounded-none border border-amber-500/25 bg-amber-500/[.06] p-3 text-[12px] text-amber-200">
+          <div className="mt-4 rounded-none border border-amber-500/25 bg-amber-500/[.06] p-3 text-[12px] text-amber-800">
             <span className="font-bold">Not applicable to this baseline:</span>{' '}
             {current.applicabilityNote || 'The approved requirements do not provide the semantics needed to draw this view without inventing behavior.'}
           </div>
@@ -1471,14 +1472,16 @@ function Diagrams({ srs }) {
                 dangerouslySetInnerHTML={{ __html: current.svg }}
               />
             </button>
-            <span className="pointer-events-none absolute right-4 top-4 flex items-center gap-1.5 rounded-full bg-black/80 px-3 py-1.5 text-[11px] font-semibold text-ink opacity-0 transition-opacity group-hover:opacity-100 border border-black/10 shadow-lg">
+            <span className="pointer-events-none absolute right-4 top-4 flex items-center gap-1.5 rounded-full bg-black/80 px-3 py-1.5 text-[11px] font-semibold text-white opacity-0 transition-opacity group-hover:opacity-100 border border-black/10 shadow-lg">
               <Maximize2 className="size-3.5" /> Click to Enlarge
             </span>
           </>
-        ) : (
+        ) : current.drawable ? (
           <pre className="whitespace-pre font-mono text-[11.5px] text-muted max-h-[360px] overflow-y-auto p-2">
             {current.mermaid}
           </pre>
+        ) : (
+          <DiagramMissing diagram={current} />
         )}
       </div>
 
@@ -1542,7 +1545,12 @@ function Diagrams({ srs }) {
       {zoomed && current.svg && (
         <DiagramViewer svg={current.svg} title={current.title} onClose={() => setZoomed(false)} />
       )}
-      {!current.svg && (
+      {current.fallback && (
+        <p className="text-[11px] text-muted2 italic">
+          Drawn directly from the specification, because the model did not return a diagram. Redraw it for a model-drawn version.
+        </p>
+      )}
+      {!current.svg && current.drawable && (
         <p className="text-[11px] text-muted2 italic">
           {current.rendered
             ? 'The picture for this revision is on disk but only the current version is displayed — its Mermaid source is shown instead.'

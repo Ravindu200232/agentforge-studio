@@ -244,10 +244,15 @@ def _focused_usage(project: str, model: str, context: int, role: str) -> Callabl
 
 
 def complete(system: str, user: str, model: str = "", think: bool | None = None,
-            project: str = "", workspace: Path | None = None, role: str = "") -> str:
+            project: str = "", workspace: Path | None = None, role: str = "",
+            thinking_fallback: bool = True) -> str:
     """One call, one answer, no history — and, when `project`/`workspace` are
     given, a read-only tool the model can call instead of being handed
-    pre-embedded file content."""
+    pre-embedded file content.
+
+    `thinking_fallback=False` is for an answer that must be the thing asked for and nothing else (a diagram's
+    source): a reply with no content then comes back empty, never as the model's reasoning ("Let me read…").
+    """
     from . import llm_tools
     kwargs: dict[str, Any] = {
         "model": _model(model),
@@ -264,7 +269,7 @@ def complete(system: str, user: str, model: str = "", think: bool | None = None,
                                  on_usage=_focused_usage(project, kwargs["model"], context, role))
     llm_tools.tag_effort(tools, kwargs["think"], "completion")
     text = (getattr(message, "content", "") or "").strip()
-    if not text:
+    if not text and thinking_fallback:
         # A reasoning model can answer in `thinking` and leave `content` empty.
         text = (getattr(message, "thinking", "") or "").strip()
     return text

@@ -334,3 +334,9 @@ body .context-window-progress {
 ::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--muted2) 65%, transparent);
 }
+
+/* A diagram's SVG carries its own white page; keep it even if the SVG ever arrives without its root style, so dark
+   linework never lands on a dark surface. */
+.srs-diagram svg {
+  background-color: #fff;
+}

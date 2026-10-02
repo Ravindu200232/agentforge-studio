@@ -40,6 +40,7 @@ it may describe a different product entirely.
 - Keep identifiers valid Mermaid: no unescaped quotes, parentheses or newlines
   inside node labels.
 - The source must parse on its own. Nothing downstream repairs it.
+- Colours may go in an `%%{init}%%` line, but never a `fontFamily`, `fontSize` or layout setting: the renderer applies one font and layout to every diagram, and a font of your own is ignored.
 - Do not leave a diagram disconnected. Every declared node, lifeline, state,
   entity, lane, or artifact must participate in the view unless the standard
   explicitly permits it as an external context node.
