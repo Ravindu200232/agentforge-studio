@@ -5,12 +5,11 @@
 import { useAgentPreview } from '@/lib/agent-preview'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Monitor, Tablet, Smartphone, MousePointerClick, Pencil, Undo2, RotateCw,
-  ChevronLeft, ChevronRight, Globe, Eraser, Rocket, Layers, Loader2, Play,
-  ExternalLink, Square, Bot,
+  Monitor, Tablet, Smartphone, MousePointerClick, Pencil, Undo2, RotateCw, ChevronLeft, ChevronRight, Globe,
+  Eraser, Rocket, Layers, Loader2, Play, ExternalLink, Square, Bot,
 } from 'lucide-react'
 import { useStore } from '@/lib/store'
-import { api, API } from '@/lib/api'
+import { api } from '@/lib/api'
 import { send } from '@/lib/ws'
 import { attachPicker, pickedFrom, pickLabel } from '@/lib/picker'
 import { previewHref, needsAddress } from '@/lib/preview'

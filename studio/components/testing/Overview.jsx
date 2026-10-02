@@ -5,18 +5,7 @@ import { Stat } from './TestingResult'
 import { cn } from '@/lib/utils'
 import { e2eStageSummary } from '@/lib/e2e-rate'
 import { unitTestStatus } from '@/lib/test-counts'
-import { 
-  FileCheck2, 
-  Layers, 
-  Compass, 
-  AlertCircle, 
-  ShieldAlert, 
-  Gauge, 
-  Terminal, 
-  CheckCircle2, 
-  AlertTriangle, 
-  Info 
-} from 'lucide-react'
+import { FileCheck2, Layers, Compass, AlertCircle, ShieldAlert, Gauge, Terminal, CheckCircle2, Info } from 'lucide-react'
 
 export default function Overview({ qa, live }) {
   const last = (qa?.history || []).slice(-1)[0]

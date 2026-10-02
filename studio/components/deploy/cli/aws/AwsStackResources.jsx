@@ -1,7 +1,7 @@
 'use client'
 
 import { Boxes } from 'lucide-react'
-import { View, Card, Table, Pill, Stats, tone } from '../parts'
+import { View, Card, Table, Stats, tone } from '../parts'
 
 const service = type => String(type || '').split('::').slice(1, 2)[0] || 'Other'
 

@@ -3,16 +3,13 @@
 /** Renders interactive dialog modals for design choices and environment configuration during builds. */
 
 import { useEffect, useMemo, useState } from 'react'
-import {
-  Check, Eye, EyeOff, KeyRound, Loader2, Palette, RotateCcw,
-  Search, SkipForward,
-} from 'lucide-react'
+import { Check, Eye, EyeOff, KeyRound, Loader2, Palette, RotateCcw, Search, SkipForward } from 'lucide-react'
 
 import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
 import PlanReading from './PlanReading'
 import DesignPreview from './DesignPreview'
-import { Button, Modal } from './ui'
+import { Modal } from './ui'
 import { cn } from '@/lib/utils'
 
 /** Clears only the specific answered decision to preserve subsequent queued questions. */

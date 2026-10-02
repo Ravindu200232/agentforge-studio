@@ -111,12 +111,3 @@ export function readInline(text) {
   if (at < String(text || '').length) parts.push({ kind: 'text', text: String(text).slice(at) })
   return parts
 }
-
-/** A one-line summary for the dialog's header. */
-export function planHeadline(markdown) {
-  for (const block of readPlan(markdown)) {
-    if (block.kind === 'para') return block.text
-    if (block.kind === 'bullets' || block.kind === 'steps') return block.items[0]
-  }
-  return ''
-}

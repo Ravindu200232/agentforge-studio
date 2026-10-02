@@ -57,7 +57,6 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
   const [pencilOn, setPencilOn] = useState(false)
   const [currentFile, setCurrentFile] = useState('index.html')
   const [protoReady, setProtoReady] = useState(false)
-  const [iframeLoading, setIframeLoading] = useState(true)
 
   // The wireframe's text tool, on the prototype page: click text, type, save. Nothing else is edited here.
   const [textOn, setTextOn] = useState(false)
@@ -98,7 +97,6 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
           return false
         }
         setProtoReady(true)
-        setIframeLoading(false)
         return true
       }
       setProtoReady(false)
@@ -154,7 +152,6 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     const f = frameRef.current
     if (f) {
       const page = currentPath(f)
-      setIframeLoading(true)
       checkPrototypeReady()
       const sep = page.includes('?') ? '&' : '?'
       f.src = `${API}/prototype/${encodeURIComponent(project || '')}/${page}${sep}t=${Date.now()}`
@@ -168,7 +165,6 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     const f = frameRef.current
     if (!f) return
     const page = currentPath(f) || currentFile || 'index.html'
-    setIframeLoading(true)
     checkPrototypeReady()
     const sep = page.includes('?') ? '&' : '?'
     f.src = `${API}/prototype/${encodeURIComponent(project || '')}/${page}${sep}t=${prototypeArtifactStamp}`

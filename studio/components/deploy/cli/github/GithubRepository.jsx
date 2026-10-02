@@ -1,7 +1,7 @@
 'use client'
 
 import { GitBranch } from 'lucide-react'
-import { View, Card, Facts, Stats, StackedBar, Chips, Pill, Link, bytes } from '../parts'
+import { View, Card, Facts, Stats, StackedBar, Pill, Link, bytes } from '../parts'
 
 /** The repository: who owns it, how big it is, what it is written in. */
 export default function GithubRepository({ project, item }) {

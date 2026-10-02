@@ -345,7 +345,6 @@ function Aws({ deploy, onSave, probe, onRecheck }) {
   const [role, setRole] = useState('')
   const [busy, setBusy] = useState('')
   const [err, setErr] = useState('')
-  const [notice, setNotice] = useState('')
 
   const identity = probe?.aws_identities?.[deploy?.aws_profile]
   const connected = Boolean(identity) || Boolean(deploy?.aws_profile)
@@ -388,26 +387,6 @@ function Aws({ deploy, onSave, probe, onRecheck }) {
     }
     setErr('the AWS sign-in expired — start it again')
     setBusy('')
-  }
-
-  async function waitForProfile(name) {
-    const deadline = Date.now() + 10 * 60 * 1000
-    while (Date.now() < deadline) {
-      const status = await api.deploy('/aws/profile/status', {
-        profile: name,
-        region,
-      }).catch(() => null)
-      if (status?.authenticated) {
-        await onSave({ aws_profile: name, aws_region: region })
-        setProfile(name)
-        setNotice(`AWS sign-in completed — profile ${name} is selected.`)
-        onRecheck?.()
-        return true
-      }
-      await new Promise(resolve => setTimeout(resolve, 3000))
-    }
-    setErr('AWS sign-in was not completed in time. Start it again.')
-    return false
   }
 
   async function pickAccount(id) {
@@ -563,7 +542,6 @@ function Aws({ deploy, onSave, probe, onRecheck }) {
           </Button>
         </div>
 
-        {notice && <p className="text-[10.5px] text-muted">{notice}</p>}
         {String(identity?.arn || '').endsWith(':root') && (
           <p className="text-[10.5px] text-deep">
             Root identity detected. Use an IAM Identity Center deployment role

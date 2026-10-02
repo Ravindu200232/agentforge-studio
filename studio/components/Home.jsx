@@ -2,8 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ArrowRight, Check, ChevronDown, CloudUpload, FileText, FlaskConical, FolderOpen, Languages, Layers,
-  PencilLine, Rocket, Search, Sparkles,
+  ArrowRight, Check, CloudUpload, FileText, FlaskConical, FolderOpen, Languages, PencilLine, Rocket, Search,
 } from 'lucide-react'
 import { useStore, KEYS } from '@/lib/store'
 import { send } from '@/lib/ws'
@@ -44,7 +43,7 @@ export default function Home({
   connectionsVersion = 0,
 }) {
   const s = useStore()
-  const { images, think, models, srsId, srsPhase } = s
+  const { think, models, srsId, srsPhase } = s
   const [prompt, setPrompt] = useState('')
   const [logoFor, setLogoFor] = useState(null)
   const [srsError, setSrsError] = useState('')
@@ -137,7 +136,6 @@ export default function Home({
     return () => { live = false }
   }, [srsId])
 
-
   useEffect(() => {
     function handleClickOutside(e) {
       if (langRef.current && !langRef.current.contains(e.target)) {
@@ -162,14 +160,6 @@ export default function Home({
     )
   }, [languageOptions, langSearch])
 
-  function begin(p, srs = '', prototypeOnly = false) {
-    if (!p || !builderModel.trim()) return
-    const config = { model: builderModel.trim(), stack, think, thinking_level: s.thinkingLevel }
-    chooseModel(config.model)
-    if (images && !prototypeOnly) return setLogoFor({ idea: p, srs, config })
-    startBuild(p, '', srs, null, config, prototypeOnly)
-  }
-
   // One implementation, shared with Settings, so a model chosen in either
   // place reaches the same set of agents.
   const chooseModel = model => useStore.getState().applyModel(model)
@@ -188,10 +178,6 @@ export default function Home({
     setWorkspacePath('')
     setWorkspaceError('')
     setLocationDialog(true)
-  }
-
-  function submitPrototype() {
-    submit()
   }
 
   async function startBuild(p, logo, srs = '', uploads = null, config = null, prototypeOnly = false) {

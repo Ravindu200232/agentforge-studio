@@ -1,7 +1,7 @@
 'use client'
 
 import { User } from 'lucide-react'
-import { View, Card, Facts, Chips, Note } from '../parts'
+import { View, Card, Facts, Note } from '../parts'
 
 /** Who the GitHub command line tool is signed in as, and what its token may do. */
 export default function GithubAccount({ project, item }) {

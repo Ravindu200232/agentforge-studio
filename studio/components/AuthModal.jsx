@@ -3,7 +3,6 @@
 import { useState } from 'react'
 import { X, Mail, Lock, User, ArrowLeft, Loader2, AlertCircle } from 'lucide-react'
 import { useAuthStore } from '@/lib/auth'
-import { cn } from '@/lib/utils'
 
 export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 'methods' }) {
   const { login, signup, loading, error, clearError } = useAuthStore()

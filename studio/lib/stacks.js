@@ -48,9 +48,6 @@ export const STACKS = [
 
 export const DEFAULT_STACK = 'nextjs-supabase'
 
-export const stackName = (id) =>
-  STACKS.find(stack => stack.id === id)?.name || 'read from the brief'
-
 /** The connections a build of `id` needs; Auto (empty) counts as DEFAULT_STACK. */
 export const stackNeeds = (id) =>
   (STACKS.find(stack => stack.id === (id || DEFAULT_STACK)) || STACKS[0]).needs

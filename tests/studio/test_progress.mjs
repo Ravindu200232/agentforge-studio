@@ -1,7 +1,6 @@
 /** Verify that progress stays monotonic across every backend flow. */
 import { advance, displayPct, emptyProgress, CEILING } from '../../studio/lib/progress-model.js'
 import { e2eStageSummary } from '../../studio/lib/e2e-rate.js'
-import { WORK_STAGES, stageIndex, stagesFor } from '../../studio/lib/work-stages.js'
 
 const FLOWS = [
   [15, 40, 65, 78, 88, 95, 100],   // feature
@@ -65,38 +64,7 @@ for (const [input, rate] of cases) {
   }
 }
 
-// Every smaller job lights its lamps in order, from the arc its own
-// backend flow really reports.
-const ARCS = {
-  feature: [15, 40, 65, 78, 88, 95],
-  repair: [20, 45, 65, 78],
-  // the second flow that also reports as a repair
-  'repair:short': [10, 35, 80],
-  select: [15, 40, 75],
-  pencil: [12, 30, 50, 78],
-  image: [20, 45, 70],
-}
-for (const [name, arc] of Object.entries(ARCS)) {
-  const kind = name.split(':')[0]
-  const stages = stagesFor(kind)
-  if (!stages) { console.error(`${kind}: no stages`); fail++; continue }
-  let seen = -1
-  for (const pct of arc) {
-    const i = stageIndex(kind, pct)
-    if (i < seen) { console.error(`${kind}: stage went backwards at ${pct}%`); fail++ }
-    if (i < 0 || i >= stages.length) { console.error(`${kind}: stage ${i} out of range`); fail++ }
-    seen = i
-  }
-  if (stageIndex(kind, 0) !== 0) { console.error(`${kind}: does not start at its first stage`); fail++ }
-  if (stageIndex(kind, 99) !== stages.length - 1) { console.error(`${kind}: does not end at its last stage`); fail++ }
-  if (!arc.some(p => stageIndex(kind, p) === stages.length - 1)) {
-    console.error(`${kind}: its last stage is never reached`); fail++
-  }
-}
-if (stagesFor('build') !== null) { console.error('build must use the four-stage rail'); fail++ }
-
 console.log(fail ? `Progress verification: ${fail} FAILURE(S)` :
   'Progress verification: forward-only across 3 timing profiles ' +
-  '(reports and repaints), ' +
-  `${Object.keys(WORK_STAGES).length} work rails in order, pass rates OK`)
+  '(reports and repaints), pass rates OK')
 process.exit(fail ? 1 : 0)

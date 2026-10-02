@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Activity, Accessibility as AccessibilityIcon, Bug, Code2, Download, FileCheck2, FileSearch, Gauge, History, Loader2, Network, RefreshCw, Route, ShieldCheck, Sparkles, Wrench } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
@@ -21,8 +21,6 @@ import Coder from './Coder'
 import Screenshots from './Screenshots'
 import E2ELiveLanes from './E2ELiveLanes'
 import Verification from './Verification'
-import { e2eStageSummary } from '@/lib/e2e-rate'
-import { unitTestStatus } from '@/lib/test-counts'
 import { refreshQaReport } from '@/lib/qa-results'
 
 
@@ -105,7 +103,6 @@ export default function TestingResult() {
     wasBuilding.current = building
   }, [building])
 
-  const counts = useMemo(() => badges(qa), [qa])
   const View = (VIEWS.find(v => v.id === sub) || VIEWS[0]).C
 
   if (!project) return <Empty>Open a project to see its test results.</Empty>
@@ -162,49 +159,6 @@ export default function TestingResult() {
       )}
     </div>
   )
-}
-
-
-function badges(qa) {
-  const out = {}
-  const r = qa?.report
-  const v = qa?.vitest || qa?.savedVitest
-  if (v) {
-    const unit = unitTestStatus(v)
-    out.unit = { n: `${unit.passed}/${unit.total}${unit.unit === 'files' ? ' files' : ''}${qa.unitEvidenceStatus === 'outdated' ? ' saved' : ''}`,
-                 bad: unit.failed > 0 }
-  }
-  if (r) {
-    const bugs = r.suite?.unresolved?.length || 0
-    out.bugs = { n: qa?.resolvedBugs?.length ? `${bugs} open · ${qa.resolvedBugs.length} fixed` : bugs, bad: bugs > 0 }
-  }
-  if (r?.e2e) {
-    const e = e2eStageSummary(r.e2e)
-    if (e.total) out.e2e = { n: `${e.passed}/${e.total}`, bad: e.passed !== e.total }
-    else if (r.e2e.recordedOutcomes?.length) out.e2e = { n: `${r.e2e.recordedOutcomes.length} saved`, bad: false }
-  }
-  if (r?.security) {
-    const zapCounts = r.security.zap?.counts || qa?.security?.zap?.counts || {}
-    const high = Number(zapCounts.high || 0)
-    const medium = Number(zapCounts.medium || 0)
-    const low = Number(zapCounts.low || 0)
-    const fallback = r.security.findings?.length || 0
-    out.security = { n: high ? `${high} high` : medium ? `${medium} med` : low ? `${low} low` : fallback,
-                     bad: high > 0 || medium > 0 || low > 0 }
-  }
-  if (qa?.load) out.perf = { n: qa.load.status === 'completed' ? `${qa.load.latencyMs?.p97_5 ?? '—'}ms p97.5` : qa.load.status, bad: qa.load.status !== 'completed' }
-  if (qa?.accessibility) {
-    const audited = Math.max(Number(qa.accessibility.audited || 0), Number(qa.accessibility.declaredAudited || 0), Number(qa.accessibility.totalRoutes || 0))
-    const passed = Math.max(Number(qa.accessibility.passed || 0), Number(qa.accessibility.declaredPassed || 0))
-    out.accessibility = { n: `${passed}/${audited}`, bad: qa.accessibility.status !== 'passed' }
-  }
-  if (qa?.repairs?.rounds?.length) out.repair = { n: `${qa.repairs.rounds.length} round(s)`, bad: qa.repairs.status !== 'fixed' }
-  else if (qa?.buildRepairs?.items?.length) out.repair = { n: `${qa.buildRepairs.items.length} fixed`, bad: false }
-  const timeline = qa?.timeline?.length || qa?.history?.length
-  if (timeline) out.timeline = { n: timeline, bad: false }
-  if (qa?.screenshots?.length) out.screenshots = { n: qa.screenshots.length, bad: false }
-  if (qa?.contracts?.length) out.routes = { n: qa.contracts.length, bad: false }
-  return out
 }
 
 

@@ -188,7 +188,6 @@ export const useStore = create((set, get) => ({
   setWorkKind: (workKind) => set({ workKind }),
   setOpening: (opening) => set({ opening }),
   askOpen: false,
-  setAskOpen: (askOpen) => set({ askOpen }),
   setBusy: (busy) => set(busy ? { busy } : { busy, opening: false }),
   bumpProjects: () => set(s => ({ projectsStamp: s.projectsStamp + 1 })),
 
@@ -197,7 +196,6 @@ export const useStore = create((set, get) => ({
   setPreviewRoute: (previewRoute) => set({ previewRoute }),
 
   e2eLive: null,
-  setE2eLive: (e2eLive) => set({ e2eLive }),
   project: null,
   view: 'preview',
   // The deployment run the Deploy panel is showing, so the chat beside it can
@@ -265,14 +263,12 @@ export const useStore = create((set, get) => ({
   // What the console shows about the run itself: the model, how much of its
   // context window is in use, and how much work it has done.
   runStats: null,
-  setRunStats: (runStats) => set({ runStats }),
 
   // Composing the next move, or carrying one out. The gap between the two is
   // where a feed looks stalled, so it is shown rather than left blank.
   agentState: '',
   // How far along that is, when the engine says (`12/35` while it compacts its memory).
   agentDetail: '',
-  setAgentState: (agentState) => set({ agentState }),
 
   // The one question a run is waiting on, if any. It carries its own deadline
   // and clears itself, so a closed dialog costs a choice and not a build.
@@ -292,7 +288,6 @@ export const useStore = create((set, get) => ({
   // The engine's own browser, as it is right now. Headless, so this is the
   // only way to see what it is doing.
   browserFrame: null,
-  setBrowserFrame: (browserFrame) => set({ browserFrame }),
 
   // Visual attachments for pending messages, including element selections and annotated screenshots.
   selection: [],
@@ -333,14 +328,6 @@ export const useStore = create((set, get) => ({
   setProgress: (step, pct) =>
     set(s => ({ progress: advance(s.progress, step, pct) })),
   phases: [],
-  upsertPhase: (p) => set(s => {
-    const key = `${p.kind || 'run'}:${p.key || p.title || p.phase}`
-    const i = s.phases.findIndex(x => `${x.kind || 'run'}:${x.key || x.title || x.phase}` === key)
-    if (i < 0) return { phases: [...s.phases, p] }
-    const next = s.phases.slice()
-    next[i] = { ...next[i], ...p }
-    return { phases: next }
-  }),
 
   files: {},
   activeFile: null,
@@ -395,15 +382,6 @@ export const useStore = create((set, get) => ({
     }
   },
 
-  setTheme: () => {
-    set({ theme: 'dark' })
-    try {
-      document.documentElement.setAttribute('data-theme', 'dark')
-      document.documentElement.classList.add('dark')
-      LS?.setItem(KEYS.theme, 'dark')
-    } catch { }
-  },
-  toggleTheme: () => {},
   persist: (key, value) => { try { LS?.setItem(key, value) } catch { } },
 
   /** Agent roles that adopt the globally selected language model. */
@@ -446,12 +424,6 @@ export const useStore = create((set, get) => ({
   busyProject: '',
   setBusyProject: (busyProject) => set({ busyProject }),
 
-  /** Merges restored historical project stream events behind any live incoming socket messages. */
-  adoptStream: (stream) => set(state => ({
-    logs: [...(stream.logs || []), ...state.logs],
-    chat: [...(stream.chat || []), ...state.chat],
-  })),
-
       // Persist active project chat stream when switching project context.
   reset: (project) => set(state => {
     const sessions = { ...state.projectSessions }
@@ -481,86 +453,10 @@ export const useStore = create((set, get) => ({
   }),
 
   tests: emptyTests(),
-  testStart: () => set({
-    tests: { ...emptyTests(), running: true, startedAt: Date.now() },
-    e2eParallel: emptyE2eParallel(),
-  }),
-  testRun: (attempt) => set(s => ({ tests: { ...s.tests, attempt, running: true } })),
 
   stage: '',
-  setStage: (stage) => set({ stage }),
-  testResult: (m) => set(s => {
-    const rows = [...s.tests.rows, {
-      status: m.status || 'run', msg: m.msg || '', detail: m.detail || '',
-      stage: s.stage, at: Date.now(),
-    }]
-
-    const pass = rows.filter(r => r.status === 'pass').length
-    const fail = rows.filter(r => r.status === 'fail').length
-    const warn = rows.filter(r => r.status === 'warn').length
-    return { tests: { ...s.tests, rows, pass, fail, warn } }
-  }),
-  testFixing: (m) => set(s => ({
-    tests: {
-      ...s.tests,
-      fixing: [...s.tests.fixing,
-               { attempt: m.attempt, errors: m.errors || [], at: Date.now() }],
-    },
-  })),
-  testDone: () => set(s => ({
-    tests: { ...s.tests, running: false },
-    e2eParallel: { ...s.e2eParallel, active: false },
-  })),
 
   e2eParallel: emptyE2eParallel(),
-  e2eParallelEvent: (m) => set(s => {
-    const current = s.e2eParallel || emptyE2eParallel()
-    if (m.state === 'start') {
-      return { e2eParallel: {
-        ...emptyE2eParallel(), active: true,
-        workers: Math.max(1, Math.min(4, Number(m.workers) || 1)),
-        waves: Number(m.waves) || 0,
-      } }
-    }
-    if (m.state === 'wave') {
-      return { e2eParallel: {
-        ...current, active: true, wave: Number(m.wave) || 0,
-        waves: Number(m.waves) || current.waves,
-        lanes: emptyE2eLanes(),
-      } }
-    }
-    if (m.state === 'done') {
-      return { e2eParallel: { ...current, active: false } }
-    }
-    return { e2eParallel: current }
-  }),
-  e2eEvent: (m) => set(s => {
-    const current = s.e2eParallel || emptyE2eParallel()
-    const laneNo = Math.max(1, Math.min(4, Number(m.lane) || 1))
-    const lanes = [...(current.lanes || emptyE2eLanes())]
-    const old = lanes[laneNo - 1] || emptyE2eLane(laneNo)
-    const state = String(m.state || '')
-    lanes[laneNo - 1] = {
-      ...old,
-      lane: laneNo,
-      state,
-      title: m.title ?? old.title,
-      role: m.role ?? old.role,
-      route: m.route ?? old.route,
-      label: m.label ?? old.label,
-      message: m.message ?? (state === 'journey_start' ? '' : old.message),
-      index: Number.isFinite(Number(m.index)) ? Number(m.index) : old.index,
-      total: Number.isFinite(Number(m.total)) ? Number(m.total) : old.total,
-      ok: m.ok ?? old.ok,
-      updatedAt: Date.now(),
-    }
-    return { e2eParallel: {
-      ...current,
-      active: current.active || state !== 'journey_done',
-      workers: Math.max(current.workers || 0, laneNo),
-      lanes,
-    } }
-  }),
 
   qaReport: null,
   setQaReport: (qaReport) => set({ qaReport }),
@@ -571,12 +467,6 @@ export const useStore = create((set, get) => ({
   // A question the run stopped on, waiting for an answer.
   question: null,
 }))
-
-/** A project's saved stream, or a clean one for a project with no history. */
-function restored(stream) {
-  return { logs: stream?.logs || [], chat: stream?.chat || [],
-           runStats: stream?.runStats || null }
-}
 
 
 function emptyTests() {

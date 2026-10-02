@@ -3,10 +3,10 @@
 import { useState } from 'react'
 import {
   AlertTriangle, ArrowRight, Check, CheckCircle2, Compass, Copy, Cpu, Database, FileCode,
-  FileText, Globe, Key, Lock, Maximize2, MessageSquare, ShieldAlert, ShieldCheck, Sparkles,
+  FileText, Globe, Lock, Maximize2, MessageSquare, ShieldAlert, ShieldCheck, Sparkles,
   Users, Workflow, Zap,
 } from 'lucide-react'
-import { Empty, Table } from '../ui'
+import { Empty } from '../ui'
 import DiagramViewer from './DiagramViewer'
 import Overview from './Overview'
 import { UserJourney, Wireframes } from './Wireframes'
@@ -28,25 +28,6 @@ const idOf = (item, i) =>
   (item && typeof item === 'object'
     && (item.id || item.ref || item.module || item.category || item.area)) || `#${i + 1}`
 
-/** A numbered section of the document. */
-function Section({ title, children, count, n }) {
-  return (
-    <div className="mb-6">
-      <div className="flex items-baseline gap-2.5 border-b-2 border-line2 pb-[7px]">
-        {n != null && <span className="font-mono text-[11px] text-accent">{n}</span>}
-        <h3 className="font-display text-[15px] font-extrabold tracking-[-.01em] text-ink">
-          {title}
-        </h3>
-        <span className="flex-1" />
-        {count != null && (
-          <span className="font-mono text-[10px] text-muted2">{count}</span>
-        )}
-      </div>
-      <div className="mt-1">{children}</div>
-    </div>
-  )
-}
-
 function Bullets({ items, tone }) {
   if (!list(items).length) return <p className="py-2 text-[11.5px] text-muted2">None recorded.</p>
   return (
@@ -63,11 +44,6 @@ function Bullets({ items, tone }) {
     </ul>
   )
 }
-
-/** Two section columns with a fixed gutter. */
-const Columns = ({ children }) => (
-  <div className="grid gap-x-[30px] md:grid-cols-2">{children}</div>
-)
 
 
 function Document({ srs }) {
@@ -1685,7 +1661,6 @@ export function badgeFor(id, srs) {
 
 function Risks({ srs }) {
   const doc = srs.document || {}
-  const ambiguities = list(doc.ambiguities)
   const risks = list(doc.risk_priority)
   const acceptance = list(doc.acceptance_criteria)
 

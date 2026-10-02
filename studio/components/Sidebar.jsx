@@ -1,25 +1,21 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
-  FolderUp, Settings, Download, ExternalLink, Search, Trash2,
-  PanelLeftClose, PanelLeftOpen, Home, LayoutGrid,
-  BookOpen, FileText, Activity, ChevronDown, CreditCard, LogOut,
-  X, Menu, Plus,
+  FolderUp, Settings, Download, ExternalLink, PanelLeftClose, Home, LayoutGrid, BookOpen, FileText, Activity,
+  ChevronDown, LogOut, X, Plus,
 } from 'lucide-react'
 import { useStore, KEYS } from '@/lib/store'
 import { api } from '@/lib/api'
 import { previewHref } from '@/lib/preview'
-import { Badge, Button, Input, SectionLabel, Tag, Tip } from './ui'
+import { Tip } from './ui'
 import { cn } from '@/lib/utils'
 
 export default function Sidebar({
   projects = [],
-  onOpen,
   onImport,
   onSettings,
   onZip,
-  onDeleted,
   screen = 'home',
   onScreenChange,
   user = null,
@@ -38,15 +34,11 @@ export default function Sidebar({
   const busyProject = useStore(z => z.busyProject)
   const busy = useStore(z => z.busy)
   const persist = useStore(z => z.persist)
-  const addLog = useStore(z => z.addLog)
 
   // Desktop starts as the compact Codex/ChatGPT-style icon rail.  The brand
   // button expands it when somebody needs the full project list and labels.
   const [collapsed, setCollapsed] = useState(true)
   const folderRef = useRef(null)
-  const [q, setQ] = useState('')
-  const [confirming, setConfirming] = useState('')
-  const [removing, setRemoving] = useState('')
 
   const [accountOpen, setAccountOpen] = useState(false)
   const accountMenuRef = useRef(null)
@@ -79,21 +71,6 @@ export default function Sidebar({
     }
   }
 
-  async function remove(name) {
-    setRemoving(name)
-    try {
-      await api.deleteProject(name)
-      addLog('SUCCESS', `Deleted ${name}`)
-    } catch (e) {
-      addLog('WARN', `Delete of ${name} did not report back — ${e.message}. `
-                     + 'Checking whether it went.')
-    }
-    if (project === name) useStore.getState().reset(null)
-    onDeleted?.(name)
-    setRemoving('')
-    setConfirming('')
-  }
-
   useEffect(() => {
     api.settings()
       .then(cfg => {
@@ -103,14 +80,6 @@ export default function Sidebar({
       })
       .catch(() => { })
   }, [persist])
-
-  const shown = useMemo(() => {
-    const needle = q.trim().toLowerCase()
-    if (!needle) return projects
-    return projects.filter(p =>
-      String(p.title || p.name || p).toLowerCase().includes(needle) ||
-      String(p.name || '').toLowerCase().includes(needle))
-  }, [projects, q])
 
   const dot = { live: 'bg-ok', busy: 'bg-warn', connecting: 'bg-info' }[status]
     || 'bg-bad'
@@ -472,22 +441,5 @@ export default function Sidebar({
         {renderBody(false)}
       </aside>
     </>
-  )
-}
-
-
-
-
-function DeployTag({ deployed }) {
-  if (!deployed) return null
-  const gone = deployed.state === 'deleted'
-  const where = deployed.target?.startsWith('aws') ? 'aws'
-              : deployed.target === 'vercel' ? 'vercel'
-              : ''
-  return (
-    <Tip text={gone ? 'Deployed, then deleted'
-                    : `Deployed${where ? ` to ${where}` : ''}`}>
-      <Tag tone={gone ? 'mute' : 'solid'}>{gone ? 'gone' : (where || 'deployed')}</Tag>
-    </Tip>
   )
 }

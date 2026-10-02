@@ -100,7 +100,7 @@ export default function PlanReview({ projectId, onGenerated, onGenerating, onCan
     sync('running', { srs_status: 'running' })
     const job = api.srs(`/projects/${projectId}/generate-srs`, {})
     try {
-      const kept = await api.keepSrs(projectId)
+      await api.keepSrs(projectId)
       st.bumpProjects()
       addLog('INFO', 'Writing the specification — follow it in the chat')
       if (onGenerating) onGenerating(projectId)

@@ -214,7 +214,7 @@ export default function AgentChat({ projectTitle = '', readOnly = false, classNa
   useEffect(() => {
     if (lifecycleStream.busy || !project) return
     const next = useStore.getState().takeQueued(project, agentRole) // takeQueued(project)
-    if (next) fire(next.payload, next.body, next.shown, next.shots)
+    if (next) fire(next.payload, next.body)
   }, [lifecycleStream.busy, project])
 
   const stopRun = useStopRun(lifecycleStream.busy)
@@ -284,7 +284,7 @@ export default function AgentChat({ projectTitle = '', readOnly = false, classNa
     if (lifecycleStream.busy) {
       queueUp(payload, full, typed, shots)
     } else {
-      fire(payload, full, typed, shots)
+      fire(payload, full)
     }
     setReading(false)
   }
@@ -301,7 +301,7 @@ export default function AgentChat({ projectTitle = '', readOnly = false, classNa
   }
 
   /** Say it, and it goes: sends typed prompts and attachments directly to the agent. */
-  function fire(payload, body, shown, shots = []) {
+  function fire(payload, body) {
     const s = useStore.getState()
     // The server journals and echoes the message, including queued requests.
     send({ ...payload, prompt: body })
@@ -1098,7 +1098,7 @@ function FileActionCard({ turn, live }) {
   const openInEditor = (e) => {
     e.stopPropagation()
     useStore.getState().setView('code')
-    if (filePath) useStore.getState().selectFile(filePath)
+    if (filePath) useStore.getState().setActiveFile(filePath)
   }
 
   const badgeText = isRead
@@ -1386,9 +1386,4 @@ function ReadableAgentText({ text }) {
       ))}
     </div>
   )
-}
-
-function lastLine(turn) {
-  if (!turn) return ''
-  return turn.title || turn.text || ''
 }

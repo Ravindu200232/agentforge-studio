@@ -7,7 +7,7 @@ import { TIERS, isCloud, tierFromModel } from '@/lib/models'
 /** The choices for the next build stay beside the brief they belong to. */
 export default function BuildSetup({
   model, stack, think, thinkingLevel = think ? 'high' : 'low', options = [], onModelChange,
-  onStackChange, onThinkChange, onThinkingLevelChange, onTierChange,
+  onStackChange, onThinkChange, onThinkingLevelChange,
   plugins = [], onPluginsOpen, compact = false,
 }) {
   const currentTier = tierFromModel(model, think)

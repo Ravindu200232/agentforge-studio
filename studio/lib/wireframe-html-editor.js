@@ -9,11 +9,6 @@ const CSS = `
     outline-offset: 1px !important;
     cursor: grab !important;
   }
-  [${MARK}].__wf_dragging {
-    cursor: grabbing !important;
-    box-shadow: 0 8px 24px rgba(13, 153, 255, 0.25) !important;
-    z-index: 2147483640 !important;
-  }
   [${MARK}][data-wf-secondary] {
     outline-style: dashed !important;
     outline-color: #7C3AED !important;
@@ -27,49 +22,7 @@ const CSS = `
     cursor: text !important;
   }
 
-  /* Smart drop indicator line */
-  #__wf_drop_line {
-    position: absolute;
-    background: #0D99FF;
-    box-shadow: 0 0 10px rgba(13, 153, 255, 0.85);
-    pointer-events: none;
-    z-index: 2147483647;
-    border-radius: 2px;
-  }
-  #__wf_drop_line::before, #__wf_drop_line::after {
-    content: '';
-    position: absolute;
-    width: 8px;
-    height: 8px;
-    background: #0D99FF;
-    border: 1.5px solid #ffffff;
-    border-radius: 50%;
-    top: 50%;
-    transform: translateY(-50%);
-    box-shadow: 0 0 4px rgba(0, 0, 0, 0.4);
-  }
-  #__wf_drop_line::before { left: -4px; }
-  #__wf_drop_line::after { right: -4px; }
-
-  /* Floating live HUD coordinates badge */
-  #__wf_hud {
-    position: fixed;
-    background: rgba(15, 23, 42, 0.94);
-    color: #ffffff;
-    border: 1px solid #0D99FF;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-    font: 600 11px/1.4 ui-monospace, Menlo, monospace;
-    padding: 3px 8px;
-    border-radius: 6px;
-    pointer-events: none;
-    z-index: 2147483647;
-    white-space: nowrap;
-    display: none;
-    align-items: center;
-    gap: 6px;
-  }
-
-  /* Selection overlay & interactive resize handles */
+  /* Selection overlay */
   #__wf_overlay {
     position: absolute;
     pointer-events: none;
@@ -77,23 +30,6 @@ const CSS = `
     box-sizing: border-box;
     display: none;
   }
-  .__wf_handle {
-    position: absolute;
-    width: 8px;
-    height: 8px;
-    background: #ffffff;
-    border: 1.5px solid #0D99FF;
-    border-radius: 2px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
-    pointer-events: auto;
-    box-sizing: border-box;
-  }
-  .__wf_handle_nw { top: -4px; left: -4px; cursor: nwse-resize; }
-  .__wf_handle_ne { top: -4px; right: -4px; cursor: nesw-resize; }
-  .__wf_handle_se { bottom: -4px; right: -4px; cursor: nwse-resize; }
-  .__wf_handle_sw { bottom: -4px; left: -4px; cursor: nesw-resize; }
-  .__wf_handle_e  { top: 50%; right: -4px; transform: translateY(-50%); cursor: ew-resize; height: 12px; }
-  .__wf_handle_s  { bottom: -4px; left: 50%; transform: translateX(-50%); cursor: ns-resize; width: 12px; }
 
   /* Top tag & move badge bar */
   #__wf_tag_badge {
@@ -120,106 +56,6 @@ const CSS = `
   }
 `
 
-/* Predefined wireframe HTML markup components for insertions. */
-const CELL = 'border border-black px-3 py-2 text-left'
-const BOX = 'border-2 border-black'
-const IMG = `${BOX} flex items-center justify-center bg-[#F3F4F6] text-[11px]`
-
-export const PARTS = [
-  ['Navigation & layout', [
-    ['nav', 'Nav', `<nav class="${BOX} flex items-center justify-between px-6 py-4 mb-4">
-      <span class="font-bold">Product</span>
-      <span class="flex gap-6 text-sm"><span>Overview</span><span>Records</span><span>Settings</span></span>
-    </nav>`],
-    ['footer', 'Footer', `<footer class="${BOX} grid grid-cols-3 gap-6 px-6 py-6 mt-4 text-sm">
-      <div><div class="font-bold mb-2">Product</div><div>About</div><div>Contact</div></div>
-      <div><div class="font-bold mb-2">Help</div><div>Guides</div><div>Support</div></div>
-      <div><div class="font-bold mb-2">Legal</div><div>Terms</div><div>Privacy</div></div>
-    </footer>`],
-    ['panel', 'Panel', `<section class="${BOX} p-5 mb-4">
-      <h3 class="font-bold mb-3">Panel title</h3>
-      <p class="text-sm">What this grouping is for.</p>
-    </section>`],
-    ['tabs', 'Tabs', `<div class="flex gap-2 mb-4">
-      <span class="${BOX} px-4 py-2 text-sm font-bold bg-black text-white">All</span>
-      <span class="${BOX} px-4 py-2 text-sm">Open</span>
-      <span class="${BOX} px-4 py-2 text-sm">Closed</span>
-    </div>`],
-    ['divider', 'Divider', '<hr class="border-t-2 border-black my-6" />'],
-  ]],
-  ['Typography & media', [
-    ['heading', 'Heading', '<h1 class="text-3xl font-bold mb-2">Page heading</h1>'],
-    ['title', 'Title', '<h2 class="text-xl font-bold mb-2">Section title</h2>'],
-    ['text', 'Text', `<p class="text-sm mb-4 max-w-2xl">Two or three sentences of the copy this
-      part of the page carries, written out so the length and the tone are visible.</p>`],
-    ['image', 'Image', `<div class="${IMG} mb-4" style="height:220px">[ Image / Banner Placeholder ]</div>`],
-    ['icon', 'Icon', `<span class="${BOX} inline-flex items-center justify-center rounded-full"
-      style="width:44px;height:44px">ICON</span>`],
-  ]],
-  ['Wireframe notes & flow', [
-    ['note', 'Annotation', `<aside class="border-2 border-dashed border-black bg-[#F3F4F6] px-3 py-2 text-xs mb-4" data-wf-note>
-      <strong>NOTE</strong> — explain the interaction, data or behaviour here.
-    </aside>`],
-    ['flow', 'Flow arrow', `<div class="flex items-center gap-2 text-xs font-bold mb-4" data-wf-flow>
-      <span class="border border-black px-2 py-1">Next action</span><span aria-hidden="true">→</span><span class="border border-dashed border-black px-2 py-1">Next screen</span>
-    </div>`],
-    ['placeholder', 'Placeholder', `<div class="border-2 border-dashed border-black px-4 py-8 text-center text-xs text-black mb-4" data-wf-placeholder>
-      [ Content placeholder ]
-    </div>`],
-    ['modal', 'Modal sketch', `<section class="border-2 border-black bg-white p-5 mb-4" data-wf-modal>
-      <div class="mb-3 flex items-center justify-between border-b-2 border-black pb-2 font-bold">Modal title <span>×</span></div>
-      <p class="mb-4 text-sm">Explain the short decision or confirmation here.</p>
-      <div class="flex gap-2"><button class="border-2 border-black px-3 py-1.5 text-sm font-bold">Confirm</button><button class="border-2 border-black px-3 py-1.5 text-sm">Cancel</button></div>
-    </section>`],
-  ]],
-  ['Inputs & actions', [
-    ['field', 'Field', `<label class="block mb-4 max-w-md">
-      <span class="block text-xs font-bold uppercase tracking-wide mb-1">Field label</span>
-      <input class="${BOX} w-full px-3 py-2 text-sm" value="Typed value" />
-    </label>`],
-    ['button', 'Button', `<button type="button" class="${BOX} px-5 py-2 text-sm font-bold mr-2 mb-4">Action</button>`],
-    ['search', 'Search', `<div class="flex gap-2 mb-4 max-w-xl">
-      <input class="${BOX} flex-1 px-3 py-2 text-sm" placeholder="Search…" />
-      <button type="button" class="${BOX} px-5 py-2 text-sm font-bold">Search</button>
-    </div>`],
-  ]],
-  ['Data & analytics', [
-    ['table', 'Table', `<table class="${BOX} w-full border-collapse text-sm mb-4">
-      <thead><tr class="bg-[#F3F4F6]">
-        <th class="${CELL}">Name</th><th class="${CELL}">Owner</th><th class="${CELL}">Status</th>
-      </tr></thead>
-      <tbody>
-        <tr><td class="${CELL}">First record</td><td class="${CELL}">A. Rivera</td><td class="${CELL}">Open</td></tr>
-        <tr><td class="${CELL}">Second record</td><td class="${CELL}">M. Chen</td><td class="${CELL}">Closed</td></tr>
-      </tbody>
-    </table>`],
-    ['row', 'Table row', `<tr><td class="${CELL}">New record</td><td class="${CELL}">Someone</td><td class="${CELL}">Open</td></tr>`],
-    ['cards', 'Cards', `<div class="grid grid-cols-3 gap-4 mb-4">
-      ${[1, 2, 3].map(n => `<div class="${BOX} p-4">
-        <div class="${IMG} mb-3" style="height:120px">[ Image ]</div>
-        <div class="font-bold text-sm">Item ${n}</div>
-        <div class="text-xs">A line about it.</div>
-      </div>`).join('')}
-    </div>`],
-    ['list', 'List', `<ul class="${BOX} divide-y divide-black text-sm mb-4">
-      <li class="px-4 py-3">First item</li><li class="px-4 py-3">Second item</li>
-      <li class="px-4 py-3">Third item</li>
-    </ul>`],
-    ['stat', 'Stat', `<div class="${BOX} p-4 mb-4 inline-block mr-3">
-      <div class="text-xs uppercase tracking-wide">Total</div>
-      <div class="text-3xl font-bold">128</div>
-    </div>`],
-    ['chart', 'Chart', `<div class="${BOX} flex items-end gap-2 p-4 mb-4" style="height:180px">
-      ${[45, 70, 35, 85, 60, 75].map(h =>
-        `<span class="flex-1 bg-[#E5E7EB] border border-black" style="height:${h}%"></span>`).join('')}
-    </div>`],
-    ['rating', 'Rating', '<div class="text-xl mb-4">★ ★ ★ ★ ☆</div>'],
-  ]],
-]
-
-const SNIPPETS = Object.fromEntries(
-  PARTS.flatMap(([, items]) => items.map(([kind, , html]) => [kind, html])))
-
 /** Never select the page itself, or the wrappers that hold everything. */
 function selectable(node, doc) {
   if (!node || node === doc.documentElement || node === doc.body) return null
@@ -241,7 +77,7 @@ function label(node) {
  * `textOnly` keeps just the typing: text is edited where it is clicked and undone with Ctrl+Z, and nothing else
  * (selecting a box, moving, deleting or duplicating it from the keyboard) happens.
  */
-export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics, textOnly = false } = {}) {
+export function attachEditor(iframe, { onSelect, onSelection, onDirty, textOnly = false } = {}) {
   let doc
   try {
     doc = iframe.contentDocument
@@ -300,26 +136,6 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
     selectedNodes = new Set()
     ensureEditorStyle()
     onSelect?.('')
-    onMetrics?.(null)
-  }
-
-  function getMetrics() {
-    if (!selected) return null
-    const curX = Math.round(parseFloat(selected.style.left) || 0)
-    const curY = Math.round(parseFloat(selected.style.top) || 0)
-    const rect = selected.getBoundingClientRect()
-    return {
-      tag: label(selected),
-      x: curX,
-      y: curY,
-      w: Math.round(rect.width),
-      h: Math.round(rect.height),
-      hasOffset: curX !== 0 || curY !== 0,
-    }
-  }
-
-  function notifyMetrics() {
-    onMetrics?.(getMetrics())
   }
 
   function updateOverlay() {
@@ -408,7 +224,6 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
       tag: item.tagName.toLowerCase(),
       text: String(item.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 180),
     })))
-    notifyMetrics()
   }
 
   /**
@@ -631,10 +446,6 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
 
   const api = {
     selected: () => selected,
-    selections: () => Array.from(selectedNodes),
-    parent() {
-      if (selected?.parentElement) select(selected.parentElement)
-    },
     nudge(dx, dy) {
       if (!selected) return
       snapshot(`Nudged <${label(selected)}>`)
@@ -645,43 +456,7 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
       selected.style.top = `${Math.round(curTop + dy)}px`
       touched()
       updateOverlay()
-      notifyMetrics()
     },
-    setPos(x, y) {
-      if (!selected) return
-      snapshot(`Set position for <${label(selected)}>`)
-      liftFree(selected)
-      if (x === null || x === undefined || x === '') selected.style.left = ''
-      else selected.style.left = `${Math.round(Number(x))}px`
-      if (y === null || y === undefined || y === '') selected.style.top = ''
-      else selected.style.top = `${Math.round(Number(y))}px`
-      touched()
-      updateOverlay()
-      notifyMetrics()
-    },
-    resetPos() {
-      if (!selected) return
-      snapshot(`Reset position for <${label(selected)}>`)
-      const slot = selected.previousElementSibling
-      if (slot?.hasAttribute('data-wf-flow-slot')) slot.replaceWith(selected)
-      selected.removeAttribute('data-wf-free')
-      selected.style.left = ''
-      selected.style.top = ''
-      selected.style.position = ''
-      selected.style.width = ''
-      selected.style.height = ''
-      selected.style.minWidth = ''
-      selected.style.minHeight = ''
-      selected.style.maxWidth = ''
-      selected.style.flex = ''
-      selected.style.zIndex = ''
-      selected.style.boxSizing = ''
-      selected.style.margin = ''
-      touched()
-      updateOverlay()
-      notifyMetrics()
-    },
-    getMetrics,
     duplicate() {
       if (!selected?.parentElement) return
       snapshot(`Duplicated <${label(selected)}>`)
@@ -722,80 +497,6 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
       slot?.remove()
       select(next)
       touched()
-    },
-    align(how) {
-      if (!selected) return
-      snapshot(`Aligned <${label(selected)}> ${how}`)
-      selected.style.marginLeft = how === 'center' || how === 'right' ? 'auto' : ''
-      selected.style.marginRight = how === 'center' || how === 'left' ? 'auto' : ''
-      if (how === 'left') selected.style.marginLeft = ''
-      if (how === 'right') selected.style.marginRight = ''
-      selected.style.textAlign = how === 'center' ? 'center' : ''
-      touched()
-      updateOverlay()
-      notifyMetrics()
-    },
-    style(property, value) {
-      if (!selected || !property) return
-      snapshot(`Updated ${property} on <${label(selected)}>`)
-      selected.style.setProperty(String(property).trim(), String(value ?? '').trim())
-      touched()
-      updateOverlay()
-      notifyMetrics()
-    },
-    text(value) {
-      if (!selected) return
-      snapshot(`Changed text in <${label(selected)}>`)
-      selected.textContent = String(value ?? '')
-      touched()
-      updateOverlay()
-      notifyMetrics()
-    },
-    insert(kind) {
-      const markup = SNIPPETS[kind]
-      if (!markup) return
-      snapshot(`Inserted ${kind}`)
-      const host = doc.createElement(kind === 'row' ? 'tbody' : 'div')
-      if (kind === 'row') {
-        const table = doc.createElement('table')
-        table.innerHTML = `<tbody>${markup}</tbody>`
-        const row = table.querySelector('tr')
-        const body = selected?.closest('tbody') || doc.querySelector('tbody')
-        if (!body || !row) return
-        body.appendChild(row)
-        select(row)
-        touched()
-        return
-      }
-      host.innerHTML = markup.trim()
-      const node = host.firstElementChild
-      if (!node) return
-      if (selected && selected.parentElement) {
-        // Insert right after the currently selected element.
-        selected.after(node)
-      } else {
-        // Nothing selected: insert at the visible centre of the iframe viewport
-        // so the element appears where the user is looking rather than scrolling
-        // them to the bottom of the page.
-        const vw = doc.defaultView?.innerWidth || doc.documentElement.clientWidth || 800
-        const vh = doc.defaultView?.innerHeight || doc.documentElement.clientHeight || 600
-        const midX = vw / 2
-        const midY = vh / 2
-        // Walk up from the point to find a sensible block-level host.
-        let anchor = doc.elementFromPoint(midX, midY)
-        while (anchor && anchor !== doc.body && anchor !== doc.documentElement) {
-          if (['DIV', 'SECTION', 'MAIN', 'ARTICLE', 'HEADER', 'FOOTER', 'ASIDE'].includes(anchor.tagName)) break
-          anchor = anchor.parentElement
-        }
-        const container = (anchor && anchor !== doc.documentElement ? anchor : null)
-          || doc.querySelector('main, body > div, body')
-          || doc.body
-        container.appendChild(node)
-      }
-      select(node)
-      node.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-      touched()
-      return node
     },
     editText(on) {
       if (!selected) return
@@ -840,8 +541,6 @@ export function attachEditor(iframe, { onSelect, onSelection, onDirty, onMetrics
     // has walked all the way back to what is actually saved on the server.
     hasHistory: () => undoStack.length > 0,
     changes: () => [...editLog],
-    canRedo: () => redoStack.length > 0,
-    deselect: () => select(null),
     serialize() {
       const clone = doc.documentElement.cloneNode(true)
       clone.querySelectorAll(`[${MARK}]`).forEach(n => {

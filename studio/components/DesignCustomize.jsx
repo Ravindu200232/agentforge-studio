@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Check, Heart, ImagePlus, Loader2, Palette, Sparkles, Upload, X } from 'lucide-react'
+import { ArrowLeft, Check, Heart, ImagePlus, Loader2, Sparkles, Upload, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Button, Modal } from './ui'
 

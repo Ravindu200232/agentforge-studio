@@ -1,9 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import {
-  ArrowLeft, Check, FileDown, FolderUp, ListTree, Loader2, Plus, RotateCcw, Square, Trash2,
-} from 'lucide-react'
+import { ArrowLeft, Check, FileDown, FolderUp, ListTree, Loader2, Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
 import { loadSrsView, srsViewFromVersion } from '@/lib/srs-view'
@@ -25,7 +23,6 @@ export default function SrsReview({ projectId, onApproved, onKept, onBack, onNew
   const [asking, setAsking] = useState(false)
   const [editingWireframe, setEditingWireframe] = useState(null)
   const [downloadingPdf, setDownloadingPdf] = useState(false)
-
 
   const [busy, setBusy] = useState('')
   const [viewing, setViewing] = useState(null)
@@ -72,8 +69,6 @@ export default function SrsReview({ projectId, onApproved, onKept, onBack, onNew
   }
 
   useEffect(() => { load()  }, [projectId])
-
-
 
   /** Approve the specification and proceed directly to build. */
   async function approve() {

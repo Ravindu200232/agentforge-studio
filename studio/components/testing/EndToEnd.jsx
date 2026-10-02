@@ -1,6 +1,6 @@
 'use client'
 
-import { CircleCheck, CircleX, CircleDashed, ShieldAlert, Sparkles, Terminal } from 'lucide-react'
+import { CircleCheck, CircleX, CircleDashed, ShieldAlert } from 'lucide-react'
 import { Badge, Empty } from '../ui'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'

@@ -29,7 +29,7 @@ import AgentChat from '@/components/AgentChat'
 import AgentDecision from '@/components/AgentDecision'
 import { useAuthStore } from '@/lib/auth'
 import AuthModal from '@/components/AuthModal'
-import { Badge, Button } from '@/components/ui'
+import { Badge } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { projectUnitTestStatus } from '@/lib/test-counts'
 
@@ -524,10 +524,6 @@ export default function Studio() {
       {user && (
         <Sidebar
           projects={projects}
-          onOpen={(name, p) => {
-            setMobileNavOpen(false)
-            openProject(name, p)
-          }}
           onImport={importFolder}
           onSettings={() => {
             setMobileNavOpen(false)
@@ -546,10 +542,6 @@ export default function Studio() {
           }}
           user={user}
           onLogout={signOut}
-          onDeleted={(name) => {
-            refreshProjects()
-            if (project === name) setScreen('home')
-          }}
           mobileOpen={mobileNavOpen}
           onMobileClose={() => setMobileNavOpen(false)}
         />

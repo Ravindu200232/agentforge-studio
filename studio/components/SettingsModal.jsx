@@ -157,8 +157,6 @@ function ModelPicker({ meta, onSaved }) {
 }
 
 export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpenInNewTab, onLogout, initialTab }) {
-  const theme = useStore(s => s.theme)
-  const setTheme = useStore(s => s.setTheme)
   const user = useAuthStore(s => s.user)
   // The open project, so the Plugins tab can offer to tick them for it rather
   // than only hold the credentials.

@@ -99,11 +99,7 @@ export default function DeployPanel({ onSettings, accountsRevision = 0 }) {
       .catch(() => { if (ok) setMonitors({ loaded: true, items: [] }) })
     return () => { ok = false }
   }, [monitorsKey])            // eslint-disable-line react-hooks/exhaustive-deps
-  const clis = useMemo(() => [...new Set(monitors.items.map(item => item.cli))], [monitors.items])
-  const [cliTab, setCliTab] = useState('')
   const current = monitors.items.find(item => item.id === view)
-  useEffect(() => { if (!clis.includes(cliTab)) setCliTab(clis[0] || '') }, [clis, cliTab])
-  useEffect(() => { if (current && current.cli !== cliTab) setCliTab(current.cli) }, [current])   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (view !== 'deploy' && monitors.loaded && !current) setView('deploy')
   }, [view, monitors.loaded, current])
@@ -171,7 +167,7 @@ export default function DeployPanel({ onSettings, accountsRevision = 0 }) {
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden bg-[radial-gradient(circle_at_top_right,rgba(191,185,255,.08),transparent_30%)]">
-      <DeployNav view={view} setView={setView} items={monitors.items} clis={clis} cliTab={cliTab} setCliTab={setCliTab}
+      <DeployNav view={view} setView={setView} items={monitors.items}
                  last={live || last} running={running} runId={runId} onDone={refresh} />
 
       <div className="min-w-0 flex-1 overflow-y-auto">
@@ -293,7 +289,7 @@ export default function DeployPanel({ onSettings, accountsRevision = 0 }) {
 
 /** Command monitors can be numerous, so this keeps the shared rail language
  * while exposing each command's name and CLI group for quick recognition. */
-function DeployNav({ view, setView, items, setCliTab, last, running, runId, onDone }) {
+function DeployNav({ view, setView, items, last, running, runId, onDone }) {
   const [, tone] = last ? (STATE_TEXT[last.state] || [last.state, 'mute']) : ['', 'mute']
   const statusDot = tone === 'pass' ? 'bg-ok' : tone === 'fail' ? 'bg-bad' : running ? 'bg-ok' : 'bg-muted2'
   const usedIcons = new Set()
@@ -316,7 +312,7 @@ function DeployNav({ view, setView, items, setCliTab, last, running, runId, onDo
           <div key={item.id}>
             {newGroup && index > 0 && <span className="my-1 block h-px w-7 bg-line" />}
             <Tip text={item.display || label} side="right">
-              <button type="button" onClick={() => { setCliTab(item.cli); setView(item.id) }} aria-label={label} aria-pressed={view === item.id}
+              <button type="button" onClick={() => setView(item.id)} aria-label={label} aria-pressed={view === item.id}
                       className={cn('grid size-9 place-items-center rounded-xl text-muted2 transition-colors hover:bg-raised hover:text-ink',
                         view === item.id && 'text-deep')}>
                 <Icon className={cn('size-4', view === item.id && 'text-deep')} />

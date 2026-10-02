@@ -114,16 +114,10 @@ export const api = {
   projects: () => req('/projects'),
   chooseWorkspace: () => post('/workspace/pick', {}),
   models: () => req('/models'),
-  mongo: () => req('/mongo'),
   settings: () => req('/settings'),
   saveSettings: (s) => post('/settings', s),
   mcpProbe: (server) => post('/mcp/probe', server),
   setPlanMode: (project, enabled) => post(`/projects/${encodeURIComponent(project)}/plan-mode`, { enabled }),
-  imageCheck: () => req('/image-check'),
-  // Draws one design theme's own page. Kept afterwards, so the second
-  // person to open that theme waits for a file read, not for a model.
-  drawThemePreview: (slug, model) => post('/design-theme-preview', { slug, model }),
-  imageStart: () => post('/image-start', {}),
   files: (project, agent = 'developer') => req(`/files/${encodeURIComponent(project)}?agent=${agent}`),
   saveFile: (project, path, content, changeSummary = '') => post('/save-file', { project, path, content, change_summary: changeSummary }),
   open: (project) => post(`/open/${encodeURIComponent(project)}`, {}),
@@ -151,25 +145,17 @@ export const api = {
   // What a run is waiting on right now, for a studio that missed the message.
   decisions: () => req('/decisions'),
 
-  // What a project's conversation is already holding, for the status line.
-  session: (project) => req(`/session/${encodeURIComponent(project)}`),
-
   // Everything that has happened to a project, so a reload does not lose it.
   stream: (project) => req(`/stream/${encodeURIComponent(project)}`),
   retrySync: project => post('/sync/retry', { project }),
 
-  // A change typed into the specification, carried down into whichever of the
-  // prototype and the build the user chose.
-  specChange: (project, prompt, targets) => post('/spec-change', { project, prompt, targets }),
   // Every user-approved update is retained before a run starts. The execution
   // still uses the existing SRS transaction; this adds the company audit trail.
-  changeRequests: project => req(`/change-requests/${encodeURIComponent(project)}`),
   createChangeRequest: body => post('/change-requests/draft', body),
   approveChangeRequest: (project, id, targets) =>
     post(`/change-requests/${encodeURIComponent(id)}/approve`, { project, targets }),
   workflow: (project) => req(`/workflow/${encodeURIComponent(project)}`),
   lifecycle: (project) => req(`/lifecycle/${encodeURIComponent(project)}`),
-  saveStream: (project, logs, chat) => post('/stream', { project, logs, chat }),
 
   // Throw away a specification that has not been approved.
   discardSrs: (srs_id) => post('/discard-srs', { srs_id }),
@@ -209,15 +195,11 @@ export const api = {
       + `?route=${encodeURIComponent(route)}`,
 
   siteImages: (project) => req(`/site-images/${encodeURIComponent(project)}`),
-  siteImageUrl: (project, file) =>
-    `${API}/site-image/${encodeURIComponent(project)}/${encodeURIComponent(file)}`,
   siteImageSave: (project, file, purpose = '') => Promise.resolve(tooBig(file)).then(big => {
     if (big) throw big
     return fileToBase64(file).then(data_base64 =>
       post('/site-image-save', { project, filename: file.name, purpose, data_base64 }))
   }),
-  siteImageDescribe: (project, file, purpose) =>
-    post('/site-image-describe', { project, file, purpose }),
   siteImageDrop: (project, file) => post('/site-image-drop', { project, file }),
 
   // Photograph what the user pointed at, so it can travel with the message.
@@ -263,9 +245,7 @@ export const api = {
     'SRS.pdf'),
   downloadSrsPdf: (srsId, name = 'SRS.pdf') =>
     download(`/srs/projects/${encodeURIComponent(srsId)}/download/pdf`, name),
-  srsStatus: () => req('/srs-status'),
   integrations: (project) => req(`/srs/projects/${encodeURIComponent(project)}/integrations`),
-  saveIntegrations: (project, answers) => post(`/srs/projects/${encodeURIComponent(project)}/integrations`, { answers }),
 
   resumeSrs: path => resumeSrsJob(path),
   srs: (path, body) => body === undefined
@@ -285,7 +265,6 @@ export const api = {
       }, opts))
   }),
 
-  deployStatus: () => req('/deploy-status'),
   deployResults: (project) => req(`/deploy-results/${encodeURIComponent(project)}`),
   deployStart: (body) => post('/deploy-start', body),
 
@@ -328,11 +307,6 @@ export const api = {
   cliSigninPoll: (flowId) => post('/cli-signin/poll', { flow_id: flowId }),
   cliSigninUseExisting: (provider, region = '') => post('/cli-signin/use-existing', { provider, region }),
   cliSigninCancel: (flowId) => post('/cli-signin/cancel', { flow_id: flowId }),
-
-  // Whether this project already has its own Supabase project (created at build time - see
-  // supabase_connect.ensure_project). Signing in to the Supabase account itself is the
-  // supabaseOauth* group below, studio-wide, not per-project.
-  supabaseConnectStatus: (project) => post('/supabase/connect/status', { project }),
 
   supabaseOauthStatus: () => post('/supabase/oauth/status', {}),
   supabaseOauthStart: () => post('/supabase/oauth/start', {}),

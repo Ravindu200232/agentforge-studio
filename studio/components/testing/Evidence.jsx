@@ -9,7 +9,7 @@
  * wrong, this is the page that says why.
  */
 
-import { Badge, Empty, Panel, Table, Tag, TD, TH, TR } from '../ui'
+import { Badge, Empty, Table, Tag, TD, TH, TR } from '../ui'
 import { cn } from '@/lib/utils'
 
 const STATUS_TONE = {

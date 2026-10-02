@@ -1,7 +1,7 @@
 'use client'
 
 import { FileCode } from 'lucide-react'
-import { View, Card, Facts, Chips } from '../parts'
+import { View, Card, Facts } from '../parts'
 
 /** What each task runs: its image, its size, and the names of its variables and secrets. */
 export default function AwsEcsTaskDefinition({ project, item }) {

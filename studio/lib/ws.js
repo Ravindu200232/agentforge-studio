@@ -1,10 +1,7 @@
 
-import { useStore, KEYS } from './store'
+import { useStore } from './store'
 import { api, API, HTTP_FALLBACK, getAuthToken } from './api'
 import { refreshQaReport } from './qa-results'
-
-
-const STEP_ALIAS = { plan: 'build', generate: 'build' }
 
 // What each outgoing message is, in the terms the overlay presents.
 const WORK_KIND = {
@@ -21,31 +18,6 @@ let lastEdit = null
 
 // Send periodic heartbeat pings to keep WebSocket connections alive through proxies and tunnels.
 const HEARTBEAT_MS = 25000
-
-let streamPending = ''
-let streamTimer = null
-let e2eVersion = 0
-
-function flushStream() {
-  if (!streamPending) return
-  const chunk = streamPending
-  streamPending = ''
-  streamTimer = null
-  useStore.setState(st => ({ liveBuf: st.liveBuf + chunk }))
-}
-
-function queueStream(token) {
-  streamPending += token || ''
-  if (streamTimer) return
-  streamTimer = setTimeout(flushStream, 32)
-}
-
-function resetStreamQueue() {
-  if (streamTimer) clearTimeout(streamTimer)
-  streamTimer = null
-  streamPending = ''
-}
-
 
 /** Resend the last edit with an answer or instruction. */
 export function answerQuestion(prompt) {
@@ -144,7 +116,6 @@ async function recoverPendingDecision() {
   }
 }
 
-
 export function connect() {
   if (typeof window === 'undefined') return
   const s = useStore.getState()
@@ -164,7 +135,7 @@ export function connect() {
 
   try {
     sock = new WebSocket(wsUrl())
-  } catch (e) {
+  } catch {
     s.setStatus('disconnected', 'no socket')
     return
   }
@@ -219,20 +190,7 @@ export function disconnect() {
     sock.close()
     sock = null
   }
-  flushStream()
-  resetStreamQueue()
 }
-
-/** Persists accumulated chat messages and execution logs to the server. */
-function keepStream(project) {
-  const s = useStore.getState()
-  const name = project || s.project
-  if (!name) return
-  api.saveStream(name, s.logs, s.chat).catch(() => {
-    // An older backend keeps no stream; the session still has it in memory.
-  })
-}
-
 
 export function send(obj) {
   const current = useStore.getState()
@@ -267,18 +225,6 @@ export function send(obj) {
   })
 }
 
-/** The Preview was already brought up for the run that is streaming its browser now. */
-let liveShown = false
-
-/** Determines whether an incoming WebSocket message belongs to the currently active project. */
-function meantForMe(m) {
-  const mine = useStore.getState().project
-  if (!m?.project || !mine) return true
-  if (m.type === 'project' || m.type === 'done' || m.type === 'cancelled') return true
-  return m.project === mine
-}
-
-
 function handle(m) {
   const s = useStore.getState()
   // Contracts: approval?.id === m.id | browser_frame
@@ -300,10 +246,6 @@ function handle(m) {
     }
     return
   }
-  if (m.type === 'browser_frame' && m.frame && m.project === s.project && !liveShown && !s.drawing) {
-    liveShown = true
-  }
-  if (m.type === 'e2e_done' || m.type === 'done' || m.type === 'error' || m.type === 'cancelled') liveShown = false
   // A live picture arrives ten times a second: it goes straight to the screen, not through the
   // session reducer (which copies the chat and the logs for every event). The pointer arrives on
   // its own and is kept across pictures.
