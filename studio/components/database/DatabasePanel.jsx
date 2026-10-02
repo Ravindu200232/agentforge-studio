@@ -124,6 +124,8 @@ function Home({ listing, accounts, needs, onSettings, go }) {
   const supabase = context?.supabase
   const mongodb = context?.mongodb
   const showMongo = Boolean(mongodb) || needs.includes('mongodb')
+  // A MongoDB-only stack has no Supabase: its card appears only when a Supabase database actually exists.
+  const showSupabase = Boolean(supabase) || needs.includes('supabase')
 
   return (
     <section className="space-y-4">
@@ -141,8 +143,8 @@ function Home({ listing, accounts, needs, onSettings, go }) {
       {listing.error && <Note tone="bad">{listing.error}</Note>}
       {!listing.loaded && <p className="flex items-center gap-2 text-[12px] text-muted"><Loader2 className="size-3.5 animate-spin" /> Reading this project's connections…</p>}
 
-      <div className={cn('grid gap-4', showMongo && 'lg:grid-cols-2')}>
-        <SupabaseCard supabase={supabase} account={accounts.supabase} onSettings={onSettings} go={go} loaded={listing.loaded} />
+      <div className={cn('grid gap-4', showMongo && showSupabase && 'lg:grid-cols-2')}>
+        {showSupabase && <SupabaseCard supabase={supabase} account={accounts.supabase} onSettings={onSettings} go={go} loaded={listing.loaded} />}
         {showMongo && <MongoCard mongodb={mongodb} account={accounts.mongodb} onSettings={onSettings} go={go} loaded={listing.loaded} />}
       </div>
     </section>

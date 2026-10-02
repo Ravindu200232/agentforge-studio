@@ -17,7 +17,24 @@ STACK_GUIDES = {
     "vite-mongo": "vite-mongo.md",
     "remix-supabase": "remix-supabase.md",
     "mern-microservices": "mern-microservices.md",
+    "remix-mongo": "remix-mongo.md",
+    # The same applications without Supabase: MongoDB is the only account they need.
+    "nextjs-mongo-only": "nextjs-mongo.md",
+    "vite-mongo-only": "vite-mongo.md",
+    "mern-microservices-only": "mern-microservices.md",
+    "remix-mongo-only": "remix-mongo.md",
 }
+# The stacks that run on MongoDB and never touch Supabase. Their twins without "-only" keep Supabase for one thing: the
+# bucket uploaded files go in (the templates hold no Supabase code, so the two kinds install the same folder).
+MONGO_ONLY = frozenset({"nextjs-mongo-only", "vite-mongo-only", "mern-microservices-only", "remix-mongo-only"})
+MONGO_STACKS = frozenset({"nextjs-mongo", "vite-mongo", "mern-microservices", "remix-mongo"}) | MONGO_ONLY
+# Which template folder a stack installs; a stack not listed installs the folder of its own name.
+STACK_TEMPLATES = {"nextjs-mongo-only": "nextjs-mongo", "vite-mongo-only": "vite-mongo",
+                   "mern-microservices-only": "mern-microservices", "remix-mongo-only": "remix-mongo"}
+# Where uploaded files are kept when no uploads plugin is selected, for the MongoDB stacks: the Supabase-bucket ones
+# use Supabase Storage, the Mongo-only ones use MongoDB's own GridFS. (The Supabase-database stacks say it in their guide.)
+UPLOAD_GUIDES = {**{stack: "uploads-supabase.md" for stack in MONGO_STACKS - MONGO_ONLY},
+                 **{stack: "uploads-gridfs.md" for stack in MONGO_ONLY}}
 TEST_GUIDES = ("vitest.md", "playwright.md", "visual.md", "axe.md", "lighthouse.md", "zap.md")
 # Not about one app: mistakes every build of every stack has made, and the scaffold's
 # answer to each. Read before the stack guide so they are not learned again by failing.
@@ -41,6 +58,28 @@ def _files(root: Path) -> list[tuple[Path, str]]:
         target = rel if rel.startswith("scaffold/") else rel.removesuffix(".tpl")
         result.append((source, target))
     return result
+
+
+def uses_mongodb(stack: str) -> bool:
+    return stack in MONGO_STACKS
+
+
+def uses_supabase(stack: str) -> bool:
+    """Whether a build of this stack needs the customer's Supabase account: every stack but the Mongo-only ones."""
+    return stack in STACK_GUIDES and stack not in MONGO_ONLY
+
+
+def template_dir(stack: str) -> Path:
+    return ROOT / STACK_TEMPLATES.get(stack, stack)
+
+
+def _uploads(stack: str) -> tuple[str, ...]:
+    return (UPLOAD_GUIDES[stack],) if stack in UPLOAD_GUIDES else ()
+
+
+def _pitfalls(stack: str) -> tuple[str, ...]:
+    """The shared pitfalls; a stack that uses Supabase (or a caller that does not say) also gets the Supabase ones."""
+    return ("pitfalls.md", *(("pitfalls-supabase.md",) if not stack or uses_supabase(stack) else ()))
 
 
 def project_slug(project: str) -> str:
@@ -68,7 +107,7 @@ def install(workspace: Path, stack: str) -> dict:
     package_name = re.sub(r"[^a-z0-9._-]+", "-", workspace.name.lower()).strip("-._") or "app"
     slug = project_slug(workspace.name)
     files, preserved = [], []
-    for source, target in _files(ROOT / stack) + _files(ROOT / "_testing"):
+    for source, target in _files(template_dir(stack)) + _files(ROOT / "_testing"):
         dest = (workspace / target).resolve()
         if not dest.is_relative_to(workspace):
             raise ValueError(f"unsafe scaffold path: {target}")
@@ -84,7 +123,7 @@ def install(workspace: Path, stack: str) -> dict:
         files.append(target)
 
     result = {"stack": stack, "scaffolded": True, "files": files, "preserved": preserved,
-              "source": f"builder_agent/assets/templates/{stack}"}
+              "source": f"builder_agent/assets/templates/{template_dir(stack).name}"}
     manifest = workspace / ".agentforge" / "build" / "scaffold.json"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(json.dumps(result, indent=2), encoding="utf-8")
@@ -103,16 +142,16 @@ def guide_files(stack: str) -> dict[str, str]:
     """Every guide a QA run reads for this stack - common, stack, then test guides - as name->body for staging."""
     if stack not in STACK_GUIDES:
         raise ValueError(f"unsupported build stack: {stack}")
-    return _guide_bodies((*COMMON_GUIDES, STACK_GUIDES[stack], *TEST_GUIDES))
+    return _guide_bodies((*_pitfalls(stack), "unit-tests.md", STACK_GUIDES[stack], *_uploads(stack), *TEST_GUIDES))
 
 
 def build_guide_files(stack: str) -> dict[str, str]:
     """The guides a build reads while implementing (pitfalls and the stack guide), as name->body for staging."""
     if stack not in STACK_GUIDES:
         raise ValueError(f"unsupported build stack: {stack}")
-    return _guide_bodies(("pitfalls.md", STACK_GUIDES[stack]))
+    return _guide_bodies((*_pitfalls(stack), STACK_GUIDES[stack], *_uploads(stack)))
 
 
-def common_context() -> str:
+def common_context(stack: str = "") -> str:
     """Only the stack-neutral guidance, for a change to an application already built."""
-    return _guides(COMMON_GUIDES)
+    return _guides((*_pitfalls(stack), "unit-tests.md"))

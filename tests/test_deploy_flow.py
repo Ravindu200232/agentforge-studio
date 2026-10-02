@@ -148,11 +148,14 @@ class DeployFlowCase(unittest.TestCase):
 
 
 SUPABASE_STACKS = ("nextjs-supabase", "vite-supabase", "remix-supabase")
-MONGO_STACKS = ("nextjs-mongo", "vite-mongo", "mern-microservices")
-ALL_STACKS = SUPABASE_STACKS + MONGO_STACKS
-# vite-mongo's Express server and mern-microservices' gateway/services need a real, long-running
-# process - never a static or serverless-functions-only target.
-RESTRICTED_STACKS = ("vite-mongo", "mern-microservices")
+MONGO_STACKS = ("nextjs-mongo", "vite-mongo", "remix-mongo", "mern-microservices")
+# The same MongoDB applications without Supabase (uploaded files in MongoDB itself).
+MONGO_ONLY_STACKS = ("nextjs-mongo-only", "vite-mongo-only", "remix-mongo-only", "mern-microservices-only")
+ALL_STACKS = SUPABASE_STACKS + MONGO_STACKS + MONGO_ONLY_STACKS
+# vite-mongo's Express server, remix-mongo's server and mern-microservices' gateway/services need a real,
+# long-running process - never a static or serverless-functions-only target.
+RESTRICTED_STACKS = ("vite-mongo", "remix-mongo", "mern-microservices",
+                     "vite-mongo-only", "remix-mongo-only", "mern-microservices-only")
 
 
 class StackTests(DeployFlowCase):
@@ -170,7 +173,7 @@ class StackTests(DeployFlowCase):
         # These render their own server-rendered or serverless routes (or, for the Supabase SPA, need
         # no server at all) - nothing about them needs a fixed address or a long-running process only
         # some targets provide, so every one of them can go anywhere.
-        for stack in (*SUPABASE_STACKS, "nextjs-mongo"):
+        for stack in (*SUPABASE_STACKS, "nextjs-mongo", "nextjs-mongo-only"):
             self.assertEqual(set(deploy.allowed_targets(stack)), set(deploy.SKILLS_FOR))
 
     def test_server_backed_mongo_stacks_are_restricted_to_real_server_hosting(self):
@@ -189,7 +192,7 @@ class StackTests(DeployFlowCase):
     def test_every_skill_page_carries_the_questions_the_customer_may_decide(self):
         for slug in ("core", "vercel", "netlify", "aws", "aws-ec2", "aws-ecs", "azure", "github",
                      "stack-nextjs-supabase", "stack-remix-supabase", "stack-vite-supabase",
-                     "stack-nextjs-mongo", "stack-vite-mongo", "stack-mern-microservices"):
+                     "stack-nextjs-mongo", "stack-vite-mongo", "stack-remix-mongo", "stack-mern-microservices"):
             self.assertRegex(prompts.skill("deployment", slug), r"(?i)questions? to ask|how to ask", slug)
 
 

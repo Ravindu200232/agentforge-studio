@@ -27,14 +27,10 @@ These are not about any one product. They are the mistakes that cost every build
 | `npm.ps1` / `npx.ps1` is blocked | PowerShell execution policy blocks script shims | call `npm.cmd` / `npx.cmd`, or call npm's CLI JS through `node`; do not retry the `.ps1` shim |
 | `npm install` has no CPU, network, files or output for 60 seconds, or registry fetches return `EACCES` | package registry access is unavailable | stop only that install child process. Compare this `package.json` dependency versions with sibling workspace projects; when an exact compatible installed `node_modules` exists, create a local directory junction to it and continue. Never repeat a ten-minute network wait. Recheck `Test-Path node_modules/next/package.json` before declaring the toolchain blocked |
 
-## Supabase and test data
+## Test data
 
-- **Tests never use the project's real Supabase project.** `test/helpers/db.js` connects straight to the *local* Postgres (`supabase start`, port 54322) and refuses anything that is not a loopback address, because `clearTables()` truncates every table it finds. It deliberately does not read `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` for this reason. Symptoms of getting this wrong: a unique-constraint violation on data another suite just wrote, tests passing only once.
-- Every generated app has its own real Supabase project (created once when the stack was chosen; see `.env.example`, `lib/supabase.js`) — the old shared local default let apps clobber each other. **Never** truncate or delete against the real project's URL from a test.
-- Suites using `test/helpers/db.js` share that one local Postgres, so they run one after another (`fileParallelism: false` is set). Do not turn it back on.
 - Set test environment variables (secrets, URLs) in a setup module imported before the code under test (`vitest.env.js`), and never "restore" them by deleting them in `afterAll` — that breaks the next file.
-- Data your E2E journeys create outlives the run: give it a unique prefix and delete it in `afterAll`, or the next run (and the existing counts) drift. `_testing/scripts/with-server.mjs` only owns the temporary test server; it never resets or seeds the connected Supabase project. Never make a QA wrapper truncate a real project's tables.
-- Every table an app reads or writes needs a Row Level Security policy before it holds real data; a missing one is a security bug, not a missing feature (most true on the Vite-only stacks, which have no server to fall back on).
+- Data your E2E journeys create outlives the run: give it a unique prefix and delete it in `afterAll`, or the next run (and the existing counts) drift. `_testing/scripts/with-server.mjs` only owns the temporary test server; it never resets or seeds the project's connected database. Never make a QA wrapper truncate a real project's tables.
 
 ## Vitest
 
@@ -57,10 +53,3 @@ These are not about any one product. They are the mistakes that cost every build
 - axe fails on contrast: never fade text or controls with `opacity < 1` (a "60 % until hover" action row measured 2.57:1). Icon-only buttons, and buttons whose label is hidden on mobile, need an `aria-label` so the accessible name exists at every width. Keep a skip link, visible focus and labelled inputs.
 - Keep the scaffold's anti-clickjacking headers strict (`X-Frame-Options: DENY`, `frame-ancestors 'none'`). The Studio's own preview process lifts them for its iframe, so never loosen them "to make the Preview work"; only `FRAME_ANCESTORS` at build time may name an origin that is allowed to embed the app.
 - `npm run qa:security` always runs and always writes `.agentforge/qa/zap/summary.json`. `engine: "zap"` is a real OWASP ZAP baseline; `engine: "agentforge-baseline"` (status `partial`) means ZAP is not installed here — record it as that, **never as a ZAP pass**. To get ZAP once per machine: `npm run qa:security -- --install-zap`.
-
-## By stack
-
-- **Next.js + Supabase**: `middleware.js` runs on the **Edge runtime** and refreshes the Auth session cookie on every request — do not remove it or gate it behind a route matcher that skips real pages. `lib/supabase.js`'s `supabaseAdmin()` (service-role) is server code only; keep it out of anything a Client Component imports.
-- **Remix + Supabase**: build `lib/supabase.js`'s `supabaseServer(request, headers)` fresh per `loader`/`action` and copy its `headers` onto the response, or a refreshed session is silently dropped. `remix-serve` reads `PORT`.
-- **Vite + Supabase (plain or with microservices)**: there is no server, so `SUPABASE_SERVICE_ROLE_KEY` must never be imported anywhere in `src/` — every `VITE_*` variable ends up in the public bundle. RLS is this app's only security boundary; anything needing the service-role key belongs in a Supabase Edge Function instead (the microservices variant), never in client code.
-- **The two microservices stacks**: a "service" is a Supabase Edge Function under `supabase/functions/<name>/`, not an Express process — there is no gateway and no internal port scheme, and `supabase functions serve` (part of `supabase start`) runs them locally. Test a function's own logic directly; an E2E journey calls it the same way the app does, through `supabase.functions.invoke(...)`.

@@ -493,7 +493,7 @@ class NoQuestionsInTheBuildPromptsTests(unittest.TestCase):
             self.assertIn("ever stop to ask", text, name)
 
     def test_the_question_before_the_plan_is_left_to_the_model_in_its_own_words(self):
-        text = prompts.load("builder/decide", stack="nextjs-supabase", direction="", earlier="", answers="",
+        text = prompts.load("builder/decide", stack="nextjs-supabase", supabase="", direction="", earlier="", answers="",
                             questions_left="You may ask up to 5 more question(s) in total for this request.")
         self.assertNotIn("{{", text)
         self.assertNotIn("question.json", text)

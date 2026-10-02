@@ -5,7 +5,7 @@
     "targets": "all"
   },
   "nextjs-mongo": {
-    "name": "Next.js + MongoDB",
+    "name": "Next.js + MongoDB + Supabase bucket",
     "skill": "stack-nextjs-mongo",
     "targets": "all"
   },
@@ -15,7 +15,7 @@
     "targets": "all"
   },
   "vite-mongo": {
-    "name": "Vite + MongoDB",
+    "name": "Vite + MongoDB + Supabase bucket",
     "skill": "stack-vite-mongo",
     "targets": ["aws_ec2", "aws_ecs", "azure"]
   },
@@ -25,8 +25,37 @@
     "targets": "all"
   },
   "mern-microservices": {
-    "name": "MERN microservices",
+    "name": "MERN + Supabase bucket",
     "skill": "stack-mern-microservices",
     "targets": ["aws_ec2", "aws_ecs", "azure"]
+  },
+  "remix-mongo": {
+    "name": "Remix + MongoDB + Supabase bucket",
+    "skill": "stack-remix-mongo",
+    "targets": ["aws_ec2", "aws_ecs", "azure"]
+  },
+  "nextjs-mongo-only": {
+    "name": "Next.js + MongoDB",
+    "skill": "stack-nextjs-mongo",
+    "targets": "all",
+    "supabase": false
+  },
+  "vite-mongo-only": {
+    "name": "Vite + MongoDB",
+    "skill": "stack-vite-mongo",
+    "targets": ["aws_ec2", "aws_ecs", "azure"],
+    "supabase": false
+  },
+  "mern-microservices-only": {
+    "name": "MERN microservices",
+    "skill": "stack-mern-microservices",
+    "targets": ["aws_ec2", "aws_ecs", "azure"],
+    "supabase": false
+  },
+  "remix-mongo-only": {
+    "name": "Remix + MongoDB",
+    "skill": "stack-remix-mongo",
+    "targets": ["aws_ec2", "aws_ecs", "azure"],
+    "supabase": false
   }
 }

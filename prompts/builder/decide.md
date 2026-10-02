@@ -6,7 +6,7 @@ Read what you need to judge it, as far as the decision needs and no further (the
 
 {{direction}}
 
-Ask only what this build cannot do well without the customer and you cannot find out yourself: a real decision with no safe default, or a value only they have — an API key, a provider account, a connection string. Do not ask what the specification, the prototype or the guides already settle; what `web_search` or `web_fetch` on the framework's or provider's own site can tell you; or what a build can decide well on its own and record as an assumption. Never ask for anything Supabase: this project's Supabase project is already connected.
+Ask only what this build cannot do well without the customer and you cannot find out yourself: a real decision with no safe default, or a value only they have — an API key, a provider account, a connection string. Do not ask what the specification, the prototype or the guides already settle; what `web_search` or `web_fetch` on the framework's or provider's own site can tell you; or what a build can decide well on its own and record as an assumption. {{supabase}}
 
 Most builds need nothing from the customer. When nothing does, say it is ready.
 

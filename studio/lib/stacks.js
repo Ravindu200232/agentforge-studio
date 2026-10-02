@@ -4,8 +4,10 @@
  * These mirror `builder_agent/scaffold.py`'s STACK_GUIDES: fixed contracts, chosen once and
  * never migrated away from mid-build. "Auto" (no choice) starts as DEFAULT_STACK.
  *
- * `needs` is which account connections a build of that stack uses: Supabase on every stack
- * (sign-in, uploads and Google login run on it), MongoDB too on the MongoDB stacks.
+ * `needs` is which account connections a build of that stack uses. Supabase on the Supabase-database
+ * stacks (sign-in, uploads and Google login run on it) and on the MongoDB stacks that keep uploaded
+ * files in a Supabase Storage bucket; MongoDB on every MongoDB stack. A `-only` stack runs on
+ * MongoDB alone: no Supabase login, and uploaded files are kept in MongoDB itself.
  */
 export const STACKS = [
   {
@@ -15,22 +17,10 @@ export const STACKS = [
     needs: ['supabase'],
   },
   {
-    id: 'nextjs-mongo',
-    name: 'Next.js + MongoDB',
-    blurb: 'One Next.js app on MongoDB, with session-based auth and a real Atlas database.',
-    needs: ['supabase', 'mongodb'],
-  },
-  {
     id: 'vite-supabase',
     name: 'Vite + Supabase',
     blurb: 'A Vite + React SPA talking to Postgres directly through Supabase, RLS instead of a server.',
     needs: ['supabase'],
-  },
-  {
-    id: 'vite-mongo',
-    name: 'Vite + MongoDB',
-    blurb: 'A Vite + React SPA with its own Express + MongoDB API server behind it.',
-    needs: ['supabase', 'mongodb'],
   },
   {
     id: 'remix-supabase',
@@ -39,10 +29,52 @@ export const STACKS = [
     needs: ['supabase'],
   },
   {
-    id: 'mern-microservices',
-    name: 'MERN microservices',
-    blurb: 'A Vite React client behind an API gateway, independent MongoDB-backed services behind that.',
+    id: 'nextjs-mongo',
+    name: 'Next.js + MongoDB + Supabase bucket',
+    blurb: 'One Next.js app on MongoDB with session auth. Uploaded files go in a Supabase Storage bucket.',
     needs: ['supabase', 'mongodb'],
+  },
+  {
+    id: 'vite-mongo',
+    name: 'Vite + MongoDB + Supabase bucket',
+    blurb: 'A Vite + React SPA with its own Express + MongoDB API server. Uploaded files go in a Supabase Storage bucket.',
+    needs: ['supabase', 'mongodb'],
+  },
+  {
+    id: 'remix-mongo',
+    name: 'Remix + MongoDB + Supabase bucket',
+    blurb: 'Remix v2 on Vite with MongoDB and session auth. Uploaded files go in a Supabase Storage bucket.',
+    needs: ['supabase', 'mongodb'],
+  },
+  {
+    id: 'mern-microservices',
+    name: 'MERN + Supabase bucket',
+    blurb: 'A Vite React client behind an API gateway, independent MongoDB-backed services behind that. Uploaded files go in a Supabase Storage bucket.',
+    needs: ['supabase', 'mongodb'],
+  },
+  {
+    id: 'nextjs-mongo-only',
+    name: 'Next.js + MongoDB',
+    blurb: 'One Next.js app on MongoDB with session auth. MongoDB is the only account it needs; uploaded files are kept in MongoDB.',
+    needs: ['mongodb'],
+  },
+  {
+    id: 'vite-mongo-only',
+    name: 'Vite + MongoDB',
+    blurb: 'A Vite + React SPA with its own Express + MongoDB API server. MongoDB is the only account it needs.',
+    needs: ['mongodb'],
+  },
+  {
+    id: 'remix-mongo-only',
+    name: 'Remix + MongoDB',
+    blurb: 'Remix v2 on Vite with MongoDB and session auth. MongoDB is the only account it needs; uploaded files are kept in MongoDB.',
+    needs: ['mongodb'],
+  },
+  {
+    id: 'mern-microservices-only',
+    name: 'MERN',
+    blurb: 'A Vite React client behind an API gateway, independent MongoDB-backed services behind that. MongoDB is the only account it needs.',
+    needs: ['mongodb'],
   },
 ]
 

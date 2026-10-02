@@ -69,8 +69,8 @@ those same files through `write_file` and `replace_text`.
 ## Scaffold-first build and evidence
 
 After prototype approval, the builder installs the selected stack's template —
-Next.js, Vite or Remix on Supabase, Next.js or Vite on MongoDB, or MERN
-microservices — from `builder-agent/builder_agent/assets/templates/` into an
+Next.js, Vite or Remix on Supabase; Next.js, Vite, Remix or MERN on MongoDB alone (no Supabase
+account needed); or those MongoDB stacks with a Supabase Storage bucket for uploaded files — from `builder-agent/builder_agent/assets/templates/` into an
 empty project workspace.
 It never overwrites an existing application. Before it plans, the builder's
 model may ask the customer what it cannot settle itself - a decision with no safe

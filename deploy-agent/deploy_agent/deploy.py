@@ -305,6 +305,8 @@ def _tool_lines(target: str) -> str:
 
 def _database_fact(project: str) -> str:
     """Whether this project's own Supabase project is linked, and what it's called."""
+    if not stack_info(stack_of(project)).get("supabase", True):
+        return "not used - this stack runs on MongoDB alone, so it has no Supabase project and needs none"
     row = supabase_connect.status(project)
     if not row.get("connected"):
         return ("none linked - this stack needs one. Tell the customer to pick a Supabase stack from "

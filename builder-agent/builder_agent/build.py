@@ -206,6 +206,8 @@ def _decide(project: str, session: Any, stack: str, direction: str) -> list[dict
     build runs straight through afterwards. A turn that does not work is skipped - a question step never fails a build.
     Returns everything decided with the customer so far, earlier builds' answers included, for the plan to build on.
     """
+    from . import scaffold
+
     saved = session.read_record(*DECISIONS, fallback=None)
     earlier = [row for row in saved if isinstance(row, dict)] if isinstance(saved, list) else []
     answers: list[dict[str, str]] = []
@@ -215,6 +217,9 @@ def _decide(project: str, session: Any, stack: str, direction: str) -> list[dict
             left = QUESTIONS - len(answers)
             prompt = prompts.load(
                 "builder/decide", stack=stack,
+                supabase=("Never ask for anything Supabase: this project's Supabase project is already connected."
+                          if scaffold.uses_supabase(stack) else
+                          "This stack has no Supabase: never ask for anything Supabase, and never add it."),
                 direction=("The customer asked for this on top of the specification:\n\n" + direction.strip())
                 if direction.strip() else "",
                 earlier=("Already decided in an earlier build of this project, so not asked again:\n\n"
@@ -281,10 +286,12 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         # The stack's guides are staged first: the model reads them to judge whether anything needs the customer.
         reference_staging.stage(session.workspace, GUIDES_DIR, scaffold.build_guide_files(stack))
         decided = _decide(project, session, stack, direction)
-        # Where the data lives: this project's own Supabase project (every stack has one), kept if it is already
-        # linked, otherwise created now. A later build finds the record there and does nothing.
-        supabase_connect.ensure_project(project, name=str(record.get("name") or project),
-                                        log=lambda line: bus.agent_msg(project, line, title="Supabase"))
+        # A stack that uses Supabase (the Supabase-database ones, and the MongoDB ones that keep uploads in a bucket) gets
+        # this project's own Supabase project: kept if it is already linked, otherwise created now. A later build finds the
+        # record there and does nothing. A MongoDB-only stack has no Supabase and needs no Supabase account.
+        if scaffold.uses_supabase(stack):
+            supabase_connect.ensure_project(project, name=str(record.get("name") or project),
+                                            log=lambda line: bus.agent_msg(project, line, title="Supabase"))
         installed = scaffold.install(session.workspace, stack)
         bus.agent_msg(project,
                       f"{stack} scaffold copied ({len(installed['files'])} files)."

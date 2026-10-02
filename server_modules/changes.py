@@ -656,7 +656,7 @@ def _execute(project: str, change_id: str, model: str) -> None:
         records = "\n".join(f"- {name}" for name in versions.result_records(session.workspace)) or "(none yet)"
         request = prompts.load("changes/execute", request=change["request"], plan=plan,
                                artifacts=project_map(session.workspace), language=_language(project),
-                               results=records, guides=_guides())
+                               results=records, guides=_guides(project))
         result = session.execute_approved(request, plan, model)
         after = _snapshot(session.workspace)
         _announce(project, before, after)
@@ -686,12 +686,12 @@ def _execute(project: str, change_id: str, model: str) -> None:
         session.fail(change["error"])
 
 
-def _guides() -> str:
+def _guides(project: str = "") -> str:
     """The build and test guides, for a change that reaches application code."""
     try:
         from builder_agent import scaffold
 
-        return scaffold.common_context()
+        return scaffold.common_context(str((store.get(project) or {}).get("stack") or "") if project else "")
     except Exception:  # noqa: BLE001 - guidance is a help, not a requirement
         return ""
 

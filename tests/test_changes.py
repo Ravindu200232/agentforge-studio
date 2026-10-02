@@ -104,7 +104,7 @@ class ChangesTestCase(unittest.TestCase):
         patches = [
             mock.patch.object(changes, "session_for", lambda project: self.session),
             mock.patch.object(config, "record_dir", lambda project: self.workspace / ".agentforge"),
-            mock.patch.object(changes, "_guides", lambda: "GUIDES"),
+            mock.patch.object(changes, "_guides", lambda *args: "GUIDES"),
         ]
         for patch in patches:
             patch.start()

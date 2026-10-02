@@ -18,7 +18,8 @@ from builder_agent import scaffold  # noqa: E402
 from qa_agent.evidence import archive_results, collect  # noqa: E402
 
 SUPABASE_STACKS = {"nextjs-supabase", "vite-supabase", "remix-supabase"}
-MONGO_STACKS = {"nextjs-mongo", "vite-mongo", "mern-microservices"}
+# The sets below name template folders: a Mongo-only stack installs its Supabase-bucket twin's folder.
+MONGO_STACKS = {"nextjs-mongo", "vite-mongo", "remix-mongo", "mern-microservices"}
 NEXTJS_STACKS = {"nextjs-supabase", "nextjs-mongo"}
 # These two have their own long-running server on a fixed local port (not a single Studio-assigned
 # one) and their own aggressive, port-freeing port-guard. The single-app stacks need none: the Studio
@@ -27,6 +28,11 @@ WORKSPACE_STACKS = {"vite-mongo", "mern-microservices"}
 AGGRESSIVE_PORT_GUARD_STACKS = WORKSPACE_STACKS
 MICROSERVICES_STACKS = {"mern-microservices"}
 SPA_STACKS = {"vite-supabase"}  # no server, no secret store - the Supabase-only SPA pattern
+
+
+def template(stack):
+    """The template folder a stack installs."""
+    return scaffold.template_dir(stack).name
 
 
 class ScaffoldTests(unittest.TestCase):
@@ -52,20 +58,20 @@ class ScaffoldTests(unittest.TestCase):
                 self.assertTrue((workspace / "playwright.config.js").is_file())
                 self.assertTrue((workspace / "e2e/a11y.spec.js").is_file())
                 self.assertTrue((workspace / ".agentforge/build/scaffold.json").is_file())
-                if stack in AGGRESSIVE_PORT_GUARD_STACKS:
+                if template(stack) in AGGRESSIVE_PORT_GUARD_STACKS:
                     self.assertTrue((workspace / "scripts/port-guard.mjs").is_file())
                 manifest = json.loads((workspace / "package.json").read_text(encoding="utf-8"))
                 for script in ("build", "test", "test:e2e", "test:visual", "test:a11y", "test:perf"):
                     self.assertIn(script, manifest["scripts"])
                 self.assertIn("@axe-core/playwright", manifest["devDependencies"])
                 self.assertIn("@lhci/cli", manifest["devDependencies"])
-                if stack in NEXTJS_STACKS:
+                if template(stack) in NEXTJS_STACKS:
                     self.assertNotIn("3001", manifest["scripts"]["dev"])
                     self.assertNotIn("3001", manifest["scripts"]["start"])
                 # Preview ownership belongs to Studio, which assigns a single-app stack an isolated
                 # port of its own. The fixed-local-port workspace stacks (vite-mongo,
                 # mern-microservices) are a different, deliberate convention and are exempt.
-                if stack not in WORKSPACE_STACKS:
+                if template(stack) not in WORKSPACE_STACKS:
                     for script in ("dev", "start"):
                         self.assertNotIn("3001", manifest["scripts"][script])
                         self.assertNotIn("5173", manifest["scripts"][script])
@@ -86,7 +92,7 @@ class ScaffoldTests(unittest.TestCase):
                 self.assertEqual([t for t, body in texts.items() if scaffold.DB_PLACEHOLDER in body], [])
                 self.assertEqual(list(scaffold.guide_files(stack))[0], "pitfalls.md")
 
-                if stack in SUPABASE_STACKS:
+                if template(stack) in SUPABASE_STACKS:
                     # Every generated app has a Supabase project of its own; nothing here still
                     # names the shared placeholder once install() has substituted the real slug.
                     self.assertIn(f'project_id = "{slug}"', texts["supabase/config.toml"])
@@ -97,19 +103,19 @@ class ScaffoldTests(unittest.TestCase):
                     self.assertFalse((workspace / "supabase").exists())
                     # Every generated Mongo app gets its own `_test`-suffixed database name; tests
                     # can never touch anything else.
-                    helper_path = "packages/testing/index.js" if stack == "mern-microservices" else "test/helpers/db.js"
+                    helper_path = "packages/testing/index.js" if template(stack) == "mern-microservices" else "test/helpers/db.js"
                     helper = texts[helper_path]
                     self.assertIn(f"{slug}_test", helper)
                     self.assertIn("must end in", helper)
 
-                if stack in MICROSERVICES_STACKS:
+                if template(stack) in MICROSERVICES_STACKS:
                     self.assertTrue((workspace / "scaffold/service/package.json.tpl").is_file())
                     self.assertFalse((workspace / "scaffold/service/package.json").exists())
                     # The one Dockerfile every package (gateway or a service) is built from, in the
                     # cloud - built with a different --build-arg SERVICE per package, never per-stack.
                     self.assertIn("ARG SERVICE=packages/gateway", texts["Dockerfile"])
 
-                if stack in SPA_STACKS:
+                if template(stack) in SPA_STACKS:
                     # This app has no server and no secret store: the service-role key must never
                     # be *read* anywhere a browser bundle could include it (mentioning it in a
                     # comment, to explain why not, is fine).
