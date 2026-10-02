@@ -18,6 +18,7 @@ for folder in (".", "deploy-agent", "builder-agent", "srs-agent", "prototype-age
     sys.path.insert(0, str(ROOT / folder))
 
 from deploy_agent import deploy  # noqa: E402
+from server_modules import bus  # noqa: E402
 
 PROJECT = "prj_deploy_midway_test"
 PLAN = {"title": "Deploy", "summary": "Go live", "steps": [{"id": "repo", "title": "Publish the repository"}]}
@@ -103,6 +104,16 @@ class MidwayTests(unittest.TestCase):
                        "a free tier that is not available", "then ask\n  what to do",
                        'never offer an\n  option that only means "I will type it"'):
             self.assertIn(needle, rules)
+
+
+class QuestionIdTests(unittest.TestCase):
+    def test_question_ids_never_repeat_across_restarts(self):
+        first = bus.ask("prj_ids", "question", "a?")
+        second = bus.ask("prj_ids", "question", "b?")
+        self.assertNotEqual(first, second)
+        self.assertRegex(first, r"^ask-\d+-[0-9a-f]{8}$")
+        bus.resolve(first)
+        bus.resolve(second)
 
 
 if __name__ == "__main__":

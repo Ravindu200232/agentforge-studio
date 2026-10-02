@@ -72,10 +72,12 @@ After prototype approval, the builder installs the selected stack's template —
 Next.js, Vite or Remix on Supabase, Next.js or Vite on MongoDB, or MERN
 microservices — from `builder-agent/builder_agent/assets/templates/` into an
 empty project workspace.
-It never overwrites an existing application. Before it plans, the builder asks
-what the build needs settled (which database project or cluster, the region,
-the plan tier), and it asks again mid-build when it meets a gap it cannot
-decide alone. The stack and testing guides in `_guides/` and the
+It never overwrites an existing application. Before it plans, the builder's
+model may ask the customer what it cannot settle itself - a decision with no safe
+default, or a value only they have - in its own words and only when it is really
+needed. Once the plan starts the build never stops to ask: it runs straight
+through on the project's connected database and records whatever it could not
+settle as a gap in the build report. The stack and testing guides in `_guides/` and the
 authentication guide (`prompts/shared/authentication.md`) are staged under
 `.agentforge/build/guides/` and passed into the build plan along with the SRS
 handoff, approved design customization and prototype. The build records its

@@ -2,23 +2,20 @@
 from __future__ import annotations
 
 import json
-import re
-import threading
 from pathlib import Path
 from typing import Any
 
-from server_modules import (auth_guide, bus, changes, config, deploy_vars, plugins, prompts, reference_staging,
-                            store, supabase_connect)
+from server_modules import (auth_guide, bus, changes, config, plugins, prompts, reference_staging, store,
+                            supabase_connect)
 from server_modules.qa_report import summary_counts
 from server_modules.session import RunCancelled, session_for
 from server_modules.validation import build_report
 
 BUILD_DIR = "build"
 REPORT = (BUILD_DIR, "report.json")
-QUESTION = (BUILD_DIR, "question.json")
-PENDING = (BUILD_DIR, "pending.json")
-SETUP = (BUILD_DIR, "setup.json")
-SETUP_RETRIES = 2
+DECISIONS = (BUILD_DIR, "decisions.json")
+# The most the customer is asked before one build is planned - a bound, not a list: what is asked is the model's call.
+QUESTIONS = 5
 REPORT_REPAIR_ROUNDS = 2
 # The stack's build guides, staged where the agent reads them - inside the record folder, never the app root: a
 # folder there would make `scaffold.install` take a fresh workspace for an existing app and copy no template.
@@ -32,184 +29,6 @@ def report(project: str) -> dict[str, Any]:
 
 def built(project: str) -> bool:
     return bool(report(project))
-
-
-def pending_question(project: str) -> dict[str, Any] | None:
-    saved = session_for(project).read_record(*QUESTION, fallback=None)
-    return saved if isinstance(saved, dict) and saved.get("question") else None
-
-
-def waiting(project: str) -> dict[str, Any] | None:
-    """A build or update paused mid-run, waiting on the customer's answer."""
-    saved = session_for(project).read_record(*PENDING, fallback=None)
-    return saved if isinstance(saved, dict) and saved.get("question") else None
-
-
-_restoring = threading.Lock()
-
-
-def restore_questions() -> list[dict[str, Any]]:
-    """A build or update that was waiting on the customer when the server restarted: its question back on screen.
-
-    The wait is on disk (`build/pending.json`) but a question on screen lives only in memory, so a restart left a
-    build waiting for an answer nobody was asked for — and whatever the customer typed went to a change request
-    instead. Read straight from each record (never `session_for`, which would make a deleted project's folders again).
-    """
-    found: list[dict[str, Any]] = []
-    with _restoring:                  # several windows (or one, twice) ask at once: the question comes back once
-        shown = {d.get("project") for d in bus.pending_decisions() if d.get("flow") == "build"}
-        for row in store.listing():
-            project = str(row.get("name") or "")
-            if not project or project in shown:
-                continue
-            try:
-                path = config.record_dir(project) / Path(*PENDING)
-                pending = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-            except (OSError, ValueError):
-                continue
-            question = pending.get("question") if isinstance(pending, dict) else None
-            if isinstance(question, dict) and question.get("question"):
-                _ask(project, question)
-                found.append(question)
-    return found
-
-
-def _ask(project: str, question: dict[str, Any]) -> None:
-    bus.ask(project, "question", question["question"], options=question["options"],
-           agent=bus.DEVELOPER, why=question["why"], assumption=question["assumption"],
-           flow="build", variable=question.get("variable", ""),
-           secret=question.get("secret", False), check=question.get("check", ""))
-
-
-_SECRET_WORDS = re.compile(r"\b(passwords?|passcodes?|passphrases?|api[ _-]?keys?|access keys?|secret keys?|client secrets?"
-                           r"|private keys?|secrets?|tokens?|credentials?|connection strings?)\b", re.IGNORECASE)
-_ASKS_FOR_VALUE = re.compile(r"\b(what (?:is|are|should|will|would)|what(?:\s+\w+){0,2}?\s+(?:password|passcode|passphrase|key|secret"
-                             r"|token|credential|connection string)s?|enter|provide|give|share|paste|type|send|set|choose)\b",
-                             re.IGNORECASE)
-_FILLER = {"what", "which", "is", "are", "the", "a", "an", "your", "you", "my", "our", "their", "should", "would",
-           "will", "can", "could", "please", "enter", "provide", "give", "share", "paste", "type", "send", "set",
-           "choose", "use", "for", "of", "to", "me", "we", "i", "do", "does", "want", "need", "new", "be", "this",
-           "that", "it", "in", "on", "with", "and", "or", "here", "now", "real"}
-
-
-def _private_value(question: dict[str, Any]) -> dict[str, Any]:
-    """A question that asks the customer to give a password, key, token or other secret always gets the private box.
-
-    The prompt tells the model to name a `variable` for such a value; when it did not, one is named here from the
-    question's own words (`ADMIN_PASSWORD`, `STRIPE_SECRET_KEY`), so the value is typed into a box that hides it and is
-    saved on this computer, never into the open chat. A question that only mentions a password while asking for a
-    choice ("sign in with a password or with Google?") is left as it is.
-    """
-    text = str(question.get("question") or "")
-    found = _SECRET_WORDS.search(text)
-    if question.get("variable") or not found or not _ASKS_FOR_VALUE.search(text):
-        return question
-    words = lambda part: [w for w in re.findall(r"[A-Za-z0-9]+", part) if w.lower() not in _FILLER]
-    around = words(text[:found.start()])[-2:] or words(text[found.end():])[:2]
-    keyword = re.sub(r"S$", "", "_".join(re.findall(r"[A-Za-z0-9]+", found.group(1))).upper())
-    name = re.sub(r"^[^A-Z]+", "", "_".join([w.upper() for w in around] + [keyword]))
-    try:
-        deploy_vars.valid_name(name)
-    except ValueError:
-        name = "BUILD_SECRET"
-    return {**question, "variable": name, "secret": True}
-
-
-_SUPABASE_VALUE = re.compile(r"\b(url|keys?|password|anon|service[ _-]?role|credentials?|project ref|ref|connection"
-                             r"|token|secret)\b", re.IGNORECASE)
-AUTO_ANSWERS = 2
-
-
-def _asks_for_supabase(question: dict[str, Any]) -> bool:
-    """Whether a question asks the customer for a Supabase value — never needed: the project is connected before a build."""
-    if str(question.get("variable") or "").upper().startswith("SUPABASE"):
-        return True
-    text = str(question.get("question") or "")
-    # Asking the customer to give a value ("what is…", "paste…", "enter…"), not a choice such as
-    # "keep the images in Supabase Storage?" - that one is the customer's to answer.
-    return bool(re.search(r"supabase", text, re.IGNORECASE) and _SUPABASE_VALUE.search(text)
-                and _ASKS_FOR_VALUE.search(text))
-
-
-def _settle(project: str, session: Any, mode: str, request: str, plan: str,
-           result: dict[str, Any], auto_answered: int = 0) -> dict[str, Any]:
-    """A `run_task`/`execute_approved` outcome: pass a real result through unchanged, or turn a
-    genuine question the model raised into a paused, resumable wait instead of a hard failure.
-
-    A value only the customer has - a provider credential, a real password, a business decision
-    with no safe default - cannot be guessed or hardcoded, so the model is told to write
-    `.agentforge/build/question.json` and stop rather than invent one. There is deliberately no
-    cap on how many times a build may ask: a build has no plan card to fall back to the way a
-    revised chat request does, so refusing a real question here would only leave it stuck.
-    """
-    if result.get("status") != "blocked":
-        session.write_record(*PENDING, data={})
-        return result
-    question = pending_question(project)
-    session.write_record(*QUESTION, data={})
-    if not question:
-        raise ValueError(result.get("text") or "the build was blocked")
-    if _asks_for_supabase(question) and supabase_connect.record(project) and auto_answered < AUTO_ANSWERS:
-        # The customer is never asked for Supabase values: the project was connected before the build started and
-        # every value is already in the environment. Answer for them and carry straight on.
-        bus.log(project, "INFO", "The build asked for Supabase values; this project's Supabase is already connected, "
-                                 "so it was answered automatically and the build continues.")
-        resume = request + "\n" + prompts.load("builder/resume", question=question.get("question", ""),
-                                                answer=prompts.load("builder/supabase-connected").strip())
-        return _settle(project, session, mode, request, plan, session.execute_approved(resume, plan, model=""),
-                       auto_answered + 1)
-    asked = changes.check_question({"kind": "question", **_private_value(question)}, True)
-    session.write_record(*PENDING, data={"mode": mode, "request": request, "plan": plan, "question": asked})
-    _ask(project, asked)
-    session.finish("Waiting for your answer.")
-    return {"status": "asking", "question": asked}
-
-
-def answer(project: str, reply: str) -> dict[str, Any]:
-    """Continue a build or update that paused to ask the customer something.
-
-    Resumes the same agent conversation with the answer folded in - never a fresh separate
-    request - so work already finished is not redone and the plan already approved still holds.
-    """
-    pending = waiting(project)
-    if not pending:
-        raise ValueError("this project has no build or update waiting on a question")
-    session = session_for(project)
-    text = reply.strip() or prompts.load("changes/unanswered").strip()
-    request = pending.get("request") or ""
-    plan = pending.get("plan") or ""
-    mode = pending.get("mode") or "run"
-    if mode == "setup":
-        # Asked before the build was planned: the answer joins the others and the next question (or the
-        # build itself, once everything is settled) follows.
-        state = _setup_state(session)
-        state.setdefault("answers", []).append({"question": (pending.get("question") or {}).get("question", ""),
-                                                "answer": text})
-        state["failures"] = 0          # a new way forward from the customer gets its own tries
-        session.write_record(*SETUP, data=state)
-        session.write_record(*PENDING, data={})
-        session.begin("build", role=bus.DEVELOPER)
-        try:
-            return _setup(project, session)
-        except RunCancelled:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            session.fail(str(exc))
-            raise
-    resume_request = request + "\n" + prompts.load(
-        "builder/resume", question=(pending.get("question") or {}).get("question", ""), answer=text)
-    session.begin("build" if mode == "run" else "build-edit", role=bus.DEVELOPER)
-    try:
-        result = session.execute_approved(resume_request, plan, model="")
-        settled = _settle(project, session, mode, request, plan, result)
-        if settled.get("status") == "asking":
-            return settled
-        return _finish_run(project, session, settled, plan) if mode == "run" else _finish_update(project, session, settled)
-    except RunCancelled:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        session.fail(str(exc))
-        raise
 
 
 def _recoverably_incomplete(qa_report: Any) -> bool:
@@ -366,161 +185,152 @@ def _finish_run(project: str, session: Any, build_result: dict[str, Any], plan: 
             "plans": [build_result.get("plan_file")]}
 
 
+def _check_decision(data: Any, may_ask: bool) -> dict[str, Any]:
+    """The model's turn before the plan: ready, or one question asked the way every flow asks one."""
+    kind = data.get("kind") if isinstance(data, dict) else None
+    if kind == "ready":
+        return {"kind": "ready"}
+    if kind != "question":
+        raise ValueError('"kind" must be "ready" or "question"')
+    return changes.check_question(data, may_ask)
+
+
+def _qa_rows(rows: list[dict[str, str]]) -> str:
+    return "\n".join(f"- Q: {row.get('question', '')}\n  A: {row.get('answer', '')}" for row in rows)
+
+
+def _decide(project: str, session: Any, stack: str, direction: str) -> list[dict[str, str]]:
+    """Before the build is planned, the model may ask the customer what it cannot settle itself.
+
+    Once, up front, in its own words: nothing here lists what to ask, only the prompt tells the model when to. The
+    build runs straight through afterwards. A turn that does not work is skipped - a question step never fails a build.
+    Returns everything decided with the customer so far, earlier builds' answers included, for the plan to build on.
+    """
+    saved = session.read_record(*DECISIONS, fallback=None)
+    earlier = [row for row in saved if isinstance(row, dict)] if isinstance(saved, list) else []
+    answers: list[dict[str, str]] = []
+    try:
+        agent = session.agent("")
+        while True:
+            left = QUESTIONS - len(answers)
+            prompt = prompts.load(
+                "builder/decide", stack=stack,
+                direction=("The customer asked for this on top of the specification:\n\n" + direction.strip())
+                if direction.strip() else "",
+                earlier=("Already decided in an earlier build of this project, so not asked again:\n\n"
+                         + _qa_rows(earlier) + "\n\n") if earlier else "",
+                answers=("Asked and answered just now:\n\n" + _qa_rows(answers) + "\n\n") if answers else "",
+                questions_left=(prompts.load("changes/questions-left", count=left).strip() if left > 0
+                                else prompts.load("changes/no-questions").strip()))
+            with session.lock:
+                agent.set_mode("plan")
+            try:
+                reply = session.ask_json(prompt, validator=lambda data: _check_decision(data, left > 0))
+            finally:
+                with session.lock:
+                    agent.set_mode("act")
+            if reply["kind"] == "ready":
+                break
+            bus.phase(project, "build:decide", "Asking you before the build is planned", detail=reply["question"])
+            given = bus.ask_and_wait(project, "question", reply["question"], options=reply["options"],
+                                     agent=bus.DEVELOPER, cancelled=lambda: session.cancelled,
+                                     why=reply["why"], assumption=reply["assumption"],
+                                     variable=reply.get("variable", ""), secret=reply.get("secret", False),
+                                     check=reply.get("check", ""))
+            if given is None:
+                raise RunCancelled(project)
+            answers.append({"question": reply["question"],
+                            "answer": given.strip() or prompts.load("changes/unanswered").strip()})
+    except RunCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - what was answered so far still counts; the build goes on without more
+        bus.log(project, "WARN", f"The questions before the plan stopped, so the build goes on without them: {exc}")
+    if answers:
+        session.write_record(*DECISIONS, data=earlier + answers)
+        bus.phase(project, "build:decide", "Decided with you", status="complete",
+                  detail="; ".join(row["answer"] for row in answers[:6]))
+    return earlier + answers
+
+
+def _decided_block(answers: list[dict[str, str]]) -> str:
+    if not answers:
+        return ""
+    return ("\n\n## Decided with the customer before this plan\n\nThese were asked and answered. Build on them "
+            "and do not ask any of them again:\n\n" + _qa_rows(answers))
+
+
 def run(project: str, direction: str = "") -> dict[str, Any]:
     """Build the application from everything the project already settled.
 
-    First the customer is asked, one question at a time, everything the build will need from them (see
-    `setup.py`); the build is planned only once that is settled, so it can run without stopping.
+    The model may ask the customer what it cannot settle itself, once, before it plans (`_decide`). After that the
+    build never stops to ask: it builds straight through, and whatever it could not settle is recorded as a gap in
+    `build/report.json`.
     """
     from srs_agent import document as srs_document
 
+    from . import scaffold
+
     if not srs_document.has_document(project):
         raise ValueError("write the specification before building")
-    if waiting(project):
-        raise ValueError("this project already has a build waiting on an earlier question - "
-                         "answer it before starting another")
 
+    record = store.require(project)
+    stack = str(record.get("stack") or "nextjs-supabase")
     session = session_for(project)
     session.begin("build", role=bus.DEVELOPER)
     try:
-        saved = session.read_record(*SETUP, fallback=None)
-        previous = (saved.get("decisions") or []) if isinstance(saved, dict) and saved.get("status") == "ready" else []
-        session.write_record(*SETUP, data={"direction": direction, "answers": [], "previous": previous,
-                                           "status": "asking"})
-        return _setup(project, session)
+        # The stack's guides are staged first: the model reads them to judge whether anything needs the customer.
+        reference_staging.stage(session.workspace, GUIDES_DIR, scaffold.build_guide_files(stack))
+        decided = _decide(project, session, stack, direction)
+        # Where the data lives: this project's own Supabase project (every stack has one), kept if it is already
+        # linked, otherwise created now. A later build finds the record there and does nothing.
+        supabase_connect.ensure_project(project, name=str(record.get("name") or project),
+                                        log=lambda line: bus.agent_msg(project, line, title="Supabase"))
+        installed = scaffold.install(session.workspace, stack)
+        bus.agent_msg(project,
+                      f"{stack} scaffold copied ({len(installed['files'])} files)."
+                      if installed["scaffolded"] else "Existing application preserved; building on its files.",
+                      title="Builder scaffold")
+        bus.phase(project, "build:write", "Building and checking the application",
+                  detail="One sequential plan: complete the app, focused business units, then final product checks.")
+        request = prompts.load("builder/generate", stack=stack,
+                               report_template=build_report.stage_template(session.workspace))
+        request += _prototype_context_block(session.workspace)
+        request += "\n\n## Scaffold installation\n" + json.dumps(installed, indent=2)
+        guide_paths = reference_staging.stage(session.workspace, GUIDES_DIR,
+                                              scaffold.build_guide_files(stack))
+        request += ("\n\n## Stack build guides\n\nRead these yourself before planning:\n"
+                    + reference_staging.as_bullets(guide_paths))
+        auth = auth_guide.staged_for(session.workspace, srs_document.document(project).get("srs_document", {}))
+        if auth:
+            request += ("\n\n## Authentication, roles and navigation\n\n"
+                        f"Read `{auth}` yourself before planning. It is the standard this app's sign-up, sign-in, cookie "
+                        "sessions, role-based access, role dashboards and signed-in and signed-out navigation are built and "
+                        "tested to (its section 7 is for the real application). The specification decides which roles and "
+                        "pages exist; this file decides how they behave.")
+        from prototype_agent import design as design_stage
+        customization = design_stage.approved_customization(project)
+        if customization:
+            request += ("\n\n## Approved design customization\n"
+                        + json.dumps({"selected_design_path": customization.get("design_md_path"),
+                                      "customizer_prompt": customization.get("customizer_prompt"),
+                                      "customizer_spec": customization.get("customizer_spec")},
+                                     ensure_ascii=False, indent=2))
+            if customization.get("design_md_workspace_path"):
+                request += (f"\n\nRead `{customization['design_md_workspace_path']}` yourself for "
+                            f"the selected theme's own guidance.")
+        request += _decided_block(decided)
+        if direction.strip():
+            request += f"\n\n## What the customer asked for on top of that\n\n{direction.strip()}"
+
+        build_result = session.run_task(request, plan_directory="plan", audit=False)
+        if build_result.get("status") == "blocked":
+            raise ValueError(build_result.get("text") or "the build was blocked")
+        return _finish_run(project, session, build_result, build_result.get("plan") or "")
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001
         session.fail(str(exc))
         raise
-
-
-def _setup_state(session: Any) -> dict[str, Any]:
-    saved = session.read_record(*SETUP, fallback=None)
-    return saved if isinstance(saved, dict) else {"answers": []}
-
-
-def _setup(project: str, session: Any) -> dict[str, Any]:
-    """One turn of settling the build with the customer: the next question, or - once nothing is left to ask -
-    the build itself. The model reads the specification and what the accounts already have, and writes every
-    question itself; nothing here decides what to ask."""
-    from srs_agent import document as srs_document
-
-    from . import scaffold, setup
-
-    record = store.require(project)
-    stack = str(record.get("stack") or "nextjs-supabase")
-    state = _setup_state(session)
-    reference_staging.stage(session.workspace, GUIDES_DIR, scaffold.build_guide_files(stack))
-    auth_guide.staged_for(session.workspace, srs_document.document(project).get("srs_document", {}))
-    bus.phase(project, "build:setup", "Settling the build with you",
-              detail="Reading the specification and what your accounts already have, then asking what the build "
-                     "needs from you before it is planned.")
-    found = setup.facts(project, stack, state.get("facts"))
-    state["facts"] = found
-    session.write_record(*SETUP, data=state)
-    left = setup.MAX_QUESTIONS - len(state.get("answers") or [])
-    request = setup.prompt(project, session, stack, found, state, left)
-    agent = session.agent("")
-    with session.lock:
-        agent.set_mode("plan")
-    try:
-        reply = session.ask_json(request, validator=lambda data: setup.check(data, left > 0, stack, found,
-                                                                             state.get("answers") or []))
-    finally:
-        with session.lock:
-            agent.set_mode("act")
-    if reply["kind"] == "question":
-        if _asks_for_supabase(reply) and supabase_connect.record(project) and left > 1:
-            # Never the customer's to answer: this project's Supabase is connected through its account.
-            state.setdefault("answers", []).append({"question": reply["question"],
-                                                    "answer": prompts.load("builder/supabase-connected").strip()})
-            session.write_record(*SETUP, data=state)
-            return _setup(project, session)
-        asked = _private_value(reply)
-        session.write_record(*PENDING, data={"mode": "setup", "request": "", "plan": "", "question": asked})
-        _ask(project, asked)
-        session.finish("Waiting for your answer.")
-        return {"status": "asking", "question": asked}
-    state.update(status="ready", decisions=reply["decisions"], database=reply["database"], problem="")
-    session.write_record(*SETUP, data=state)
-    bus.phase(project, "build:setup", "Settled with you", status="complete",
-              detail="; ".join(reply["decisions"][:6]))
-    return _build(project, session, state)
-
-
-def _build(project: str, session: Any, state: dict[str, Any]) -> dict[str, Any]:
-    """The build itself, on what was settled with the customer before it."""
-    from srs_agent import document as srs_document
-
-    from . import scaffold, setup
-
-    record = store.require(project)
-    stack = str(record.get("stack") or "nextjs-supabase")
-    direction = str(state.get("direction") or "")
-    try:
-        # Where the data lives, exactly as settled: this project's Supabase project kept or created (every
-        # stack has one), and on a MongoDB stack the cluster. A later build finds them there and does nothing.
-        setup.apply(project, str(record.get("name") or project), state.get("database") or {},
-                    say=lambda line: bus.agent_msg(project, line, title="Database"))
-    except RunCancelled:
-        raise
-    except Exception as exc:  # noqa: BLE001 - a setup that fails is the customer's to decide, not a dead end
-        failures = int(state.get("failures") or 0) + 1
-        if failures > SETUP_RETRIES:
-            raise
-        bus.log(project, "WARN", f"Setting up the database did not work: {exc}")
-        state.pop("facts", None)  # what failed may have changed what the accounts have: read them again
-        state.update(status="asking", failures=failures,
-                     problem=f"Setting up where the data lives, as settled ({json.dumps(state.get('database'))}), "
-                             f"failed: {exc}")
-        session.write_record(*SETUP, data=state)
-        return _setup(project, session)
-    # Done once: a later build must never pause or delete that project again (the customer may have restored it).
-    if ((state.get("database") or {}).get("supabase") or {}).pop("make_room", None):
-        session.write_record(*SETUP, data=state)
-    installed = scaffold.install(session.workspace, stack)
-    bus.agent_msg(project,
-                  f"{stack} scaffold copied ({len(installed['files'])} files)."
-                  if installed["scaffolded"] else "Existing application preserved; building on its files.",
-                  title="Builder scaffold")
-    bus.phase(project, "build:write", "Building and checking the application",
-              detail="One sequential plan: complete the app, focused business units, then final product checks.")
-    request = prompts.load("builder/generate", stack=stack,
-                           report_template=build_report.stage_template(session.workspace))
-    request += _prototype_context_block(session.workspace)
-    request += "\n\n## Scaffold installation\n" + json.dumps(installed, indent=2)
-    guide_paths = reference_staging.stage(session.workspace, GUIDES_DIR,
-                                          scaffold.build_guide_files(stack))
-    request += ("\n\n## Stack build guides\n\nRead these yourself before planning:\n"
-               + reference_staging.as_bullets(guide_paths))
-    auth = auth_guide.staged_for(session.workspace, srs_document.document(project).get("srs_document", {}))
-    if auth:
-        request += ("\n\n## Authentication, roles and navigation\n\n"
-                    f"Read `{auth}` yourself before planning. It is the standard this app's sign-up, sign-in, cookie "
-                    "sessions, role-based access, role dashboards and signed-in and signed-out navigation are built and "
-                    "tested to (its section 7 is for the real application). The specification decides which roles and "
-                    "pages exist; this file decides how they behave.")
-    from prototype_agent import design as design_stage
-    customization = design_stage.approved_customization(project)
-    if customization:
-        request += ("\n\n## Approved design customization\n"
-                    + json.dumps({"selected_design_path": customization.get("design_md_path"),
-                                  "customizer_prompt": customization.get("customizer_prompt"),
-                                  "customizer_spec": customization.get("customizer_spec")},
-                                 ensure_ascii=False, indent=2))
-        if customization.get("design_md_workspace_path"):
-            request += (f"\n\nRead `{customization['design_md_workspace_path']}` yourself for "
-                       f"the selected theme's own guidance.")
-    request += setup.settled_block(state)
-    if direction.strip():
-        request += f"\n\n## What the customer asked for on top of that\n\n{direction.strip()}"
-
-    build_result = session.run_task(request, plan_directory="plan", audit=False)
-    settled = _settle(project, session, "run", request, build_result.get("plan") or "", build_result)
-    if settled.get("status") == "asking":
-        return settled
-    return _finish_run(project, session, settled, build_result.get("plan") or "")
 
 
 def _finish_update(project: str, session: Any, result: dict[str, Any]) -> dict[str, Any]:
@@ -535,9 +345,6 @@ def update(project: str, request: str) -> dict[str, Any]:
     """Change the built application from a message typed into the chat stream."""
     if not built(project):
         raise ValueError("there is nothing built to change yet")
-    if waiting(project):
-        raise ValueError("this project already has a change waiting on an earlier question - "
-                         "answer it before starting another")
 
     session = session_for(project)
     session.begin("build-edit", role=bus.DEVELOPER)
@@ -545,10 +352,7 @@ def update(project: str, request: str) -> dict[str, Any]:
         bus.user_msg(project, request)
         full_request = prompts.load("builder/update", request=request)
         result = session.run_task(full_request, audit=False)
-        settled = _settle(project, session, "update", full_request, result.get("plan") or "", result)
-        if settled.get("status") == "asking":
-            return settled
-        return _finish_update(project, session, settled)
+        return _finish_update(project, session, result)
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001

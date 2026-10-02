@@ -49,91 +49,26 @@ Build it the way a senior team ships a product people depend on, in every part o
   leads somewhere sensible. Every list and form has its loading, empty and error states; no page is a dead end;
   back and refresh keep working.
 
-## When only the customer can settle it
+## Never stop to ask
 
-Most of what the build needs from the customer was settled before this plan — the database, the first
-accounts, uploads, outside services — and is listed under "Settled with the customer before this build": build
-on it, and never ask any of it again. What only shows itself while building is asked then.
+Whatever the customer was asked before this plan is listed under "Decided with the customer before this plan" in your request: build on it and never ask it again. From this plan onward the build runs from its first step to its last without stopping to ask the customer anything: nobody is there to answer in the middle of it, and a build that waits on an answer never finishes. Where you would have asked, decide it yourself with the safe default below, build on that, and record what you assumed under `gaps` in `.agentforge/build/report.json` so the customer sees it. Each gap is one row in the report's own shape: `{"item": "what was assumed or could not be proven", "status": "gap|unavailable|untested|known", "reason": "why, and what the customer can do about it"}`.
 
-Ask the customer, the way the deployment does, whenever the work genuinely needs them. Ask **in the middle of
-the build, at the moment the need comes up** — in the phase where you reach it, before you write the part that
-depends on the answer — and then carry on with the rest of the plan. Never save questions up to ask at the end,
-and never finish the build with something still waiting on the customer. Write each question yourself, in
-plain words about this project, one question at a time, with two to four concrete options and your
-recommendation first. Ask in these situations:
+Before deciding anything yourself, make sure it is not something you can find out: a current API signature, a config option, an error message or a provider's own setup step is a `web_search`/`web_fetch` job against the framework's or provider's own official site, not a guess.
 
-- **You are stuck.** The same failure came back after two honest fixes, or the next step needs something you
-  do not have. Stop and ask the customer what to do, with the ways forward you see and what each one costs or
-  changes, instead of looping.
-- **A credential is needed.** An API key, an OAuth client, a mail or payment provider key, a provider account
-  or its own password — something that must be created or supplied by the customer. Ask for it when you reach
-  the feature that needs it, before building that feature; never invent, hardcode or placeholder it, never
-  silently skip the work that needs it, and never build a stand-in instead (a recorded or fake mode, a button
-  that is switched off) to write down as a gap later. **Never ask for anything
-  Supabase**: this project's Supabase project was connected before the build started, and its URL, keys and
-  database password are already in the environment of every command and of the preview.
-- **Sign-in accounts are about to be created.** Before seeding the accounts people sign in with, ask once
-  whether to use the prototype's demo accounts (recommended) or the customer's own details — then ask for each
-  value the customer chooses to give (an email, a name, a password), one value per question.
-- **An error you could not fix changes the way forward.** You tried, and searched the framework's or
-  provider's own documentation, and the remaining fixes change the product or the approach — another library
-  or service, a simpler version of a feature, a paid plan. Ask which way to go.
-- **The app stores images or other uploaded files** — a photo, an avatar, a product picture, an attachment, a
-  logo someone uploads. Ask once, before building that part, whether to keep them in Supabase Storage — see
-  "Images and uploaded files" below.
-- **A real business decision has no safe default.**
-- **You find a gap** — anything the build cannot do or cannot prove: a provider that is not connected, a
-  feature that would be switched off, a check that cannot run, a tool this computer lacks. Deal with it right
-  there, in the phase where you found it, not at the end. Close it yourself when the work is yours to do (a
-  check you have not written yet, a path no test exercises yet). When it needs the customer — a credential, an
-  account, a provider or a tool to choose, or whether to accept the limitation — ask then, and carry on from
-  their answer. A gap is recorded in the report only with their answer: `"asked"` is the question exactly as
-  you asked it and `"answer"` is what they said. Never write that the customer was asked when they were not.
+- **You are stuck.** The same failure came back after two honest fixes. Do not loop and do not stop: take the simplest alternative that still meets the requirement (another library, a plainer version of the feature), build that, and record what failed and what you did instead as a `"gap"`.
+- **A credential is needed.** An API key, an OAuth client, a mail or payment provider key, a provider account — something only the customer can create. Write the real integration against the documented environment variable (list it in `.env.example`, read it only on the server, and report a missing one as a clear error, never a crash). Never invent, hardcode or placeholder the value, never silently skip the feature, and never build a stand-in (a recorded or fake mode, a button that is switched off) in its place. Record it as an `"unavailable"` gap that names the variable the customer must supply. **Nothing Supabase is ever a missing credential**: this project's Supabase project was connected before the build started, and its URL, keys and database password are already in the environment of every command and of the preview.
+- **Sign-in accounts are about to be created.** Seed the prototype's demo accounts (`.agentforge/prototype/demo-accounts.json`), with real hashed passwords from the seed script. The customer's own details are theirs to change after the build.
+- **An error you could not fix changes the way forward.** You tried, and searched the framework's or provider's own documentation, and the remaining fixes change the approach — another library or service, a simpler version of a feature, a paid plan. Take the way that keeps the product working at no cost, and record the choice and what it left out as a `"gap"`.
+- **A real business decision has no safe default.** Take the most conservative reading of the specification (the one that grants the least access and spends nothing), build that, and record it as a `"known"` gap saying what you assumed.
+- **You find a gap** — anything the build cannot do or cannot prove: a provider that is not connected, a feature that would be switched off, a check that cannot run, a tool this computer lacks. Deal with it right there, in the phase where you found it, not at the end. Close it yourself when the work is yours to do (a check you have not written yet, a path no test exercises yet); otherwise record it honestly as `"unavailable"` or `"untested"` and carry on. Never write a gap as resolved when it was only worked around.
 
-Before asking, make sure it is not something you can find out yourself: a current API signature, a config
-option, an error message or a provider's own setup step is a `web_search`/`web_fetch` job against the
-framework's or provider's own official site, not a question.
-
-Write `.agentforge/build/question.json`, exactly
-
-```
-{"question": "...", "why": "...", "options": [{"label": "...", "hint": "..."}], "assumption": "..."}
-```
-
-and end your reply with the blocked marker. The customer is asked in the chat and this plan continues from
-exactly where it stopped once they answer — you are not restarted and finished work is not redone.
-
-**A password, key, token, secret or connection string is never asked for as plain text.** Ask for it with
-`"variable": "NAME"` (capital letters, digits and underscores, for example `ADMIN_PASSWORD`) and
-`"secret": true`, one value per question: the studio shows a private box that hides what is typed, keeps it
-out of the conversation and tells you only that it was saved. Your commands then receive it in the
-environment under that name; you never see it. Ask as many times as the build genuinely needs — there is no
-cap — but each question must be a real, current need, never speculative.
+Never end the reply with a request for an answer. The build finishes with every question settled by a default and every default on the record.
 
 ## Images and uploaded files
 
-When the specification or the prototype has anything image-related that people upload or the app stores — an
-upload field, a profile photo, product or listing pictures, a gallery, attachments — ask the customer, once,
-before building it, unless `.agentforge/PLUGIN.md` already names an image-uploads provider (then use exactly
-that provider and do not ask). Write the question yourself about this project's own images, for example:
+When the specification or the prototype has anything image-related that people upload or the app stores — an upload field, a profile photo, product or listing pictures, a gallery, attachments — build it on this project's own Supabase Storage, unless `.agentforge/PLUGIN.md` already names an image-uploads provider (then use exactly that provider instead).
 
-```
-{"question": "This app stores <the images it stores>. Keep them in Supabase Storage?",
- "why": "<where they are uploaded and shown>",
- "options": [{"label": "Yes — Supabase Storage", "hint": "recommended: one bucket per kind of image, with access rules"},
-             {"label": "No", "hint": "<the alternative you would use>"}],
- "assumption": "keep them in Supabase Storage"}
-```
-
-On **yes** (or no answer): use this project's own Supabase project — it is already connected, and
-`SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are already in the environment of every
-command and of the preview, on every stack. Never ask the customer for a Supabase URL, key or password.
-Create one Storage bucket per kind of image in a migration, with policies on `storage.objects` for who may
-upload, replace, delete and read; upload with the `@supabase/supabase-js` Storage API (the service-role key only
-on the server, never in browser code); store the object path in the record; show public images by their public
-URL and private ones through short-lived signed URLs; check type and size before upload. Seed and test images go
-through the same bucket. On **no**: ask which provider to use instead, the same way a missing credential is
-asked for — never write uploads to the local disk as the production answer.
+This project's own Supabase project is already connected, and `SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are already in the environment of every command and of the preview, on every stack. Create one Storage bucket per kind of image in a migration, with policies on `storage.objects` for who may upload, replace, delete and read; upload with the `@supabase/supabase-js` Storage API (the service-role key only on the server, never in browser code); store the object path in the record; show public images by their public URL and private ones through short-lived signed URLs; check type and size before upload. Seed and test images go through the same bucket. Never write uploads to the local disk as the production answer.
 
 ## E2E journey contract
 
@@ -178,6 +113,6 @@ Only after Phase 2 is complete, reread all of these before writing any E2E journ
 
 Derive E2E selectors, roles, setup and expected outcomes from the saved user-journey contract, the sources above and the current working app. Do not invent routes, labels, selectors or navigation. Run focused E2E tests for every saved business journey, then representative UI/visual, accessibility, performance, security and dependency checks using the scaffold's existing runners. Keep all existing Testing-screen artifact paths unchanged: `test-results/results.json`, screenshots under `test-results` or `e2e/__screenshots__`, `.lighthouseci/summary.json`, `.agentforge/qa/zap/summary.json`, and `.agentforge/qa/routes.json` when produced.
 
-Run each planned layer once. If a check finds a real product defect, repair only the affected code and rerun only that affected check. Never loop through the whole plan again. When a tool is unavailable, do not keep trying to install or rerun it: ask the customer then, as above, and record it honestly with their answer.
+Run each planned layer once. If a check finds a real product defect, repair only the affected code and rerun only that affected check. Never loop through the whole plan again. When a tool is unavailable, do not keep trying to install or rerun it: record it honestly as an `"unavailable"` gap, as above, and carry on.
 
 Then reopen `{{report_template}}` and fill both report files from it: `.agentforge/build/report.json` from its `build` section, preserving all earlier evidence, and `.agentforge/qa/report.json` from its `qa` section. Take every count from the runners' own output on disk, not from memory. Mark the QA report complete only after every planned layer has one honest recorded outcome. Finish the single plan after Phase 3.

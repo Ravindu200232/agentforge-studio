@@ -308,8 +308,8 @@ class StudioTools(WorkspaceTools):
             if stage.startswith("deploy") or stage in {"build", "build-edit", PREVIEW_START}:
                 # A deployment may also override with what the customer saved for it explicitly
                 # (pointing production at a different Supabase project, or an unrelated variable);
-                # a build/update that paused to ask for a value only the customer has needs that
-                # same saved value reachable once it resumes.
+                # a build/update needs the same saved values (a database connection string, a key the
+                # customer gave before the plan) reachable by its own commands and the preview.
                 self.command_env.update(deploy_vars.environment())
         result = super().execute(name, args)
 

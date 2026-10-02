@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -312,6 +313,48 @@ class EnsureProjectTests(SupabaseSettingsCase):
                 mock.patch.object(sc, "_run_json", return_value=[]):
             with self.assertRaisesRegex(ValueError, "no organisation"):
                 sc.ensure_project(PROJECT)
+
+
+class MakeRoomTests(unittest.TestCase):
+    def _answer(self, status: int, body: dict | None = None):
+        return SimpleNamespace(status_code=status, text=json.dumps(body or {}), json=lambda: body or {})
+
+    def test_pause_waits_until_the_project_is_down(self):
+        states = iter([self._answer(200, {"status": "ACTIVE_HEALTHY"}), self._answer(200, {"status": "PAUSING"}),
+                       self._answer(200, {"status": "INACTIVE"})])
+        with mock.patch.object(sc, "_refresh_if_needed", return_value="tok"), \
+             mock.patch.object(sc.httpx, "get", side_effect=lambda *a, **k: next(states)), \
+             mock.patch.object(sc.httpx, "post", return_value=self._answer(200)) as post, \
+             mock.patch.object(sc.time, "sleep"):
+            sc.make_room("refshop", "pause")
+        self.assertTrue(post.call_args.args[0].endswith("/v1/projects/refshop/pause"))
+
+    def test_a_project_already_paused_is_left_alone(self):
+        with mock.patch.object(sc, "_refresh_if_needed", return_value="tok"), \
+             mock.patch.object(sc.httpx, "get", return_value=self._answer(200, {"status": "INACTIVE"})), \
+             mock.patch.object(sc.httpx, "post") as post:
+            sc.make_room("refshop", "pause")
+        post.assert_not_called()
+
+    def test_delete_forgets_the_agentforge_project_that_used_it(self):
+        saved = {"prj_shop": {"ref": "refshop"}, "prj_other": {"ref": "refother"}}
+        states = iter([self._answer(200, {"status": "ACTIVE_HEALTHY"}), self._answer(404)])
+        with mock.patch.object(sc, "_refresh_if_needed", return_value="tok"), \
+             mock.patch.object(sc.httpx, "get", side_effect=lambda *a, **k: next(states)), \
+             mock.patch.object(sc.httpx, "delete", return_value=self._answer(200)) as delete, \
+             mock.patch.object(sc.time, "sleep"), \
+             mock.patch.object(sc, "_read_all", return_value=dict(saved)), \
+             mock.patch.object(sc, "_write_all") as wrote:
+            sc.make_room("refshop", "delete")
+        self.assertTrue(delete.call_args.args[0].endswith("/v1/projects/refshop"))
+        self.assertEqual(wrote.call_args.args[0], {"prj_other": {"ref": "refother"}})
+
+    def test_a_refusal_comes_back_as_the_reason(self):
+        with mock.patch.object(sc, "_refresh_if_needed", return_value="tok"), \
+             mock.patch.object(sc.httpx, "get", return_value=self._answer(200, {"status": "ACTIVE_HEALTHY"})), \
+             mock.patch.object(sc.httpx, "delete", return_value=self._answer(403, {"message": "no access"})):
+            with self.assertRaisesRegex(ValueError, "would not delete project refshop: no access"):
+                sc.make_room("refshop", "delete")
 
 
 class OauthHttpRoutesTests(SupabaseSettingsCase):

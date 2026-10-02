@@ -519,23 +519,47 @@ def resolve(decision_id: str) -> dict | None:
     return question
 
 
-def asked(decision_id: str) -> dict | None:
-    """A question as it was put on screen, from the conversation record: still findable after a restart forgot
-    the waiting one, so its answer can reach whatever is still waiting on it."""
-    with _lock:
-        for rows in _history.values():
-            for event in reversed(rows):
-                if event.get("type") == "approval" and event.get("id") == decision_id:
-                    return dict(event)
-    return None
+# --- a run that holds still for the customer's answer ------------------------
+
+_waiters: dict[str, dict] = {}
 
 
-def resolve_project(project: str, flow: str) -> None:
-    """Every question of one `flow` still on screen for a project, closed: its answer came another way."""
+def ask_and_wait(project: str, kind: str, question: str, options: Iterable[str] = (), agent: str = DEVELOPER,
+                 cancelled: Callable[[], bool] = lambda: False, **extra: Any) -> str | None:
+    """`ask`, then hold this run until the customer answers: their answer comes back ("" when they left it to the
+    run), or None when the run was stopped first. Nothing is saved - a restart ends the run and its question together.
+    """
+    waiter = {"done": threading.Event(), "reply": "", "project": project}
+    with _lock:                      # the card and its waiter exist together: no answer can arrive between them
+        decision_id = ask(project, kind, question, options, agent, **extra)
+        _waiters[decision_id] = waiter
+    try:
+        while not waiter["done"].wait(0.5):
+            if cancelled():
+                return None
+        return waiter["reply"]
+    finally:
+        with _lock:
+            _waiters.pop(decision_id, None)
+        resolve(decision_id)         # a card nobody will answer any more goes from the screen
+
+
+def deliver(decision_id: str, reply: str) -> bool:
+    """The customer's answer to a question a run is holding still for. False when no run waits on that question."""
     with _lock:
-        ids = [i for i, q in _pending_decisions.items() if q.get("project") == project and q.get("flow") == flow]
-    for decision_id in ids:
-        resolve(decision_id)
+        waiter = _waiters.get(decision_id)
+    if not waiter:
+        return False
+    waiter["reply"] = reply
+    waiter["done"].set()
+    return True
+
+
+def waiting_question(project: str) -> dict | None:
+    """The question a run of this project is holding still for, as it is on screen."""
+    with _lock:
+        return next((dict(_pending_decisions[i]) for i, w in _waiters.items()
+                     if w["project"] == project and i in _pending_decisions), None)
 
 
 def run_status(project: str) -> dict[str, dict]:
