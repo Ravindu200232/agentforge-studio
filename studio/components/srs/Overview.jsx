@@ -4,8 +4,9 @@
 
 import { useMemo, useState } from 'react'
 import {
-  AlertTriangle, ArrowRight, CheckCircle2, Circle, Compass, Database, FileText,
-  HelpCircle, Layers, Lock, Maximize2, Shield, Users, Workflow, XCircle,
+  AlertTriangle, ArrowRight, BookOpen, Boxes, CheckCircle2, Circle, Compass,
+  Database, FileText, HelpCircle, Layers, Lock, Maximize2, Shield, Sparkles,
+  Target, Users, Workflow, XCircle,
 } from 'lucide-react'
 import { Empty } from '../ui'
 import DiagramMissing from './DiagramMissing'
@@ -85,15 +86,15 @@ function groupBy(items, key, fallback) {
 /** A neutral label. Colour is reserved for the three things that mean something. */
 const Chip = ({ children, tone = 'mute' }) => {
   const tones = {
-    mute: 'border-black/10 bg-black/[.04] text-muted',
-    id: 'border-black/10 bg-black/[.04] text-muted font-mono',
-    warn: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
-    good: 'border-emerald-500/30 bg-emerald-500/10 text-ink',
-    bad: 'border-rose-500/30 bg-rose-500/10 text-rose-300',
+    mute: 'border-line bg-panel2/65 text-muted',
+    id: 'border-line bg-panel2/65 text-muted font-mono',
+    warn: 'border-amber-500/30 bg-amber-500/10 text-amber-600',
+    good: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700',
+    bad: 'border-rose-500/30 bg-rose-500/10 text-rose-600',
   }
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5
-                      text-[10.5px] leading-none ${tones[tone] || tones.mute}`}>
+    <span className={`inline-flex max-w-full items-center gap-1 break-words rounded-full border px-2.5 py-1
+                      text-[10.5px] leading-tight shadow-sm ${tones[tone] || tones.mute}`}>
       {children}
     </span>
   )
@@ -101,17 +102,53 @@ const Chip = ({ children, tone = 'mute' }) => {
 
 function Block({ n, title, icon: Icon, count, hint, children }) {
   return (
-    <section className="rounded-none border border-black/10 bg-panel p-5 sm:p-6">
-      <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-black/10 pb-3">
-        {Icon && <Icon className="size-4 shrink-0 self-center text-muted2" />}
-        <span className="font-mono text-[11px] text-muted2">{n}</span>
-        <h3 className="text-[15px] font-bold tracking-tight text-ink">{title}</h3>
-        <span className="flex-1" />
-        {count != null && <span className="font-mono text-[11px] text-muted2">{count}</span>}
+    <section id={`srs-overview-${n}`} className="group relative min-w-0 scroll-mt-5 overflow-hidden rounded-2xl border border-line bg-panel shadow-[0_14px_38px_-28px_rgba(0,0,0,.6)]">
+      <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/70 to-transparent opacity-70" />
+      <header className="flex flex-wrap items-center gap-3 border-b border-line/80 bg-panel2/35 px-5 py-4 sm:px-6">
+        <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-accent/25 bg-accent/10 text-accent shadow-sm">
+          {Icon && <Icon className="size-[18px]" />}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[10px] font-semibold uppercase tracking-[.16em] text-accent">Chapter {n}</span>
+            {count != null && <span className="rounded-full border border-line bg-panel px-2 py-0.5 font-mono text-[10px] text-muted2">{count}</span>}
+          </div>
+          <h3 className="mt-0.5 font-display text-[17px] font-bold tracking-tight text-ink sm:text-[18px]">{title}</h3>
+        </div>
       </header>
-      {hint && <p className="mt-3 text-[12px] leading-relaxed text-muted2">{hint}</p>}
-      <div className="mt-3">{children}</div>
+      <div className="min-w-0 p-5 sm:p-6">
+        {hint && <p className="mb-4 max-w-3xl text-[12px] leading-relaxed text-muted2">{hint}</p>}
+        {children}
+      </div>
     </section>
+  )
+}
+
+function Metric({ icon: Icon, value, label, detail }) {
+  return (
+    <div className="min-w-0 rounded-xl border border-line/90 bg-panel/75 p-3.5 shadow-sm backdrop-blur-md">
+      <div className="flex items-center justify-between gap-3">
+        <span className="grid size-8 place-items-center rounded-lg bg-accent/10 text-accent"><Icon className="size-4" /></span>
+        <span className="font-display text-[22px] font-black tabular-nums text-ink">{value}</span>
+      </div>
+      <p className="mt-3 text-[11px] font-semibold text-ink">{label}</p>
+      {detail && <p className="mt-0.5 truncate text-[10px] text-muted2">{detail}</p>}
+    </div>
+  )
+}
+
+function JumpLink({ n, icon: Icon, title, description }) {
+  return (
+    <a href={`#srs-overview-${n}`} className="group/link flex min-w-0 items-center gap-3 rounded-xl border border-line bg-panel px-3.5 py-3 shadow-sm transition hover:-translate-y-0.5 hover:border-accent/35 hover:shadow-md">
+      <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-panel2 text-muted transition group-hover/link:bg-accent/10 group-hover/link:text-accent">
+        <Icon className="size-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[11.5px] font-semibold text-ink">{title}</span>
+        <span className="mt-0.5 block truncate text-[10px] text-muted2">{description}</span>
+      </span>
+      <ArrowRight className="size-3.5 shrink-0 text-muted2 transition group-hover/link:translate-x-0.5 group-hover/link:text-accent" />
+    </a>
   )
 }
 
@@ -121,7 +158,7 @@ const Nothing = ({ what }) => (
 
 /** A paragraph that renders only when the document actually has one. */
 const Prose = ({ children }) => (
-  children ? <p className="text-[13px] leading-[1.75] text-ink">{children}</p> : null
+  children ? <p className="break-words text-[13px] leading-[1.8] text-ink">{children}</p> : null
 )
 
 /* ── the page ────────────────────────────────────────────────────────────── */
@@ -167,55 +204,115 @@ export default function Overview({ srs, onSelectView }) {
   }
 
   const auth = doc.authentication_requirement || {}
+  const modules = list(doc.main_modules)
+  const targetUsers = list(summary.target_users)
 
   return (
-    <div className="mx-auto max-w-[1040px] space-y-5 pb-16 text-ink">
+    <div className="mx-auto w-full min-w-0 max-w-[1160px] space-y-6 overflow-x-hidden pb-16 text-ink">
 
-      {/* Header — identity only. Every chip is a field. */}
-      <header className="rounded-none border border-black/10 bg-panel p-6">
-        <h2 className="text-[24px] font-black tracking-tight text-ink">
-          {text(doc.document_title) || `${projectName} — Software Requirements Specification`}
-        </h2>
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          {text(doc.version) && <Chip tone="id">v{doc.version}</Chip>}
-          {text(doc.document_control?.document_id) && <Chip tone="id">{doc.document_control.document_id}</Chip>}
-          {text(doc.system_category) && <Chip>{doc.system_category}</Chip>}
-          {text(doc.app_type) && <Chip>{doc.app_type}</Chip>}
-          {text(doc.document_language) && <Chip>{doc.document_language}</Chip>}
-          {text(doc.standards_profile?.requirements_standard) &&
-            <Chip>{doc.standards_profile.requirements_standard}</Chip>}
-          <Chip>{auth.login_required ? 'Sign-in required' : 'No sign-in'}</Chip>
-          {openQuestions > 0 && <Chip tone="warn">{openQuestions} open question{openQuestions === 1 ? '' : 's'}</Chip>}
-          {reviewer?.iterations_used != null &&
-            <Chip tone={reviewer.unresolved_findings?.length ? 'warn' : 'good'}>
-              Reviewed · {reviewer.iterations_used} round{reviewer.iterations_used === 1 ? '' : 's'}
-            </Chip>}
+      {/* Executive summary */}
+      <header className="relative min-w-0 overflow-hidden rounded-3xl border border-accent/25 bg-panel p-5 shadow-[0_24px_60px_-38px_rgba(0,0,0,.8)] sm:p-8">
+        <div className="pointer-events-none absolute -right-28 -top-32 size-80 rounded-full bg-accent/15 blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-40 left-1/4 size-72 rounded-full bg-accent/10 blur-3xl" />
+
+        <div className="relative z-10 flex flex-col gap-5">
+          <div className="min-w-0 max-w-3xl">
+            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[.18em] text-accent">
+              <Sparkles className="size-3.5" /> SRS executive overview
+            </div>
+            <h2 className="mt-3 break-words font-display text-[27px] font-black leading-[1.08] tracking-[-.025em] text-ink sm:text-[34px]">
+              {text(doc.document_title) || `${projectName} — Software Requirements Specification`}
+            </h2>
+            <p className="mt-3 max-w-2xl break-words text-[13px] leading-[1.75] text-muted">
+              {blurb || `A clear, navigable summary of the product requirements for ${projectName}.`}
+            </p>
+            <div className="mt-4 flex min-w-0 flex-wrap gap-2">
+              {text(doc.version) && <Chip tone="id">Version {doc.version}</Chip>}
+              {text(doc.document_control?.document_id) && <Chip tone="id">{doc.document_control.document_id}</Chip>}
+              {text(doc.system_category) && <Chip>{doc.system_category}</Chip>}
+              {text(doc.document_language) && <Chip>{doc.document_language}</Chip>}
+              <Chip>{auth.login_required ? 'Sign-in required' : 'Public access'}</Chip>
+              {reviewer?.iterations_used != null &&
+                <Chip tone={reviewer.unresolved_findings?.length ? 'warn' : 'good'}>
+                  Reviewed · {reviewer.iterations_used} round{reviewer.iterations_used === 1 ? '' : 's'}
+                </Chip>}
+            </div>
+          </div>
+
+          <div className={`w-full rounded-2xl border p-4 ${openQuestions ? 'border-amber-500/25 bg-amber-500/[.07]' : 'border-emerald-500/25 bg-emerald-500/[.07]'}`}>
+            <div className="flex items-center gap-2">
+              {openQuestions ? <HelpCircle className="size-4 text-amber-600" /> : <CheckCircle2 className="size-4 text-emerald-600" />}
+              <span className="text-[10px] font-bold uppercase tracking-[.14em] text-muted2">Specification status</span>
+            </div>
+            <p className="mt-3 font-display text-[18px] font-bold text-ink">
+              {openQuestions ? `${openQuestions} decision${openQuestions === 1 ? '' : 's'} needed` : 'Ready to explore'}
+            </p>
+            <p className="mt-1 text-[11px] leading-relaxed text-muted">
+              {openQuestions ? 'Open questions are clearly collected in chapter 10.' : 'No unresolved clarification is blocking this specification.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="relative z-10 mt-7 grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(132px,1fr))]">
+          <Metric icon={Workflow} value={reqs.length} label="Functional needs" detail="What the product does" />
+          <Metric icon={Layers} value={nfrs.length} label="Quality goals" detail="How well it works" />
+          <Metric icon={Users} value={roles.length} label="User roles" detail="Who uses the system" />
+          <Metric icon={Boxes} value={modules.length} label="Core modules" detail="Product areas" />
+          <Metric icon={Database} value={tables.length} label="Data tables" detail="Stored information" />
+          <Metric icon={Compass} value={diagrams.length} label="Diagrams" detail="Visual explanations" />
         </div>
       </header>
 
+      <nav aria-label="Overview chapters" className="rounded-2xl border border-line bg-panel2/35 p-4 sm:p-5">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[.16em] text-accent">Explore the specification</p>
+            <p className="mt-0.5 text-[11px] text-muted2">Jump straight to the part you need.</p>
+          </div>
+          <BookOpen className="size-4 text-muted2" />
+        </div>
+        <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(210px,1fr))]">
+          <JumpLink n="1" icon={Target} title="Purpose & scope" description="Why this product exists" />
+          <JumpLink n="2" icon={Users} title="People & access" description="Roles and permissions" />
+          <JumpLink n="3" icon={Workflow} title="Capabilities" description="Everything it must do" />
+          <JumpLink n="6" icon={ArrowRight} title="Workflows" description="How work moves" />
+          <JumpLink n="7" icon={Database} title="Data model" description="What it remembers" />
+          <JumpLink n="8" icon={Compass} title="Diagrams" description="See the system visually" />
+        </div>
+      </nav>
+
       {/* 1 — Purpose */}
       <Block n="1" title="Purpose and scope" icon={FileText}>
-        <div className="space-y-3">
-          <Prose>{blurb}</Prose>
+        <div className="grid min-w-0 gap-4 [grid-template-columns:repeat(auto-fit,minmax(260px,1fr))]">
+          <div className="min-w-0 rounded-xl border border-line bg-panel2/35 p-4 sm:p-5">
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-[.15em] text-accent">Product in plain language</p>
+            <Prose>{blurb}</Prose>
+            {!blurb && !goal && <Nothing what="summary" />}
+          </div>
           {goal && goal !== blurb && (
-            <p className="text-[13px] leading-[1.75] text-muted">
-              <span className="font-semibold text-ink">Business goal.</span> {goal}
-            </p>
+            <div className="min-w-0 rounded-xl border border-accent/20 bg-accent/[.06] p-4 sm:p-5">
+              <div className="mb-2 flex items-center gap-2">
+                <Target className="size-4 text-accent" />
+                <p className="text-[10px] font-bold uppercase tracking-[.15em] text-accent">Business outcome</p>
+              </div>
+              <p className="break-words text-[12.5px] leading-[1.75] text-ink">{goal}</p>
+            </div>
           )}
-          {!blurb && !goal && <Nothing what="summary" />}
-          {list(summary.target_users).length > 0 && (
-            <div>
-              <p className="mb-1.5 text-[11px] uppercase tracking-wide text-muted2">Intended users</p>
+        </div>
+        <div className="mt-4 grid min-w-0 gap-4 [grid-template-columns:repeat(auto-fit,minmax(250px,1fr))]">
+          {targetUsers.length > 0 && (
+            <div className="min-w-0 rounded-xl border border-line p-4">
+              <p className="mb-2 text-[10px] font-bold uppercase tracking-[.14em] text-muted2">Intended users</p>
               <div className="flex flex-wrap gap-1.5">
-                {list(summary.target_users).map((u, i) => <Chip key={i}>{sentence(u)}</Chip>)}
+                {targetUsers.map((u, i) => <Chip key={i}>{sentence(u)}</Chip>)}
               </div>
             </div>
           )}
-          {list(doc.main_modules).length > 0 && (
-            <div>
-              <p className="mb-1.5 text-[11px] uppercase tracking-wide text-muted2">Modules</p>
+          {modules.length > 0 && (
+            <div className="min-w-0 rounded-xl border border-line p-4">
+              <p className="mb-2 text-[10px] font-bold uppercase tracking-[.14em] text-muted2">Product modules</p>
               <div className="flex flex-wrap gap-1.5">
-                {list(doc.main_modules).map((m, i) => <Chip key={i}>{sentence(m)}</Chip>)}
+                {modules.map((m, i) => <Chip key={i}>{sentence(m)}</Chip>)}
               </div>
             </div>
           )}
@@ -225,7 +322,7 @@ export default function Overview({ srs, onSelectView }) {
       {/* 2 — Roles */}
       <Block n="2" title="Who uses it" icon={Users} count={roles.length || null}>
         {roles.length === 0 ? <Nothing what="roles" /> : (
-          <ul className="space-y-3">
+          <ul className="grid min-w-0 gap-3 [grid-template-columns:repeat(auto-fit,minmax(290px,1fr))]">
             {roles.map((role, i) => {
               const name = text(role?.role_name) || text(role?.name) || `Role ${i + 1}`
               const row = access.find(r => text(r?.role) === name || text(r?.role_name) === name)
@@ -233,17 +330,20 @@ export default function Overview({ srs, onSelectView }) {
                 ? Object.entries(row).filter(([k, v]) => !/^role(_name)?$/.test(k) && v)
                 : []
               return (
-                <li key={i} className="border-b border-black/[.07] pb-3 last:border-0 last:pb-0">
-                  <p className="text-[13px] font-semibold text-ink">{name}</p>
+                <li key={i} className="min-w-0 rounded-xl border border-line bg-panel2/30 p-4 shadow-sm">
+                  <div className="flex items-center gap-2.5">
+                    <span className="grid size-8 shrink-0 place-items-center rounded-full bg-accent/10 text-[11px] font-bold text-accent">{name.slice(0, 1).toUpperCase()}</span>
+                    <p className="break-words text-[13px] font-semibold text-ink">{name}</p>
+                  </div>
                   {text(role?.description) && (
-                    <p className="mt-1 text-[12.5px] leading-relaxed text-muted">{role.description}</p>
+                    <p className="mt-3 break-words text-[12.5px] leading-relaxed text-muted">{role.description}</p>
                   )}
                   {permissions.length > 0 && (
-                    <dl className="mt-2 space-y-1">
+                    <dl className="mt-3 space-y-1.5 border-t border-line pt-3">
                       {permissions.map(([k, v]) => (
-                        <div key={k} className="flex flex-wrap gap-x-2 text-[12px] leading-relaxed">
-                          <dt className="text-muted2">{k.replace(/_/g, ' ')}</dt>
-                          <dd className="text-ink">{v === true ? 'yes' : oneLine(v)}</dd>
+                        <div key={k} className="grid min-w-0 grid-cols-[minmax(90px,.45fr)_minmax(0,1fr)] gap-x-2 text-[11.5px] leading-relaxed">
+                          <dt className="capitalize text-muted2">{k.replace(/_/g, ' ')}</dt>
+                          <dd className="break-words text-ink">{v === true ? 'Allowed' : oneLine(v)}</dd>
                         </div>
                       ))}
                     </dl>
@@ -254,14 +354,17 @@ export default function Overview({ srs, onSelectView }) {
           </ul>
         )}
         {(auth.login_required || text(auth.registration_mode) || text(auth.sign_in_route)) && (
-          <p className="mt-4 border-t border-black/[.07] pt-3 text-[12.5px] leading-relaxed text-muted">
-            {auth.login_required
-              ? 'Signing in is required to reach the protected pages.'
-              : 'The application can be used without signing in.'}
-            {registrationSentence(auth)}
-            {text(auth.sign_in_route) && ` The sign-in route is ${auth.sign_in_route}.`}
-            {auth.password_reset_required && ' A password reset flow is required.'}
-          </p>
+          <div className="mt-4 flex items-start gap-3 rounded-xl border border-accent/20 bg-accent/[.05] p-4">
+            <Lock className="mt-0.5 size-4 shrink-0 text-accent" />
+            <p className="break-words text-[12.5px] leading-relaxed text-muted">
+              {auth.login_required
+                ? 'Signing in is required to reach the protected pages.'
+                : 'The application can be used without signing in.'}
+              {registrationSentence(auth)}
+              {text(auth.sign_in_route) && ` The sign-in route is ${auth.sign_in_route}.`}
+              {auth.password_reset_required && ' A password reset flow is required.'}
+            </p>
+          </div>
         )}
       </Block>
 
