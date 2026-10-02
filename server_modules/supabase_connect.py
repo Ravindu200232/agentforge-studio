@@ -425,6 +425,57 @@ def account_facts() -> dict:
     return out
 
 
+def linked_projects() -> dict[str, str]:
+    """Which AgentForge project uses each Supabase project this studio made: ref → AgentForge project id."""
+    return {str(row.get("ref")): key for key, row in _read_all().items() if isinstance(row, dict) and row.get("ref")}
+
+
+def make_room(ref: str, action: str, log=None) -> None:
+    """Pause or delete one of the account's projects so a new one fits in its organisation.
+
+    Only ever the project the customer named and chose this for (builder setup checks they were asked about that
+    very project). Pausing keeps everything and is undone from the Supabase dashboard; deleting is permanent. Waits
+    until Supabase has let the project go, because the organisation's slot is free only then; a project already
+    paused or gone is left as it is, so a build that tries again does not do it twice.
+    """
+    if action not in ("pause", "delete"):
+        raise ValueError('make_room takes "pause" or "delete"')
+    say = log or (lambda _line: None)
+    headers = {"Authorization": f"Bearer {_refresh_if_needed()}"}
+    url = f"https://api.supabase.com/v1/projects/{ref}"
+
+    def current() -> str:
+        answer = httpx.get(url, headers=headers, timeout=15)
+        if answer.status_code == 404:
+            return "GONE"
+        return str(_json_body(answer).get("status") or "").upper() if answer.status_code < 400 else ""
+
+    done = {"pause": {"INACTIVE", "PAUSED", "GONE", "REMOVED"}, "delete": {"GONE", "REMOVED"}}[action]
+    if current() not in done:
+        say(f"{'Pausing' if action == 'pause' else 'Deleting'} the Supabase project {ref}, as you chose…")
+        answer = (httpx.post(f"{url}/pause", headers=headers, timeout=30) if action == "pause"
+                  else httpx.delete(url, headers=headers, timeout=30))
+        if answer.status_code >= 400:
+            reason = _json_body(answer).get("message") or answer.text
+            raise ValueError(f"Supabase would not {action} project {ref}: {str(reason)[:300]}")
+        for _ in range(48):  # ~4 minutes
+            if current() in done:
+                break
+            time.sleep(5)
+        else:
+            raise ValueError(f"Supabase is still taking project {ref} down; its place in the organisation is not free "
+                             "yet. Try again in a few minutes.")
+    if action == "delete":
+        # The AgentForge project that used it has no Supabase project any more: its next build makes a new one.
+        rows = _read_all()
+        gone = [key for key, row in rows.items() if isinstance(row, dict) and row.get("ref") == ref]
+        for key in gone:
+            rows.pop(key, None)
+        if gone:
+            _write_all(rows)
+    say(f"Supabase project {ref} {'paused' if action == 'pause' else 'deleted'}.")
+
+
 def ensure_project(project: str, name: str = "", log=None, region: str = "", org_id: str = "",
                    fresh: bool = False) -> dict:
     """The project's own Supabase project: the existing one, or a freshly created one.

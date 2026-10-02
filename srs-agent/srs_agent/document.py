@@ -571,7 +571,10 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
             rendered, why = mermaid.render_diagram(kind, source, svg)
             bus.agent_msg(project, "SVG rendered successfully." if rendered else why,
                           title="Mermaid output", kind="command_output")
-            if not rendered:
+            # Only Mermaid rejecting the source goes back to the model. A renderer that could not run is not the
+            # source's fault: rewriting it would only change a good diagram, and the picture is drawn later from
+            # the saved source (_recover_rendered_diagrams) once the renderer works.
+            if not rendered and mermaid.is_syntax_error(why):
                 wrong = [why]
         if not wrong or attempt == 2:
             break
@@ -1517,8 +1520,10 @@ def redraw_diagrams(project: str, *, deep: bool = False,
                     })
                     entry.pop("render_error", None)
                 else:
-                    for field in ("svg", "svg_path", "rendered_by"):
-                        entry.pop(field, None)
+                    # A source Mermaid rejects loses its old picture; a renderer that could not run keeps it.
+                    if mermaid.is_syntax_error(reason):
+                        for field in ("svg", "svg_path", "rendered_by"):
+                            entry.pop(field, None)
                     entry["render_error"] = reason[:240]
                 return entry
 

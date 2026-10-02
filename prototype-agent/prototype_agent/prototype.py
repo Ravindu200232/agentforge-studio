@@ -181,6 +181,7 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str,
     flow = prototype_brief.flow_of(doc, routes_out)
     sign_in = prototype_brief.sign_in_route(doc)
     accounts = prototype_brief.draw_accounts(doc, routes_out, flow, "")
+    sign_up = prototype_brief.sign_up_of(doc, routes_out, accounts)
 
     fingerprint = hashlib.sha256(json.dumps(
         {"routes": routes_out, "design": spec, "customization": customization, "blueprints":
@@ -202,7 +203,7 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str,
                                            "accounts": accounts, "flow": flow}, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # The parts that are the same for every prototype: the route map, the flow and the demo sign-in.
-    write("assets/flow.js", prototype_brief.flow_script(routes_out, flow, accounts, sign_in))
+    write("assets/flow.js", prototype_brief.flow_script(routes_out, flow, accounts, sign_in, sign_up))
     write("demo-accounts.json", json.dumps({"sign_in": sign_in, "accounts": accounts}, ensure_ascii=False, indent=2))
 
     def publish(done: set[str]) -> None:
@@ -220,7 +221,7 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str,
     request = prompts.load(
         "prototype/generate", inputs="\n".join(inputs), design_direction=direction_text,
         routes=prototype_brief.routes_text(routes_out, blueprints), journeys=prototype_brief.journey_text(flow),
-        sign_in=prototype_brief.sign_in_text(accounts, sign_in, routes_out),
+        sign_in=prototype_brief.sign_in_text(accounts, sign_in, routes_out, sign_up),
         uploads=(json.dumps(uploaded_images, ensure_ascii=False, indent=2) if uploaded_images
                  else "None — use the wireframes' images or fitting real photos."),
         resume=resume)

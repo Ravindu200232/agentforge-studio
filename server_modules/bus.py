@@ -494,7 +494,8 @@ def ask(project: str, kind: str, question: str, options: Iterable[str] = (),
     `kind` decides where the studio shows it: `question` in the chat stream,
     `prototype` in the preview, anything else in a dialog.
     """
-    decision_id = f"ask-{next(_ids)}"
+    # Unique across restarts: a card still on screen from before one must never answer a newer question.
+    decision_id = f"ask-{next(_ids)}-{uuid.uuid4().hex[:8]}"
     event = {"type": "approval", "project": project, "agent": agent,
              "id": decision_id, "kind": kind, "question": question,
              "options": list(options), **extra}
@@ -516,6 +517,25 @@ def resolve(decision_id: str) -> dict | None:
         emit({"type": "approval_resolved", "project": question.get("project"),
               "agent": question.get("agent", DEVELOPER), "id": decision_id})
     return question
+
+
+def asked(decision_id: str) -> dict | None:
+    """A question as it was put on screen, from the conversation record: still findable after a restart forgot
+    the waiting one, so its answer can reach whatever is still waiting on it."""
+    with _lock:
+        for rows in _history.values():
+            for event in reversed(rows):
+                if event.get("type") == "approval" and event.get("id") == decision_id:
+                    return dict(event)
+    return None
+
+
+def resolve_project(project: str, flow: str) -> None:
+    """Every question of one `flow` still on screen for a project, closed: its answer came another way."""
+    with _lock:
+        ids = [i for i, q in _pending_decisions.items() if q.get("project") == project and q.get("flow") == flow]
+    for decision_id in ids:
+        resolve(decision_id)
 
 
 def run_status(project: str) -> dict[str, dict]:

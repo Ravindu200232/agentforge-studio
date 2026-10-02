@@ -36,7 +36,7 @@ export function answerAsk(reply) {
   const ask = useStore.getState().ask
   if (!ask) return false
   useStore.getState().setAsk(null)
-  api.decide({ id: ask.id, decision: 'answer', reply })
+  api.decide({ id: ask.id, project: ask.project, decision: 'answer', reply })
      .catch(e => useStore.getState().addLog('WARN', `Could not send that answer — ${e.message}`))
   return true
 }
@@ -49,7 +49,7 @@ export function answerAsk(reply) {
 export async function answerValue(value) {
   const ask = useStore.getState().ask
   if (!ask) return { ok: false, detail: 'That question is no longer waiting.' }
-  const result = await api.decide({ id: ask.id, decision: 'answer', reply: value })
+  const result = await api.decide({ id: ask.id, project: ask.project, decision: 'answer', reply: value })
   if (result?.ok === false) return result
   useStore.getState().setAsk(null)
   useStore.getState().pushChat({ role: 'user', text: `Saved ${ask.variable}.`, at: Date.now() })
@@ -62,7 +62,7 @@ export async function answerOption(label) {
   if (!ask) return false
   useStore.getState().setAsk(null)
   useStore.getState().pushChat({ role: 'user', text: label, at: Date.now() })
-  api.decide({ id: ask.id, decision: 'answer', reply: label, via: 'option' })
+  api.decide({ id: ask.id, project: ask.project, decision: 'answer', reply: label, via: 'option' })
      .catch(e => useStore.getState().addLog('WARN', `Could not send that answer — ${e.message}`))
   return true
 }
@@ -72,7 +72,7 @@ export function declineAsk() {
   const ask = useStore.getState().ask
   if (!ask) return false
   useStore.getState().setAsk(null)
-  api.decide({ id: ask.id, decision: 'default' })
+  api.decide({ id: ask.id, project: ask.project, decision: 'default' })
      .catch(e => useStore.getState().addLog('WARN', `Could not send that — ${e.message}`))
   return true
 }

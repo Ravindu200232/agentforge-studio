@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any
 
-from server_modules import auth_guide, changes, mongo_connect, prompts, supabase_connect
+from server_modules import auth_guide, changes, mongo_connect, prompts, store, supabase_connect
 
 MAX_QUESTIONS = 20
 _REGION = re.compile(r"^[A-Za-z0-9_-]{2,40}$")
@@ -34,6 +34,13 @@ def facts(project: str, stack: str, earlier: dict | None = None) -> dict[str, An
         account = account or supabase_connect.account_facts()
     except Exception as exc:  # noqa: BLE001 - a fact that cannot be read is said, not fatal
         account = {"connected": False, "unreadable": str(exc)[:200]}
+    # Which of the account's projects another AgentForge project of this customer's runs on: what pausing or
+    # deleting one of them would take away.
+    linked = supabase_connect.linked_projects()
+    titles = {row.get("name"): row.get("title") for row in store.listing()}
+    for row in (account or {}).get("projects") or []:
+        if isinstance(row, dict) and linked.get(row.get("ref")) not in (None, project):
+            row["used_by_agentforge_project"] = titles.get(linked[row["ref"]]) or linked[row["ref"]]
     found["supabase"] = {"this_project": {k: this.get(k, "") for k in ("ref", "name", "url")} if this.get("connected")
                          else None, "account": account}
     if uses_mongodb(stack):
@@ -47,7 +54,10 @@ def facts(project: str, stack: str, earlier: dict | None = None) -> dict[str, An
 def database_shape(stack: str) -> str:
     supabase = ('{"use": "this" (keep this project\'s Supabase project) or "new", '
                 '"organization": "<an organization id from the facts, for new>", '
-                '"region": "<a Supabase region code, for new>"}')
+                '"region": "<a Supabase region code, for new>", '
+                '"make_room": {"action": "pause" or "delete", "project": "<the ref of the account\'s project to pause or '
+                'delete first, so the new one fits>"} — only for "new", and only when the customer chose that for that very '
+                'project; otherwise leave it out}')
     if not uses_mongodb(stack):
         return '{"supabase": ' + supabase + "}"
     return ('{"supabase": ' + supabase + ', "mongodb": {"use": "atlas" (the connected Atlas account\'s cluster, '
@@ -85,7 +95,31 @@ def prompt(project: str, session: Any, stack: str, found: dict, state: dict, lef
         answers="\n\n".join(parts), database_shape=database_shape(stack))
 
 
-def check(data: Any, may_ask: bool, stack: str, found: dict) -> dict:
+def _make_room(supabase: dict, account: dict, this: dict | None, answers: list[dict]) -> dict | None:
+    """The project the customer agreed to pause or delete so a new one fits — checked against what is real: one of
+    the account's projects, not this project's own, and one the customer was asked about by name."""
+    room = supabase.get("make_room")
+    if not room:
+        return None
+    if supabase.get("use") != "new":
+        raise ValueError('"make_room" only goes with "use": "new"')
+    if not isinstance(room, dict) or room.get("action") not in ("pause", "delete"):
+        raise ValueError('"make_room.action" must be "pause" or "delete"')
+    projects = {str(p.get("ref")): p for p in account.get("projects") or [] if isinstance(p, dict) and p.get("ref")}
+    target = projects.get(str(room.get("project") or ""))
+    if not target:
+        raise ValueError('"make_room.project" must be the ref of one of the account\'s projects in the facts')
+    if this and str(this.get("ref") or "") == str(target["ref"]):
+        raise ValueError("this project's own Supabase project is never paused or deleted to make room for a new one")
+    names = {str(target.get("name") or "").strip().lower(), str(target["ref"]).lower()} - {""}
+    if not any(name in str(row.get("question") or "").lower() for row in answers for name in names):
+        raise ValueError(f'the customer has not been asked about {target.get("name") or target["ref"]}: ask them first, '
+                         f'naming it, whether to {room["action"]} it — a project of theirs is paused or deleted only '
+                         "when they chose that for it")
+    return {"action": room["action"], "project": str(target["ref"]), "name": str(target.get("name") or "")}
+
+
+def check(data: Any, may_ask: bool, stack: str, found: dict, answers: list[dict] | None = None) -> dict:
     """The model's reply as a clean question or a settled, carry-out-able `database`. What is wrong is the repair."""
     if not isinstance(data, dict):
         raise ValueError("return one JSON object")
@@ -109,6 +143,10 @@ def check(data: Any, may_ask: bool, stack: str, found: dict) -> dict:
         if supabase.get("region") and not _REGION.match(str(supabase["region"])):
             raise ValueError('"database.supabase.region" must be a Supabase region code such as the facts show')
     settled = {"supabase": {key: str(supabase.get(key) or "") for key in ("use", "organization", "region")}}
+    room = _make_room(supabase, (found.get("supabase") or {}).get("account") or {},
+                      (found.get("supabase") or {}).get("this_project"), list(answers or []))
+    if room:
+        settled["supabase"]["make_room"] = room
     if uses_mongodb(stack):
         mongodb = database.get("mongodb")
         if not isinstance(mongodb, dict) or mongodb.get("use") not in ("atlas", "saved", "local"):
@@ -130,6 +168,9 @@ def check(data: Any, may_ask: bool, stack: str, found: dict) -> dict:
 def apply(project: str, name: str, database: dict, say: Any) -> None:
     """Carry out where the data lives, exactly as settled. A no-op for what already exists."""
     supabase = database.get("supabase") or {}
+    room = supabase.get("make_room") or {}
+    if room and supabase.get("use") == "new":
+        supabase_connect.make_room(room["project"], room["action"], log=say)
     supabase_connect.ensure_project(project, name=name, log=say, region=supabase.get("region", ""),
                                     org_id=supabase.get("organization", ""),
                                     fresh=supabase.get("use") == "new" and bool(supabase_connect.record(project)))

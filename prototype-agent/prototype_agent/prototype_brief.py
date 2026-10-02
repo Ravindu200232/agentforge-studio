@@ -145,7 +145,28 @@ def routes_text(routes_out: list[dict], wireframes: dict[str, str] | None = None
     return "\n".join(rows)
 
 
-def sign_in_text(accounts: list[dict], sign_in: str, routes_out: list[dict]) -> str:
+def sign_up_of(doc: dict, routes_out: list[dict], accounts: list[dict]) -> dict | None:
+    """The sign-up page and the demo account a new sign-up becomes, when people may create their own account."""
+    auth = doc.get("authentication_requirement") or {}
+    if not isinstance(auth, dict) or not accounts:
+        return None
+    mode = str(auth.get("registration_mode") or "").strip().lower()
+    if not (auth.get("self_registration") or mode == "open"):
+        return None
+    pages = {str(r["route"]): r for r in routes_out}
+    route = str(auth.get("sign_up_route") or "").strip()
+    if route not in pages:
+        route = next((r for r in pages if re.search(r"sign-?up|register|create-?account", r, re.IGNORECASE)), "")
+    if not route:
+        return None
+    wanted = [_norm(auth.get("registration_role"))] + [_norm(name) for name in _items(auth.get("registration_roles"))]
+    account = next((a for name in wanted if name for a in accounts if name in {_norm(a["role"]), _norm(a["role_key"])}),
+                   accounts[0])
+    return {"route": route, "file": pages[route]["file"], "name": pages[route]["name"],
+            "role": account["role"], "role_key": account["role_key"]}
+
+
+def sign_in_text(accounts: list[dict], sign_in: str, routes_out: list[dict], sign_up: dict | None = None) -> str:
     """What the agent is told about signing in: one-click role-based demo login, already provided by `assets/flow.js`."""
     if not sign_in or not accounts:
         return "This product has no sign-in. Draw no sign-in form and no account menu."
@@ -160,8 +181,14 @@ def sign_in_text(accounts: list[dict], sign_in: str, routes_out: list[dict]) -> 
              "checkout — is built the same way: `<form data-sign-in>` with the empty `<div data-demo-login></div>` under it.",
              "- Never decide where signing in goes: no `data-next`, redirect, link or `data-go` on a sign-in form or its button, and "
              "no submit handler for it in app.js. Each role has its own first page below, and flow.js sends it there.",
-             "- Wherever the signed-in person shows, write `<span data-user=\"name\"></span>` (or `\"email\"`, `\"role\"`); a "
-             "sign-out control carries `data-sign-out`.",
+             "- Wherever the signed-in person shows, write `<span data-user=\"name\"></span>` (or `\"email\"`, `\"role\"`).",
+             "- Every Sign out — in the account menu, in the phone menu, the confirm button of a sign-out dialog — is a "
+             "`<button type=\"button\" data-sign-out>`: flow.js ends the demo session and opens the sign-in page. Never a plain "
+             "link to the sign-in page, no `data-roles` on it (everyone who is signed in can sign out) and no sign-out code in "
+             "app.js.",
+             "- The account menu and every dropdown open inside the screen at every width: aligned to their button's edge, "
+             "never wider than the screen; on a phone the account menu and Sign out sit inside the menu.",
+             "- app.js never keeps a signed-in state or a user of its own: it asks `window.PROTOTYPE.user()`.",
              "- Two navigation states. Anything only a signed-in person sees — the signed-in navigation, the account menu, \"Go to my "
              "dashboard\" — carries `data-auth=\"in\"`; anything only a signed-out person sees — Sign in, Sign up, \"Create account\" — "
              "carries `data-auth=\"out\"`. A public page carries both headers, the public one marked `data-auth=\"out\"` and the "
@@ -176,6 +203,15 @@ def sign_in_text(accounts: list[dict], sign_in: str, routes_out: list[dict]) -> 
              "there if app.js needs them.", "", "The demo accounts:", ""]
     lines += [f"- **{a['role']}** (`{a['role_key']}`) — {a['email']} / {a['password']} — opens "
               f"`{next((r['file'] for r in routes_out if r['route'] == a['lands_on']), a['lands_on'])}` first" for a in accounts]
+    if sign_up:
+        lines += ["", f"Signing up: the sign-up page is **{sign_up['name']}** (`.agentforge/prototype/{sign_up['file']}`), and a "
+                  f"new account is a **{sign_up['role']}**. `assets/flow.js` does the signing up too:", "",
+                  "- Its form is `<form data-sign-up>` with the fields its wireframe has (the name, the email, the password and "
+                  "the rest). Once the form is valid, flow.js creates the demo account from the typed name and email, signs it "
+                  f"in as {sign_up['role']} and opens that role's first page.",
+                  "- So no success panel, no \"check your email\" step, no `data-next`, `data-success`, redirect, link or "
+                  "`data-go` on the form or its button, and no submit handler for it in app.js. Inline validation messages "
+                  "under the fields are yours, as on every form."]
     return "\n".join(lines)
 
 
@@ -228,10 +264,12 @@ def accounts_message(accounts: list[dict], routes_out: list[dict], sign_in: str)
     return "\n".join(lines)
 
 
-def flow_script(routes_out: list[dict], flow: dict, accounts: list[dict], sign_in: str) -> str:
+def flow_script(routes_out: list[dict], flow: dict, accounts: list[dict], sign_in: str, sign_up: dict | None = None) -> str:
     """`assets/flow.js`: the route map, the journeys and the demo accounts, as data the kit's script reads."""
     data = {"routes": route_map(routes_out),
             "signIn": next(({"route": r["route"], "file": r["file"]} for r in routes_out if r["route"] == sign_in), None),
+            "signUp": ({"route": sign_up["route"], "file": sign_up["file"], "roleKey": sign_up["role_key"]}
+                       if sign_up and accounts else None),
             "accounts": [{"role": a["role"], "roleKey": a["role_key"], "name": a["display_name"], "email": a["email"], "password": a["password"],
                           "landsOn": a["lands_on"], "canOpen": [p["route"] for p in a["can_open"]]} for a in accounts],
             "journeys": flow["journeys"]}
@@ -281,6 +319,8 @@ def flow_script(routes_out: list[dict], flow: dict, accounts: list[dict], sign_i
   document.addEventListener('click', function (event) {
     var el = event.target.closest && event.target.closest('[data-go]');
     if (!el) return;
+    // Signing out or in is the demo session's to do (below): it ends or starts the session, then goes on itself.
+    if (el.closest('[data-sign-out], [data-login-as]') || /^(sign|log)\s*-?\s*out$/i.test(String(el.textContent || '').trim())) return;
     var route = el.getAttribute('data-go');
     if (route && route !== '#') { event.preventDefault(); event.stopImmediatePropagation(); go(route); }
   }, true);
@@ -290,11 +330,15 @@ def flow_script(routes_out: list[dict], flow: dict, accounts: list[dict], sign_i
 
 
 # The demo sign-in is the same on every prototype, so it is code rather than something each model run re-invents: one click per
-# role on the sign-in page, the typed demo email and password also work, sign-out, the signed-in user's fields and role-only items.
+# role on the sign-in page, the typed demo email and password also work, signing up as the role sign-ups get, sign-out, the
+# signed-in user's fields and role-only items.
 DEMO_SESSION = r'''
 (function () {
   var P = window.PROTOTYPE = window.PROTOTYPE || {};
   var KEY = 'agentforge.prototype.user';
+  var PROFILE = KEY + '.profile';
+  // A sign-out control, by its words, for a page that left out `data-sign-out`.
+  var SIGN_OUT = /^(sign|log)\s*-?\s*out$/i;
   function accounts() { return Array.isArray(P.accounts) ? P.accounts : []; }
   function fileFor(route) {
     var row = (P.routes || []).filter(function (r) { return r && r.route === route; })[0];
@@ -308,16 +352,29 @@ DEMO_SESSION = r'''
     try { if (email) window.localStorage.setItem(KEY, email); else window.localStorage.removeItem(KEY); } catch (ignore) {}
     window.name = email ? KEY + '=' + email : '';
   }
+  // The name and email someone typed when signing up, shown instead of the demo account's own.
+  function profile() {
+    try { return JSON.parse(window.localStorage.getItem(PROFILE) || 'null') || {}; } catch (ignore) { return {}; }
+  }
+  function keepProfile(value) {
+    try { if (value) window.localStorage.setItem(PROFILE, JSON.stringify(value)); else window.localStorage.removeItem(PROFILE); } catch (ignore) {}
+  }
   function find(value) {
     var key = String(value || '').trim().toLowerCase();
     return accounts().filter(function (a) {
       return [a.roleKey, a.role, a.email].some(function (v) { return String(v || '').toLowerCase() === key; });
     })[0] || null;
   }
-  P.user = function () { return find(read()); };
+  P.user = function () {
+    var account = find(read());
+    if (!account) return null;
+    var own = profile();
+    return Object.assign({}, account, own.name ? { name: own.name } : {}, own.email ? { email: own.email } : {});
+  };
   P.loginAs = function (roleOrEmail) {
     var account = find(roleOrEmail);
     if (!account) return null;
+    keepProfile(null);
     write(account.email);
     window.location.href = fileFor(account.landsOn);
     return account;
@@ -326,8 +383,18 @@ DEMO_SESSION = r'''
     var account = find(email);
     return account && account.password === String(password || '') ? P.loginAs(account.email) : null;
   };
+  // A new account: the role sign-ups get, under the name and email that were typed, opening that role's first page.
+  P.register = function (name, email) {
+    var account = find((P.signUp || {}).roleKey) || accounts()[0];
+    if (!account) return null;
+    write(account.email);
+    keepProfile({ name: String(name || '').trim(), email: String(email || '').trim() });
+    window.location.href = fileFor(account.landsOn);
+    return account;
+  };
   P.logout = function () {
     write('');
+    keepProfile(null);
     window.location.href = P.signIn && P.signIn.file ? P.signIn.file : 'index.html';
   };
   P.canOpen = function (route) {
@@ -336,6 +403,23 @@ DEMO_SESSION = r'''
   };
   function here() { return decodeURIComponent(window.location.pathname.split('/').pop() || 'index.html'); }
   function onSignIn() { return !!(P.signIn && P.signIn.file === here()); }
+  function onSignUp() { return !!(P.signUp && P.signUp.file === here()); }
+  function signOutControl(target) {
+    var marked = target.closest && target.closest('[data-sign-out]');
+    if (marked) return marked;
+    var el = target.closest && target.closest('a, button, [role="menuitem"]');
+    // A Sign out that only opens a confirmation is not the sign-out itself: its dialog's button is.
+    if (!el || el.hasAttribute('data-dialog-open') || el.hasAttribute('aria-haspopup') || el.hasAttribute('aria-controls')) return null;
+    return SIGN_OUT.test(String(el.textContent || '').replace(/\s+/g, ' ').trim()) ? el : null;
+  }
+  function typedName(form) {
+    function pick(selector) { var el = form.querySelector(selector); return el && el.value ? String(el.value).trim() : ''; }
+    var full = pick('input[autocomplete="name"]') || pick('input[name="name" i], input[id="name" i]')
+      || pick('input[name*="full" i], input[id*="full" i]');
+    if (full) return full;
+    return [pick('input[autocomplete="given-name"], input[name*="first" i], input[id*="first" i]'),
+            pick('input[autocomplete="family-name"], input[name*="last" i], input[id*="last" i]')].filter(Boolean).join(' ');
+  }
   function page() { return (P.routes || []).filter(function (r) { return r && r.file === here(); })[0] || null; }
   function demoLogin() {
     var list = accounts();
@@ -408,12 +492,24 @@ DEMO_SESSION = r'''
   document.addEventListener('click', function (event) {
     var as = event.target.closest && event.target.closest('[data-login-as]');
     if (as) { event.preventDefault(); event.stopImmediatePropagation(); P.loginAs(as.getAttribute('data-login-as')); return; }
-    var out = event.target.closest && event.target.closest('[data-sign-out]');
+    var out = signOutControl(event.target);
     if (out) { event.preventDefault(); event.stopImmediatePropagation(); P.logout(); }
   }, true);
   document.addEventListener('submit', function (event) {
     var form = event.target;
     var password = form.querySelector && form.querySelector('input[type="password"]');
+    if (accounts().length && (form.hasAttribute('data-sign-up') || (onSignUp() && password && !form.hasAttribute('data-sign-in')))) {
+      // What the form asks for is the page's own check: an incomplete form (no real email, a password shorter than the
+      // sign-up rule's 8 characters) is left to the page to show its messages.
+      var typed = form.querySelector('input[type="email"], input[name*="email" i], input[autocomplete="email"]');
+      if (form.checkValidity && !form.checkValidity()) return;
+      if ((typed && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(typed.value || '').trim()))
+          || (password && String(password.value || '').length < 8)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      P.register(typedName(form), typed && typed.value);
+      return;
+    }
     if (!accounts().length || !(form.hasAttribute('data-sign-in') || (onSignIn() && password))) return;
     event.preventDefault();
     event.stopImmediatePropagation();

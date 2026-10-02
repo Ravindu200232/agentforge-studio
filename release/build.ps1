@@ -63,6 +63,11 @@ function Get-Cached($url, $name) {
 
 function Get-Sha256($file) { (Get-FileHash -Algorithm SHA256 $file).Hash.ToLowerInvariant() }
 
+# Windows PowerShell's `Set-Content -Encoding UTF8` starts a file with a byte-order mark, and Node refuses a
+# package.json that has one: every diagram render failed on installed copies. Text other programs read is written
+# without it.
+function Write-Text($path, $text) { [IO.File]::WriteAllText($path, ($text -join "`n"), (New-Object Text.UTF8Encoding $false)) }
+
 function Get-ZipStrip($file) {
     # 1 when every entry sits under one top folder (node-v24.x-win-x64\...), else 0.
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -116,7 +121,7 @@ if (Want 'stage') {
     $studioRuntime = Join-Path $backend 'studio'
     New-Item -ItemType Directory -Force $studioRuntime | Out-Null
     $deps = @{}; foreach ($key in $StudioModules.Keys) { $deps[$key] = $StudioModules[$key] }
-    @{ name = 'agentforge-backend-runtime'; private = $true; dependencies = $deps } | ConvertTo-Json | Set-Content (Join-Path $studioRuntime 'package.json') -Encoding UTF8
+    Write-Text (Join-Path $studioRuntime 'package.json') (@{ name = 'agentforge-backend-runtime'; private = $true; dependencies = $deps } | ConvertTo-Json)
     $env:PUPPETEER_SKIP_DOWNLOAD = '1'
     Push-Location $studioRuntime
     try { npm.cmd install --omit=dev --no-audit --no-fund; if ($LASTEXITCODE -ne 0) { throw 'npm install failed' } } finally { Pop-Location; Remove-Item Env:PUPPETEER_SKIP_DOWNLOAD }
@@ -212,20 +217,20 @@ $components += $npmEntry, $browserEntry
 $localComponents += $npmEntry, $browserEntry
 
 Step "manifest.json"
-[ordered]@{ version = $version; repo = $Repo; built = (Get-Date).ToString('s'); components = $components } |
-    ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'manifest.json') -Encoding UTF8
-[ordered]@{ version = $version; repo = $Repo; built = (Get-Date).ToString('s'); components = $localComponents } |
-    ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'manifest.local.json') -Encoding UTF8
+Write-Text (Join-Path $out 'manifest.json') `
+    ([ordered]@{ version = $version; repo = $Repo; built = (Get-Date).ToString('s'); components = $components } | ConvertTo-Json -Depth 6)
+Write-Text (Join-Path $out 'manifest.local.json') `
+    ([ordered]@{ version = $version; repo = $Repo; built = (Get-Date).ToString('s'); components = $localComponents } | ConvertTo-Json -Depth 6)
 
 Step "AgentForgeSetup.exe"
 $installer = Join-Path $release 'installer'
-@"
+Write-Text (Join-Path $installer 'Config.generated.cs') @"
 namespace AgentForge.Setup { static class Config {
     public const string AppName = "AgentForge";
     public const string Publisher = "AgentForge";
     public const string ManifestUrl = "https://github.com/$Repo/releases/latest/download/manifest.json";
 } }
-"@ | Set-Content (Join-Path $installer 'Config.generated.cs') -Encoding UTF8
+"@
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 & $csc -nologo -target:winexe -optimize+ "-out:$(Join-Path $out 'AgentForgeSetup.exe')" `
     "-win32icon:$(Join-Path $root 'desktop\build\icon.ico')" "-win32manifest:$(Join-Path $installer 'app.manifest')" `

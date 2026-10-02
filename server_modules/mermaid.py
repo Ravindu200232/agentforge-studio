@@ -16,12 +16,17 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 _lock = threading.Lock()
 # Without this every mmdc/npx/Chromium launch flashes a console window on Windows.
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _cli: list[str] | None | bool = False   # False = not looked for yet
+_cli_checked = 0.0
+# A renderer that was not found is looked for again after this long: Node can arrive (an install finishing, PATH
+# changing) while the studio runs, and "not found once" must not mean source-only diagrams until a restart.
+RECHECK_SECONDS = 60
 
 # Mermaid needs a browser; on a headless machine it needs to be told it may run
 # without a sandbox. Written next to the call rather than into the project.
@@ -100,8 +105,27 @@ def _node_binaries() -> list[str]:
     return found
 
 
+def _playwright_browsers() -> list[Path]:
+    """Chromium as Playwright installed it (the desktop app installs one under its tools, PLAYWRIGHT_BROWSERS_PATH):
+    the browser every computer the installer set up has, Chrome or Edge or not."""
+    roots = [os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""),
+             str(Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright") if os.environ.get("LOCALAPPDATA") else "",
+             str(Path.home() / "Library" / "Caches" / "ms-playwright"), str(Path.home() / ".cache" / "ms-playwright")]
+    found: list[Path] = []
+    for root in filter(None, roots):
+        base = Path(root)
+        if not base.is_dir():
+            continue
+        for pattern in ("chromium-*/chrome-win*/chrome.exe", "chromium-*/chrome-linux*/chrome",
+                        "chromium-*/chrome-mac*/Chromium.app/Contents/MacOS/Chromium",
+                        "chromium_headless_shell-*/chrome-headless-shell-*/chrome-headless-shell.exe",
+                        "chromium_headless_shell-*/chrome-headless-shell-*/chrome-headless-shell"):
+            found.extend(sorted(base.glob(pattern), reverse=True))
+    return found
+
+
 def _installed_browser() -> str | None:
-    """Use Puppeteer's browser when present, otherwise a system Chrome/Edge."""
+    """Use Puppeteer's browser when present, otherwise a system Chrome/Edge, otherwise Playwright's Chromium."""
     candidates = [
         Path(os.environ.get("PUPPETEER_EXECUTABLE_PATH", "")),
         Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
@@ -114,6 +138,7 @@ def _installed_browser() -> str | None:
         / "Microsoft/Edge/Application/msedge.exe",
         Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
         / "Microsoft/Edge/Application/msedge.exe",
+        *_playwright_browsers(),
     ]
     for candidate in candidates:
         if str(candidate) and candidate.is_file():
@@ -122,12 +147,13 @@ def _installed_browser() -> str | None:
 
 
 def _find_cli() -> list[str] | None:
-    """The first mermaid-cli invocation that actually works, or None."""
-    global _cli
+    """The first mermaid-cli invocation that actually works, or None (looked for again after RECHECK_SECONDS)."""
+    global _cli, _cli_checked
     with _lock:
-        if _cli is not False:
+        if _cli is not False and (_cli is not None or time.monotonic() - _cli_checked < RECHECK_SECONDS):
             return _cli  # type: ignore[return-value]
         _cli = None
+        _cli_checked = time.monotonic()
         candidates: list[list[str]] = []
         local_cli = (_STUDIO_ROOT / "node_modules" / "@mermaid-js"
                      / "mermaid-cli" / "src" / "cli.js")
@@ -454,6 +480,17 @@ def _readable_error(text: str) -> str:
             if any(word in line.lower() for word in
                    ("error", "expecting", "parse", "unexpected", "got '", "syntax"))]
     return " | ".join((keep or lines)[:6])[:600] or "the renderer failed without a message"
+
+
+# What Mermaid itself says about a source it cannot parse. Anything else (a browser that would not start, a file the
+# renderer could not read) is the renderer's own trouble, which no rewrite of the source can fix.
+_SYNTAX = re.compile(r"parse error|lexical error|syntax error in|expecting |no diagram type detected|"
+                     r"unknowndiagramerror|unsupported diagram|got '", re.IGNORECASE)
+
+
+def is_syntax_error(message: str) -> bool:
+    """Whether a failed render was Mermaid rejecting the source (worth sending back to the model to correct)."""
+    return bool(_SYNTAX.search(str(message or "")))
 
 
 _FENCE = re.compile(r"```(?:mermaid)?\s*(.+?)```", re.DOTALL)

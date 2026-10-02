@@ -36,6 +36,14 @@ earlier answer:
   already has (name it, as the facts give it) or create a new one, on which plan — free or paid, with the
   provider's own current price and limits — and in which region, nearest the people who will use the app.
   This project's Supabase is connected through its account: never ask for a Supabase URL, key or password.
+- **When the account cannot take a new one.** The facts give each organisation's plan and its projects with their
+  status, and which of the customer's other AgentForge projects runs on one (`used_by_agentforge_project`); "What
+  went wrong just now" says when creating one failed. When the plan's limit (read it on the provider's site) or that
+  failure is in the way, say so plainly and offer the ways forward that are real: pause one of their projects —
+  name it, say what uses it, that its data is kept and it is restored from the dashboard — delete one — name it, say
+  it is permanent and its data is gone — or a paid plan, at its current price. Recommend the way that loses nothing.
+  A project is paused or deleted only when the customer chose that for that named project, and a delete only after
+  they confirmed it once more, plainly. Then settle it as `make_room`.
 - **Who signs in first.** The accounts the app starts with, when it has sign-in: the prototype's demo accounts,
   or the customer's own details.
 - **Images and uploaded files**, when the app stores them: where they are kept.

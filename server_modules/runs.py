@@ -97,6 +97,15 @@ def answer_build(project: str, reply: str) -> dict[str, Any]:
     return {"ok": True}
 
 
+def _answer_waiting_build(project: str, reply: str) -> dict[str, Any]:
+    """A build waiting on the customer takes what they type next as its answer, wherever they typed it — the
+    question's own card, the chat box, or the chat after a restart lost the card. Sent as a change request
+    instead, it only planned "nothing to change" while the build went on waiting."""
+    bus.resolve_project(project, "build")
+    bus.user_msg(project, reply)
+    return answer_build(project, reply)
+
+
 def active_run(project: str) -> str:
     with _active_lock:
         return _active.get(project, "")
@@ -165,6 +174,8 @@ def agent_update(message: dict[str, Any]) -> dict[str, Any]:
     if held:
         bus.agent_msg(project, held, title="Not sent")
         return {"ok": False, "detail": held}
+    if builder.waiting(project):
+        return _answer_waiting_build(project, request)
     if changes.applies(project):
         return changes.submit(project, request, _model_from(message))
     return agent_update_direct(message)
@@ -184,6 +195,8 @@ def agent_update_direct(message: dict[str, Any]) -> dict[str, Any]:
     if held:
         bus.agent_msg(project, held, title="Not sent")
         return {"ok": False, "detail": held}
+    if builder.waiting(project):
+        return _answer_waiting_build(project, request)
 
     role = str(message.get("agent") or bus.DEVELOPER)
     if role == bus.DESIGNER and prototyper.exists(project):

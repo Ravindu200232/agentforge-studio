@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,35 @@ def waiting(project: str) -> dict[str, Any] | None:
     """A build or update paused mid-run, waiting on the customer's answer."""
     saved = session_for(project).read_record(*PENDING, fallback=None)
     return saved if isinstance(saved, dict) and saved.get("question") else None
+
+
+_restoring = threading.Lock()
+
+
+def restore_questions() -> list[dict[str, Any]]:
+    """A build or update that was waiting on the customer when the server restarted: its question back on screen.
+
+    The wait is on disk (`build/pending.json`) but a question on screen lives only in memory, so a restart left a
+    build waiting for an answer nobody was asked for — and whatever the customer typed went to a change request
+    instead. Read straight from each record (never `session_for`, which would make a deleted project's folders again).
+    """
+    found: list[dict[str, Any]] = []
+    with _restoring:                  # several windows (or one, twice) ask at once: the question comes back once
+        shown = {d.get("project") for d in bus.pending_decisions() if d.get("flow") == "build"}
+        for row in store.listing():
+            project = str(row.get("name") or "")
+            if not project or project in shown:
+                continue
+            try:
+                path = config.record_dir(project) / Path(*PENDING)
+                pending = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+            except (OSError, ValueError):
+                continue
+            question = pending.get("question") if isinstance(pending, dict) else None
+            if isinstance(question, dict) and question.get("question"):
+                _ask(project, question)
+                found.append(question)
+    return found
 
 
 def _ask(project: str, question: dict[str, Any]) -> None:
@@ -155,6 +185,7 @@ def answer(project: str, reply: str) -> dict[str, Any]:
         state = _setup_state(session)
         state.setdefault("answers", []).append({"question": (pending.get("question") or {}).get("question", ""),
                                                 "answer": text})
+        state["failures"] = 0          # a new way forward from the customer gets its own tries
         session.write_record(*SETUP, data=state)
         session.write_record(*PENDING, data={})
         session.begin("build", role=bus.DEVELOPER)
@@ -394,7 +425,8 @@ def _setup(project: str, session: Any) -> dict[str, Any]:
     with session.lock:
         agent.set_mode("plan")
     try:
-        reply = session.ask_json(request, validator=lambda data: setup.check(data, left > 0, stack, found))
+        reply = session.ask_json(request, validator=lambda data: setup.check(data, left > 0, stack, found,
+                                                                             state.get("answers") or []))
     finally:
         with session.lock:
             agent.set_mode("act")
@@ -444,6 +476,9 @@ def _build(project: str, session: Any, state: dict[str, Any]) -> dict[str, Any]:
                              f"failed: {exc}")
         session.write_record(*SETUP, data=state)
         return _setup(project, session)
+    # Done once: a later build must never pause or delete that project again (the customer may have restored it).
+    if ((state.get("database") or {}).get("supabase") or {}).pop("make_room", None):
+        session.write_record(*SETUP, data=state)
     installed = scaffold.install(session.workspace, stack)
     bus.agent_msg(project,
                   f"{stack} scaffold copied ({len(installed['files'])} files)."

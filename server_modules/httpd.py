@@ -539,8 +539,9 @@ def forget_plugin(ctx: dict) -> Any:
 
 @route("GET", r"/decisions")
 def decisions(_ctx: dict) -> Any:
-    # A question the planner asked before the server restarted is still waiting for its answer.
+    # A question the planner, or a build, asked before the server restarted is still waiting for its answer.
     changes.restore_questions()
+    runs.builder.restore_questions()
     return {"pending": bus.pending_decisions()}
 
 
@@ -565,6 +566,12 @@ def decide(ctx: dict) -> Any:
         return {"ok": False, "detail": held}
     question = bus.resolve(decision_id)
     if not question:
+        # Forgotten by a restart, or asked again since: a build of this project still waiting on the customer takes
+        # the answer all the same, rather than losing it.
+        project = str(ctx.get("project") or "")
+        choice = str(ctx.get("decision") or "")
+        if project and choice in {"answer", "default"} and runs.builder.waiting(project):
+            return runs.answer_build(project, str(ctx.get("reply") or "") if choice == "answer" else "")
         return {"ok": False, "detail": "that question is no longer waiting"}
     project = question.get("project", "")
     choice = str(ctx.get("decision") or "accept")

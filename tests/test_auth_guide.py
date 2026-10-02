@@ -59,6 +59,29 @@ class PrototypeNavigationTests(unittest.TestCase):
         self.assertIn("[data-auth]", script)
         self.assertIn("[hidden]{display:none!important}", script)
 
+    def test_sign_up_signs_the_new_account_in_and_every_sign_out_ends_the_session(self):
+        routes = [{"route": "/login", "file": "login.html", "name": "Sign in", "roles": [], "signed_in": False},
+                  {"route": "/register", "file": "register.html", "name": "Create account", "roles": [], "signed_in": False},
+                  {"route": "/home", "file": "home.html", "name": "My home", "roles": ["member"], "signed_in": True}]
+        accounts = [{"role": role, "role_key": role.lower(), "display_name": f"Demo {role}", "email": f"{role.lower()}@example.com",
+                     "password": "pw", "lands_on": "/home", "can_open": []} for role in ("Admin", "Member")]
+        doc = {"authentication_requirement": {"self_registration": True, "registration_mode": "open",
+                                              "sign_up_route": "/register", "registration_role": "Member"}}
+        sign_up = prototype_brief.sign_up_of(doc, routes, accounts)
+        self.assertEqual((sign_up["file"], sign_up["role_key"]), ("register.html", "member"))
+        self.assertIsNone(prototype_brief.sign_up_of({"authentication_requirement": {"registration_mode": "admin_created"}},
+                                                     routes, accounts))
+        script = prototype_brief.flow_script(routes, {"journeys": [], "leads": {}}, accounts, "/login", sign_up)
+        self.assertIn('"roleKey": "member"', script)
+        for needle in ("P.register", "data-sign-up", "keepProfile(null)", "signOutControl"):
+            self.assertIn(needle, script)
+        # The link handler leaves a sign-out to the demo session, so a Sign out with a data-go still ends the session.
+        self.assertIn("el.closest('[data-sign-out], [data-login-as]')", script)
+        text = prototype_brief.sign_in_text(accounts, "/login", routes, sign_up)
+        for needle in ("<form data-sign-up>", '<button type="button" data-sign-out>', "no `data-roles` on it",
+                       "inside the screen", "Member"):
+            self.assertIn(needle, text)
+
     def test_the_prototype_is_told_to_mark_both_navigations(self):
         accounts = [{"role": "Member", "role_key": "member", "email": "m@example.com", "password": "pw",
                      "lands_on": "/dashboard"}]

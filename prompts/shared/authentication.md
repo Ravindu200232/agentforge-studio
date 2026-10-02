@@ -101,7 +101,11 @@ The prototype has no guards — every page opens directly — but it shows both 
 - A public page carries both headers — the public one with `data-auth="out"` and the signed-in one with
   `data-auth="in"` — so it shows the right one. A signed-in page carries only its role's navigation.
 - `data-roles="role_key"` on items only some roles see, `data-user="name"` (or `email`, `role`) where the person's
-  details show, `data-sign-out` on Sign out.
+  details show.
+- Every Sign out is a `<button type="button" data-sign-out>`, with no `data-roles`: flow.js ends the session and opens
+  the sign-in page.
+- The sign-up form is `<form data-sign-up>`: once it is valid, flow.js signs the new account in as the role sign-ups
+  get and opens that role's dashboard. No redirect, success panel or submit handler of the page's own.
 - Each role's dashboard is drawn as that role's real home, with its own sample data.
 
 ## 7. In the real application
