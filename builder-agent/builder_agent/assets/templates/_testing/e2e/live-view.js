@@ -2,19 +2,47 @@
 // its preview while the test runs: the page, the pointer, the element being clicked or typed into.
 //
 // It only WATCHES. It never touches what the test does or how it ends: every failure in here is
-// swallowed, nothing here awaits anything for long, and without AGENTFORGE_LIVE_URL (set only by
-// the Studio) it does nothing at all, so `npm run qa:*` is the same run everywhere else.
+// swallowed, nothing here awaits anything for long, and without AGENTFORGE_LIVE_URL or
+// AGENTFORGE_LIVE_DIR (set only by the Studio) it does nothing at all, so `npm run qa:*` is the
+// same run everywhere else.
+//
+// The Studio's desktop app listens on no port: it names a folder instead, and each message is
+// dropped there as a file it reads in order.
 //
 // Only the first worker streams: three browsers fighting over one picture is unwatchable, and
 // the others run as fast as ever. Chromium only (the screencast is a DevTools feature).
+import fs from 'node:fs'
+import path from 'node:path'
+
 const target = process.env.AGENTFORGE_LIVE_URL || ''
+const folder = process.env.AGENTFORGE_LIVE_DIR || ''
 const FRAME_MS = 100      // at most ten pictures a second
 const CURSOR_MS = 60      // pointer updates are tiny; at most sixteen a second
 
-export const isLive = Boolean(target)
+export const isLive = Boolean(target || folder)
+
+let dropped = 0
+let watching = { at: 0, answer: {} }
+
+/** One message into the Studio's folder: written aside, then renamed, so it is never read half-written. */
+function drop(body) {
+  try {
+    const name = `${String(Date.now()).padStart(15, '0')}-${String(dropped++).padStart(7, '0')}`
+    const aside = path.join(folder, `${name}.part`)
+    fs.writeFileSync(aside, JSON.stringify(body))
+    fs.renameSync(aside, path.join(folder, `${name}.json`))
+  } catch { /* nobody is watching the folder */ }
+  // The Studio says whether anyone is looking in a file of its own, read at most once a second.
+  if (Date.now() - watching.at > 1000) {
+    try { watching = { at: Date.now(), answer: JSON.parse(fs.readFileSync(path.join(folder, 'watching.json'), 'utf8')) } }
+    catch { watching = { at: Date.now(), answer: {} } }
+  }
+  return Promise.resolve(watching.answer)
+}
 
 /** Send one message to the Studio. Never throws and never waits long: a test must not depend on a viewer. */
 export function post(body, timeout = 2000) {
+  if (folder && !target) return drop(body)
   if (!target) return Promise.resolve()
   try {
     return fetch(target, {
@@ -80,7 +108,7 @@ function watchPointer() {
 /** Begin streaming `page`. Returns the function that stops it (await it before the test ends). */
 export async function startLiveView(page, testInfo) {
   const nothing = async () => {}
-  if (!target || testInfo.parallelIndex !== 0) return nothing
+  if (!isLive || testInfo.parallelIndex !== 0) return nothing
   try {
     if (!(await somebodyIsWatching())) return nothing
     let session

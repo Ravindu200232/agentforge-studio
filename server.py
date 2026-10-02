@@ -4,12 +4,20 @@
 Two listeners: the API on 7824 and the live feed on 7825, which is exactly what
 `studio/next.config.js` proxies `/__agentforge/api` and `/__agentforge/ws` to.
 Run the studio itself with `npm run dev` inside `studio/`.
+
+`server.py --stdio` is the desktop app's backend instead: nothing listens, and the app
+talks to it over stdin/stdout (server_modules/stdio_bridge.py).
 """
 from __future__ import annotations
 
+import os
 import sys
 import threading
 from pathlib import Path
+
+if "--stdio" in sys.argv:
+    # Decided before anything is imported: what a project's own commands can reach depends on it.
+    os.environ["AGENTFORGE_TRANSPORT"] = "stdio"
 
 ROOT = Path(__file__).resolve().parent
 for folder in ("", "src", "srs-agent", "prototype-agent", "builder-agent",
@@ -29,6 +37,11 @@ from server_modules import config, httpd, runs, wsd  # noqa: E402
 def main() -> int:
     config.STATE.mkdir(parents=True, exist_ok=True)
     config.WORKSPACES.mkdir(parents=True, exist_ok=True)
+
+    if config.TRANSPORT == "stdio":
+        from server_modules import stdio_bridge
+
+        return stdio_bridge.serve()
 
     feed = wsd.FeedServer(handler=runs.handle, port=config.WS_PORT)
     feed.start()

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import {
-  Check, Cpu, Database, Keyboard,
+  Check, Database, Keyboard,
   LayoutGrid, Loader2, Network, Palette, Plug, SlidersHorizontal, X, Link2,
   Download, ExternalLink, FolderUp, LogOut,
 } from 'lucide-react'
@@ -11,150 +11,9 @@ import { Modal } from './ui'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import { useAuthStore } from '@/lib/auth'
-import { modelLabel } from '@/lib/models'
 import DeployAccounts from './deploy/DeployAccounts'
 import PluginAccounts from './PluginAccounts'
 import McpServers from './McpServers'
-
-const THINKING_LEVELS = [
-  { id: 'off', label: 'Off', hint: 'Fastest. No reasoning, no extra verification nudge.' },
-  { id: 'low', label: 'Low', hint: 'No reasoning, but the agent is told to verify with a read tool rather than guess.' },
-  { id: 'high', label: 'High', hint: 'Reasons before answering, plus the same verification nudge. Slower, better on hard changes.' },
-  { id: 'xhigh', label: 'Extra high', hint: 'Reasons and requires a separate final verification pass. Slowest; use for risky or difficult work.' },
-]
-
-/** Model picker interface for selecting and configuring LLM models across all agent roles. */
-function ModelPicker({ meta, onSaved }) {
-  const [catalog, setCatalog] = useState(null)
-  const [chosen, setChosen] = useState('')
-  const [thinkingLevel, setThinkingLevel] = useState('high')
-  const [busy, setBusy] = useState(false)
-  const [note, setNote] = useState('')
-  // Server-synced state to track whether chosen model settings have been saved.
-  const [saved, setSaved] = useState({ model: '', thinkingLevel: 'high' })
-
-  useEffect(() => {
-    if (!meta) return
-    const level = THINKING_LEVELS.some(l => l.id === meta.thinking_level) ? meta.thinking_level : 'high'
-    setChosen(meta.agent_model || '')
-    setThinkingLevel(level)
-    setSaved({ model: meta.agent_model || '', thinkingLevel: level })
-  }, [meta])
-
-  useEffect(() => {
-    let alive = true
-    api.models().then(d => { if (alive) setCatalog(d) }).catch(() => { if (alive) setCatalog({}) })
-    return () => { alive = false }
-  }, [])
-
-  async function save() {
-    setBusy(true); setNote('')
-    try {
-      await api.saveSettings({ agent_model: chosen, thinking_level: thinkingLevel })
-      // The server's `agent_model` is only a fallback: the studio keeps a
-      // model per role and sends it on every run, so without this the saved
-      // choice would lose to whatever those roles already held.
-      const roles = useStore.getState().applyModel(chosen)
-      useStore.getState().setThinkingLevel(thinkingLevel === 'off' ? 'low' : thinkingLevel)
-      setSaved({ model: chosen, thinkingLevel })
-      setNote(`saved — ${roles.length} agents now use it`)
-      onSaved?.()
-    } catch (failure) { setNote(failure.message) } finally { setBusy(false) }
-  }
-
-  const dirty = chosen !== saved.model || thinkingLevel !== saved.thinkingLevel
-
-  const groups = [
-    ['On this machine', catalog?.local_models || []],
-    ['Cloud', catalog?.cloud || []],
-  ]
-  const anything = groups.some(([, rows]) => rows.length)
-
-  return (
-    <div className="max-w-[700px] space-y-4">
-      <div className="rounded-2xl border border-line bg-panel px-4 py-3.5 shadow-sm">
-        <p className="text-[12.5px] font-medium text-ink">Thinking</p>
-        <p className="mt-0.5 text-[11px] text-muted">
-          How much the agent reasons and verifies before it answers. The
-          specification agent never reasons regardless of this setting.
-        </p>
-        <div className="mt-3 grid grid-cols-2 gap-1.5">
-          {THINKING_LEVELS.map(level => {
-            const picked = level.id === thinkingLevel
-            return (
-              <button key={level.id} type="button" disabled={busy}
-                title={level.hint}
-                onClick={() => { setThinkingLevel(level.id); setNote('') }}
-                aria-pressed={picked}
-                className={cn('rounded-xl border px-2.5 py-2 text-[11.5px] font-semibold transition-colors',
-                  picked ? 'border-accent bg-accent text-ink' : 'border-line bg-panel2/60 text-muted hover:text-ink')}>
-                {level.label}
-              </button>
-            )
-          })}
-        </div>
-        <p className="mt-2 text-[10.5px] text-muted2">
-          {THINKING_LEVELS.find(l => l.id === thinkingLevel)?.hint}
-        </p>
-      </div>
-
-      <div className="rounded-2xl border border-line bg-panel shadow-sm">
-        {!catalog && <p className="px-4 py-3.5 text-[11.5px] text-muted">Reading the model list…</p>}
-        {catalog && !anything && (
-          <p className="px-4 py-3.5 text-[11.5px] text-muted">
-            Ollama reported no models. Start it, or pull one, and reopen this tab.
-          </p>
-        )}
-        {groups.map(([label, rows]) => rows.length > 0 && (
-          <div key={label}>
-            <p className="border-b border-line px-4 pb-1.5 pt-3 text-[10px] uppercase tracking-wider text-muted2">
-              {label}
-            </p>
-            <div className="divide-y divide-line">
-              {rows.map(row => {
-                const id = row.id || row
-                const picked = id === chosen
-                return (
-                  <button key={id} type="button" disabled={busy}
-                    onClick={() => { setChosen(id); setNote('') }}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-panel2">
-                    <span className={cn('grid size-4 shrink-0 place-items-center rounded-full border',
-                      picked ? 'border-accent bg-accent' : 'border-line')}>
-                      {picked && <Check className="size-2.5 text-ink" />}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[12.5px] text-ink">
-                        {modelLabel ? modelLabel(id) : id}
-                      </span>
-                      <span className="block truncate font-mono text-[10px] text-muted2">{id}</span>
-                    </span>
-                    {row.installed === false && (
-                      <span className="shrink-0 text-[10px] text-muted2">not pulled</span>
-                    )}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
-      <div className="flex items-center gap-3">
-        <p className="min-w-0 flex-1 text-[11px] text-muted">
-          {busy ? 'Saving…'
-                : note
-                || (dirty ? 'Not saved yet — nothing uses this until you save it.'
-                          : 'Every build, prototype, specification, test and deployment '
-                            + 'uses this model.')}
-        </p>
-        <button type="button" disabled={busy || !chosen || !dirty} onClick={save}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-accent px-4 py-2 text-[11.5px] font-semibold text-ink transition-colors hover:bg-press disabled:opacity-40">
-          {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
-          Save
-        </button>
-      </div>
-    </div>
-  )
-}
 
 export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpenInNewTab, onLogout, initialTab }) {
   const user = useAuthStore(s => s.user)
@@ -165,10 +24,7 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
   const [activeTab, setActiveTab] = useState(initialTab || 'general')
   const folderRef = useRef(null)
 
-  // Real server settings — loaded via api.settings()
-  const [host, setHost] = useState('')
-  const [ctx, setCtx] = useState('')
-  const [key, setKey] = useState('')
+  // Real server settings — loaded via api.settings(). The AI engine is built into AgentForge: nothing to set here.
   const [mongo, setMongo] = useState('')
   const [meta, setMeta] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -180,11 +36,9 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
     api.settings()
       .then(d => {
         if (!alive) return
-        setHost(d.ollama_host || '')
-        setCtx(d.local_num_ctx || '')
         setMeta(d)
-        setNote(d.cloud_enabled ? 'cloud enabled' : 'cloud off — local only')
-        setTone(d.cloud_enabled ? 'ok' : 'muted')
+        setNote('ready')
+        setTone('ok')
       })
       .catch(() => { if (alive) { setNote('server offline'); setTone('bad') } })
     return () => { alive = false }
@@ -194,16 +48,15 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
     setSaving(true)
     setNote('saving…')
     setTone('muted')
-    const body = { ollama_host: host.trim(), local_num_ctx: String(ctx).trim() }
-    if (key.trim()) body.ollama_api_key = key.trim()
+    const body = {}
     if (mongo.trim()) body.mongodb_uri = mongo.trim() === '-' ? '' : mongo.trim()
     try {
       const d = await api.saveSettings(body)
-      setNote(!d.cloud_enabled ? 'cloud off — local only'
-        : d.cloud_reachable ? 'cloud key verified' : 'key saved but not accepted')
-      setTone(!d.cloud_enabled ? 'muted' : d.cloud_reachable ? 'ok' : 'bad')
+      setMeta(d)
+      setMongo('')
+      setNote('saved')
+      setTone('ok')
       onSaved?.()
-      if (d.cloud_reachable) setTimeout(onClose, 800)
     } catch (e) {
       setNote('save failed — ' + e.message)
       setTone('bad')
@@ -212,8 +65,8 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
   }
 
   const cloudOn = tone === 'ok'
-  // AgentForge's own engine and database are the whole machine's, so they are
-  // its admin's. Everyone's deployment accounts are their own — Integrations.
+  // AgentForge's own database is the whole machine's, so it is its admin's.
+  // Everyone's deployment accounts are their own — Integrations.
   const isAdmin = Boolean(meta?.admin)
 
   const displayName = user?.name || user?.username || 'User'
@@ -223,7 +76,6 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
   const settingsNav = [
     { id: 'general',      label: 'General',      Icon: SlidersHorizontal },
     { id: 'application',  label: 'Application',  Icon: LayoutGrid },
-    { id: 'models',       label: 'Models',       Icon: Cpu },
     { id: 'appearance',   label: 'Appearance',   Icon: Palette },
     { id: 'integrations', label: 'Integrations', Icon: Link2 },
     { id: 'plugins',      label: 'Plugins',      Icon: Plug },
@@ -288,7 +140,6 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
               <h2 className="font-display text-[15px] sm:text-[16px] font-bold tracking-tight text-ink truncate">
                 {activeTab === 'general'      ? 'General'
                : activeTab === 'application'  ? 'Application'
-               : activeTab === 'models'       ? 'AI Models'
                : activeTab === 'appearance'   ? 'Appearance'
                : activeTab === 'integrations' ? 'Integrations'
                : activeTab === 'plugins'      ? 'Plugins'
@@ -297,13 +148,10 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
               </h2>
               <p className="text-[10.5px] sm:text-[11px] text-muted mt-0.5 truncate">
                 {activeTab === 'general'
-                  ? isAdmin ? 'Ollama engine, API key and MongoDB connection.'
+                  ? isAdmin ? 'AgentForge database connection and this workspace.'
                             : 'What this machine runs, and what is yours.'
                   : activeTab === 'application'
                   ? 'Running services and database status.'
-                  : activeTab === 'models'
-                  ? isAdmin ? 'One model, used by every agent. Choose it, then save.'
-                            : 'The model every agent uses on this machine.'
                   : activeTab === 'appearance'
                   ? 'Studio visual theme.'
                   : activeTab === 'integrations'
@@ -331,10 +179,10 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
             {activeTab === 'general' && !isAdmin && (
               <div className="space-y-4 max-w-[700px]">
                 <p className="rounded-2xl border border-line bg-panel px-4 py-3 text-[12px] text-muted">
-                  The Ollama engine, its key and AgentForge's own database are
-                  shared by everyone on this machine, so only its admin changes
-                  them. Your GitHub, AWS, Vercel and production database are
-                  yours alone — they are under <b className="text-ink">Integrations</b>.
+                  AgentForge's own database is shared by everyone on this
+                  machine, so only its admin changes it. Your GitHub, AWS, Vercel
+                  and production database are yours alone — they are under{' '}
+                  <b className="text-ink">Integrations</b>.
                 </p>
                 <MongoState mongo={meta?.mongo} />
                 <WorkspaceActions project={project} folderRef={folderRef} onImport={onImport}
@@ -345,37 +193,6 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
             {activeTab === 'general' && isAdmin && (
               <div className="space-y-5 max-w-[700px]">
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <label className="block">
-                    <span className="mb-1.5 block text-[11.5px] font-semibold text-muted">Ollama Host</span>
-                    <input
-                      value={host}
-                      onChange={e => setHost(e.target.value)}
-                      placeholder="http://127.0.0.1:11434"
-                      className="w-full rounded-xl border border-line bg-panel2/60 px-3 py-2 text-[12.5px] text-ink outline-none placeholder:text-muted/40 focus:border-accent focus:ring-1 focus:ring-accent transition-colors"
-                    />
-                  </label>
-
-                  <label className="block">
-                    <span className="mb-1.5 block text-[11.5px] font-semibold text-muted">ollama.com API Key</span>
-                    <input
-                      type="password"
-                      value={key}
-                      onChange={e => setKey(e.target.value)}
-                      placeholder={meta?.api_key_hint ? `saved (${meta.api_key_hint})` : 'Paste your key'}
-                      className="w-full rounded-xl border border-line bg-panel2/60 px-3 py-2 text-[12.5px] text-ink outline-none placeholder:text-muted/40 focus:border-accent focus:ring-1 focus:ring-accent transition-colors"
-                    />
-                  </label>
-
-                  <label className="block">
-                    <span className="mb-1.5 block text-[11.5px] font-semibold text-muted">Local Context Window</span>
-                    <input
-                      value={ctx}
-                      onChange={e => setCtx(e.target.value)}
-                      placeholder="e.g. 32768"
-                      className="w-full rounded-xl border border-line bg-panel2/60 px-3 py-2 text-[12.5px] text-ink outline-none placeholder:text-muted/40 focus:border-accent focus:ring-1 focus:ring-accent transition-colors"
-                    />
-                  </label>
-
                   <label className="block">
                     <span className="mb-1.5 block text-[11.5px] font-semibold text-muted">MongoDB URI</span>
                     <input
@@ -447,25 +264,6 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
                   </button>
                 )}
               </div>
-            )}
-
-            {/* ── MODELS ── */}
-            {activeTab === 'models' && (
-              isAdmin
-                ? <ModelPicker meta={meta} onSaved={onSaved} />
-                : <div className="max-w-[700px] space-y-4">
-                    <p className="rounded-2xl border border-line bg-panel px-4 py-3 text-[12px] text-muted">
-                      The model every agent uses is shared by everyone on this
-                      machine, so only its admin changes it. It is currently{' '}
-                      <b className="text-ink">
-                        {meta?.agent_model ? (modelLabel ? modelLabel(meta.agent_model)
-                                                         : meta.agent_model)
-                                           : 'whatever Ollama reports as largest'}
-                      </b>
-                      {meta?.thinking_level && meta.thinking_level !== 'high'
-                        ? `, thinking set to ${meta.thinking_level}.` : '.'}
-                    </p>
-                  </div>
             )}
 
             {/* ── APPEARANCE ── */}

@@ -116,8 +116,37 @@ async function recoverPendingDecision() {
   }
 }
 
+/** The desktop app's own channel to its backend (desktop/preload.js), when the studio runs inside it. */
+const desktop = () => (typeof window !== 'undefined' ? window.agentforgeDesktop : null) || null
+let desktopOff = null
+
+/** In the desktop app there is no socket and no port: the backend's events arrive over the app itself. */
+function connectDesktop(bridge) {
+  desktopOff?.()
+  const offEvent = bridge.onEvent(handle)
+  const offStatus = bridge.onStatus?.(status => {
+    if (status === 'ready') {
+      useStore.getState().setStatus('live', 'ready')
+      const project = useStore.getState().project
+      if (project) api.workflow(project).then(snapshot => useStore.getState().restoreProject(snapshot)).catch(() => {})
+      recoverPendingDecision()
+    } else {
+      useStore.getState().setStatus('disconnected', status === 'restarting' ? 'restarting the engine…' : String(status))
+    }
+  })
+  desktopOff = () => { offEvent?.(); offStatus?.() }
+  useStore.getState().setStatus('live', 'ready')
+  const project = useStore.getState().project
+  if (project) api.workflow(project).then(snapshot => useStore.getState().restoreProject(snapshot)).catch(() => {})
+  recoverPendingDecision()
+  window.__studioFeed = handle
+  return disconnect
+}
+
 export function connect() {
   if (typeof window === 'undefined') return
+  const bridge = desktop()
+  if (bridge) return connectDesktop(bridge)
   const s = useStore.getState()
 
   // Close whatever is already open FIRST.
@@ -182,6 +211,8 @@ export function connect() {
 }
 
 export function disconnect() {
+  desktopOff?.()
+  desktopOff = null
   clearTimeout(retry)
   clearInterval(heartbeat)
   retry = heartbeat = null
@@ -205,6 +236,10 @@ export function send(obj) {
   if (obj && obj.prompt !== undefined) {
     lastEdit = obj
     useStore.setState({ question: null })
+  }
+  if (desktop()) {
+    desktop().send(obj)
+    return
   }
   if (sock && sock.readyState === 1) {
     sock.send(JSON.stringify(obj))

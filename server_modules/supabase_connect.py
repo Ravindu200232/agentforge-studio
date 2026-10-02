@@ -200,6 +200,10 @@ class OAuthConnects:
         if not client_id or not config.setting(CLIENT_SECRET_SETTING):
             raise ValueError("Register a Supabase OAuth app first (Organization settings -> OAuth Apps) "
                               "and save its Client ID and Secret.")
+        # The desktop app listens on no port: its callback is answered only while this sign-in is waiting.
+        from . import oauth_listener
+
+        oauth_listener.open_for(CALLBACK_PATH, FLOW_TTL_SECONDS)
         verifier, challenge = _pkce_pair()
         flow = _Flow(flow_id="sbo_" + secrets.token_urlsafe(24), verifier=verifier)
         with self._lock:

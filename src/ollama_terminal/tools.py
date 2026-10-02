@@ -240,7 +240,11 @@ class WorkspaceTools:
         self.shell = shell or ("powershell" if os.name == "nt" else "/bin/sh")
         self.web_host = web_host.rstrip("/")
         self.use_local_web = use_local_web
-        self.source_guard = SourceGuard(protected_app_root) if protected_app_root else None
+        # Only a workspace inside the app can reach the app's own source by a relative path; a project
+        # folder elsewhere (C:\Projects\shop) cannot, and guarding it only risks undoing the app's own updates.
+        self.source_guard = (SourceGuard(protected_app_root)
+                             if protected_app_root and self.root.is_relative_to(Path(protected_app_root).resolve())
+                             else None)
         self.mcp = mcp
 
     def _local_web_request(self, endpoint: str, payload: dict[str, Any]) -> str:
@@ -492,6 +496,10 @@ class WorkspaceTools:
                 if changed:
                     output = (output + "\nProtected CLI source changes were reverted: " +
                               ", ".join(changed))[:MAX_OUTPUT]
+                elif self.source_guard.left_alone:
+                    output = (output + "\nThe app's own repository moved to a new commit while this command ran "
+                              "(a pull or checkout), so its changed files were left as they are: " +
+                              ", ".join(self.source_guard.left_alone[:20]))[:MAX_OUTPUT]
         return output[:MAX_OUTPUT]
 
     def tool_web_search(self, query: str, max_results: int = 3) -> str:

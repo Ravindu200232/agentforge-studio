@@ -13,10 +13,17 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 PROMPTS = ROOT / "prompts"
-WORKSPACES = ROOT / "workspaces"
-STATE = ROOT / ".agentforge-server"
+# The installed desktop app keeps what is the user's outside its own folder, so an update or a reinstall never
+# touches it: settings and records under AGENTFORGE_DATA (%APPDATA%\AgentForge), projects under
+# AGENTFORGE_WORKSPACES (Documents\AgentForge). A checkout run by hand keeps both beside the code, as before.
+DATA = Path(os.environ["AGENTFORGE_DATA"]) if os.environ.get("AGENTFORGE_DATA") else None
+WORKSPACES = Path(os.environ.get("AGENTFORGE_WORKSPACES") or (ROOT / "workspaces"))
+STATE = DATA / "state" if DATA else ROOT / ".agentforge-server"
 SETTINGS_FILE = STATE / "settings.json"
 PROJECTS_FILE = STATE / "projects.json"
+# "http" (the API and feed listen on the ports below) or "stdio" (the desktop app talks over stdin/stdout and
+# nothing listens). What is reachable from a project's own commands depends on it (see live.channel_for).
+TRANSPORT = os.environ.get("AGENTFORGE_TRANSPORT", "http")
 
 # The studio's next.config.js proxies /__agentforge/api to the first and
 # /__agentforge/ws to the second. Both are overridable from the environment so a
@@ -31,6 +38,8 @@ RECORD_DIR = ".agentforge"
 DEFAULTS: dict[str, Any] = {
     "ollama_host": os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
     "ollama_api_key": "",
+    # "" chooses itself (ollama.com once a key is saved), "cloud" or "local" pins it. See engine().
+    "engine": "",
     "cloud": False,
     "model": "",
     "context": 0,
@@ -111,10 +120,51 @@ def _write(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+ENGINE_FILE = ROOT / "server_modules" / "engine.json"
+
+
+def built_in_engine() -> dict[str, str]:
+    """AgentForge's own AI engine (engine-proxy/): a server that holds the ollama.com key, so no key ships in the
+    app and nobody is asked for one. Its address and the app's token come from engine.json, or from
+    AGENTFORGE_ENGINE_URL / AGENTFORGE_ENGINE_TOKEN; {} when this copy has none."""
+    url = os.environ.get("AGENTFORGE_ENGINE_URL", "").strip()
+    token = os.environ.get("AGENTFORGE_ENGINE_TOKEN", "").strip()
+    if not url:
+        found = _read(ENGINE_FILE, {})
+        if isinstance(found, dict):
+            url, token = str(found.get("url") or "").strip(), str(found.get("token") or "").strip()
+    return {"url": url.rstrip("/"), "token": token} if url and token else {}
+
+
+def engine(saved: dict[str, Any] | None = None) -> str:
+    """Where the models run:
+
+    - "built-in": AgentForge's own engine server (built_in_engine), with nothing to set up;
+    - "cloud": ollama.com, with an API key saved in settings.json;
+    - "local": the Ollama app on this computer.
+
+    A saved "local", or "cloud" with a key, wins: a development setup keeps the engine it chose. Otherwise the
+    built-in engine when this copy has one, then a saved key, then the Ollama app here.
+    """
+    saved = saved if saved is not None else settings()
+    chosen = str(saved.get("engine") or "").strip().lower()
+    has_key = bool(str(saved.get("ollama_api_key") or "").strip())
+    if chosen == "local":
+        return "local"
+    if chosen == "cloud" and has_key:
+        return "cloud"
+    if built_in_engine():
+        return "built-in"
+    return "cloud" if has_key else "local"
+
+
 def settings() -> dict[str, Any]:
-    """The saved settings, over the defaults."""
+    """The saved settings, over the defaults. `cloud` (the models run remotely, on ollama.com directly or through
+    the built-in engine) is always what `engine()` decides, never a stale copy."""
     saved = _read(SETTINGS_FILE, {})
-    return {**DEFAULTS, **(saved if isinstance(saved, dict) else {})}
+    merged = {**DEFAULTS, **(saved if isinstance(saved, dict) else {})}
+    merged["cloud"] = engine(merged) in ("cloud", "built-in")
+    return merged
 
 
 # ``xhigh`` is intentionally a distinct setting rather than an alias for

@@ -30,7 +30,7 @@ from qa_agent import report_pdf
 from qa_agent import verify as qa
 from srs_agent import document as srs_document
 
-from . import bus, changes, cli_monitor, cli_signin, config, deploy_vars, github_device, jobs, live, pdf, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, workspace_picker
+from . import bus, changes, cli_monitor, cli_signin, config, deploy_vars, github_device, jobs, live, ollama_cloud, pdf, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, workspace_picker
 from . import database_rows as database_rows_module
 from .session import session_for
 
@@ -124,33 +124,53 @@ def auth_out(_ctx: dict) -> Any:
 
 @route("GET", r"/models")
 def models(_ctx: dict) -> Any:
-    """Whatever this Ollama actually has, plus whether cloud is reachable."""
+    """The models the engine serves, plus whether cloud is reachable."""
     saved = config.settings()
+    engine = config.engine(saved)
     local: list[dict[str, Any]] = []
     ready = False
-    try:
-        listed = ollama.Client(host=saved["ollama_host"]).list()
-        for row in getattr(listed, "models", []) or []:
-            name = getattr(row, "model", None) or getattr(row, "name", None)
-            if name:
-                local.append({"id": str(name), "tag": "local"})
-        ready = True
-    except Exception:  # noqa: BLE001 - a daemon that is not running is an answer
-        ready = False
+    if engine != "built-in":
+        # The built-in engine is the only one there is: models on an Ollama app here would not be reached.
+        try:
+            listed = ollama.Client(host=saved["ollama_host"]).list()
+            for row in getattr(listed, "models", []) or []:
+                name = getattr(row, "model", None) or getattr(row, "name", None)
+                if name:
+                    local.append({"id": str(name), "tag": "local"})
+            ready = True
+        except Exception:  # noqa: BLE001 - a daemon that is not running is an answer
+            ready = False
 
     has_key = bool(saved.get("ollama_api_key"))
     cloud_models = [m for m in local if m["id"].endswith("-cloud") or m["id"].endswith(":cloud")]
     local_models = [m for m in local if m not in cloud_models]
+    if engine in ("cloud", "built-in"):
+        # ollama.com itself (with the key, or through the built-in engine): every model it serves, named the way
+        # the Ollama app names them (ollama_cloud.studio_name), so a choice made either way keeps working.
+        seen = {m["id"] for m in cloud_models}
+        cloud_models += [{"id": studio_name, "tag": "cloud", "remote": name}
+                         for name in ollama_cloud.engine_names(saved)
+                         if (studio_name := ollama_cloud.studio_name(name)) not in seen]
     return {
         "local": [m["id"] for m in local_models],
         "local_models": local_models,
         "cloud": cloud_models,
         "cloud_enabled": bool(saved.get("cloud")) or has_key or bool(cloud_models),
-        "cloud_via": "api-key" if has_key else ("signed-in" if cloud_models else "none"),
+        "cloud_via": "built-in" if engine == "built-in" else "api-key" if has_key else ("signed-in" if cloud_models else "none"),
+        "engine": engine,
         "ollama_ready": ready,
         "cloud_account": "",
         "selected": saved.get("model", ""),
     }
+
+
+@route("POST", r"/ollama/test")
+def ollama_test(ctx: dict) -> Any:
+    """Whether ollama.com takes the key typed in (or, with none typed, the saved one). The key never comes back."""
+    typed = str(ctx.get("key") or "").strip()
+    key = typed if typed and typed != "****" else str(config.setting("ollama_api_key") or "")
+    return {**ollama_cloud.test(key, str(ctx.get("model") or config.setting("model") or "")),
+            "checked": "typed" if typed and typed != "****" else "saved"}
 
 
 def _safe_mcp_servers(saved: Any) -> list[dict[str, Any]]:
@@ -189,7 +209,9 @@ def read_settings(_ctx: dict) -> Any:
             "thinking_level": config.thinking(saved),
             "mcp_servers": _safe_mcp_servers(saved.get("mcp_servers")),
             "cloud_enabled": bool(catalog["cloud_enabled"]),
-            "cloud_reachable": bool(catalog["cloud"] and catalog["ollama_ready"]),
+            # With the key, ollama.com is the engine and the Ollama app here does not matter.
+            "cloud_reachable": bool(catalog["cloud"] and (catalog["ollama_ready"] or catalog["engine"] == "cloud")),
+            "engine": catalog["engine"],
             "api_key_hint": str(saved.get("ollama_api_key") or "")[-4:],
             "mongodb_uri_set": bool(saved.get("mongodb_uri")),
             "mongodb_uri_hint": str(saved.get("mongodb_uri") or "")[-4:],
@@ -235,9 +257,10 @@ def write_settings(ctx: dict) -> Any:
     for alias in ("agent_model", "planner_model", "builder_model", "design_model"):
         if patch.get(alias):
             patch["model"] = patch[alias]
-    key = patch.get("ollama_api_key", config.setting("ollama_api_key", ""))
-    chosen = str(patch.get("model") or config.setting("model") or "")
-    patch["cloud"] = bool(key) and (chosen.endswith("-cloud") or chosen.endswith(":cloud"))
+    if "engine" in patch and str(patch["engine"] or "").lower() not in ("", "cloud", "local"):
+        raise ValueError("engine is cloud, local, or empty to choose itself")
+    # `cloud` is never saved: config.settings() derives it from the key and `engine` every time it is read.
+    patch.pop("cloud", None)
     config.save_settings(patch)
     prompts.clear_cache()
     return read_settings({})
@@ -1289,6 +1312,35 @@ def dispatch(method: str, path: str, body: dict[str, Any] | None = None,
     raise HttpError(404, f"no route for {method} {clean}")
 
 
+def respond(method: str, path: str, body: dict[str, Any] | None = None,
+            query: dict[str, str] | None = None) -> tuple[int, Any, str, str]:
+    """One request, answered: `(status, payload, content type, download name)`.
+
+    The same answer whichever way the request came: over HTTP (`Studio`) or over the desktop app's stdin
+    (`stdio_bridge`). A `bytes` payload is a file; anything else is JSON.
+    """
+    try:
+        result = dispatch(method, path, body, query)
+    except HttpError as exc:
+        return exc.status, {"error": exc.message}, "application/json", ""
+    except FileNotFoundError as exc:
+        return 404, {"error": str(exc) or "not found"}, "application/json", ""
+    except KeyError as exc:
+        return 404, {"error": f"{exc} was not found"}, "application/json", ""
+    except (ValueError, TypeError) as exc:
+        return 400, {"error": str(exc)}, "application/json", ""
+    except Exception as exc:  # noqa: BLE001 - the browser needs the reason
+        # Printed as well as returned. A 500 whose message is empty shows in
+        # the studio as a bare "HTTP 500", which says nothing about what
+        # actually broke; the traceback here is the only record of it.
+        traceback.print_exc()
+        return 500, {"error": str(exc) or exc.__class__.__name__, "where": f"{method} {path}",
+                     "detail": traceback.format_exc()[-1500:]}, "application/json", ""
+    if isinstance(result, Raw):
+        return 200, result.body, result.content_type, result.filename
+    return 200, result if result is not None else {"ok": True}, "application/json", ""
+
+
 class Studio(BaseHTTPRequestHandler):
     server_version = "AgentForge"
     protocol_version = "HTTP/1.1"
@@ -1334,35 +1386,8 @@ class Studio(BaseHTTPRequestHandler):
         path = parsed.path[len(config.API_PREFIX):] or "/"
         query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
         body = self._body() if method == "POST" else {}
-
-        try:
-            result = dispatch(method, path, body, query)
-        except HttpError as exc:
-            self._send(exc.status, {"error": exc.message})
-            return
-        except FileNotFoundError as exc:
-            self._send(404, {"error": str(exc) or "not found"})
-            return
-        except KeyError as exc:
-            self._send(404, {"error": f"{exc} was not found"})
-            return
-        except (ValueError, TypeError) as exc:
-            self._send(400, {"error": str(exc)})
-            return
-        except Exception as exc:  # noqa: BLE001 - the browser needs the reason
-            # Printed as well as returned. A 500 whose message is empty shows in
-            # the studio as a bare "HTTP 500", which says nothing about what
-            # actually broke; the traceback here is the only record of it.
-            traceback.print_exc()
-            self._send(500, {"error": str(exc) or exc.__class__.__name__,
-                             "where": f"{method} {path}",
-                             "detail": traceback.format_exc()[-1500:]})
-            return
-
-        if isinstance(result, Raw):
-            self._send(200, result.body, result.content_type, result.filename)
-        else:
-            self._send(200, result if result is not None else {"ok": True})
+        status, payload, content_type, filename = respond(method, path, body, query)
+        self._send(status, payload, content_type, filename)
 
     def do_GET(self) -> None:  # noqa: N802
         self._serve("GET")

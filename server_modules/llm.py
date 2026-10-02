@@ -117,14 +117,15 @@ def _wait_for_stop(seconds: float) -> bool:
 def client() -> Any:
     """One Ollama client per thread, so parallel lanes do not share a socket."""
     saved = config.settings()
-    key = (saved.get("cloud"), saved.get("ollama_host"), saved.get("ollama_api_key"))
+    key = (config.engine(saved), saved.get("ollama_host"), saved.get("ollama_api_key"))
     if getattr(_local, "key", None) != key or getattr(_local, "client", None) is None:
         if saved.get("cloud"):
-            token = saved.get("ollama_api_key") or ""
-            if not token:
-                raise LLMUnavailable("Cloud mode needs an Ollama API key.")
-            inner = ollama.Client(host="https://ollama.com",
-                                  headers={"Authorization": f"Bearer {token}"})
+            from . import ollama_cloud
+
+            try:
+                inner = ollama_cloud.for_engine(saved)
+            except ValueError as exc:
+                raise LLMUnavailable(str(exc)) from exc
         else:
             inner = ollama.Client(host=saved.get("ollama_host") or "http://localhost:11434")
         from .session import RetryingClient

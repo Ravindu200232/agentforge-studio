@@ -508,7 +508,6 @@ function ChatModelControls({ project, agentRole, busy }) {
   }, [])
 
   async function save(nextModel, nextLevel) {
-    if (!project) return
     setSaving(true)
     try {
       await api.saveSettings({ agent_model: nextModel, thinking_level: nextLevel })

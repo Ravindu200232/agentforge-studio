@@ -258,6 +258,40 @@ class AgentTests(unittest.TestCase):
             self.assertIn("Protected CLI source changes were reverted", result)
             self.assertEqual(readme.read_text(encoding="utf-8"), "original")
 
+    def test_a_pull_landing_while_a_command_runs_is_not_undone(self):
+        """Found live: a deployment command was running when the app's own repository was pulled, and the
+        guard put every pulled file back the way it was before the pull."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspaces"
+            workspace.mkdir()
+            (root / ".git" / "refs" / "heads").mkdir(parents=True)
+            (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+            branch = root / ".git" / "refs" / "heads" / "main"
+            branch.write_text("aaaa\n", encoding="utf-8")
+            readme = root / "README.md"
+            readme.write_text("original", encoding="utf-8")
+            guard = SourceGuard(root)
+            before = guard.snapshot()
+            self.assertEqual(before.head, "aaaa")
+            # What a pull does to the working tree and the branch, while the command is still running.
+            readme.write_text("pulled", encoding="utf-8")
+            (root / "server.py").write_text("new file from the pull", encoding="utf-8")
+            branch.write_text("bbbb\n", encoding="utf-8")
+            self.assertEqual(guard.restore(before), [])
+            self.assertEqual(readme.read_text(encoding="utf-8"), "pulled")
+            self.assertTrue((root / "server.py").exists())
+            self.assertEqual(set(guard.left_alone), {"README.md", "server.py"})
+
+    def test_a_project_outside_the_app_is_not_guarded(self):
+        with tempfile.TemporaryDirectory() as app, tempfile.TemporaryDirectory() as elsewhere:
+            tools = WorkspaceTools(Path(elsewhere), FakeClient(), lambda _: True, protected_app_root=Path(app))
+            self.assertIsNone(tools.source_guard)
+            inside = Path(app) / "workspaces" / "shop"
+            inside.mkdir(parents=True)
+            self.assertIsNotNone(WorkspaceTools(inside, FakeClient(), lambda _: True,
+                                                protected_app_root=Path(app)).source_guard)
+
     def test_read_utf16_file_from_windows_shell(self):
         with tempfile.TemporaryDirectory() as directory:
             (Path(directory) / "utf16.txt").write_text("hello", encoding="utf-16")

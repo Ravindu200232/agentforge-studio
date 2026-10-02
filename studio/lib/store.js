@@ -1,5 +1,6 @@
 
 import { create } from 'zustand'
+import { api } from './api'
 import { advance, emptyProgress } from './progress-model'
 import { captureSession, emptySession, reduceSession, ROLES } from './agent-session'
 
@@ -387,6 +388,9 @@ export const useStore = create((set, get) => ({
   /** Agent roles that adopt the globally selected language model. */
   ROLE_MODELS: ['agent', 'planner', 'design', 'builder', 'qa', 'srs', 'deploy'],
 
+  /** The model every agent uses, picked beside the first input or the chat. It is saved on the server too:
+   *  the interview, the plan, the specification and the diagrams run on the saved model, not on what a
+   *  request carries. */
   applyModel: (model) => {
     const chosen = String(model || '').trim()
     if (!chosen) return []
@@ -398,6 +402,8 @@ export const useStore = create((set, get) => ({
     for (const role of roles) {
       try { LS?.setItem(KEYS[role], chosen) } catch { }
     }
+    api.saveSettings({ agent_model: chosen })
+      .catch(error => useStore.getState().addLog?.('WARN', `Could not save the model choice — ${error.message}`))
     return roles
   },
 

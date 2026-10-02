@@ -293,9 +293,10 @@ class StudioTools(WorkspaceTools):
             enabled = config.record_dir(self.project) / "plugins.json"
             choices = json.loads(enabled.read_text(encoding="utf-8")) if enabled.is_file() else []
             # A generated app's Playwright run streams what its browser shows to this
-            # address, and the studio's preview displays it while the test runs.
+            # address (or, with no port to post to, this folder), and the studio's
+            # preview displays it while the test runs.
             self.command_env = {**os.environ, **plugins.environment(choices),
-                                "AGENTFORGE_LIVE_URL": live.url_for(self.project)}
+                                **live.channel_for(self.project)}
             # A Supabase-stack project gets the one real project `supabase_connect` made for it,
             # in build, test and deploy alike - unlike the old studio-wide MongoDB setting, there is
             # no separate "the studio's own" database to fall back to here.
@@ -405,13 +406,12 @@ class ProjectSession:
     def _client(self) -> Any:
         saved = config.settings()
         if saved.get("cloud"):
-            key = saved.get("ollama_api_key") or ""
-            if not key:
-                raise EngineUnavailable(
-                    "Cloud mode needs an Ollama API key. Add it in Settings, or "
-                    "switch back to a local model.")
-            inner = ollama.Client(host="https://ollama.com",
-                                  headers={"Authorization": f"Bearer {key}"})
+            from . import ollama_cloud
+
+            try:
+                inner = ollama_cloud.for_engine(saved)
+            except ValueError as exc:
+                raise EngineUnavailable(str(exc)) from exc
         else:
             inner = ollama.Client(host=saved.get("ollama_host") or "http://localhost:11434")
         return RetryingClient(inner, announce=self._announce,

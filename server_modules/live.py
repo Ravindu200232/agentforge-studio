@@ -6,7 +6,10 @@ frames of a run that has ended are of no use to anyone.
 """
 from __future__ import annotations
 
+import json
 import threading
+import time
+from pathlib import Path
 from typing import Any
 
 from . import bus
@@ -14,8 +17,15 @@ from . import bus
 # A frame is a JPEG as a data URL. Larger than this is not a screencast frame.
 MAX_FRAME_CHARS = 700_000
 
+# The desktop app's backend listens on no port, so a run cannot post to it: it drops each message as a file
+# into a folder this module watches instead (see channel_for). How often the folder is looked at, and how long
+# a watcher with nothing to read stays up.
+POLL_SECONDS = 0.05
+IDLE_SECONDS = 900
+
 _lock = threading.Lock()
 _active: set[str] = set()
+_watchers: dict[str, threading.Thread] = {}
 
 
 def url_for(project: str) -> str:
@@ -23,6 +33,67 @@ def url_for(project: str) -> str:
     from . import config
 
     return f"http://127.0.0.1:{config.API_PORT}{config.API_PREFIX}/live/{project}"
+
+
+def channel_for(project: str) -> dict[str, str]:
+    """What a command run for `project` is told, to stream its live view: the API's address when the API
+    listens, otherwise a folder to drop each message into (`AGENTFORGE_LIVE_DIR`), watched from here."""
+    from . import config
+
+    if config.TRANSPORT != "stdio":
+        return {"AGENTFORGE_LIVE_URL": url_for(project)}
+    folder = config.record_dir(project) / "live"
+    watch(project, folder)
+    return {"AGENTFORGE_LIVE_DIR": str(folder)}
+
+
+def watch(project: str, folder: Path) -> None:
+    """Read `folder` for `project`, in order, until it has been quiet for a while."""
+    folder.mkdir(parents=True, exist_ok=True)
+    with _lock:
+        running = _watchers.get(project)
+        if running and running.is_alive():
+            return
+        thread = threading.Thread(target=_drain, args=(project, folder), name=f"live:{project}", daemon=True)
+        _watchers[project] = thread
+    thread.start()
+
+
+def _drain(project: str, folder: Path) -> None:
+    quiet_since = time.monotonic()
+    told = 0.0
+    while True:
+        now = time.monotonic()
+        # Whether anyone is looking, for the run to read instead of a reply (see live-view.js).
+        if now - told > 1:
+            told = now
+            try:
+                (folder / "watching.json").write_text(json.dumps({"watching": bus.viewers() > 0}), encoding="utf-8")
+            except OSError:
+                pass
+        for path in sorted(folder.glob("*.json")):
+            if path.name == "watching.json":
+                continue
+            quiet_since = now
+            try:
+                body = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                body = None
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            if isinstance(body, dict):
+                try:
+                    handle(project, body)
+                except Exception:  # noqa: BLE001 - one bad message must not stop the view
+                    pass
+        if now - quiet_since > IDLE_SECONDS:
+            with _lock:
+                if _watchers.get(project) is threading.current_thread():
+                    _watchers.pop(project, None)
+            return
+        time.sleep(POLL_SECONDS)
 
 
 def _number(value: Any) -> float | None:

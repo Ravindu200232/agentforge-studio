@@ -265,6 +265,9 @@ export default function Home({
         language: languageOptions.find(item => item.code === srsLanguage)?.name || srsLanguage,
         stack: stack || DEFAULT_STACK,
         workspace_path: workspace || undefined,
+        // What is picked beside this input is what the interview and the specification run on.
+        model: builderModel,
+        thinking_level: s.thinkingLevel,
       })
       const id = created.project.id
       if (useStore.getState().accountEpoch !== epoch || useStore.getState().srsPhase !== 'planning') return

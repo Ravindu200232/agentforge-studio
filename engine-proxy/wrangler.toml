@@ -1,0 +1,19 @@
+# AgentForge's AI engine (src/index.js). Deploy with `npx wrangler deploy` from this folder.
+#
+# Secrets, set once with `npx wrangler secret put <NAME>` (never written in this file or in the app):
+#   OLLAMA_API_KEY   the ollama.com API key the engine uses
+#   APP_TOKEN        the token every copy of the app sends (server_modules/engine.json holds the same value)
+name = "agentforge-engine"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+# At most this many requests a minute from one address: one person's agents stay well under it, a script
+# hammering the engine does not.
+[[ratelimits]]
+name = "LIMITER"
+namespace_id = "1001"
+
+  [ratelimits.simple]
+  limit = 300
+  period = 60

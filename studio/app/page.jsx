@@ -61,7 +61,7 @@ const STAGE_TAB = {
 const WIREFRAME_APPROVAL_PROMPT =
   'Use the approved /plan as the scope. Read the site map and the application spec at ' +
   '.agentforge/srs/handoff/ (sitemap.md, app.md). Before drawing anything, search the web ' +
-  '(Ollama web search) for how good products of this kind lay out their screens, and take ideas ' +
+  '(the web_search tool) for how good products of this kind lay out their screens, and take ideas ' +
   'from what you find. Then draw one creative, strictly black-and-white low-fidelity HTML wireframe ' +
   'for every planned screen, with no page limit. A screen is one page with one job: tables, forms and ' +
   'detail views each get a page of their own and are linked from the pages that lead to them, never ' +
@@ -232,23 +232,34 @@ export default function Studio() {
       setCat(c)
 
       const cur = useStore.getState().models
-      if (cur.planner && cur.design && cur.builder) return
       const known = new Set([...c.cloud, ...(c.local || [])].map(m => m.id))
       api.settings().then(s => {
-        const fallback = TIERS.medium.model
         const legacy = String(s?.agent_model || '').trim()
+        // A first run has nothing saved: a model this engine really has, preferring the usual default.
+        const fallback = [TIERS.medium.model, TIERS.high.model, TIERS.ultra.model].find(id => known.has(id))
+          || c.cloud[0]?.id || (c.local || []).find(m => !m.willPull)?.id || TIERS.medium.model
         const pick = value => {
           const saved = String(value || legacy).trim()
           return (saved && known.has(saved)) ? saved : fallback
         }
         const now = useStore.getState().models
-        useStore.setState({ models: {
-          ...now,
-          planner: now.planner || pick(s?.planner_model),
-          design: now.design || pick(s?.design_model),
-          builder: now.builder || pick(s?.builder_model),
-        } })
+        // A choice this engine does not have (an earlier default, a model since removed) is chosen again.
+        const keep = value => value && (!known.size || known.has(value))
+        if (!(keep(now.planner) && keep(now.design) && keep(now.builder))) {
+          useStore.setState({ models: {
+            ...now,
+            planner: keep(now.planner) ? now.planner : pick(s?.planner_model),
+            design: keep(now.design) ? now.design : pick(s?.design_model),
+            builder: keep(now.builder) ? now.builder : pick(s?.builder_model),
+          } })
+        }
+        // The interview and the specification run on the saved model: never leave it empty or unknown.
+        const chosen = useStore.getState().models.builder
+        if (chosen && (!legacy || !known.has(legacy)) && known.has(chosen)) {
+          api.saveSettings({ agent_model: chosen }).catch(() => { })
+        }
       }).catch(() => {
+        if (cur.planner && cur.design && cur.builder) return
         const now = useStore.getState().models
         useStore.setState({ models: {
           ...now,

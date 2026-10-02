@@ -1,0 +1,45 @@
+{
+  "name": "agentforge-desktop",
+  "productName": "AgentForge",
+  "version": "1.0.1",
+  "description": "AgentForge — plan, build, test and deploy apps with AI agents",
+  "author": "AgentForge",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "ai.agentforge.desktop",
+    "productName": "AgentForge",
+    "executableName": "AgentForge",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "bridge.js",
+      "paths.js",
+      "preload.js",
+      "starting.html",
+      "build/icon.png",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../release/stage/app",
+        "to": "app"
+      }
+    ],
+    "asar": true,
+    "win": {
+      "target": "dir",
+      "icon": "build/icon.ico"
+    }
+  }
+}

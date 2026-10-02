@@ -79,8 +79,12 @@ export function catalogue(payload) {
     if (!byId.has(id)) byId.set(id, { id, tag: 'local' })
   }
 
-  for (const m of CURATED) {
-    if (!byId.has(m.id)) byId.set(m.id, { ...m, willPull: true })
+  // Models to pull are only worth offering where an Ollama app runs: with the built-in engine, or just an
+  // ollama.com key, there is none.
+  if (p.ollama_ready || p.engine === 'local') {
+    for (const m of CURATED) {
+      if (!byId.has(m.id)) byId.set(m.id, { ...m, willPull: true })
+    }
   }
   const local = [...byId.values()]
   return {
@@ -89,6 +93,7 @@ export function catalogue(payload) {
     cloudEnabled: !!p.cloud_enabled,
     cloudVia: p.cloud_via || 'none',
     ollamaReady: !!p.ollama_ready,
+    engine: p.engine || (p.cloud_via === 'api-key' ? 'cloud' : 'local'),
     cloudAccount: p.cloud_account || '',
   }
 }

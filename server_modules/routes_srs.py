@@ -14,7 +14,7 @@ from prototype_agent import design as design_stage
 from prototype_agent import prototype as prototyper
 from srs_agent import document, interview, plan
 
-from . import store
+from . import config, store
 
 Handler = Callable[[str, dict[str, Any]], Any]
 
@@ -53,6 +53,17 @@ def create_project(_project: str, body: dict) -> Any:
     idea = str(body.get("idea") or "").strip()
     if not idea:
         raise ValueError("describe what you want built")
+    # The model picked beside the first input: the interview, the plan and the specification all run on the
+    # saved model, so it is saved here, before any of them starts.
+    chosen = str(body.get("model") or "").strip()
+    level = str(body.get("thinking_level") or "").strip().lower()
+    patch: dict[str, Any] = {}
+    if chosen and chosen != config.setting("model"):
+        patch["model"] = chosen
+    if level in config.THINKING_LEVELS and level != config.thinking():
+        patch["thinking_level"] = level
+    if patch:
+        config.save_settings(patch)
     record = store.create(idea=idea,
                           language=str(body.get("language") or ""),
                           stack=str(body.get("stack") or ""),

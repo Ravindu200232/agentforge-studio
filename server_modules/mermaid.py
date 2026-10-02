@@ -205,6 +205,37 @@ _UC_DASHED = re.compile(r'^\s*(\w+)\s*-\.->\s*\|\s*"?([^|"]+?)"?\s*\|\s*(\w+)')
 _UC_LABELED = re.compile(r'^\s*(\w+)\s*-->\s*\|\s*"?([^|"]+?)"?\s*\|\s*(\w+)')
 
 
+# One stick figure (head to feet, y-32..y+48) and a two-line name below it, with
+# clear space before the next actor in the same column.
+_UC_ACTOR_GAP = 150
+
+
+def _spread(wanted: list[float], low: float, high: float, gap: float) -> list[float]:
+    """Positions as near `wanted` as they can be, at least `gap` apart, within low..high.
+
+    Neighbours that would be too close move apart around the middle of where they
+    wanted to be, so a pair is centred on its shared use cases rather than one
+    actor keeping its spot and the other being pushed off."""
+    order = sorted(range(len(wanted)), key=lambda i: wanted[i])
+    blocks: list[tuple[float, list[int]]] = []          # (first position, members in order)
+    for index in order:
+        blocks.append((wanted[index], [index]))
+        while len(blocks) > 1 and blocks[-2][0] + len(blocks[-2][1]) * gap > blocks[-1][0]:
+            _, later = blocks.pop()
+            members = blocks[-1][1] + later
+            start = sum(wanted[m] - k * gap for k, m in enumerate(members)) / len(members)
+            blocks[-1] = (start, members)
+    ys = [start + k * gap for start, members in blocks for k in range(len(members))]
+    for k in range(len(ys)):
+        ys[k] = max(ys[k], low if k == 0 else ys[k - 1] + gap)
+    for k in reversed(range(len(ys))):
+        ys[k] = min(ys[k], high if k == len(ys) - 1 else ys[k + 1] - gap)
+    placed = [0.0] * len(wanted)
+    for k, index in enumerate(i for _, members in blocks for i in members):
+        placed[index] = ys[k]
+    return placed
+
+
 def _uc_actor_svg(x: float, y: float) -> str:
     return (f'<circle cx="{x}" cy="{y - 22}" r="10" fill="#75c5e8" stroke="#111827" stroke-width="1.8"/>'
             f'<path d="M{x} {y - 12}V{y + 24}M{x - 20} {y}H{x + 20}M{x} {y + 24}L{x - 18} {y + 48}'
@@ -269,7 +300,8 @@ def _render_use_case_svg(source: str, out_path: Path) -> bool:
     uc_rows = (len(use_cases) + uc_columns - 1) // uc_columns
     rows = max(uc_rows, len(left_actors), len(right_actors), 1)
     width = 1840 if uc_columns == 2 else 1440
-    height = max(650, 200 + rows * 130)
+    stacked = max(len(left_actors), len(right_actors), 1) - 1
+    height = max(650, 200 + rows * 130, 240 + stacked * _UC_ACTOR_GAP)
     bound_w = 980 if uc_columns == 2 else 480
     bound_x = (width - bound_w) / 2
     bound_y, bound_h = 80, height - 160
@@ -297,18 +329,17 @@ def _render_use_case_svg(source: str, out_path: Path) -> bool:
         svg.append(_context_text(cx, cy, label, 14, "600"))
 
     actor_pos: dict[str, tuple[float, float]] = {}
-    for i, node in enumerate(left_actors):
-        linked = [uc_pos[b][1] for a, b in assoc if a == node and b in uc_pos]
-        x, y = left_x, (sum(linked) / len(linked) if linked else row_y(i, len(left_actors)) + 20)
-        actor_pos[node] = (x, y)
-        svg.append(_uc_actor_svg(x, y))
-        svg.append(_context_text(x, y + 68, actors[node], 14))
-    for i, node in enumerate(right_actors):
-        linked = [uc_pos[b][1] for a, b in assoc if a == node and b in uc_pos]
-        x, y = right_x, (sum(linked) / len(linked) if linked else row_y(i, len(right_actors)) + 20)
-        actor_pos[node] = (x, y)
-        svg.append(_uc_actor_svg(x, y))
-        svg.append(_context_text(x, y + 68, actors[node], 14))
+    for x, column in ((left_x, left_actors), (right_x, right_actors)):
+        # Each actor sits level with the use cases it joins, but two that join the
+        # same ones would land on one spot: spread them a full figure apart.
+        wanted = []
+        for i, node in enumerate(column):
+            linked = [uc_pos[b][1] for a, b in assoc if a == node and b in uc_pos]
+            wanted.append(sum(linked) / len(linked) if linked else row_y(i, len(column)) + 20)
+        for node, y in zip(column, _spread(wanted, bound_y + 40, height - 100, _UC_ACTOR_GAP)):
+            actor_pos[node] = (x, y)
+            svg.append(_uc_actor_svg(x, y))
+            svg.append(_context_text(x, y + 68, actors[node], 14))
 
     def uc_connector(start_node: str, end_node: str) -> tuple[float, float, float, float]:
         """Join two ovals at their borders, never through their labels."""
