@@ -45,6 +45,7 @@ desktop/dist/
 release/stage/
 release/out/
 release/installer/Config.generated.cs
+release/installer/AssemblyInfo.generated.cs
 release/cache/
 engine-proxy/.wrangler/
 engine-proxy/.dev.vars

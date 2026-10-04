@@ -236,12 +236,27 @@ namespace AgentForge.Setup { static class Config {
     public const string ManifestUrl = "https://github.com/$Repo/releases/latest/download/manifest.json";
 } }
 "@
+# Who made the file, what it is and which version: the Details tab of its Properties, and what Windows shows beside an
+# unknown program. Without these a compiled exe says nothing about itself, and antivirus heuristics and SmartScreen
+# treat a file like that with more suspicion than one that does. (Only a code-signing signature makes Windows trust it.)
+$year = (Get-Date).Year
+Write-Text (Join-Path $installer 'AssemblyInfo.generated.cs') @"
+using System.Reflection;
+[assembly: AssemblyTitle("AgentForge Setup")]
+[assembly: AssemblyDescription("Installs AgentForge Studio for the current user: downloads the app from its GitHub release and sets it up. No administrator rights needed.")]
+[assembly: AssemblyCompany("AgentForge")]
+[assembly: AssemblyProduct("AgentForge")]
+[assembly: AssemblyCopyright("Copyright (c) $year AgentForge")]
+[assembly: AssemblyVersion("$version.0")]
+[assembly: AssemblyFileVersion("$version.0")]
+[assembly: AssemblyInformationalVersion("$version")]
+"@
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 & $csc -nologo -target:winexe -optimize+ "-out:$(Join-Path $out 'AgentForgeSetup.exe')" `
     "-win32icon:$(Join-Path $root 'desktop\build\icon.ico')" "-win32manifest:$(Join-Path $installer 'app.manifest')" `
     -r:System.IO.Compression.dll -r:System.IO.Compression.FileSystem.dll -r:System.Web.Extensions.dll `
     -r:System.Windows.Forms.dll -r:System.Drawing.dll `
-    (Join-Path $installer 'AgentForgeSetup.cs') (Join-Path $installer 'Config.generated.cs')
+    (Join-Path $installer 'AgentForgeSetup.cs') (Join-Path $installer 'Config.generated.cs') (Join-Path $installer 'AssemblyInfo.generated.cs')
 if ($LASTEXITCODE -ne 0) { throw 'the installer did not compile' }
 
 Step "Done"
