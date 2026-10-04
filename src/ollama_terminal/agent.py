@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import json
@@ -81,8 +82,16 @@ def model_context_length(client: Any, model: str) -> int | None:
         return None
 
 
+# What a picture costs a model, roughly. Its bytes are never counted as text: a screenshot would read as hundreds of
+# thousands of tokens and the history would be compacted away.
+PICTURE_TOKENS = 1500
+
+
 def _approx_tokens(messages: list[dict]) -> int:
-    return len(json.dumps(messages, ensure_ascii=False, default=str)) // 4
+    pictures = sum(len(m.get("images") or []) for m in messages if isinstance(m, dict))
+    plain = [{k: v for k, v in m.items() if k != "images"} if isinstance(m, dict) and m.get("images") else m
+             for m in messages]
+    return len(json.dumps(plain, ensure_ascii=False, default=str)) // 4 + pictures * PICTURE_TOKENS
 
 
 def _usage_count(response: Any, *names: str) -> int:
@@ -519,12 +528,35 @@ class Agent:
                           self.tools.execute(name, args))
                 save_result(name, args, result)
                 cursor += 1
+            self._show_pictures()
             # A terminal marker accompanying tool calls means those calls were
             # the final action. Returning here prevents another automatic
             # continuation turn from reopening an already completed plan.
             if self.last_terminal_signal:
                 return terminal_text
         return f"Tool batch reached {self.max_steps} steps; continuing automatically."
+
+    def _show_pictures(self) -> None:
+        """Hand the model the pictures its tools took (screenshots). Ollama carries a picture on a user turn, and the tool
+        results must follow the assistant's tool calls directly, so they come as one message after all of them. Only the
+        newest pictures stay in the history: older ones are replaced by a note, so the bytes are not sent again and again."""
+        take = getattr(self.tools, "take_images", None)
+        pictures = take() if callable(take) else []
+        if not pictures:
+            return
+        self._drop_old_pictures()
+        what = "the screenshot" if len(pictures) == 1 else f"the {len(pictures)} screenshots"
+        self.messages.append({
+            "role": "user",
+            "content": f"Here {'is' if len(pictures) == 1 else 'are'} {what} you took: "
+                       + "; ".join(label for label, _ in pictures) + ". Look at it and judge the page as a person would.",
+            "images": [base64.b64encode(data).decode("ascii") for _, data in pictures]})
+
+    def _drop_old_pictures(self) -> None:
+        for message in self.messages:
+            if isinstance(message, dict) and message.get("images"):
+                message.pop("images")
+                message["content"] = str(message.get("content") or "") + " (the picture is no longer attached)"
 
     def execute_plan(self, request: str, plan: str, audit: bool = True,
                      parallel_write_limit: int = 1) -> ExecutionResult:

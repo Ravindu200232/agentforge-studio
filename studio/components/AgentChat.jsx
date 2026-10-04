@@ -10,19 +10,21 @@ import {
   Square, Terminal, Wrench, X,
 } from 'lucide-react'
 
-import { api } from '@/lib/api'
+import { API, api } from '@/lib/api'
 import { chatTurns } from '@/lib/chat'
 import { chatDisplayBlocks, cleanChatProse } from '@/lib/chat-display'
 import { consoleReport, forgetConsole } from '@/lib/console-log'
 import { computeLineDiff } from '@/lib/diff'
 import { modelLabel } from '@/lib/models'
 import { useStore } from '@/lib/store'
+import { useVisionModels } from '@/lib/vision'
 import { useEditAttachments } from '@/lib/use-edit-attachments'
 import { answerAsk, answerOption, answerQuestion, answerValue, declineAsk, reviseDrawing, send } from '@/lib/ws'
 import { cn } from '@/lib/utils'
 import ChangePlan from './ChangePlan'
 import EditAttach from './EditAttach'
 import PluginAccounts from './PluginAccounts'
+import VisionBadge from './VisionBadge'
 import { Dropdown, Modal } from './ui'
 
 const ICONS = {
@@ -486,6 +488,7 @@ function ChatModelControls({ project, agentRole, busy }) {
   const [catalog, setCatalog] = useState(null)
   const [saving, setSaving] = useState(false)
   const [open, setOpen] = useState(false)
+  const seeing = useVisionModels(open)
 
   const role = agentRole === 'designer' ? 'design' : 'builder'
   const current = models[role] || models.agent || ''
@@ -567,6 +570,7 @@ function ChatModelControls({ project, agentRole, busy }) {
                             className={cn('flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] transition-colors disabled:opacity-45',
                               picked ? 'bg-accent/55 text-ink' : 'text-ink hover:bg-panel2')}>
                       <span className="min-w-0 flex-1 truncate">{modelLabel(row) || id}</span>
+                      {seeing.vision.has(id) && <VisionBadge />}
                       {picked && <Check className="size-3 shrink-0" />}
                     </button>
                   )
@@ -574,6 +578,11 @@ function ChatModelControls({ project, agentRole, busy }) {
               </section>
             ))}
             {!catalog && <p className="px-2 py-3 text-[10px] text-muted2">Reading available models…</p>}
+            {catalog && seeing.vision.size > 0 && (
+              <p className="px-2 py-1.5 text-[9.5px] leading-snug text-muted2">
+                A model marked <b>vision</b> can look at pictures, so the Studio can have it check the prototype's screens by looking at them. Other models skip that check.
+              </p>
+            )}
             {catalog && !groups.some(([, rows]) => rows.length) && <p className="px-2 py-3 text-[10px] text-muted2">No models are available yet.</p>}
           </div>
 
@@ -1203,6 +1212,7 @@ function FileActionCard({ turn, live }) {
 
 /** Memoized conversation turn row rendering messages, tool events, and plans. */
 const Turn = memo(function Turn({ turn, live }) {
+  const project = useStore(s => s.project)
   if (turn.role === 'stage') {
     const active = turn.status === 'active'
     const passed = turn.status === 'done'
@@ -1298,6 +1308,7 @@ const Turn = memo(function Turn({ turn, live }) {
                 </div>
               )
               : <ReadableAgentText text={turn.text} />}
+          {turn.images?.length > 0 && <TurnPictures images={turn.images} project={project} />}
         </div>
       </div>
     )
@@ -1335,6 +1346,24 @@ const Turn = memo(function Turn({ turn, live }) {
     </div>
   )
 })
+
+/** The screenshots a message carries (the visual review's, the screenshot tool's): a thumbnail each, the full picture on click. */
+function TurnPictures({ images, project }) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {images.map((image, index) => {
+        const src = `${API}/qa-screenshot/${encodeURIComponent(project || '')}?path=${encodeURIComponent(image.path)}`
+        return (
+          <a key={`${image.path}-${index}`} href={src} target="_blank" rel="noreferrer" title={image.label || 'Open the screenshot'}
+             className="group block w-[150px] overflow-hidden rounded-xl bg-panel2 shadow-sm transition-shadow hover:shadow-md">
+            <img src={src} alt={image.label || 'Screenshot'} loading="lazy" className="h-[104px] w-full object-cover object-top" />
+            {image.label && <span className="block truncate px-2 py-1 text-[9.5px] text-muted2">{image.label}</span>}
+          </a>
+        )
+      })}
+    </div>
+  )
+}
 
 /** Terminal output remains available without overwhelming a long chat. */
 function CommandTurn({ turn, live }) {

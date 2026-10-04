@@ -5,6 +5,7 @@
 // contains it: what is printed is one JSON object with a plain-language message.
 import { createRequire } from 'node:module';
 import dns from 'node:dns/promises';
+import dnsClassic from 'node:dns';
 import net from 'node:net';
 import path from 'node:path';
 import tls from 'node:tls';
@@ -20,6 +21,39 @@ const scrub = (text) => {
   return clean.replace(/\/\/[^/@\s]+:[^@\s]+@/g, '//<credentials>@');
 };
 
+// A home router often answers an SRV question wrongly once and rightly the next time, and some never answer it at
+// all. So an address that cannot be found is asked again, then of public DNS, before it is called wrong. The two
+// environment variables only exist to try this without a bad router: CHECK_DNS_SERVERS replaces this computer's DNS
+// servers for the check, CHECK_PUBLIC_DNS_SERVERS the public ones it falls back to.
+const FLAKY = new Set(['ENOTFOUND', 'ENODATA', 'ECONNREFUSED', 'ETIMEOUT', 'ESERVFAIL', 'EAI_AGAIN']);
+const UNANSWERED = new Set(['ECONNREFUSED', 'ETIMEOUT', 'ESERVFAIL', 'EAI_AGAIN']);
+const list = (text) => String(text || '').split(',').map((item) => item.trim()).filter(Boolean);
+const PUBLIC_DNS = list(process.env.CHECK_PUBLIC_DNS_SERVERS || '1.1.1.1,8.8.8.8');
+if (list(process.env.CHECK_DNS_SERVERS).length) dns.setServers(list(process.env.CHECK_DNS_SERVERS));
+const notes = [];
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function resolveSrv(name) {
+  try {
+    return await dns.resolveSrv(name);
+  } catch (first) {
+    if (!FLAKY.has(first.code)) throw first;
+    await sleep(400);
+    try { return await dns.resolveSrv(name); } catch { /* asked of public DNS next */ }
+    const before = dns.getServers();
+    dns.setServers(PUBLIC_DNS);
+    try {
+      const rows = await dns.resolveSrv(name);
+      notes.push(`This computer's DNS server could not look the cluster up, so public DNS (${PUBLIC_DNS.join(', ')}) was used for this check. A deployed application is not affected.`);
+      return rows;
+    } catch (second) {
+      dns.setServers(before);
+      first.publicCode = second.code;
+      throw first;
+    }
+  }
+}
+
 const parsed = uri.match(/^mongodb(\+srv)?:\/\/(?:[^@/]*@)?([^/?]+)(\/[^?]*)?/i);
 if (!parsed) done({ ok: false, stage: 'parse', message: 'That is not a MongoDB connection string. It starts with mongodb:// or mongodb+srv://.' });
 const srv = Boolean(parsed[1]);
@@ -30,18 +64,33 @@ const database = (parsed[3] || '').replace(/^\//, '');
 let targets = [];
 try {
   if (srv) {
-    targets = (await dns.resolveSrv(`_mongodb._tcp.${hosts[0]}`)).map((row) => ({ host: row.name, port: row.port }));
+    targets = (await resolveSrv(`_mongodb._tcp.${hosts[0]}`)).map((row) => ({ host: row.name, port: row.port }));
   } else {
     targets = hosts.map((host) => { const [name, port] = host.split(':'); return { host: name, port: Number(port) || 27017 }; });
   }
 } catch (error) {
-  done({ ok: false, stage: 'dns', message: `The cluster's address could not be found (${scrub(error.code || error.message)}). Check the host name in the string.` });
+  const code = scrub(error.code || error.message);
+  if (error.publicCode && UNANSWERED.has(error.publicCode)) {
+    done({ ok: false, stage: 'dns', message: `The cluster's address could not be looked up: this computer's DNS said ${code}, and public DNS could not be reached (${scrub(error.publicCode)}). Check this computer's internet connection and try again.` });
+  }
+  const agreed = error.publicCode ? ', and public DNS could not find it either' : '';
+  done({ ok: false, stage: 'dns', message: `The cluster's address could not be found (${code}${agreed}). Check the host name in the string.` });
 }
 
 // 2. Can it be reached from here? Atlas needs TLS; a plain mongodb:// host on a private network may not.
 const secure = srv || /[?&]tls=true|[?&]ssl=true/i.test(uri);
+// This computer's own lookup first; when it fails, a direct address lookup through the DNS servers in use now.
+const lookup = (hostname, options, callback) => {
+  dnsClassic.lookup(hostname, options, (error, address, family) => {
+    if (!error) { callback(null, address, family); return; }
+    dns.resolve4(hostname).then((found) => {
+      if (options && options.all) callback(null, found.map((item) => ({ address: item, family: 4 })));
+      else callback(null, found[0], 4);
+    }, () => callback(error));
+  });
+};
 const reach = (target) => new Promise((resolve) => {
-  const socket = (secure ? tls.connect : net.connect)({ host: target.host, port: target.port, servername: target.host, timeout: 7000 });
+  const socket = (secure ? tls.connect : net.connect)({ host: target.host, port: target.port, servername: target.host, timeout: 7000, lookup });
   socket.once(secure ? 'secureConnect' : 'connect', () => { socket.destroy(); resolve(true); });
   socket.once('timeout', () => { socket.destroy(); resolve(false); });
   socket.once('error', () => resolve(false));
@@ -56,7 +105,7 @@ let mongodb;
 try {
   mongodb = createRequire(path.join(driverBase, 'package.json'))('mongodb');
 } catch {
-  done({ ok: true, verified: false, stage: 'network', message: 'The cluster answers over the network, but the username and password were not checked: no MongoDB driver was found on this computer (one is installed when a project is built).' });
+  done({ ok: true, verified: false, stage: 'network', message: 'The cluster answers over the network, but the username and password were not checked: no MongoDB driver was found on this computer (one is installed when a project is built).', warnings: notes });
 }
 
 const client = new mongodb.MongoClient(uri, { serverSelectionTimeoutMS: 10000, connectTimeoutMS: 10000 });
@@ -66,7 +115,7 @@ try {
   const info = await client.db('admin').command({ buildInfo: 1 }).catch(() => ({}));
   const warnings = [];
   if (!database) warnings.push('The string names no database, so the application would use the default one (test). Add a name after the host, for example …mongodb.net/myapp?…');
-  done({ ok: true, verified: true, stage: 'ping', message: 'Connected and signed in.', server_version: info.version || '', database: database || 'test', warnings });
+  done({ ok: true, verified: true, stage: 'ping', message: 'Connected and signed in.', server_version: info.version || '', database: database || 'test', warnings: [...notes, ...warnings] });
 } catch (error) {
   const text = scrub(error.message);
   if (/auth/i.test(error.codeName || '') || /authentication failed|bad auth/i.test(text) || error.code === 18) {

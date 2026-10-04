@@ -114,6 +114,8 @@ export const api = {
   projects: () => req('/projects'),
   chooseWorkspace: () => post('/workspace/pick', {}),
   models: () => req('/models'),
+  // Which models can look at pictures: { capabilities: { id: { vision } }, pending } (filled in as Ollama answers).
+  modelCapabilities: () => req('/models/capabilities'),
   settings: () => req('/settings'),
   saveSettings: (s) => post('/settings', s),
   mcpProbe: (server) => post('/mcp/probe', server),

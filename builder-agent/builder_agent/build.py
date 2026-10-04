@@ -332,6 +332,12 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         build_result = session.run_task(request, plan_directory="plan", audit=False)
         if build_result.get("status") == "blocked":
             raise ValueError(build_result.get("text") or "the build was blocked")
+        # The plan's own end-to-end tests are done: a model that can look at pictures looks at their screenshots, and what
+        # it finds is fixed (a model that cannot skips this, with a line in the chat saying so).
+        from qa_agent import e2e_review
+        e2e_review.run(project, session)
+        if session.cancelled:
+            raise RunCancelled(project)
         return _finish_run(project, session, build_result, build_result.get("plan") or "")
     except RunCancelled:
         raise

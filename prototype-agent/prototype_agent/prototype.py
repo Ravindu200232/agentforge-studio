@@ -13,6 +13,7 @@ from server_modules.session import ProjectSession, RunCancelled, session_for
 
 from . import design as design_stage
 from . import prototype_brief
+from . import visual_review
 from .assets import normalize_inline_svg
 
 PROTOTYPE_DIR = "prototype"
@@ -336,6 +337,14 @@ def _generate(project: str, direction: str,
         if not drawn:
             raise ValueError("the prototype wrote no routes.json, so no screen is reviewable")
 
+        # Every screen is photographed silently and looked at by the model, when it can look at pictures (a model that
+        # cannot skips this, with a line in the chat saying so); what it finds is fixed before the prototype is handed over.
+        drawn_accounts = (_read_record(session, PROTOTYPE_DIR, "demo-accounts.json", fallback=None) or {}).get("accounts") or []
+        visual_review.run(project, session, drawn, drawn_accounts)
+        if session.cancelled:
+            raise RunCancelled(project)
+        drawn = routes(project) or drawn
+
         previous = store.require(project)
         if not previous.get("build_available"):
             store.update(project, prototype_only=True, status="prototyped",
@@ -379,6 +388,22 @@ def _generate(project: str, direction: str,
             bus.sync_state(project, "failed", str(exc)[:300], source="prototype",
                            error=str(exc)[:300])
         raise
+
+
+def review(project: str, fix: bool = True, model: str = "") -> dict[str, Any]:
+    """Look at every screen of the prototype that is already drawn, with a model that can look at pictures, and fix what it
+    finds (`fix`: false only looks and reports)."""
+    if not exists(project):
+        raise ValueError("there is no prototype to look at yet")
+    session = session_for(project)
+    drawn = routes(project)
+    accounts = (_read_record(session, PROTOTYPE_DIR, "demo-accounts.json", fallback=None) or {}).get("accounts") or []
+    result = visual_review.run(project, session, drawn, accounts, fix=fix, model=model, force=True)
+    if session.cancelled:
+        raise RunCancelled(project)
+    if result.get("status") == "done" and fix:
+        bus.prototype_changed(project)          # the pages may have changed: the preview reloads them
+    return result
 
 
 def revise(project: str, request: str) -> dict[str, Any]:

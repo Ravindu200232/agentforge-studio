@@ -29,7 +29,7 @@ from ollama_terminal.agent import Agent
 from ollama_terminal.mcp_client import NAME_PREFIX as MCP_NAME_PREFIX
 from ollama_terminal.tools import WorkspaceTools, describe_call
 
-from . import bus, config, deploy_vars, live, plugins, prompts, stage_evidence, supabase_connect
+from . import bus, config, deploy_vars, live, plugins, prompts, stage_evidence, supabase_connect, vision
 
 
 class RunCancelled(Exception):
@@ -167,13 +167,62 @@ class RetryingClient:
 
         return read()
 
+    def _back_off(self, exc: Exception, attempt: int) -> None:
+        """Say the connection was interrupted and wait before the next attempt; Stop ends the wait at once."""
+        pause = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+        if self._announce:
+            self._announce(f"[retry] Connection to the model service was interrupted "
+                           f"({str(exc)[:120]}). Retrying attempt {attempt + 2} of "
+                           f"{RETRY_ATTEMPTS} in {pause}s.")
+        # ``time.sleep`` made Stop appear broken while a cloud request was
+        # backing off: the longest delay is 30 seconds.  A session supplies
+        # its Event.wait here, which wakes immediately when the customer
+        # presses Stop; simple clients keep the old sleep behaviour.
+        if self._wait_for_cancel:
+            if self._wait_for_cancel(pause):
+                raise RunCancelled("The run was stopped.")
+        else:
+            time.sleep(pause)
+
+    def _retried_stream(self, kwargs: dict[str, Any], first: Any = None) -> Any:
+        """A streamed reply, asked for again when the connection fails before its first chunk.
+
+        A streamed request is only sent when the first chunk is read, so a dropped connection, a bad TLS record or
+        a 502 on opening it surfaces to whoever reads the stream, not to `chat()`, and used to end the whole run. It
+        is asked for again here. Once a chunk has been handed on the reply cannot be repeated without handing the
+        same words on twice, so a failure after that is raised as it is. `first` is the stream already opened for the
+        first attempt.
+        """
+        for attempt in range(RETRY_ATTEMPTS):
+            self._raise_if_cancelled()
+            started = False
+            try:
+                stream, first = (first if first is not None else self._inner.chat(**kwargs)), None
+                for chunk in self._interruptible_stream(stream):
+                    started = True
+                    yield chunk
+                return
+            except RunCancelled:
+                raise
+            except Exception as exc:  # noqa: BLE001 - re-raised below when it is not worth asking again
+                self._raise_if_cancelled()
+                if started or not _transient(exc) or attempt == RETRY_ATTEMPTS - 1:
+                    raise
+                self._back_off(exc, attempt)
+
     def chat(self, **kwargs: Any) -> Any:
+        if kwargs.get("stream"):
+            try:
+                first = self._inner.chat(**kwargs)      # a real client only builds the stream here; nothing is sent yet
+            except Exception:  # noqa: BLE001 - asked again, and judged, by the retrying read below
+                first = None
+            if first is not None and not hasattr(first, "__iter__"):
+                return first                            # not a stream after all: handed back as it is
+            return self._retried_stream(kwargs, first)
         last: Exception | None = None
         for attempt in range(RETRY_ATTEMPTS):
             self._raise_if_cancelled()
             try:
-                if kwargs.get("stream"):
-                    return self._interruptible_stream(self._inner.chat(**kwargs))
                 return self._interruptible(lambda: self._inner.chat(**kwargs))
             except RunCancelled:
                 raise
@@ -182,20 +231,7 @@ class RetryingClient:
                 if not _transient(exc) or attempt == RETRY_ATTEMPTS - 1:
                     raise
                 last = exc
-                pause = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
-                if self._announce:
-                    self._announce(f"[retry] Connection to the model service was interrupted "
-                                   f"({str(exc)[:120]}). Retrying attempt {attempt + 2} of "
-                                   f"{RETRY_ATTEMPTS} in {pause}s.")
-                # ``time.sleep`` made Stop appear broken while a cloud request was
-                # backing off: the longest delay is 30 seconds.  A session supplies
-                # its Event.wait here, which wakes immediately when the customer
-                # presses Stop; simple clients keep the old sleep behaviour.
-                if self._wait_for_cancel:
-                    if self._wait_for_cancel(pause):
-                        raise RunCancelled("The run was stopped.")
-                else:
-                    time.sleep(pause)
+                self._back_off(exc, attempt)
         raise last  # pragma: no cover - the loop either returns or raises above
 
 
@@ -233,6 +269,30 @@ class StudioTools(WorkspaceTools):
         # A Studio agent must never own a long-running web server.  Preview
         # startup is handled by preview_runtime, which assigns the stack's preview port.
         self.managed_preview = True
+
+    def _take_picture(self, target: str, viewport: str, role: str, out: Path) -> Path:
+        """A prototype page by its file name, route or name (shown signed in as a role that can open it, or as `role`);
+        anything else - a preview URL, an HTML file - as the generic tool does."""
+        if not target.lower().startswith("http"):
+            from prototype_agent import screens
+
+            root = self.root / config.RECORD_DIR / "prototype"
+            try:
+                rows = (json.loads((root / "routes.json").read_text(encoding="utf-8")) or {}).get("routes") or []
+                accounts = (json.loads((root / "demo-accounts.json").read_text(encoding="utf-8")) or {}).get("accounts") or []
+            except (OSError, ValueError):
+                rows, accounts = [], []
+            page = screens.find_page(root, target, rows) if rows else None
+            file = self.root / target
+            if page and not (file.is_file() and file.suffix.lower() in {".html", ".htm"}):
+                wanted = role.strip().lower()
+                email = None
+                if wanted:
+                    email = next((str(a.get("email") or "") for a in accounts if wanted in {
+                        str(a.get("email") or "").lower(), str(a.get("role") or "").lower(),
+                        str(a.get("role_key") or "").lower()}), "")
+                return screens.shoot_page(root, page, accounts, out, viewport, email)
+        return super()._take_picture(target, viewport, role, out)
 
     def browser_url(self) -> str:
         """The local preview this project's browser tool may inspect."""
@@ -342,6 +402,17 @@ class StudioTools(WorkspaceTools):
         elif name == "web_fetch":
             bus.log(self.project, "INFO",
                     f'Read web page {str(args.get("url") or "")}', agent=role)
+        elif name == "screenshot" and not result.startswith("Tool error"):
+            try:
+                taken = json.loads(result)
+                bus.agent_msg(self.project,
+                              f"{taken.get('target')} · {taken.get('viewport')} · "
+                              + ("the model is looking at it" if taken.get("shown_to_you")
+                                 else "saved (this model cannot look at pictures)"),
+                              title="Screenshot", kind="screenshot", agent=role,
+                              images=[{"path": taken.get("saved"), "label": f"{taken.get('target')} · {taken.get('viewport')}"}])
+            except (TypeError, ValueError):
+                bus.log(self.project, "WARN", "The screenshot tool returned an unreadable result.", agent=role)
         elif name == "browser_inspect":
             try:
                 inspected = json.loads(result)
@@ -520,6 +591,8 @@ class ProjectSession:
                 )
                 # A command running when Stop is pressed is stopped with its process tree, not waited for.
                 self._agent.tools.stop_requested = lambda: self.cancelled
+                # Whether the model in use can look at the screenshots its tool takes (Ollama says so: vision.py).
+                self._agent.tools.sees_pictures = lambda: vision.supports(self._agent.model) is True
                 self._apply_effort(self._agent, level)
                 self._model = wanted
                 self._thinking_level = level
@@ -622,7 +695,9 @@ class ProjectSession:
                 "thinking_level": self._thinking_level,
                 "memory_summary": self._agent.memory_summary,
                 "tool_calls": self._agent.tool_call_count,
-                "messages": self._agent.messages,
+                # Screenshots are shown to the model once; the bytes are not kept in the saved conversation.
+                "messages": [{k: v for k, v in m.items() if k != "images"} if isinstance(m, dict) and "images" in m else m
+                             for m in self._agent.messages],
             }, ensure_ascii=False, default=str), encoding="utf-8")
         except (OSError, TypeError, ValueError):
             # A context that cannot be written is a context this run still has.

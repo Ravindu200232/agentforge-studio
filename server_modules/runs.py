@@ -361,6 +361,47 @@ def _start_preview(project: str, model: str = "", part: str = "") -> None:
         raise
 
 
+def review_screens(message: dict[str, Any]) -> dict[str, Any]:
+    """Look at a project's screens again with a model that can look at pictures: the prototype's pages (`what`:
+    "prototype"), the end-to-end tests' screenshots ("tests"), or both (the default). `fix`: false only looks and reports
+    (nothing is changed); `model` is the model for this run."""
+    _remember_model(message)
+    project = str(message.get("project") or "").strip()
+    if not project:
+        raise ValueError("that message names no project")
+    store.require(project)
+    what = str(message.get("what") or "both").strip().lower()
+    if what not in {"prototype", "tests", "both"}:
+        raise ValueError('what must be "prototype", "tests" or "both"')
+    fix = message.get("fix", True) not in (False, "false", 0, "0")
+    _in_background(f"review:{project}", project, bus.DESIGNER if what == "prototype" else bus.DEVELOPER, _review_screens,
+                   project, what, fix, _model_from(message), _project=project)
+    return {"ok": True, "project": project, "what": what, "fix": fix}
+
+
+def _review_screens(project: str, what: str, fix: bool, model: str = "") -> None:
+    from qa_agent import e2e_review
+
+    session = session_for(project)
+    outcomes: list[str] = []
+    try:
+        if what in ("prototype", "both"):
+            session.begin("review", role=bus.DESIGNER)
+            if prototyper.exists(project):
+                outcomes.append(f"prototype: {prototyper.review(project, fix=fix, model=model).get('status')}")
+            elif what == "prototype":
+                raise ValueError("there is no prototype to look at yet")
+        if what in ("tests", "both"):
+            session.begin("review", role=bus.DEVELOPER)
+            outcomes.append(f"tests: {e2e_review.run(project, session, fix=fix, model=model, force=True).get('status')}")
+        session.finish("Screens reviewed (" + "; ".join(outcomes) + ").")
+    except RunCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - shown as the run's failure, then re-raised
+        session.fail(f"The screen review stopped: {exc}")
+        raise
+
+
 HANDLERS = {
     "agent_build": agent_build,
     "agent_update": agent_update,
@@ -368,6 +409,7 @@ HANDLERS = {
     "feature": feature,
     "element_edit": element_edit,
     "preview_start": preview_start,
+    "review_screens": review_screens,
 }
 
 

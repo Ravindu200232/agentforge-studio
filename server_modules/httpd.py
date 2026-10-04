@@ -30,7 +30,7 @@ from qa_agent import report_pdf
 from qa_agent import verify as qa
 from srs_agent import document as srs_document
 
-from . import bus, changes, cli_monitor, cli_signin, config, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, workspace_picker
+from . import bus, changes, cli_monitor, cli_signin, config, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, workspace_picker
 from . import database_rows as database_rows_module
 from .session import session_for
 
@@ -162,6 +162,18 @@ def models(_ctx: dict) -> Any:
         "cloud_account": "",
         "selected": saved.get("model", ""),
     }
+
+
+@route("GET", r"/models/capabilities")
+def model_capabilities(_ctx: dict) -> Any:
+    """Which of the models in `/models` can look at a picture (`{"capabilities": {id: {"vision": bool}}, "pending": n}`).
+
+    Ollama is asked per model (`vision.py`), a few at a time in the background, so this answers at once with what is known
+    and the picker asks again while `pending` is not zero."""
+    listed = models({})
+    ids = [str(row.get("id") if isinstance(row, dict) else row)
+           for row in [*(listed.get("local_models") or []), *(listed.get("cloud") or [])]]
+    return vision.capabilities(ids)
 
 
 @route("POST", r"/ollama/test")
@@ -1054,6 +1066,13 @@ def http_element_edit(ctx: dict) -> Any:
 @route("POST", r"/preview-start")
 def http_preview_start(ctx: dict) -> Any:
     return runs.preview_start(ctx)
+
+
+@route("POST", r"/review-screens")
+def http_review_screens(ctx: dict) -> Any:
+    """Look at the project's screens (the prototype's pages, the end-to-end tests' screenshots, or both) with a model that
+    can look at pictures, and fix what it finds; `fix: false` only reports."""
+    return runs.review_screens(ctx)
 
 
 # =========================================================================

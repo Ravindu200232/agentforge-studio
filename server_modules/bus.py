@@ -278,7 +278,8 @@ def user_msg(project: str, text: str, agent: str = DEVELOPER) -> None:
 
 
 def agent_msg(project: str, text: str, agent: str = DEVELOPER,
-              title: str = "", kind: str = "", design: Any = None) -> None:
+              title: str = "", kind: str = "", design: Any = None, images: list[dict[str, str]] | None = None) -> None:
+    """A message in the chat stream. `images` are pictures shown under it: [{"path": workspace-relative, "label": ...}]."""
     event = {"type": "agent_msg", "project": project, "agent": agent, "text": text}
     if title:
         event["title"] = title
@@ -286,6 +287,9 @@ def agent_msg(project: str, text: str, agent: str = DEVELOPER,
         event["kind"] = kind
     if design is not None:
         event["design"] = design
+    if images:
+        event["images"] = [{"path": str(row.get("path") or ""), "label": str(row.get("label") or "")}
+                           for row in images if row.get("path")]
     emit(event)
 
 

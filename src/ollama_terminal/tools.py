@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -16,6 +17,7 @@ from typing import Any, Callable
 
 import httpx
 
+from . import screenshot as screenshots
 from .browser_inspect import inspect_local_page
 from .guard import SourceGuard
 from .mcp_client import MCPManager
@@ -199,6 +201,8 @@ def describe_call(name: str, args: dict[str, Any]) -> str:
         return f"web_fetch({args.get('url') or ''})"
     if name == "browser_inspect":
         return f"browser_inspect({args.get('url') or 'managed preview'}, {args.get('viewport') or 'desktop'})"
+    if name == "screenshot":
+        return f"screenshot({args.get('target') or 'managed preview'}, {args.get('viewport') or 'desktop'})"
     return f"{name}({', '.join(f'{k}={v!r}' for k, v in args.items())})"
 
 
@@ -227,6 +231,10 @@ TOOL_SCHEMAS = [
     _schema("browser_inspect", "Open one local running app page in a real browser. Returns rendered text, layout/accessibility findings (including elements that overflow the viewport) and saves a screenshot for UI review. Use desktop and mobile before declaring a UI complete; it never clicks, types, signs in or navigates away from the local preview.",
             {"url": {"type": "string", "description": "Optional http://127.0.0.1 or http://localhost preview URL. Studio agents default to their managed preview."},
              "viewport": {"type": "string", "enum": ["desktop", "mobile"], "description": "desktop (1440px) or mobile (390px)"}}, []),
+    _schema("screenshot", "Take a silent screenshot of one page and, when your model can look at pictures, see it: a page of the prototype (its file name such as dashboard.html, or its route such as /dashboard), an HTML file in the workspace, or a local preview URL (http://localhost...). Use it to judge how a page really looks - layout, spacing, overlap, clipped or unreadable text, contrast, broken images, the mobile layout - instead of guessing from the code, and check desktop and mobile. It never clicks, types or leaves the page; a signed-in prototype page is shown signed in as a demo role that can open it. A model that cannot look at pictures only gets the file saved: use browser_inspect for layout facts instead.",
+            {"target": {"type": "string", "description": "A prototype page (dashboard.html or /dashboard), an HTML file in the workspace, or a local preview URL. Empty: the managed preview."},
+             "viewport": {"type": "string", "enum": ["desktop", "mobile"], "description": "desktop (1440px wide) or mobile (390px wide)"},
+             "role": {"type": "string", "description": "Optional: the demo role or email to show a signed-in prototype page as."}}, []),
 ]
 
 
@@ -246,6 +254,10 @@ class WorkspaceTools:
                              if protected_app_root and self.root.is_relative_to(Path(protected_app_root).resolve())
                              else None)
         self.mcp = mcp
+        # Pictures the screenshot tool took, until the agent has shown them to the model (once), and whether this
+        # model can look at pictures at all (the studio sets it from what Ollama says of the model).
+        self._pictures: list[tuple[str, bytes]] = []
+        self.sees_pictures: Callable[[], bool] = lambda: False
 
     def _local_web_request(self, endpoint: str, payload: dict[str, Any]) -> str:
         response = httpx.post(f"{self.web_host}/api/experimental/{endpoint}",
@@ -516,6 +528,42 @@ class WorkspaceTools:
             return self._local_web_request("web_fetch", {"url": url})
         response = self.client.web_fetch(url=url)
         return json.dumps(response.model_dump(), ensure_ascii=False)[:MAX_OUTPUT]
+
+    def take_images(self) -> list[tuple[str, bytes]]:
+        """The pictures the last tool calls took for the model to look at, as (label, PNG bytes); each is handed out once."""
+        pictures, self._pictures = self._pictures, []
+        return pictures
+
+    def _take_picture(self, target: str, viewport: str, role: str, out: Path) -> Path:
+        """Photograph `target` into `out`: a local preview URL, or an HTML file in the workspace. (The studio also knows the
+        prototype's pages, by file name and by route.)"""
+        if target.lower().startswith("http"):
+            return screenshots.shoot(screenshots.local_url(target), out, viewport)
+        page = self._path(target)
+        if page.suffix.lower() not in {".html", ".htm"} or not page.is_file():
+            raise ValueError(f"{target} is not an HTML file in the workspace, a prototype page or a local preview URL")
+        return screenshots.shoot(page, out, viewport)
+
+    def tool_screenshot(self, target: str = "", viewport: str = "desktop", role: str = "") -> str:
+        """A silent screenshot, kept under .agentforge/qa/shots and, for a model that can look at pictures, shown to it."""
+        choice = str(viewport or "desktop").strip().lower()
+        if choice not in screenshots.VIEWPORTS:
+            raise ValueError("viewport must be desktop or mobile")
+        target = str(target or "").strip() or getattr(self, "browser_url", lambda: "")()
+        if not target:
+            raise ValueError("Say which page to photograph: a prototype page, an HTML file, or a local preview URL.")
+        digest = hashlib.sha256(f"{target}|{choice}|{role}".encode("utf-8")).hexdigest()[:12]
+        relative = Path(".agentforge") / "qa" / "shots" / f"screenshot-{choice}-{digest}.png"
+        out = self._take_picture(target, choice, str(role or "").strip(), self.root / relative)
+        seen = bool(self.sees_pictures())
+        if seen:
+            self._pictures.append((f"{target} ({choice})", out.read_bytes()))
+        return json.dumps({
+            "saved": relative.as_posix(), "target": target, "viewport": choice, "shown_to_you": seen,
+            "note": ("The screenshot is attached to the next message: look at it." if seen else
+                     "This model cannot look at pictures, so the screenshot was only saved for the person; "
+                     "use browser_inspect for the page's layout facts."),
+        }, ensure_ascii=False)
 
     def tool_browser_inspect(self, url: str = "", viewport: str = "desktop") -> str:
         """Render a local preview without interacting with it or the outside web."""

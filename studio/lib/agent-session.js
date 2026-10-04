@@ -31,7 +31,7 @@ export function reduceSession(session, event) {
   switch (event.type) {
     case 'log': log(event.level, event.text); break
     case 'user_msg': chat({ role: 'user', text: event.text }); break
-    case 'agent_msg': chat({ role: 'assistant', text: event.text, title: event.title, kind: event.kind, design: event.design }); break
+    case 'agent_msg': chat({ role: 'assistant', text: event.text, title: event.title, kind: event.kind, design: event.design, images: event.images }); break
     case 'run_state':
       next.runId = event.run_id || s.runId
       next.busy = ['running', 'queued'].includes(event.status)

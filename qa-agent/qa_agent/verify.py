@@ -103,6 +103,13 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         watcher.join(timeout=2)
         _publish(session, project, published[0])
 
+        # The end-to-end tests are done: a model that can look at pictures looks at the screenshots they left, and what it
+        # finds is fixed (a model that cannot skips this, with a line in the chat saying so).
+        from . import e2e_review
+        e2e_review.run(project, session)
+        if session.cancelled:
+            raise RunCancelled(project)
+
         final = report(project)
         if not final.get("complete"):
             raise ValueError("testing ended without a complete QA report")

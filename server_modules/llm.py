@@ -14,6 +14,7 @@ through here.
 """
 from __future__ import annotations
 
+import base64
 import json
 import re
 import threading
@@ -243,9 +244,19 @@ def _focused_usage(project: str, model: str, context: int, role: str) -> Callabl
     return report
 
 
+def _user_message(user: str, images: Sequence[bytes | str] | None) -> dict[str, Any]:
+    """The user's turn, with any pictures it carries (raw bytes or base64 text) as base64, the way Ollama takes them."""
+    message: dict[str, Any] = {"role": "user", "content": user}
+    pictures = [base64.b64encode(item).decode("ascii") if isinstance(item, (bytes, bytearray)) else str(item)
+                for item in (images or []) if item]
+    if pictures:
+        message["images"] = pictures
+    return message
+
+
 def complete(system: str, user: str, model: str = "", think: bool | None = None,
             project: str = "", workspace: Path | None = None, role: str = "",
-            thinking_fallback: bool = True) -> str:
+            thinking_fallback: bool = True, images: Sequence[bytes | str] | None = None) -> str:
     """One call, one answer, no history — and, when `project`/`workspace` are
     given, a read-only tool the model can call instead of being handed
     pre-embedded file content.
@@ -257,7 +268,7 @@ def complete(system: str, user: str, model: str = "", think: bool | None = None,
     kwargs: dict[str, Any] = {
         "model": _model(model),
         "messages": [{"role": "system", "content": system},
-                     {"role": "user", "content": user}],
+                     _user_message(user, images)],
         "stream": bool(config.setting("cloud")),
     }
     kwargs["think"] = config.thinking_enabled() if think is None else think
@@ -277,7 +288,8 @@ def complete(system: str, user: str, model: str = "", think: bool | None = None,
 
 def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None = None,
                   label: str = "json", model: str = "", attempts: int = 3,
-                  project: str = "", workspace: Path | None = None, role: str = "") -> Any:
+                  project: str = "", workspace: Path | None = None, role: str = "",
+                  images: Sequence[bytes | str] | None = None) -> Any:
     """One call answered as JSON, repaired in place when it is not.
 
     The repair carries the model's own broken answer and what was wrong with it,
@@ -287,7 +299,7 @@ def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None
     """
     from . import llm_tools
     tools = _tools_for(project, workspace, role)
-    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    messages = [{"role": "system", "content": system}, _user_message(user, images)]
     last = ""
     for _ in range(max(1, attempts)):
         kwargs: dict[str, Any] = {"model": _model(model), "messages": messages,
