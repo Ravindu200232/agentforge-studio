@@ -304,6 +304,17 @@ def run_state(project: str, status: str, run_id: str = "", agent: str = DEVELOPE
           "status": status, "run_id": run_id})
 
 
+def connection(project: str, state: str, agent: str = DEVELOPER, **fields: Any) -> None:
+    """The model service is not answering, or answers again: what the chat shows, with its "Try again".
+
+    `state` is "retrying" (it failed, and is asked again after `pause` seconds: `failed` of `of` tries so far, `detail` says
+    what the service said), "waiting" (it was asked as many times as it will be on its own: the run holds still until the
+    person presses "Try again", or Stop) or "ok" (it answered). Not `DURABLE`: it is about now, never worth keeping.
+    """
+    emit({"type": "connection", "project": project, "agent": agent, "state": state,
+          **{key: value for key, value in fields.items() if key in {"failed", "of", "pause", "detail", "hold"}}})
+
+
 def agent_state(project: str, state: str, thinking: bool = False, agent: str = DEVELOPER,
                 detail: str = "") -> None:
     """What the agent is doing right now; `detail` says how far along (`12/35` while compacting)."""

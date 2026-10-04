@@ -129,6 +129,13 @@ export const api = {
   // An address for this project's app that works away from this machine.
   previewLink: (project) => post('/preview-link', { project }),
   previewActivity: (project, runtimeId) => post(`/runtime/${encodeURIComponent(project)}/activity`, { runtimeId }),
+
+  // Look at a project's screens again with a model that can look at pictures. `what`: 'prototype' (every page), 'journeys'
+  // (the prototype's journeys, clicked through in a browser shown live, a picture at every step), 'tests' (the end-to-end
+  // tests' screenshots) or 'both'. `fix: false` only looks and reports; the model is the one the studio last used.
+  reviewScreens: (project, what = 'both', fix = true) => post('/review-screens', { project, what, fix }),
+  // "Try again", pressed while a run waits for a model service that is not answering: it asks again at once.
+  connectionRetry: (project) => post('/connection/retry', { project }),
   deleteProject: (project) => post('/delete-project', { project }),
 
   // Stop the running build.

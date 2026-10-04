@@ -26,7 +26,7 @@ from typing import Any, Callable, Sequence, TypeVar
 import httpx
 import ollama
 
-from . import bus, config
+from . import bus, config, connection
 
 T = TypeVar("T")
 
@@ -115,6 +115,72 @@ def _wait_for_stop(seconds: float) -> bool:
     return event.wait(seconds)
 
 
+class _Linked(threading.Event):
+    """A Stop of its own that is also set whenever the run's Stop (`parent`) is: what a call given a time limit is run under,
+    so the run's Stop ends it and so does giving up on it."""
+
+    def __init__(self, parent: threading.Event | None):
+        super().__init__()
+        self._parent = parent
+
+    def is_set(self) -> bool:
+        return super().is_set() or bool(self._parent is not None and self._parent.is_set())
+
+    def wait(self, timeout: float | None = None) -> bool:
+        end = None if timeout is None else time.monotonic() + timeout
+        while True:
+            if self.is_set():
+                return True
+            left = None if end is None else end - time.monotonic()
+            if left is not None and left <= 0:
+                return False
+            super().wait(0.05 if left is None else min(0.05, left))
+
+
+def within(seconds: float, function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """`function(*args)`, but not for longer than `seconds`: a model call that has stopped answering (a service that keeps
+    failing and is asked again and again) must not stop a whole review or walk with it.
+
+    The call runs on its own thread, under the Stop of the run it belongs to; giving up on it stops it too, so it does not go
+    on asking the model service (or waiting for a "Try again" nobody will press) for work nobody wants any more."""
+    box: dict[str, Any] = {}
+    done = threading.Event()
+    stop = _Linked(_stop_event())
+
+    def work() -> None:
+        bind_stop(stop)
+        try:
+            box["value"] = function(*args, **kwargs)
+        except BaseException as exc:  # noqa: BLE001 - handed back to the thread that waits
+            box["error"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(target=work, name="model-within", daemon=True).start()
+    if not done.wait(seconds):
+        stop.set()
+        raise TimeoutError(f"the model did not answer within {int(seconds)} seconds")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
+def _connection_report(state: str, fields: dict[str, Any]) -> None:
+    """The model service stopped answering a call made for a project (or answers again): the chat says so."""
+    project = getattr(_local, "project", "")
+    if project:
+        bus.connection(project, state, agent=getattr(_local, "role", "") or bus.DEVELOPER, **fields)
+
+
+def _connection_presses() -> int:
+    return connection.presses(getattr(_local, "project", ""))
+
+
+def _hold_for_person() -> bool:
+    """A call made for a project, under a Stop button, waits for "Try again" instead of failing: the person can always end it."""
+    return bool(getattr(_local, "project", "")) and _stop_event() is not None
+
+
 def client() -> Any:
     """One Ollama client per thread, so parallel lanes do not share a socket."""
     saved = config.settings()
@@ -130,7 +196,9 @@ def client() -> Any:
         else:
             inner = ollama.Client(host=saved.get("ollama_host") or "http://localhost:11434")
         from .session import RetryingClient
-        _local.client = RetryingClient(inner, cancelled=_stopped, wait_for_cancel=_wait_for_stop)
+        _local.client = RetryingClient(inner, cancelled=_stopped, wait_for_cancel=_wait_for_stop,
+                                       on_connection=_connection_report, presses=_connection_presses,
+                                       hold=_hold_for_person)
         _local.key = key
     return _local.client
 
@@ -265,6 +333,7 @@ def complete(system: str, user: str, model: str = "", think: bool | None = None,
     source): a reply with no content then comes back empty, never as the model's reasoning ("Let me read…").
     """
     from . import llm_tools
+    _local.project, _local.role = project, role
     kwargs: dict[str, Any] = {
         "model": _model(model),
         "messages": [{"role": "system", "content": system},
@@ -298,6 +367,7 @@ def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None
     of pre-embedded file content.
     """
     from . import llm_tools
+    _local.project, _local.role = project, role
     tools = _tools_for(project, workspace, role)
     messages = [{"role": "system", "content": system}, _user_message(user, images)]
     last = ""

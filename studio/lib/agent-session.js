@@ -8,7 +8,7 @@ export function emptySession() {
     progress: emptyProgress(), selection: [], approval: null, ask: null, drawing: null,
     browserFrame: null, browserConsole: [], question: null, undo: null, previewRoute: '/', draft: '',
     tests: { running: false, attempt: 0, rows: [], fixing: [], pass: 0, fail: 0, warn: 0 },
-    e2eLive: null, qaReport: null, e2eParallel: { active: false, lanes: [] },
+    e2eLive: null, qaReport: null, e2eParallel: { active: false, lanes: [] }, connection: null,
     prototypeStamp: 0, lastEventAt: 0, eventIds: [], runId: '', runStartedAt: 0, workKind: '', workflowStatus: 'idle' }
 }
 
@@ -37,6 +37,7 @@ export function reduceSession(session, event) {
       next.busy = ['running', 'queued'].includes(event.status)
       next.workflowStatus = event.status
       next.runStartedAt = next.busy ? at : 0
+      if (!next.busy) next.connection = null
       if (next.busy) {
         // A new request must not inherit the previous request's generated
         // total while it is waiting for the first provider usage report.
@@ -47,6 +48,18 @@ export function reduceSession(session, event) {
     case 'agent_state':
       next.agentState = event.state || ''; next.agentDetail = event.detail || ''; next.reasoning = Boolean(event.thinking); break
     case 'memory': next.runStats = event; break
+    // The model service stopped answering (or answers again): one notice at the end of the chat, with "Try again" while the
+    // run waits, and one line in the stream when it is back. It is about now, so a reload does not bring it back.
+    case 'connection':
+      if (event.state === 'ok') {
+        if (s.connection) chat({ role: 'connection', state: 'back', failed: s.connection.failed || 0 })
+        next.connection = null
+      } else {
+        next.connection = { state: event.state === 'waiting' ? 'waiting' : 'retrying', failed: Number(event.failed) || s.connection?.failed || 0,
+          of: Number(event.of) || 0, pause: Number(event.pause) || 0, detail: event.detail || '',
+          hold: Boolean(event.hold), at, since: s.connection?.since || at }
+      }
+      break
     case 'step': next.steps = { ...s.steps, [event.step]: event.status }; break
     case 'progress': next.progress = advance(s.progress, event.step, event.pct, at); break
     case 'phase': {
@@ -159,7 +172,7 @@ export function reduceSession(session, event) {
       break
     case 'done': case 'error': case 'cancelled':
       next.busy = false; next.agentState = ''; next.liveFile = null; next.liveBuf = ''
-      next.browserFrame = null; next.approval = null; next.ask = null
+      next.browserFrame = null; next.approval = null; next.ask = null; next.connection = null
       next.tests = { ...s.tests, running: false }
       next.e2eParallel = { ...s.e2eParallel, active: false }; next.reasoning = false
       next.workflowStatus = event.type === 'done' ? 'completed' : event.type === 'cancelled' ? 'paused' : 'failed'

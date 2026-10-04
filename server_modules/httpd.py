@@ -30,7 +30,7 @@ from qa_agent import report_pdf
 from qa_agent import verify as qa
 from srs_agent import document as srs_document
 
-from . import bus, changes, cli_monitor, cli_signin, config, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, workspace_picker
+from . import bus, changes, cli_monitor, cli_signin, config, connection, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, workspace_picker
 from . import database_rows as database_rows_module
 from .session import session_for
 
@@ -1066,6 +1066,13 @@ def http_element_edit(ctx: dict) -> Any:
 @route("POST", r"/preview-start")
 def http_preview_start(ctx: dict) -> Any:
     return runs.preview_start(ctx)
+
+
+@route("POST", r"/connection/retry")
+def http_connection_retry(ctx: dict) -> Any:
+    """The person pressed "Try again" on the chat's notice that the model service is not answering: the run that waits
+    for it asks again at once (see connection.py)."""
+    return {"ok": connection.retry(str(ctx.get("project") or "").strip())}
 
 
 @route("POST", r"/review-screens")

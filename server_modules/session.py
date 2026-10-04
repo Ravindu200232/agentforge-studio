@@ -29,7 +29,7 @@ from ollama_terminal.agent import Agent
 from ollama_terminal.mcp_client import NAME_PREFIX as MCP_NAME_PREFIX
 from ollama_terminal.tools import WorkspaceTools, describe_call
 
-from . import bus, config, deploy_vars, live, plugins, prompts, stage_evidence, supabase_connect, vision
+from . import bus, config, connection, deploy_vars, live, plugins, prompts, stage_evidence, supabase_connect, vision
 
 
 class RunCancelled(Exception):
@@ -65,6 +65,19 @@ def _transient(exc: Exception) -> bool:
     return isinstance(exc, (ConnectionError, TimeoutError, OSError, httpx.TransportError))
 
 
+HOLD_SECONDS = 1800        # how long a run holds still for "Try again" before it gives up
+
+
+def _said(exc: Exception) -> str:
+    """What the model service said, short enough for a notice: "Internal Server Error (status code: 500)"."""
+    text = str(exc).strip() or exc.__class__.__name__
+    status = getattr(exc, "status_code", None)
+    text = re.sub(r"\s*\(ref:\s*[0-9a-f-]+\)", "", text)             # the service's own reference number means nothing to a person
+    if isinstance(status, int) and f"{status}" not in text:
+        text += f" (status code: {status})"
+    return text[:160]
+
+
 class _Failure:
     """An exception raised on a reading thread, carried to the thread that waits for the reply."""
 
@@ -81,11 +94,21 @@ class RetryingClient:
 
     def __init__(self, inner: Any, announce: Callable[[str], None] | None = None,
                  cancelled: Callable[[], bool] | None = None,
-                 wait_for_cancel: Callable[[float], bool] | None = None):
+                 wait_for_cancel: Callable[[float], bool] | None = None,
+                 on_connection: Callable[[str, dict[str, Any]], None] | None = None,
+                 presses: Callable[[], int] | None = None, hold: bool | Callable[[], bool] = False):
+        """`on_connection(state, fields)` is told when the service stops answering ("retrying", "waiting") and when it answers
+        again ("ok"), for the chat to show. `presses()` counts the person's presses of "Try again": a wait ends at once when
+        the count moves. `hold`: when it has asked as many times as it will on its own, wait for the person instead of
+        giving up (a function says so per request)."""
         self._inner = inner
         self._announce = announce
         self._cancelled = cancelled
         self._wait_for_cancel = wait_for_cancel
+        self._on_connection = on_connection
+        self._presses = presses
+        self._hold = hold
+        self._incident = False         # the service has failed and has not answered since
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -167,22 +190,91 @@ class RetryingClient:
 
         return read()
 
-    def _back_off(self, exc: Exception, attempt: int) -> None:
-        """Say the connection was interrupted and wait before the next attempt; Stop ends the wait at once."""
-        pause = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
-        if self._announce:
-            self._announce(f"[retry] Connection to the model service was interrupted "
-                           f"({str(exc)[:120]}). Retrying attempt {attempt + 2} of "
-                           f"{RETRY_ATTEMPTS} in {pause}s.")
+    def _tell(self, state: str, **fields: Any) -> None:
+        """The connection's state, for the chat to show. A notice nobody could show never stops a request."""
+        if self._on_connection:
+            try:
+                self._on_connection(state, fields)
+            except Exception:  # noqa: BLE001 - a notice is only a notice
+                pass
+
+    def _recovered(self) -> None:
+        """The service answered: if it had been failing, say it is back."""
+        if self._incident:
+            self._incident = False
+            self._tell("ok")
+
+    def _pause(self, seconds: float) -> None:
+        """Wait `seconds` before asking again. Stop ends the wait at once; so does the person's "Try again"."""
         # ``time.sleep`` made Stop appear broken while a cloud request was
         # backing off: the longest delay is 30 seconds.  A session supplies
         # its Event.wait here, which wakes immediately when the customer
         # presses Stop; simple clients keep the old sleep behaviour.
-        if self._wait_for_cancel:
-            if self._wait_for_cancel(pause):
-                raise RunCancelled("The run was stopped.")
-        else:
-            time.sleep(pause)
+        if not self._presses:
+            if self._wait_for_cancel:
+                if self._wait_for_cancel(seconds):
+                    raise RunCancelled("The run was stopped.")
+            else:
+                time.sleep(seconds)
+            return
+        end = time.monotonic() + seconds
+        pressed = self._presses()
+        while True:
+            left = end - time.monotonic()
+            if left <= 0:
+                return
+            step = min(0.25, left)
+            if self._wait_for_cancel:
+                if self._wait_for_cancel(step):
+                    raise RunCancelled("The run was stopped.")
+            else:
+                time.sleep(step)
+            if self._presses() != pressed:
+                return
+
+    def _back_off(self, exc: Exception, attempt: int) -> None:
+        """Say the connection was interrupted and wait before the next attempt; Stop ends the wait at once."""
+        pause = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+        self._incident = True
+        self._tell("retrying", failed=attempt + 1, of=RETRY_ATTEMPTS, pause=pause, detail=_said(exc))
+        if self._announce:
+            self._announce(f"[retry] Connection to the model service was interrupted "
+                           f"({str(exc)[:120]}). Retrying attempt {attempt + 2} of "
+                           f"{RETRY_ATTEMPTS} in {pause}s.")
+        self._pause(pause)
+
+    def _wait_for_person(self, exc: Exception) -> None:
+        """It has been asked as many times as it will be on its own: hold the run here until the person presses "Try again"
+        (or Stop), so that what was done so far, and this very request, are not lost to a service that is down for a while."""
+        self._incident = True
+        self._tell("waiting", of=RETRY_ATTEMPTS, detail=_said(exc), hold=True)
+        if self._announce:
+            self._announce(f"[retry] The model service is still not answering ({str(exc)[:120]}). "
+                           "Waiting here until you press Try again.")
+        deadline = time.monotonic() + HOLD_SECONDS
+        pressed = self._presses() if self._presses else 0
+        while time.monotonic() < deadline:
+            if self._wait_for_cancel:
+                if self._wait_for_cancel(0.25):
+                    raise RunCancelled("The run was stopped.")
+            else:
+                time.sleep(0.25)
+            if self._presses and self._presses() != pressed:
+                return
+        raise exc            # nobody came back for it in all that time
+
+    def _next_attempt(self, exc: Exception, attempt: int) -> int:
+        """What to do after a failed request: the number of the next attempt, or raise when it is not worth asking again."""
+        self._raise_if_cancelled()
+        if not _transient(exc):
+            raise exc
+        if attempt >= RETRY_ATTEMPTS - 1:
+            if not (self._hold() if callable(self._hold) else self._hold):
+                raise exc
+            self._wait_for_person(exc)
+            return 0                                   # the person said to try again: a fresh round of attempts
+        self._back_off(exc, attempt)
+        return attempt + 1
 
     def _retried_stream(self, kwargs: dict[str, Any], first: Any = None) -> Any:
         """A streamed reply, asked for again when the connection fails before its first chunk.
@@ -193,22 +285,25 @@ class RetryingClient:
         same words on twice, so a failure after that is raised as it is. `first` is the stream already opened for the
         first attempt.
         """
-        for attempt in range(RETRY_ATTEMPTS):
+        attempt = 0
+        while True:
             self._raise_if_cancelled()
             started = False
             try:
                 stream, first = (first if first is not None else self._inner.chat(**kwargs)), None
                 for chunk in self._interruptible_stream(stream):
-                    started = True
+                    if not started:
+                        started = True
+                        self._recovered()
                     yield chunk
                 return
             except RunCancelled:
                 raise
             except Exception as exc:  # noqa: BLE001 - re-raised below when it is not worth asking again
-                self._raise_if_cancelled()
-                if started or not _transient(exc) or attempt == RETRY_ATTEMPTS - 1:
+                if started:
+                    self._raise_if_cancelled()
                     raise
-                self._back_off(exc, attempt)
+                attempt = self._next_attempt(exc, attempt)
 
     def chat(self, **kwargs: Any) -> Any:
         if kwargs.get("stream"):
@@ -219,20 +314,17 @@ class RetryingClient:
             if first is not None and not hasattr(first, "__iter__"):
                 return first                            # not a stream after all: handed back as it is
             return self._retried_stream(kwargs, first)
-        last: Exception | None = None
-        for attempt in range(RETRY_ATTEMPTS):
+        attempt = 0
+        while True:
             self._raise_if_cancelled()
             try:
-                return self._interruptible(lambda: self._inner.chat(**kwargs))
+                answer = self._interruptible(lambda: self._inner.chat(**kwargs))
+                self._recovered()
+                return answer
             except RunCancelled:
                 raise
-            except Exception as exc:  # noqa: BLE001 - re-raised below when it is not transient
-                self._raise_if_cancelled()
-                if not _transient(exc) or attempt == RETRY_ATTEMPTS - 1:
-                    raise
-                last = exc
-                self._back_off(exc, attempt)
-        raise last  # pragma: no cover - the loop either returns or raises above
+            except Exception as exc:  # noqa: BLE001 - raised by `_next_attempt` when it is not worth asking again
+                attempt = self._next_attempt(exc, attempt)
 
 
 def extract_json(text: str) -> Any:
@@ -485,9 +577,13 @@ class ProjectSession:
                 raise EngineUnavailable(str(exc)) from exc
         else:
             inner = ollama.Client(host=saved.get("ollama_host") or "http://localhost:11434")
+        # A run that is working on the person's project holds still for "Try again" when the model service stops answering,
+        # rather than failing with all it has done so far: the chat shows it (`bus.connection`) and says what to press.
         return RetryingClient(inner, announce=self._announce,
                               cancelled=lambda: self.cancelled,
-                              wait_for_cancel=self._cancel.wait)
+                              wait_for_cancel=self._cancel.wait,
+                              on_connection=lambda state, fields: bus.connection(self.project, state, agent=self.role, **fields),
+                              presses=lambda: connection.presses(self.project), hold=True)
 
     def _announce(self, line: str) -> None:
         """What the engine narrates, as the studio's own log and state."""
