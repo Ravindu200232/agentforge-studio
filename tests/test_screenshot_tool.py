@@ -138,6 +138,35 @@ class ShownToTheModelTests(unittest.TestCase):
         self.assertNotIn("images", older)
         self.assertIn("no longer attached", older["content"])
 
+    def test_a_conversation_too_long_to_carry_a_picture_is_not_sent_one_and_the_model_is_told(self):
+        # The service answered "500" to every try of a 2.6 MB conversation with a 0.75 MB picture, and to nothing smaller.
+        agent, tools = self.make()
+        agent.messages.append({"role": "user", "content": "x" * agent_module.MAX_REQUEST_BYTES})
+        agent._show_pictures()
+        self.assertFalse([m for m in agent.messages if m.get("images")])
+        note = agent.messages[-1]
+        self.assertEqual(note["role"], "user")
+        self.assertIn("could not be shown to you", note["content"])
+        self.assertIn("dashboard.html (desktop)", note["content"])
+
+    def test_the_pictures_that_fit_are_sent_and_the_ones_that_do_not_are_named_as_left_out(self):
+        agent, tools = self.make()
+        small, big = b"s" * 1000, b"B" * 900_000
+        tools.take_images.return_value = [("small.html (desktop)", small), ("big.html (desktop)", big)]
+        agent.messages.append({"role": "user", "content": "x" * (agent_module.MAX_REQUEST_BYTES - 1_000_000)})
+        agent._show_pictures()
+        pictured = [m for m in agent.messages if m.get("images")]
+        self.assertEqual(len(pictured), 1)
+        self.assertEqual(len(pictured[0]["images"]), 1)
+        self.assertIn("small.html (desktop)", pictured[0]["content"])
+        self.assertIn("big.html (desktop)", next(m for m in agent.messages if "could not be shown" in str(m.get("content")))["content"])
+
+    def test_a_short_conversation_gets_its_pictures_as_before(self):
+        agent, tools = self.make()
+        agent._show_pictures()
+        self.assertEqual(len(agent.messages[-1]["images"]), 2)
+        self.assertFalse([m for m in agent.messages if "could not be shown" in str(m.get("content"))])
+
     def test_a_picture_is_a_fixed_cost_in_the_context_not_its_bytes(self):
         big = {"role": "user", "content": "look", "images": [base64.b64encode(b"x" * 2_000_000).decode()]}
         plain = {"role": "user", "content": "look"}

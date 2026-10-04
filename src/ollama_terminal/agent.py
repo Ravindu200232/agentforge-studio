@@ -85,6 +85,10 @@ def model_context_length(client: Any, model: str) -> int | None:
 # What a picture costs a model, roughly. Its bytes are never counted as text: a screenshot would read as hundreds of
 # thousands of tokens and the history would be compacted away.
 PICTURE_TOKENS = 1500
+# The most a request that carries a picture may weigh in all (the conversation as JSON and the pictures as base64). Measured on
+# Ollama Cloud with a long project conversation: 2.5 MB with a picture was answered, 3.4 MB with the same picture was a
+# "500 Internal Server Error" on every try, while the same conversation without the picture (2.6 MB) was answered too.
+MAX_REQUEST_BYTES = 2_400_000
 
 
 def _approx_tokens(messages: list[dict]) -> int:
@@ -545,12 +549,31 @@ class Agent:
         if not pictures:
             return
         self._drop_old_pictures()
-        what = "the screenshot" if len(pictures) == 1 else f"the {len(pictures)} screenshots"
+        # The model service refuses a request that is too big to take pictures with, and says only "500 Internal Server Error":
+        # with a very long conversation (a project whose chat has grown to some megabytes) the picture is the last straw, and
+        # every try of the same request fails the same way. So a picture is attached only while the whole request stays under
+        # what was seen to work; past that the model is told it could not be shown, and goes on from the page's text and files.
+        room = MAX_REQUEST_BYTES - len(json.dumps(self.messages, ensure_ascii=False, default=str))
+        fits: list[tuple[str, bytes]] = []
+        for label, data in pictures:
+            cost = len(data) * 4 // 3 + 16
+            if cost <= room:
+                fits.append((label, data))
+                room -= cost
+        if len(fits) < len(pictures):
+            left = [label for label, _ in pictures if (label, _) not in fits]
+            self.messages.append({
+                "role": "user",
+                "content": f"You took {', '.join(left)}, but this conversation has grown too long to attach a picture to a request: "
+                           "the picture could not be shown to you. Judge the page from its text and files instead."})
+        if not fits:
+            return
+        what = "the screenshot" if len(fits) == 1 else f"the {len(fits)} screenshots"
         self.messages.append({
             "role": "user",
-            "content": f"Here {'is' if len(pictures) == 1 else 'are'} {what} you took: "
-                       + "; ".join(label for label, _ in pictures) + ". Look at it and judge the page as a person would.",
-            "images": [base64.b64encode(data).decode("ascii") for _, data in pictures]})
+            "content": f"Here {'is' if len(fits) == 1 else 'are'} {what} you took: "
+                       + "; ".join(label for label, _ in fits) + ". Look at it and judge the page as a person would.",
+            "images": [base64.b64encode(data).decode("ascii") for _, data in fits]})
 
     def _drop_old_pictures(self) -> None:
         for message in self.messages:
