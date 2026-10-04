@@ -743,7 +743,7 @@ namespace AgentForge.Setup
             detail.ForeColor = Muted;
             detail.Text = options.Uninstall
                 ? "Removes AgentForge and the tools it installed from " + options.InstallDir + ".\n\nYour projects (Documents\\AgentForge) and settings stay, so a later install picks up where you left off."
-                : "Plan, build, test and deploy apps with AI agents.\n\nSetup downloads AgentForge and everything it needs (Python, Node.js, Git and the GitHub, AWS, Azure, Vercel, Netlify and Supabase command line tools), about 1 GB. No administrator rights are needed.";
+                : "Plan, build, test and deploy apps with AI agents.\n\nSetup downloads AgentForge and everything it needs (Python, Node.js, Git and the GitHub, AWS, Azure, MongoDB Atlas, Vercel, Netlify and Supabase command line tools), about 1 GB. No administrator rights are needed.";
             Controls.Add(detail);
 
             // Where to install, and whether to put AgentForge on the Desktop: chosen before anything is downloaded.

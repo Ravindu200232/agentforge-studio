@@ -1,9 +1,9 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import {
   Check, Database, Keyboard,
-  LayoutGrid, Loader2, Network, Palette, Plug, SlidersHorizontal, X, Link2,
+  LayoutGrid, Loader2, Network, Palette, Plug, SlidersHorizontal, X,
   Download, ExternalLink, FolderUp, LogOut,
 } from 'lucide-react'
 import { api } from '@/lib/api'
@@ -11,9 +11,21 @@ import { Modal } from './ui'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
 import { useAuthStore } from '@/lib/auth'
-import DeployAccounts from './deploy/DeployAccounts'
+import BrandIcon, { BRANDS, BRAND_ORDER } from './BrandIcon'
+import DeployAccount from './deploy/DeployAccounts'
 import PluginAccounts from './PluginAccounts'
 import McpServers from './McpServers'
+
+// Each service the studio connects to has a page of its own in this list, behind its own logo.
+const PROVIDER_ABOUT = {
+  github:   'Sign in so a deployment can create a private repository under your account and push its workflows.',
+  aws:      'Deploy to your own AWS account. Sign in with the AWS command line tool or IAM Identity Center; no access keys are stored.',
+  vercel:   'Deploy to your own Vercel account.',
+  netlify:  'Deploy to your own Netlify account.',
+  azure:    'Deploy to your own Azure subscription.',
+  supabase: 'Every Supabase-stack project gets its own real Supabase project, in the account you sign in with.',
+  mongodb:  'A real production database for MongoDB-stack deployments: sign in to Atlas, or paste a connection string.',
+}
 
 export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpenInNewTab, onLogout, initialTab }) {
   const user = useAuthStore(s => s.user)
@@ -21,7 +33,8 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
   // than only hold the credentials.
   const project = useStore(s => s.project)
 
-  const [activeTab, setActiveTab] = useState(initialTab || 'general')
+  // The old single "Integrations" page is now one page per service: land on the first of them.
+  const [activeTab, setActiveTab] = useState(initialTab === 'integrations' ? 'github' : initialTab || 'general')
   const folderRef = useRef(null)
 
   // Real server settings — loaded via api.settings(). The AI engine is built into AgentForge: nothing to set here.
@@ -66,7 +79,7 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
 
   const cloudOn = tone === 'ok'
   // AgentForge's own database is the whole machine's, so it is its admin's.
-  // Everyone's deployment accounts are their own — Integrations.
+  // Everyone's deployment accounts are their own — one Settings page per service.
   const isAdmin = Boolean(meta?.admin)
 
   const displayName = user?.name || user?.username || 'User'
@@ -77,7 +90,7 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
     { id: 'general',      label: 'General',      Icon: SlidersHorizontal },
     { id: 'application',  label: 'Application',  Icon: LayoutGrid },
     { id: 'appearance',   label: 'Appearance',   Icon: Palette },
-    { id: 'integrations', label: 'Integrations', Icon: Link2 },
+    ...BRAND_ORDER.map(id => ({ id, label: BRANDS[id].title, brand: true })),
     { id: 'plugins',      label: 'Plugins',      Icon: Plug },
     { id: 'mcp',          label: 'MCP Servers',  Icon: Network },
     { id: 'shortcuts',    label: 'Shortcuts',    Icon: Keyboard },
@@ -94,11 +107,14 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
               Settings
             </div>
             <div className="flex sm:flex-col gap-1 sm:gap-0.5">
-              {settingsNav.map(item => {
+              {settingsNav.map((item, index) => {
                 const active = activeTab === item.id
+                const first = item.brand && !settingsNav[index - 1]?.brand
+                const last = item.brand && !settingsNav[index + 1]?.brand
                 return (
+                  <Fragment key={item.id}>
+                  {first && <div className="my-1.5 hidden h-px bg-ink/[.07] sm:block" />}
                   <button
-                    key={item.id}
                     type="button"
                     onClick={() => setActiveTab(item.id)}
                     className={cn(
@@ -108,9 +124,13 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
                         : 'text-muted hover:text-ink hover:bg-ink/[.06] font-medium'
                     )}
                   >
-                    <item.Icon className={cn('size-3.5 shrink-0', active ? 'text-accent' : 'text-muted2')} />
+                    {item.brand
+                      ? <BrandIcon name={item.id} className={cn('size-4 shrink-0', active ? 'text-ink' : 'text-muted')} />
+                      : <item.Icon className={cn('size-3.5 shrink-0', active ? 'text-accent' : 'text-muted2')} />}
                     <span>{item.label}</span>
                   </button>
+                  {last && <div className="my-1.5 hidden h-px bg-ink/[.07] sm:block" />}
+                  </Fragment>
                 )
               })}
             </div>
@@ -141,7 +161,7 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
                 {activeTab === 'general'      ? 'General'
                : activeTab === 'application'  ? 'Application'
                : activeTab === 'appearance'   ? 'Appearance'
-               : activeTab === 'integrations' ? 'Integrations'
+               : BRANDS[activeTab]            ? BRANDS[activeTab].title
                : activeTab === 'plugins'      ? 'Plugins'
                : activeTab === 'mcp'          ? 'MCP Servers'
                : 'Keyboard Shortcuts'}
@@ -154,8 +174,8 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
                   ? 'Running services and database status.'
                   : activeTab === 'appearance'
                   ? 'Studio visual theme.'
-                  : activeTab === 'integrations'
-                  ? 'Connect GitHub, AWS, Vercel, Netlify, Azure and your production database.'
+                  : PROVIDER_ABOUT[activeTab]
+                  ? PROVIDER_ABOUT[activeTab]
                   : activeTab === 'plugins'
                   ? 'Stripe, Resend, Supabase, Google and the rest — set up once, used by any app you tick.'
                   : activeTab === 'mcp'
@@ -181,8 +201,8 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
                 <p className="rounded-2xl border border-line bg-panel px-4 py-3 text-[12px] text-muted">
                   AgentForge's own database is shared by everyone on this
                   machine, so only its admin changes it. Your GitHub, AWS, Vercel
-                  and production database are yours alone — they are under{' '}
-                  <b className="text-ink">Integrations</b>.
+                  and production database are yours alone — each has its own page
+                  in the Settings list.
                 </p>
                 <MongoState mongo={meta?.mongo} />
                 <WorkspaceActions project={project} folderRef={folderRef} onImport={onImport}
@@ -294,10 +314,10 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
               </div>
             )}
 
-            {/* ── INTEGRATIONS ── */}
-            {activeTab === 'integrations' && (
-              <div className="space-y-4 max-w-[700px]">
-                <DeployAccounts deploy={meta?.deploy} onSaved={() => {
+            {/* ── SERVICES: GitHub, AWS, Vercel, Netlify, Azure, Supabase, MongoDB — one page each ── */}
+            {BRANDS[activeTab] && (
+              <div className="max-w-[700px]">
+                <DeployAccount key={activeTab} provider={activeTab} deploy={meta?.deploy} onSaved={() => {
                   api.settings().then(setMeta).catch(() => {})
                   onSaved?.()
                 }} />

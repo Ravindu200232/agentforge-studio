@@ -2,7 +2,7 @@
 
 /** File and voice input for the SRS brief. */
 import { useRef } from 'react'
-import { AlertTriangle, Check, FileText, Image as ImageIcon, Loader2, Mic,
+import { AlertTriangle, AudioLines, Check, FileText, FileUp, Image as ImageIcon, Loader2, Mic,
          Paperclip, Square, X } from 'lucide-react'
 
 import { ACCEPT_UPLOAD } from '@/lib/api'
@@ -45,7 +45,7 @@ export function AttachButtons({ attach, disabled, label = 'Attach', cell }) {
                 onClick={() => picker.current?.click()}
                 aria-label="Attach a PDF, document, screenshot or image"
                 title="Attach a PDF, document, screenshot or image">
-          <Paperclip className="size-3 shrink-0 text-accent" />
+          <FileUp className="size-3 shrink-0 text-accent" aria-hidden="true" />
         </button>
         <button disabled={disabled} onClick={recorder.toggle}
                 className={cn(cellClass, recorder.recording && 'border-accent bg-accent text-ink')}
@@ -53,7 +53,7 @@ export function AttachButtons({ attach, disabled, label = 'Attach', cell }) {
                 title={recorder.recording ? 'Stop recording' : 'Describe the app by voice'}>
           {recorder.recording
             ? <Square className="size-3 shrink-0 fill-current" />
-            : <Mic className="size-3 shrink-0 text-accent" />}
+            : <AudioLines className="size-3 shrink-0 text-accent" aria-hidden="true" />}
         </button>
         {recorder.recording && (
           <span className="flex items-center rounded-none bg-accent px-2

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, ChevronDown, Layers, Plug } from 'lucide-react'
+import { Blocks, BrainCircuit, Check, ChevronDown, Puzzle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { STACKS } from '@/lib/stacks'
 import { TIERS, isCloud, tierFromModel } from '@/lib/models'
@@ -77,6 +77,7 @@ export default function BuildSetup({
                       : 'inline-flex h-8 items-center gap-1.5 rounded-full border border-line bg-panel2/80 px-2.5 text-[11px] font-medium text-muted shadow-sm transition-all hover:bg-raised hover:border-line2 hover:text-ink'
             )}
           >
+            {compact && <BrainCircuit className="size-3 shrink-0 text-accent" aria-hidden="true" />}
             <span className={cn(compact ? 'truncate text-ink' : 'max-w-36 truncate')}>{model || 'Choose model'}</span>
             {compact && <span className="shrink-0 text-muted2">{effortLabel}</span>}
             <ChevronDown className={cn(compact ? 'size-3 shrink-0 transition-transform' : 'size-2.5 transition-transform', modelOpen && 'rotate-180')} />
@@ -140,7 +141,7 @@ export default function BuildSetup({
                                       : 'inline-flex h-8 items-center gap-1.5 rounded-xl border px-2.5 text-[11.5px] font-medium transition-colors',
                   plugins.length ? 'border-accent/50 bg-accent text-ink'
                                  : 'border-line bg-panel2/60 text-muted hover:text-ink')}>
-          <Plug className="size-3.5" />
+          <Puzzle className="size-3.5" aria-hidden="true" />
           {!compact && (plugins.length ? `${plugins.length} plugin${plugins.length === 1 ? '' : 's'}`
                                       : 'Plugins')}
         </button>
@@ -159,7 +160,7 @@ export default function BuildSetup({
             stack && 'border-accent/40 bg-accent text-ink'
           )}
         >
-          <Layers className={cn(compact ? 'size-3.5' : 'size-2.5 shrink-0', 'text-accent')} aria-hidden="true" />
+          <Blocks className={cn(compact ? 'size-3.5' : 'size-2.5 shrink-0', 'text-accent')} aria-hidden="true" />
           {!compact && <span>{currentStackLabel}</span>}
           {!compact && <ChevronDown className={cn('size-2.5 shrink-0 text-muted2 transition-transform duration-200', stackOpen && 'rotate-180 text-ink')} />}
         </button>

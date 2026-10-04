@@ -9,13 +9,21 @@ one-click browser sign-in the rest of the Studio gives every other provider.
 
 What Supabase does have is a real OAuth2 API for third-party integrations
 (api.supabase.com/v1/oauth/authorize, .../v1/oauth/token, PKCE supported, a `localhost` redirect
-explicitly allowed) - confirmed against Supabase's own docs. Unlike GitHub's device flow, it needs a
-**client secret** as well as a client id, so it can't be a value this module supplies for itself the
-way `github_device.py` can: whoever runs this Studio registers one OAuth app, once, in their own
-Supabase organisation (Organization settings -> OAuth Apps -> Publish OAuth app), with `REDIRECT_URI`
-below as its exact callback URL, and pastes the Client ID and Secret into Settings.
+explicitly allowed) - confirmed against Supabase's own docs. Unlike GitHub's device flow, its token
+endpoint needs a **client secret** as well as a client id, and a secret cannot ship inside an app
+everyone installs. So nobody who installs AgentForge registers anything: the publisher registers ONE
+OAuth app, and the secret stays in the engine Worker (`engine-proxy/`, the same server that holds the
+AI key and that `config.built_in_engine()` already points every copy at). `OAUTH.start()` asks that
+broker for the authorize link, and the code exchange and every refresh go through it too; the person
+only clicks "Sign in with Supabase" and approves in the browser, the way "Sign in with Google" works.
 
-The callback lands on the Studio's own already-running API server, at that same fixed URL
+A copy with no broker (a development checkout with no `engine.json`, or a broker not yet set up)
+keeps the older path: the person registers an OAuth app in their own Supabase organisation
+(Organization settings -> OAuth Apps -> Publish OAuth app), with `REDIRECT_URI` below as its exact
+callback URL, and pastes the Client ID and Secret into Settings. Which path issued the saved tokens
+is remembered (`supabase_oauth_via`), because a refresh token only works with the app that issued it.
+
+Either way the browser ends up on the Studio's own already-running API server, at one fixed URL
 (`httpd.py`'s `/supabase-oauth/callback` route) - no separate listener to open or a port of its own
 to collide with. `OAUTH.start()` opens the browser and hands back a flow id (used as the OAuth
 `state`, so the callback route can find it again); the callback route only records what arrived and
@@ -66,6 +74,13 @@ ACCESS_TOKEN_SETTING = "supabase_oauth_access_token"
 REFRESH_TOKEN_SETTING = "supabase_oauth_refresh_token"
 EXPIRES_AT_SETTING = "supabase_oauth_expires_at"
 ORG_SETTING = "supabase_org"
+# Which OAuth app issued the saved tokens: "broker" (the publisher's, through the engine Worker) or "own"
+# (one this person registered; also what tokens saved before the broker existed are).
+VIA_SETTING = "supabase_oauth_via"
+VIA_BROKER, VIA_OWN = "broker", "own"
+# The other accounts signed in, kept aside (id -> its tokens); "credentials" in the name keeps them out of GET /settings.
+ACCOUNTS_SETTING = "supabase_account_credentials"
+ACTIVE_ID_SETTING = "supabase_account_id"
 
 AUTHORIZE_URL = "https://api.supabase.com/v1/oauth/authorize"
 TOKEN_URL = "https://api.supabase.com/v1/oauth/token"
@@ -90,20 +105,111 @@ DEFAULT_REGION = "us-east-1"
 
 
 def credentials_saved() -> bool:
-    """Whether the one-time OAuth app registration (Settings) is done."""
+    """Whether a person's own OAuth app (Settings) is registered."""
     return bool(config.setting(CLIENT_ID_SETTING) and config.setting(CLIENT_SECRET_SETTING))
 
 
+def _broker() -> dict[str, str]:
+    """The engine Worker that holds the publisher's OAuth app secret ({} when this copy has none)."""
+    return config.built_in_engine()
+
+
 def token_status() -> dict:
-    """What the studio may show: whether an account is connected and which, never the tokens."""
-    connected = bool(config.setting(ACCESS_TOKEN_SETTING) or config.setting(REFRESH_TOKEN_SETTING))
-    return {"app_registered": credentials_saved(), "connected": connected,
-            "org": str(config.setting(ORG_SETTING) or "")}
+    """What the studio may show: whether an account is connected and which, never the tokens.
+
+    `app_registered` is whether signing in can start at all: a broker supplies the OAuth app, so the person
+    registers nothing; without one it is whether they registered their own."""
+    connected = _signed_in()
+    broker = bool(_broker())
+    return {"app_registered": broker or credentials_saved(), "connected": connected,
+            "org": str(config.setting(ORG_SETTING) or ""), "broker": broker,
+            "accounts": accounts(), "active": _current_id() if connected else ""}
 
 
 def forget_account() -> None:
+    """Sign the active account out. Accounts kept aside (`accounts()`) stay signed in."""
     config.save_settings({ACCESS_TOKEN_SETTING: "", REFRESH_TOKEN_SETTING: "", EXPIRES_AT_SETTING: 0,
-                          ORG_SETTING: ""})
+                          ORG_SETTING: "", VIA_SETTING: "", ACTIVE_ID_SETTING: ""})
+
+
+# --- more than one account ----------------------------------------------------------------------
+#
+# One Supabase account is the active one: its tokens are the flat settings above, which is what every build and
+# deployment reads. Any others the person has signed in as are kept aside in settings.json, as the active ones are
+# (the key name carries "credentials", so GET /settings never returns them), and switching swaps one with the
+# active one. An account is told apart by its organisation: a Supabase sign-in is a grant on an organisation, so
+# signing in again with another organisation (of the same login or of another) is how a second account is added.
+
+def _signed_in() -> bool:
+    return bool(config.setting(ACCESS_TOKEN_SETTING) or config.setting(REFRESH_TOKEN_SETTING))
+
+
+def _aside() -> dict:
+    kept = config.setting(ACCOUNTS_SETTING)
+    return dict(kept) if isinstance(kept, dict) else {}
+
+
+def _current_id() -> str:
+    """The active account's id: its organisation's, or - for a session saved before accounts existed, until
+    it is next signed in - something stable made from its token."""
+    known = str(config.setting(ACTIVE_ID_SETTING) or "")
+    if known or not _signed_in():
+        return known
+    seed = str(config.setting(REFRESH_TOKEN_SETTING) or config.setting(ACCESS_TOKEN_SETTING) or "")
+    return "acct-" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
+
+
+def _active_row() -> dict:
+    return {"label": str(config.setting(ORG_SETTING) or "Supabase account"),
+            "access_token": str(config.setting(ACCESS_TOKEN_SETTING) or ""),
+            "refresh_token": str(config.setting(REFRESH_TOKEN_SETTING) or ""),
+            "expires_at": float(config.setting(EXPIRES_AT_SETTING) or 0), "via": _via()}
+
+
+def _make_active(account_id: str, row: dict) -> None:
+    config.save_settings({
+        ACCESS_TOKEN_SETTING: row.get("access_token", ""), REFRESH_TOKEN_SETTING: row.get("refresh_token", ""),
+        EXPIRES_AT_SETTING: row.get("expires_at", 0), VIA_SETTING: row.get("via", ""),
+        ORG_SETTING: row.get("label", ""), ACTIVE_ID_SETTING: account_id})
+
+
+def accounts() -> list[dict]:
+    """Every account signed in, the active one first: [{"id", "label", "active"}]. Never the tokens."""
+    rows = [{"id": _current_id(), "label": str(config.setting(ORG_SETTING) or "Supabase account"), "active": True}] \
+        if _signed_in() else []
+    rows += [{"id": key, "label": str(row.get("label") or "Supabase account"), "active": False}
+             for key, row in _aside().items() if isinstance(row, dict)]
+    return rows
+
+
+def switch_account(account_id: str) -> dict:
+    """Make a signed-in account the one new projects are made in, keeping the one it replaces signed in."""
+    account_id = str(account_id or "")
+    kept = _aside()
+    if account_id == _current_id() and _signed_in():
+        return token_status()
+    row = kept.pop(account_id, None)
+    if not isinstance(row, dict):
+        raise ValueError("That Supabase account is not signed in here. Add it first.")
+    if _signed_in():
+        kept[_current_id()] = _active_row()
+    _make_active(account_id, row)
+    config.save_settings({ACCOUNTS_SETTING: kept})
+    return token_status()
+
+
+def remove_account(account_id: str) -> dict:
+    """Sign one account out of the studio (the active one, or one kept aside). Nothing is deleted on Supabase."""
+    account_id = str(account_id or "")
+    kept = _aside()
+    if account_id in kept:
+        kept.pop(account_id)
+        config.save_settings({ACCOUNTS_SETTING: kept})
+    elif _signed_in() and account_id == _current_id():
+        forget_account()
+    else:
+        raise ValueError("That Supabase account is not signed in here.")
+    return token_status()
 
 
 def _json_body(answer: httpx.Response) -> dict:
@@ -114,25 +220,72 @@ def _json_body(answer: httpx.Response) -> dict:
     return body if isinstance(body, dict) else {}
 
 
-def _keep_tokens(body: dict) -> dict:
+def _via() -> str:
+    """Which OAuth app issued the saved tokens (anything saved before the broker existed is the person's own)."""
+    return VIA_BROKER if config.setting(VIA_SETTING) == VIA_BROKER else VIA_OWN
+
+
+def _broker_post(path: str, payload: dict) -> httpx.Response:
+    engine = _broker()
+    if not engine:
+        raise ValueError("This copy of AgentForge has no sign-in server to use.")
+    return httpx.post(f"{engine['url']}{path}", json=payload, timeout=30,
+                      headers={"Authorization": f"Bearer {engine['token']}", "Accept": "application/json"})
+
+
+def _token_request(form: dict, via: str) -> httpx.Response:
+    """Trade a code or a refresh token for tokens, as the OAuth app that `via` names. Through the broker the
+    client secret is added by the Worker; on the person's own app it is added here."""
+    if via == VIA_BROKER:
+        return _broker_post("/oauth/supabase/token", form)
+    client_id, client_secret = str(config.setting(CLIENT_ID_SETTING) or ""), str(config.setting(CLIENT_SECRET_SETTING) or "")
+    own = dict(form)
+    if own["grant_type"] == "authorization_code":
+        own["redirect_uri"] = REDIRECT_URI
+    return httpx.post(TOKEN_URL, auth=(client_id, client_secret), data=own,
+                      headers={"Accept": "application/json"}, timeout=30)
+
+
+def _keep_tokens(body: dict, via: str | None = None) -> dict:
+    """Keep the tokens just issued as the active account's. A sign-in (`via` given) that lands on a different
+    organisation than the one active keeps the one it replaces signed in, aside; a refresh only renews."""
+    previous = None
+    if via and _signed_in():
+        previous = {"id": _current_id(), **_active_row()}
+        if not config.setting(ACTIVE_ID_SETTING):
+            # Saved before accounts existed: ask which organisation it is while its own token is still the one in use.
+            previous["id"] = _fetch_org().get("id") or previous["id"]
     expires_in = int(body.get("expires_in") or 3600)
     config.save_settings({
         ACCESS_TOKEN_SETTING: str(body.get("access_token") or ""),
         REFRESH_TOKEN_SETTING: str(body.get("refresh_token") or config.setting(REFRESH_TOKEN_SETTING) or ""),
         EXPIRES_AT_SETTING: time.time() + expires_in - 60,
+        **({VIA_SETTING: via} if via else {}),
     })
-    org = _fetch_org_name()
-    if org:
-        config.save_settings({ORG_SETTING: org})
+    org = _fetch_org()
+    if org.get("name"):
+        config.save_settings({ORG_SETTING: org["name"]})
+    if org.get("id") and (via or not config.setting(ACTIVE_ID_SETTING)):
+        config.save_settings({ACTIVE_ID_SETTING: org["id"]})
+    elif via:
+        config.save_settings({ACTIVE_ID_SETTING: ""})   # which organisation this is cannot be asked: do not keep the last one's id
+    if via:
+        kept = _aside()
+        kept.pop(org.get("id") or "", None)            # signed in again as one kept aside: it is the active one now
+        if previous and org.get("id") and previous["id"] != org["id"]:
+            kept[previous.pop("id")] = previous
+        config.save_settings({ACCOUNTS_SETTING: kept})
     return token_status()
 
 
-def _fetch_org_name() -> str:
+def _fetch_org() -> dict:
+    """The organisation the active token was granted on: {"id", "name"}, or {} when it cannot be asked."""
     try:
         orgs = _run_json([_tool(), "orgs", "list", "--output", "json"]) or []
     except ValueError:
-        return ""
-    return str(orgs[0].get("name") or "") if isinstance(orgs, list) and orgs else ""
+        return {}
+    first = orgs[0] if isinstance(orgs, list) and orgs and isinstance(orgs[0], dict) else {}
+    return {"id": str(first.get("id") or ""), "name": str(first.get("name") or "")}
 
 
 def _refresh_if_needed() -> str:
@@ -144,16 +297,13 @@ def _refresh_if_needed() -> str:
     refresh = str(config.setting(REFRESH_TOKEN_SETTING) or "")
     if not refresh:
         return access
-    client_id, client_secret = str(config.setting(CLIENT_ID_SETTING) or ""), str(config.setting(CLIENT_SECRET_SETTING) or "")
     try:
-        answer = httpx.post(TOKEN_URL, auth=(client_id, client_secret),
-                            data={"grant_type": "refresh_token", "refresh_token": refresh},
-                            headers={"Accept": "application/json"}, timeout=30)
+        answer = _token_request({"grant_type": "refresh_token", "refresh_token": refresh}, _via())
         body = _json_body(answer)
         if answer.status_code < 400 and body.get("access_token"):
             _keep_tokens(body)
             return str(body["access_token"])
-    except httpx.HTTPError:
+    except (httpx.HTTPError, ValueError):
         pass
     # Stale and could not be refreshed (revoked, network down): handed to the CLI as-is, so the
     # failure is a clear 401 from Supabase's own API rather than a silent, wrongly-scoped success.
@@ -176,6 +326,7 @@ def _pkce_pair() -> tuple[str, str]:
 class _Flow:
     flow_id: str
     verifier: str
+    via: str = VIA_OWN  # which OAuth app this sign-in is with, so its code is exchanged with the same one
     started: float = field(default_factory=time.time)
     result: dict | None = None  # set by receive_callback() once the browser redirect lands
 
@@ -195,23 +346,55 @@ class OAuthConnects:
         for key in [k for k, f in self._flows.items() if now - f.started > FLOW_TTL_SECONDS]:
             self._flows.pop(key, None)
 
+    @staticmethod
+    def _broker_link(flow_id: str, challenge: str) -> str:
+        """The authorize link from the broker: it knows the OAuth app's client id and the one callback URL that
+        app was registered with, and signs the state so only it will accept the browser coming back."""
+        try:
+            answer = _broker_post("/oauth/supabase/start",
+                                  {"flow_id": flow_id, "challenge": challenge, "return_to": REDIRECT_URI})
+        except httpx.HTTPError as exc:
+            raise ValueError(f"The AgentForge sign-in server could not be reached: {exc}") from exc
+        body = _json_body(answer)
+        link = str(body.get("authorize_url") or "")
+        if answer.status_code >= 400 or not link:
+            raise ValueError(str(body.get("error") or f"Supabase sign-in is not available (HTTP {answer.status_code})."))
+        # Opened in the person's browser, so only ever Supabase's own authorize page.
+        if not link.startswith(AUTHORIZE_URL + "?"):
+            raise ValueError("The sign-in server answered with a link that is not Supabase's. Not opened.")
+        return link
+
+    def _own_link(self, flow_id: str, challenge: str) -> str:
+        params = {"response_type": "code", "client_id": str(config.setting(CLIENT_ID_SETTING) or ""),
+                  "redirect_uri": REDIRECT_URI, "scope": "all", "state": flow_id,
+                  "code_challenge": challenge, "code_challenge_method": "S256"}
+        return f"{AUTHORIZE_URL}?{urllib.parse.urlencode(params)}"
+
     def start(self) -> dict:
-        client_id = str(config.setting(CLIENT_ID_SETTING) or "")
-        if not client_id or not config.setting(CLIENT_SECRET_SETTING):
+        verifier, challenge = _pkce_pair()
+        flow_id = "sbo_" + secrets.token_urlsafe(24)
+        via, link = VIA_OWN, ""
+        if _broker():
+            # The publisher's OAuth app: nothing for the person to register. If the broker is not set up (or not
+            # reachable) a person's own saved app still works; with none, say why.
+            try:
+                via, link = VIA_BROKER, self._broker_link(flow_id, challenge)
+            except ValueError:
+                if not credentials_saved():
+                    raise
+        elif not credentials_saved():
             raise ValueError("Register a Supabase OAuth app first (Organization settings -> OAuth Apps) "
                               "and save its Client ID and Secret.")
+        if not link:
+            via, link = VIA_OWN, self._own_link(flow_id, challenge)
         # The desktop app listens on no port: its callback is answered only while this sign-in is waiting.
         from . import oauth_listener
 
         oauth_listener.open_for(CALLBACK_PATH, FLOW_TTL_SECONDS)
-        verifier, challenge = _pkce_pair()
-        flow = _Flow(flow_id="sbo_" + secrets.token_urlsafe(24), verifier=verifier)
         with self._lock:
             self._prune()
-            self._flows[flow.flow_id] = flow
-        params = {"response_type": "code", "client_id": client_id, "redirect_uri": REDIRECT_URI,
-                  "scope": "all", "state": flow.flow_id, "code_challenge": challenge, "code_challenge_method": "S256"}
-        return {"flow_id": flow.flow_id, "verification_uri": f"{AUTHORIZE_URL}?{urllib.parse.urlencode(params)}"}
+            self._flows[flow_id] = _Flow(flow_id=flow_id, verifier=verifier, via=via)
+        return {"flow_id": flow_id, "verification_uri": link}
 
     def receive_callback(self, state: str, code: str, error: str) -> bool:
         """Called by httpd.py's `/supabase-oauth/callback` route, on the browser's own request.
@@ -242,22 +425,18 @@ class OAuthConnects:
             raise ValueError(f"Supabase refused the sign-in: {flow.result['error']}")
         if not flow.result.get("code"):
             raise ValueError("Supabase did not send back an authorization code.")
-        return self._exchange(flow.result["code"], flow.verifier)
+        return self._exchange(flow.result["code"], flow.verifier, flow.via)
 
-    def _exchange(self, code: str, verifier: str) -> dict:
-        client_id, client_secret = str(config.setting(CLIENT_ID_SETTING) or ""), str(config.setting(CLIENT_SECRET_SETTING) or "")
+    def _exchange(self, code: str, verifier: str, via: str = VIA_OWN) -> dict:
         try:
-            answer = httpx.post(TOKEN_URL, auth=(client_id, client_secret),
-                                data={"grant_type": "authorization_code", "code": code,
-                                      "redirect_uri": REDIRECT_URI, "code_verifier": verifier},
-                                headers={"Accept": "application/json"}, timeout=30)
+            answer = _token_request({"grant_type": "authorization_code", "code": code, "code_verifier": verifier}, via)
         except httpx.HTTPError as exc:
             raise ValueError(f"Supabase could not be reached: {exc}") from exc
         body = _json_body(answer)
         if answer.status_code >= 400 or not body.get("access_token"):
-            raise ValueError(str(body.get("error_description") or body.get("message")
+            raise ValueError(str(body.get("error_description") or body.get("message") or body.get("error")
                                  or f"Supabase rejected the sign-in (HTTP {answer.status_code})."))
-        return {"status": "ready", **_keep_tokens(body)}
+        return {"status": "ready", **_keep_tokens(body, via)}
 
     def cancel(self, flow_id: str) -> dict:
         with self._lock:

@@ -61,6 +61,7 @@ Everything is installed per user into `%LOCALAPPDATA%\Programs\AgentForge`, with
   - GitHub CLI
   - AWS CLI (unpacked from its MSI)
   - Azure CLI
+  - MongoDB Atlas CLI (the browser sign-in for MongoDB)
   - The Vercel, Netlify and Supabase CLIs
   - Playwright's Chromium
 

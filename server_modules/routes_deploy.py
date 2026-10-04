@@ -119,7 +119,19 @@ def mongodb_status(body: dict) -> Any:
 
 @route("GET", r"/mongodb/account/status")
 def mongodb_account_status(_body: dict) -> Any:
-    return {"ok": True, **mongo_connect.status()}
+    return {"ok": True, **mongo_connect.status(accounts=True)}
+
+
+@route("POST", r"/mongodb/account/switch")
+def mongodb_account_switch(body: dict) -> Any:
+    """Use another account signed in through the Atlas CLI (`id` is its profile)."""
+    return {"ok": True, **mongo_connect.switch_account(str(body.get("id") or ""))}
+
+
+@route("POST", r"/mongodb/account/remove")
+def mongodb_account_remove(body: dict) -> Any:
+    """Sign one account out of the Atlas CLI (`id` is its profile)."""
+    return {"ok": True, **mongo_connect.remove_account(str(body.get("id") or ""))}
 
 
 @route("POST", r"/mongodb/account/save")

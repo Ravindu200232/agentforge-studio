@@ -6,15 +6,22 @@ self-service: MongoDB issues the `client_id`/`client_secret` only after approvin
 a design partner (confirmed live against
 https://www.mongodb.com/docs/atlas/app-connections/partner-integration-guide/ - its own
 "Prerequisites & Eligibility" section says so explicitly). Until that approval exists, this studio
-cannot offer the Supabase-style "click to sign in, a browser opens" button for Atlas at all.
+cannot offer a sign-in with an OAuth app of its own for Atlas.
 
-What *is* self-service today is a Service Account - Atlas's own recommended replacement for a bare
-API key pair, and still real OAuth2 underneath (`POST https://cloud.mongodb.com/api/oauth/token`,
-`grant_type=client_credentials`, confirmed live against MongoDB's docs). The customer creates one
-once, in the Atlas UI (Organization Access Manager -> Service Accounts, any role that can manage
-projects and clusters), and pastes its Client ID and Secret here - the one-time paste every other
-CLI-less provider in this studio already needs (`cli_signin.py`'s Supabase note), except the
-exchange itself is a standard, verifiable OAuth2 grant rather than a bespoke token format.
+What it can offer is MongoDB's own: the Atlas CLI's `atlas auth login` signs a person in through the
+browser and a one-time code, with MongoDB's OAuth app, and nothing for the person to register or
+paste. That is the way in for a non-technical person (`cli_signin.py`, the "atlas" provider, run in a
+pseudo-terminal because its login opens with a menu). Once the CLI is signed in, the cluster is made
+with its commands (`_ensure_cluster_cli`), the CLI keeping the credential as it does for every
+command line tool in this studio.
+
+Still there for automation, and for anyone who has one: a Service Account - Atlas's own recommended
+replacement for a bare API key pair, and still real OAuth2 underneath (`POST
+https://cloud.mongodb.com/api/oauth/token`, `grant_type=client_credentials`, confirmed live against
+MongoDB's docs). The customer creates one once, in the Atlas UI (Organization Access Manager ->
+Service Accounts, any role that can manage projects and clusters), and pastes its Client ID and
+Secret here; the exchange itself is a standard, verifiable OAuth2 grant rather than a bespoke token
+format. When both exist, the Service Account is used.
 
 One studio-wide connection, like the account-level tokens in `config.py` (`github_token`,
 `vercel_token`, ...) - a Service Account belongs to the customer's Atlas organisation, not to one
@@ -27,14 +34,16 @@ as it does for a hand-typed string, because that is still, in the end, exactly w
 """
 from __future__ import annotations
 
+import json
 import secrets
 import string
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
 
-from . import config
+from . import cli_signin, config
 
 TOKEN_URL = "https://cloud.mongodb.com/api/oauth/token"
 API_BASE = "https://cloud.mongodb.com/api/atlas/v2"
@@ -62,14 +71,121 @@ def credentials_saved() -> bool:
     return bool(config.setting(CLIENT_ID_SETTING) and config.setting(CLIENT_SECRET_SETTING))
 
 
-def status() -> dict:
+def cli_account() -> dict:
+    """Who the Atlas CLI is signed in as ({} when it is not installed or is signed out). Asked of the CLI itself,
+    and remembered for a few seconds by `cli_signin`."""
+    row = cli_signin.SIGNINS.available(only="atlas").get("atlas") or {}
+    return dict(row.get("identity") or {}) if row.get("signed_in") else {}
+
+
+def status(accounts: bool = False) -> dict:
     """What the studio may show: never the credentials or tokens, only that an account is
-    connected, which organisation, and whether a cluster has already been provisioned."""
-    return {
-        "connected": credentials_saved(),
+    connected (and how), which organisation, and whether a cluster has already been provisioned.
+    With `accounts`, also every account signed in through the Atlas CLI (asking the CLI about each)."""
+    service_account = credentials_saved()
+    cli = {} if service_account else cli_account()
+    answer = {
+        "connected": service_account or bool(cli),
+        "via": "service_account" if service_account else "cli" if cli else "",
+        "account": str(cli.get("account") or ""),
         "org": str(config.setting(ORG_SETTING) or ""),
         "cluster_ready": bool(config.setting(CLUSTER_NAME_SETTING)),
     }
+    if accounts:
+        answer["accounts"] = [] if service_account else cli_accounts()
+    return answer
+
+
+# --- more than one account (each is a profile of the Atlas CLI) ---------------------------------------
+#
+# Signing in through the CLI as another account gives it a profile of its own (cli_signin `add`), so the first stays
+# signed in. One profile is the active one: every cluster command names it, and the studio's cluster record (the
+# project, the cluster and the connection string made for it) belongs to it, so switching puts the other account's
+# record in its place instead of leaving a string for a cluster the new account cannot reach.
+
+PROFILE_SETTING = cli_signin.ATLAS_PROFILE_SETTING
+CLUSTERS_SETTING = "mongodb_clusters_credentials"  # "credentials" in the name keeps it out of GET /settings
+_ACCOUNTS_TTL = 20
+_seen_accounts: list = [0.0, []]
+
+
+def active_profile() -> str:
+    return str(config.setting(PROFILE_SETTING) or "")
+
+
+def cli_accounts(fresh: bool = False) -> list[dict]:
+    """[{"id": profile, "label": the account's name, "active": bool}] for every profile signed in, the active first."""
+    now = time.time()
+    if not fresh and now - _seen_accounts[0] < _ACCOUNTS_TTL:
+        return [dict(row) for row in _seen_accounts[1]]
+    tool = cli_signin._where("atlas")  # noqa: SLF001
+    rows: list[dict] = []
+    if tool:
+        names = cli_signin.atlas_profiles(tool)
+        active = active_profile() or "default"
+        with ThreadPoolExecutor(max_workers=max(1, len(names))) as pool:
+            for name, who in zip(names, pool.map(lambda n: cli_signin.atlas_identity(tool, n), names)):
+                if who:
+                    rows.append({"id": name, "label": who["account"], "active": name == active})
+        rows.sort(key=lambda row: not row["active"])
+    _seen_accounts[0], _seen_accounts[1] = now, rows
+    return [dict(row) for row in rows]
+
+
+def _forget_seen() -> None:
+    _seen_accounts[0] = 0.0
+    cli_signin.SIGNINS._seen.pop("atlas", None)  # noqa: SLF001 - who is signed in is asked again
+
+
+def _put_cluster_aside(profile: str) -> dict:
+    """Take the cluster record made for the account in use out of the settings the deployments read."""
+    kept = dict(config.setting(CLUSTERS_SETTING) or {})
+    updates: dict[str, Any] = {}
+    if config.setting(CLUSTER_NAME_SETTING):
+        kept[profile or "default"] = {"group_id": str(config.setting(GROUP_ID_SETTING) or ""),
+                                      "cluster_name": str(config.setting(CLUSTER_NAME_SETTING) or ""),
+                                      "uri": str(config.setting("deploy_mongodb_uri", "") or "")}
+        # Only a string this module made goes with its account; one typed in by hand stays whoever signs in.
+        updates["deploy_mongodb_uri"] = ""
+    updates.update({GROUP_ID_SETTING: "", CLUSTER_NAME_SETTING: ""})
+    config.save_settings({**updates, CLUSTERS_SETTING: kept})
+    return kept
+
+
+def switch_account(profile: str) -> dict:
+    """Use another account signed in through the Atlas CLI ("" or "default" is the CLI's own default profile)."""
+    profile = "" if str(profile or "") == "default" else str(profile or "")
+    if profile == active_profile():
+        _forget_seen()
+        return status(accounts=True)
+    kept = _put_cluster_aside(active_profile())
+    restore = kept.pop(profile or "default", None)
+    updates: dict[str, Any] = {PROFILE_SETTING: profile, CLUSTERS_SETTING: kept}
+    if isinstance(restore, dict):
+        updates.update({GROUP_ID_SETTING: restore.get("group_id", ""), CLUSTER_NAME_SETTING: restore.get("cluster_name", ""),
+                        "deploy_mongodb_uri": restore.get("uri", "")})
+    config.save_settings(updates)
+    _forget_seen()
+    return status(accounts=True)
+
+
+def remove_account(profile: str) -> dict:
+    """Sign one account out of the Atlas CLI. Nothing is deleted in Atlas, and its cluster stays there."""
+    profile = "" if str(profile or "") == "default" else str(profile or "")
+    tool = cli_signin._where("atlas")  # noqa: SLF001
+    if not tool:
+        raise ValueError("The MongoDB Atlas command line tool is not installed on this computer.")
+    done = cli_signin._run([tool, "auth", "logout", "--force", *cli_signin.atlas_profile_args(profile)], timeout=30)  # noqa: SLF001
+    if done.returncode != 0:
+        raise ValueError(((done.stderr or done.stdout or "").strip().removeprefix("Error:").strip()[:300])
+                         or "The Atlas CLI could not sign that account out.")
+    if profile == active_profile():
+        _put_cluster_aside(profile)          # what was made for it is no longer what deployments use ...
+    kept = dict(config.setting(CLUSTERS_SETTING) or {})
+    kept.pop(profile or "default", None)     # ... and is forgotten here; the next account picked starts from its own
+    config.save_settings({CLUSTERS_SETTING: kept})
+    _forget_seen()
+    return status(accounts=True)
 
 
 def forget_account() -> None:
@@ -245,7 +361,7 @@ def account_facts() -> dict:
     from . import deploy_vars
 
     saved = {row["name"] for row in deploy_vars.names()}
-    return {"atlas_connected": credentials_saved(),
+    return {"atlas_connected": credentials_saved() or bool(cli_account()),
             "studio_cluster": str(config.setting(CLUSTER_NAME_SETTING) or ""),
             "connection_string_saved": bool(config.setting("deploy_mongodb_uri", "") or "MONGODB_URI" in saved)}
 
@@ -255,10 +371,12 @@ def ensure_cluster(log=None, region: str = "") -> dict:
     (cluster creation takes a few minutes) - called from a background job (routes_deploy.py), the
     same way the Deploy panel already runs anything slow."""
     say = log or (lambda _line: None)
-    if not credentials_saved():
-        raise ValueError("Connect a MongoDB Atlas Service Account first.")
+    if not credentials_saved() and not cli_account():
+        raise ValueError("Sign in to MongoDB Atlas first.")
     if config.setting(CLUSTER_NAME_SETTING):
         return status()  # already provisioned by this flow; the manual box can still override it
+    if not credentials_saved():
+        return _ensure_cluster_cli(say, region)
 
     token = _token()
     say("Finding or creating the Atlas project…")
@@ -271,6 +389,11 @@ def ensure_cluster(log=None, region: str = "") -> dict:
     say("Opening the cluster to the deployed application…")
     _ensure_access_list(token, group_id)
 
+    return _keep_cluster(cluster, group_id, cluster_name, password, say)
+
+
+def _keep_cluster(cluster: dict, group_id: str, cluster_name: str, password: str, say) -> dict:
+    """Write the connection string for `cluster` where every deployment reads it, and remember which cluster it is."""
     srv = str((cluster.get("connectionStrings") or {}).get("standardSrv") or "")
     if not srv:
         raise ValueError("Atlas did not return a connection string for the cluster.")
@@ -283,3 +406,92 @@ def ensure_cluster(log=None, region: str = "") -> dict:
     config.save_settings({"deploy_mongodb_uri": uri, GROUP_ID_SETTING: group_id, CLUSTER_NAME_SETTING: cluster_name})
     say("Cluster ready.")
     return status()
+
+
+# --- the same cluster, made with the Atlas CLI the person signed in with -----------------------------
+
+def _atlas(args: list[str], timeout: int = 90) -> Any:
+    """One Atlas CLI command as the account in use, its JSON answer parsed. A failure is the CLI's own message."""
+    tool = cli_signin._where("atlas")  # noqa: SLF001 - the one finder every tool here shares
+    if not tool:
+        raise ValueError("The MongoDB Atlas command line tool is not installed on this computer.")
+    done = cli_signin._run([tool, *args, *cli_signin.atlas_profile_args(), "-o", "json"], timeout=timeout)  # noqa: SLF001
+    text = (done.stdout or "").strip()
+    if done.returncode != 0:
+        said = (done.stderr or "").strip() or text
+        raise ValueError(said.removeprefix("Error:").strip()[:300] or f"atlas {args[0]} failed.")
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except ValueError:
+        start = min((i for i in (text.find("{"), text.find("[")) if i >= 0), default=-1)
+        if start < 0:
+            raise ValueError(f"atlas {args[0]} answered with something that is not JSON.") from None
+        return json.loads(text[start:])
+
+
+def _rows(body: Any) -> list[dict]:
+    """The list in a CLI answer, which is `{"results": [...]}` for a list command."""
+    rows = body.get("results") if isinstance(body, dict) else body
+    return [row for row in rows or [] if isinstance(row, dict)]
+
+
+def _ensure_cluster_cli(say, region: str = "") -> dict:
+    """What `ensure_cluster` does with a Service Account, with the commands of the CLI the person signed in with: the
+    project, one free M0 cluster, a database user whose password is set here, and an open access list."""
+    say("Finding or creating the Atlas project…")
+    orgs = _rows(_atlas(["organizations", "list"]))
+    if not orgs:
+        raise ValueError("This Atlas account has no organisation to make a project in.")
+    org_id = str(orgs[0].get("id") or "")
+    projects = _rows(_atlas(["projects", "list", "--orgId", org_id]))
+    named = next((p for p in projects if p.get("name") == GROUP_NAME), None) or (projects[0] if projects else None)
+    if named:
+        group_id = str(named.get("id") or "")
+    else:
+        group_id = str(_atlas(["projects", "create", GROUP_NAME, "--orgId", org_id]).get("id") or "")
+    if not group_id:
+        raise ValueError("Atlas did not return the project's id.")
+
+    clusters = _rows(_atlas(["clusters", "list", "--projectId", group_id]))
+    # A free-tier project allows one M0 cluster: an existing one is used rather than failing to make a second.
+    cluster_name = next((c["name"] for c in clusters if c.get("name") == CLUSTER_NAME), "") \
+        or (str(clusters[0].get("name") or "") if clusters else "")
+    if not cluster_name:
+        say(f"Creating the {CLUSTER_NAME} cluster (free tier)…")
+        _atlas(["clusters", "create", CLUSTER_NAME, "--projectId", group_id, "--provider", "AWS",
+                "--region", region or DEFAULT_REGION, "--tier", "M0"], timeout=180)
+        cluster_name = CLUSTER_NAME
+
+    say(f"Waiting for {cluster_name} to come up…")
+    cluster: dict = {}
+    for _ in range(60):  # ~5 minutes
+        cluster = _atlas(["clusters", "describe", cluster_name, "--projectId", group_id])
+        if cluster.get("stateName") == "IDLE":
+            break
+        time.sleep(5)
+    else:
+        raise ValueError(f"The {cluster_name} cluster did not finish provisioning in time. "
+                         "Check the Atlas UI and try again.")
+
+    say("Creating the database user…")
+    password = _db_password()
+    try:
+        _atlas(["dbusers", "describe", DB_USERNAME, "--projectId", group_id])
+    except ValueError:
+        _atlas(["dbusers", "create", "readWriteAnyDatabase", "--username", DB_USERNAME, "--password", password,
+                "--projectId", group_id])
+    else:
+        # It is already there (an earlier attempt that did not finish): the connection string needs a password
+        # that is known, so set one rather than guess.
+        _atlas(["dbusers", "update", DB_USERNAME, "--password", password, "--projectId", group_id])
+
+    say("Opening the cluster to the deployed application…")
+    entries = _rows(_atlas(["accessLists", "list", "--projectId", group_id]))
+    if not any(e.get("cidrBlock") == "0.0.0.0/0" for e in entries):
+        # Every MongoDB-stack deployment target needs to reach this cluster; the connection string's own
+        # username and password are the real access control (see `_ensure_access_list`).
+        _atlas(["accessLists", "create", "0.0.0.0/0", "--type", "cidrBlock", "--projectId", group_id,
+                "--comment", "AgentForge-managed cluster: open, password-protected"])
+    return _keep_cluster(cluster, group_id, cluster_name, password, say)

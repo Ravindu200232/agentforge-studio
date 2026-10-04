@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ExternalLink, Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
+import AccountList from './AccountList'
 import { Button, Input } from './ui'
 
 const Field = ({ label, hint, children }) => (
@@ -16,11 +17,11 @@ const Field = ({ label, hint, children }) => (
 /**
  * Supabase has no device-flow CLI sign-in the way GitHub/Vercel/Netlify/Azure do (see
  * cli_signin.py's own docstring on why it isn't there - tried live, `supabase login` refuses
- * outside a real terminal). So this drives the real OAuth thing instead: a one-time OAuth app
- * registered in the person's own Supabase organisation (Organization settings -> OAuth Apps ->
- * Publish OAuth app, with the callback URL below), then a genuine "click, approve in the browser"
- * sign-in for every project after that - the same shape as every other provider, just needing a
- * client secret as well as an id to get there, which only the person's own org can supply.
+ * outside a real terminal). So this drives the real OAuth thing instead: a genuine "click, approve
+ * in the browser" sign-in, like "Sign in with Google". The OAuth app behind it is the publisher's,
+ * one for everyone, kept by the engine server (`status.broker`; supabase_connect.py), so the person
+ * registers nothing and types no client id or callback URL. Only a copy with no engine server (a
+ * development checkout) still asks for an OAuth app of the person's own, below.
  */
 export default function SupabaseConnect({ onDone }) {
   const [status, setStatus] = useState(null)
@@ -29,6 +30,7 @@ export default function SupabaseConnect({ onDone }) {
   const [flow, setFlow] = useState(null)
   const [busy, setBusy] = useState('')
   const [err, setErr] = useState('')
+  const [copied, setCopied] = useState(false)
   const stop = useRef(false)
 
   const look = () => api.supabaseOauthStatus().then(setStatus).catch(() => setStatus({ app_registered: false, connected: false }))
@@ -77,6 +79,23 @@ export default function SupabaseConnect({ onDone }) {
     setFlow(null); setBusy('')
   }
 
+  // Switch to, or sign out of, one of the accounts signed in here.
+  async function change(kind, id) {
+    setBusy(`${kind}:${id}`); setErr('')
+    try {
+      setStatus(kind === 'switch' ? await api.supabaseOauthSwitch(id) : await api.supabaseOauthRemove(id))
+      onDone?.({ status: 'ready' })
+    } catch (e) { setErr(e.message) } finally { setBusy('') }
+  }
+
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(flow.verification_uri)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch { }
+  }
+
   if (!status) {
     return <p className="flex items-center gap-1.5 text-[10.5px] text-muted2"><Loader2 className="size-3 animate-spin" /> Checking Supabase…</p>
   }
@@ -95,11 +114,11 @@ export default function SupabaseConnect({ onDone }) {
                        done once for this machine.{' '}
                        <a className="text-accent hover:underline" target="_blank" rel="noreferrer"
                           href="https://supabase.com/dashboard/org/_/apps">Manage OAuth apps</a></>}>
-          <Input value={clientId} onChange={e => setClientId(e.target.value)} placeholder="Client ID" />
+          <Input className="border-transparent bg-bg/60 shadow-none" value={clientId} onChange={e => setClientId(e.target.value)} placeholder="Client ID" />
         </Field>
-        <Input type="password" autoComplete="off" value={clientSecret}
+        <Input className="border-transparent bg-bg/60 shadow-none" type="password" autoComplete="off" value={clientSecret}
                onChange={e => setClientSecret(e.target.value)} placeholder="Client Secret" />
-        <Button size="sm" disabled={!clientId.trim() || !clientSecret.trim() || Boolean(busy)} onClick={registerApp}>
+        <Button size="sm" variant="primary" disabled={!clientId.trim() || !clientSecret.trim() || Boolean(busy)} onClick={registerApp}>
           {busy === 'register' && <Loader2 className="size-3 animate-spin" />} Save
         </Button>
         {err && <p className="text-[10.5px] text-bad">{err}</p>}
@@ -112,27 +131,51 @@ export default function SupabaseConnect({ onDone }) {
       <p className="text-[11px] text-muted">
         {status.connected
           ? <>Signed in{status.org ? <> as <b className="text-ink">{status.org}</b></> : ''}</>
-          : 'App registered — sign in to connect your account.'}
+          : status.accounts?.length
+            ? 'Signed out. Pick one of your accounts below, or sign in again.'
+            : status.broker
+              ? 'Connect your Supabase account: a browser tab opens, you approve it there, and you are back here.'
+              : 'App registered — sign in to connect your account.'}
       </p>
+      {(status.accounts?.length > 1 || (status.accounts?.length === 1 && !status.connected)) && (
+        <AccountList accounts={status.accounts} busy={busy}
+                     onSwitch={id => change('switch', id)} onRemove={id => change('remove', id)} />
+      )}
       {flow && (
-        <div className="rounded-lg border border-line bg-panel2 p-3">
+        <div className="rounded-2xl bg-bg/60 p-4">
           <p className="text-[11px] text-muted">A browser tab opened — approve the sign-in there.</p>
           <a className="inline-flex items-center gap-1 break-all text-[11px] text-accent hover:underline"
              target="_blank" rel="noreferrer" href={flow.verification_uri}>
             Open the sign-in page <ExternalLink className="size-2.5 shrink-0" />
           </a>
+          {status.connected && (
+            <p className="mt-1.5 text-[10.5px] leading-snug text-muted2">
+              Your browser may already be signed in to another Supabase account. To add a different one, sign in to it
+              there first, or{' '}
+              <button type="button" className="text-accent hover:underline" onClick={copyLink}>
+                {copied ? 'link copied' : 'copy the sign-in link'}
+              </button>{' '}
+              and open it in a private window.
+            </p>
+          )}
           <p className="mt-2 flex items-center gap-1.5 text-[10.5px] text-muted2">
             <Loader2 className="size-3 animate-spin" /> Waiting for you to approve it…
           </p>
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" disabled={Boolean(busy)} onClick={signIn}>
+        <Button size="sm" variant={status.connected ? 'soft' : 'primary'} disabled={Boolean(busy)} onClick={signIn}>
           {busy === 'signin' && <Loader2 className="size-3 animate-spin" />}
-          {status.connected ? 'Sign in again' : 'Sign in with Supabase'}
+          {status.connected ? 'Add another account' : 'Sign in with Supabase'}
         </Button>
-        {flow && <Button size="sm" variant="outline" onClick={cancel}>Cancel</Button>}
+        {flow && <Button size="sm" variant="soft" onClick={cancel}>Cancel</Button>}
       </div>
+      {status.connected && status.accounts?.length === 1 && (
+        <p className="text-[10.5px] leading-snug text-muted2">
+          Have another Supabase account or organisation? Add it, then switch between them here. New projects are made in
+          the one marked in use.
+        </p>
+      )}
       {err && <p className="text-[10.5px] text-bad">{err}</p>}
     </div>
   )

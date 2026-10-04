@@ -28,7 +28,10 @@ class SupabaseSettingsCase(unittest.TestCase):
         settings_patch = mock.patch.object(config, "SETTINGS_FILE", Path(self.temp.name) / "settings.json")
         key_patch = mock.patch.object(sc, "KEY", Path(self.temp.name) / "supabase.key")
         vault_patch = mock.patch.object(sc, "VAULT", Path(self.temp.name) / "supabase.enc")
-        for patch in (settings_patch, key_patch, vault_patch):
+        # No built-in engine unless a test gives one: it is the broker that holds the publisher's OAuth app.
+        self.engine: dict = {}
+        engine_patch = mock.patch.object(config, "built_in_engine", side_effect=lambda: dict(self.engine))
+        for patch in (settings_patch, key_patch, vault_patch, engine_patch):
             patch.start()
             self.addCleanup(patch.stop)
 
@@ -38,7 +41,8 @@ class SupabaseSettingsCase(unittest.TestCase):
 
 class AccountConnectionTests(SupabaseSettingsCase):
     def test_nothing_is_connected_until_an_app_is_registered(self):
-        self.assertEqual(sc.token_status(), {"app_registered": False, "connected": False, "org": ""})
+        self.assertEqual(sc.token_status(), {"app_registered": False, "connected": False, "org": "", "broker": False,
+                                              "accounts": [], "active": ""})
         self.assertFalse(sc.credentials_saved())
 
     def test_registering_the_app_does_not_by_itself_sign_anyone_in(self):
@@ -183,7 +187,7 @@ class RefreshTests(SupabaseSettingsCase):
         refreshed = mock.Mock(status_code=200)
         refreshed.json.return_value = {"access_token": "new-token", "refresh_token": "rt-2", "expires_in": 3600}
         with mock.patch("httpx.post", return_value=refreshed) as post, \
-                mock.patch.object(sc, "_fetch_org_name", return_value=""):
+                mock.patch.object(sc, "_fetch_org", return_value={}):
             env = sc._env_with_token()
         self.assertEqual(env["SUPABASE_ACCESS_TOKEN"], "new-token")
         self.assertEqual(post.call_args.kwargs["data"]["grant_type"], "refresh_token")
@@ -370,6 +374,271 @@ class OauthHttpRoutesTests(SupabaseSettingsCase):
         self.assertEqual(cancelled["status"], "cancelled")
         with self.assertRaises(ValueError):
             httpd.dispatch("POST", "/supabase/oauth/poll", {"flow_id": started["flow_id"]}, {})
+
+
+class BrokerSignInTests(SupabaseSettingsCase):
+    """Nobody who installs AgentForge registers an OAuth app: the engine Worker holds the publisher's, so signing in is a
+    click. Every call to it carries the app token, and the client secret never reaches this computer."""
+
+    ENGINE = {"url": "https://engine.example.test", "token": "app-token"}
+
+    def setUp(self):
+        super().setUp()
+        self.engine = dict(self.ENGINE)
+
+    @staticmethod
+    def answer(status, body):
+        reply = mock.Mock(status_code=status)
+        reply.json.return_value = body
+        return reply
+
+    def link(self):
+        return sc.AUTHORIZE_URL + "?client_id=publisher&state=signed"
+
+    def start(self, link=None):
+        with mock.patch("httpx.post", return_value=self.answer(200, {"authorize_url": link or self.link()})) as post:
+            started = sc.OAUTH.start()
+        return started, post
+
+    def test_a_broker_means_nothing_to_register(self):
+        status = sc.token_status()
+        self.assertEqual((status["app_registered"], status["connected"], status["broker"]), (True, False, True))
+        self.assertFalse(sc.credentials_saved())
+
+    def test_start_asks_the_broker_for_the_link_without_any_client_id(self):
+        started, post = self.start()
+        self.assertEqual(started["verification_uri"], self.link())
+        self.assertEqual(post.call_args.args[0], "https://engine.example.test/oauth/supabase/start")
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer app-token")
+        sent = post.call_args.kwargs["json"]
+        self.assertEqual(sent["flow_id"], started["flow_id"])
+        self.assertEqual(sent["return_to"], sc.REDIRECT_URI)
+        self.assertGreaterEqual(len(sent["challenge"]), 43)  # a PKCE S256 challenge; the verifier stays here
+        self.assertNotIn("verifier", json.dumps(sent))
+
+    def test_a_link_that_is_not_supabases_is_never_opened(self):
+        with mock.patch("httpx.post", return_value=self.answer(200, {"authorize_url": "https://evil.example/login"})):
+            with self.assertRaisesRegex(ValueError, "not Supabase's"):
+                sc.OAUTH.start()
+
+    def test_a_broker_that_is_not_set_up_says_so_when_there_is_no_own_app_to_fall_back_on(self):
+        not_set_up = self.answer(503, {"error": "Supabase sign-in is not set up on this engine yet"})
+        with mock.patch("httpx.post", return_value=not_set_up):
+            with self.assertRaisesRegex(ValueError, "not set up"):
+                sc.OAUTH.start()
+        with mock.patch("httpx.post", side_effect=__import__("httpx").ConnectError("down")):
+            with self.assertRaisesRegex(ValueError, "could not be reached"):
+                sc.OAUTH.start()
+
+    def test_a_persons_own_saved_app_still_works_when_the_broker_is_not_set_up(self):
+        self.register(client_id="mine")
+        with mock.patch("httpx.post", return_value=self.answer(503, {"error": "not set up"})):
+            started = sc.OAUTH.start()
+        self.assertIn("client_id=mine", started["verification_uri"])
+
+    def test_the_code_is_traded_through_the_broker_with_the_verifier_and_no_secret(self):
+        started, _ = self.start()
+        sc.OAUTH.receive_callback(started["flow_id"], "auth-code-9", "")
+        tokens = self.answer(200, {"access_token": "at-9", "refresh_token": "rt-9", "expires_in": 3600})
+        with mock.patch("httpx.post", return_value=tokens) as post, \
+                mock.patch.object(sc, "_fetch_org", return_value={"id": "org-1", "name": "Acme"}):
+            result = sc.OAUTH.poll(started["flow_id"])
+        self.assertEqual((result["status"], result["connected"], result["org"]), ("ready", True, "Acme"))
+        self.assertEqual(post.call_args.args[0], "https://engine.example.test/oauth/supabase/token")
+        sent = post.call_args.kwargs["json"]
+        self.assertEqual((sent["grant_type"], sent["code"]), ("authorization_code", "auth-code-9"))
+        self.assertTrue(sent["code_verifier"])
+        self.assertNotIn("auth", post.call_args.kwargs)  # no client id or secret from this side
+        self.assertEqual(config.setting("supabase_oauth_via"), "broker")
+
+    def test_the_broker_refusing_the_exchange_is_a_clean_error(self):
+        started, _ = self.start()
+        sc.OAUTH.receive_callback(started["flow_id"], "auth-code-9", "")
+        with mock.patch("httpx.post", return_value=self.answer(400, {"error_description": "Invalid code"})):
+            with self.assertRaisesRegex(ValueError, "Invalid code"):
+                sc.OAUTH.poll(started["flow_id"])
+
+    def test_a_token_from_the_broker_is_refreshed_through_the_broker(self):
+        config.save_settings({"supabase_oauth_access_token": "old", "supabase_oauth_refresh_token": "rt-1",
+                              "supabase_oauth_expires_at": 0, "supabase_oauth_via": "broker"})
+        refreshed = self.answer(200, {"access_token": "new", "refresh_token": "rt-2", "expires_in": 3600})
+        with mock.patch("httpx.post", return_value=refreshed) as post, \
+                mock.patch.object(sc, "_fetch_org", return_value={}):
+            env = sc._env_with_token()
+        self.assertEqual(env["SUPABASE_ACCESS_TOKEN"], "new")
+        self.assertEqual(post.call_args.args[0], "https://engine.example.test/oauth/supabase/token")
+        self.assertEqual(post.call_args.kwargs["json"], {"grant_type": "refresh_token", "refresh_token": "rt-1"})
+        self.assertEqual(config.setting("supabase_oauth_via"), "broker")  # a refresh does not change who issued it
+
+    def test_a_token_from_a_persons_own_app_is_refreshed_with_that_app_even_when_a_broker_exists(self):
+        self.register()
+        config.save_settings({"supabase_oauth_access_token": "old", "supabase_oauth_refresh_token": "rt-1",
+                              "supabase_oauth_expires_at": 0})  # saved before the broker existed: no "via"
+        refreshed = self.answer(200, {"access_token": "new", "expires_in": 3600})
+        with mock.patch("httpx.post", return_value=refreshed) as post, \
+                mock.patch.object(sc, "_fetch_org", return_value={}):
+            sc._env_with_token()
+        self.assertEqual(post.call_args.args[0], sc.TOKEN_URL)
+        self.assertEqual(post.call_args.kwargs["auth"], ("fake-client-id", "fake-client-secret"))
+
+    def test_losing_the_broker_does_not_crash_a_refresh(self):
+        config.save_settings({"supabase_oauth_access_token": "old", "supabase_oauth_refresh_token": "rt-1",
+                              "supabase_oauth_expires_at": 0, "supabase_oauth_via": "broker"})
+        self.engine = {}
+        self.assertEqual(sc._env_with_token()["SUPABASE_ACCESS_TOKEN"], "old")
+
+    def test_signing_in_again_through_the_broker_replaces_an_own_app_session(self):
+        self.register()
+        config.save_settings({"supabase_oauth_access_token": "old-own", "supabase_oauth_via": "own"})
+        started, _ = self.start()
+        sc.OAUTH.receive_callback(started["flow_id"], "c", "")
+        with mock.patch("httpx.post", return_value=self.answer(200, {"access_token": "brokered", "expires_in": 60})), \
+                mock.patch.object(sc, "_fetch_org", return_value={}):
+            sc.OAUTH.poll(started["flow_id"])
+        self.assertEqual((config.setting("supabase_oauth_access_token"), config.setting("supabase_oauth_via")),
+                         ("brokered", "broker"))
+
+    def test_forgetting_the_account_forgets_who_issued_it(self):
+        config.save_settings({"supabase_oauth_access_token": "at", "supabase_oauth_via": "broker"})
+        sc.forget_account()
+        self.assertFalse(config.setting("supabase_oauth_via"))
+        self.assertFalse(sc.token_status()["connected"])
+
+
+class SeveralAccountsTests(SupabaseSettingsCase):
+    """A person with more than one Supabase account (or organisation) signs in as each, and switches between them."""
+
+    ENGINE = {"url": "https://engine.example.test", "token": "app-token"}
+
+    def setUp(self):
+        super().setUp()
+        self.engine = dict(self.ENGINE)
+        # Supabase answers "which organisation?" for whichever token is in use, as the real CLI does.
+        self.orgs_by_token: dict[str, dict] = {}
+        patch = mock.patch.object(sc, "_fetch_org", side_effect=lambda: dict(
+            self.orgs_by_token.get(config.setting("supabase_oauth_access_token"), {})))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def sign_in_as(self, org, access, refresh):
+        """One browser sign-in that lands on `org`."""
+        self.orgs_by_token[access] = org
+        with mock.patch("httpx.post", return_value=mock.Mock(status_code=200, json=lambda: {"authorize_url": sc.AUTHORIZE_URL + "?x=1"})):
+            started = sc.OAUTH.start()
+        sc.OAUTH.receive_callback(started["flow_id"], "code", "")
+        tokens = mock.Mock(status_code=200, json=lambda: {"access_token": access, "refresh_token": refresh, "expires_in": 3600})
+        with mock.patch("httpx.post", return_value=tokens):
+            return sc.OAUTH.poll(started["flow_id"])
+
+    def ids(self):
+        return [(row["id"], row["label"], row["active"]) for row in sc.accounts()]
+
+    def test_the_first_sign_in_is_the_one_account_and_it_is_active(self):
+        self.sign_in_as({"id": "org-a", "name": "Acme"}, "at-a", "rt-a")
+        self.assertEqual(self.ids(), [("org-a", "Acme", True)])
+        self.assertEqual(sc.token_status()["active"], "org-a")
+
+    def test_signing_in_as_another_account_keeps_the_first_signed_in_and_makes_the_new_one_active(self):
+        self.sign_in_as({"id": "org-a", "name": "Acme"}, "at-a", "rt-a")
+        status = self.sign_in_as({"id": "org-b", "name": "Globex"}, "at-b", "rt-b")
+        self.assertEqual(self.ids(), [("org-b", "Globex", True), ("org-a", "Acme", False)])
+        self.assertEqual((status["active"], status["org"]), ("org-b", "Globex"))
+        self.assertEqual(config.setting("supabase_oauth_access_token"), "at-b")   # what builds use now
+        self.assertEqual(sc._aside()["org-a"]["refresh_token"], "rt-a")           # nothing of the first was lost
+
+    def test_signing_in_again_as_the_same_account_does_not_make_a_second_one(self):
+        self.sign_in_as({"id": "org-a", "name": "Acme"}, "at-1", "rt-1")
+        self.sign_in_as({"id": "org-a", "name": "Acme"}, "at-2", "rt-2")
+        self.assertEqual(self.ids(), [("org-a", "Acme", True)])
+        self.assertEqual(config.setting("supabase_oauth_access_token"), "at-2")
+
+    def test_signing_in_as_one_kept_aside_makes_it_active_again_and_not_a_duplicate(self):
+        self.sign_in_as({"id": "org-a", "name": "Acme"}, "at-a", "rt-a")
+        self.sign_in_as({"id": "org-b", "name": "Globex"}, "at-b", "rt-b")
+        self.sign_in_as({"id": "org-a", "name": "Acme"}, "at-a2", "rt-a2")
+        self.assertEqual(self.ids(), [("org-a", "Acme", True), ("org-b", "Globex", False)])
+        self.assertEqual(config.setting("supabase_oauth_access_token"), "at-a2")
+
+    def test_switching_swaps_the_tokens_builds_use_and_keeps_both_signed_in(self):
+        self.sign_in_as({"id": "org-a", "name": "Acme"}, "at-a", "rt-a")
+        self.sign_in_as({"id": "org-b", "name": "Globex"}, "at-b", "rt-b")
+        status = sc.switch_account("org-a")
+        self.assertEqual((status["active"], status["org"]), ("org-a", "Acme"))
+        self.assertEqual(config.setting("supabase_oauth_access_token"), "at-a")
+        self.assertEqual(config.setting("supabase_oauth_refresh_token"), "rt-a")
+        self.assertEqual(self.ids(), [("org-a", "Acme", True), ("org-b", "Globex", False)])
+        sc.switch_account("org-b")
+        self.assertEqual(config.setting("supabase_oauth_access_token"), "at-b")
+
+    def test_a_switched_to_account_is_refreshed_with_its_own_refresh_token(self):
+        self.sign_in_as({"id": "org-a", "name": "Acme"}, "at-a", "rt-a")
+        self.sign_in_as({"id": "org-b", "name": "Globex"}, "at-b", "rt-b")
+        sc.switch_account("org-a")
+        config.save_settings({"supabase_oauth_expires_at": 0})        # an hour has passed
+        refreshed = mock.Mock(status_code=200, json=lambda: {"access_token": "at-a-new", "expires_in": 3600})
+        with mock.patch("httpx.post", return_value=refreshed) as post:
+            token = sc._env_with_token()["SUPABASE_ACCESS_TOKEN"]
+        self.assertEqual(token, "at-a-new")
+        self.assertEqual(post.call_args.kwargs["json"]["refresh_token"], "rt-a")
+        self.assertEqual(config.setting("supabase_account_id"), "org-a")
+
+    def test_switching_to_an_account_that_is_not_signed_in_is_refused_and_changes_nothing(self):
+        self.sign_in_as({"id": "org-a", "name": "Acme"}, "at-a", "rt-a")
+        with self.assertRaisesRegex(ValueError, "not signed in"):
+            sc.switch_account("org-zzz")
+        self.assertEqual(config.setting("supabase_oauth_access_token"), "at-a")
+        self.assertEqual(sc.switch_account("org-a")["active"], "org-a")      # already active: nothing to do
+
+    def test_removing_an_account_kept_aside_leaves_the_active_one_alone(self):
+        self.sign_in_as({"id": "org-a", "name": "Acme"}, "at-a", "rt-a")
+        self.sign_in_as({"id": "org-b", "name": "Globex"}, "at-b", "rt-b")
+        sc.remove_account("org-a")
+        self.assertEqual(self.ids(), [("org-b", "Globex", True)])
+        with self.assertRaisesRegex(ValueError, "not signed in"):
+            sc.remove_account("org-a")
+
+    def test_removing_the_active_account_signs_it_out_and_keeps_the_others(self):
+        self.sign_in_as({"id": "org-a", "name": "Acme"}, "at-a", "rt-a")
+        self.sign_in_as({"id": "org-b", "name": "Globex"}, "at-b", "rt-b")
+        status = sc.remove_account("org-b")
+        self.assertFalse(status["connected"])
+        self.assertEqual(self.ids(), [("org-a", "Acme", False)])
+        self.assertEqual(sc.switch_account("org-a")["org"], "Acme")            # and it can be picked up again
+
+    def test_a_session_saved_before_accounts_existed_is_kept_when_another_account_signs_in(self):
+        # Tokens in the flat settings, no account id yet: the organisation is asked while its own token is in use.
+        config.save_settings({"supabase_oauth_access_token": "old-at", "supabase_oauth_refresh_token": "old-rt",
+                              "supabase_org": "Acme", "supabase_oauth_via": "own"})
+        self.assertEqual(len(sc.accounts()), 1)
+        self.orgs_by_token["old-at"] = {"id": "org-a", "name": "Acme"}
+        self.sign_in_as({"id": "org-b", "name": "Globex"}, "at-b", "rt-b")
+        self.assertEqual(self.ids(), [("org-b", "Globex", True), ("org-a", "Acme", False)])   # filed under its organisation
+        self.assertEqual(config.setting("supabase_oauth_access_token"), "at-b")
+        self.assertEqual(sc.switch_account("org-a")["org"], "Acme")
+        self.assertEqual(config.setting("supabase_oauth_refresh_token"), "old-rt")
+
+    def test_when_the_organisation_cannot_be_asked_a_new_sign_in_simply_replaces_the_account(self):
+        self.sign_in_as({"id": "org-a", "name": "Acme"}, "at-a", "rt-a")
+        self.sign_in_as({}, "at-x", "rt-x")
+        self.assertEqual(len(sc.accounts()), 1)
+        self.assertEqual(config.setting("supabase_oauth_access_token"), "at-x")
+
+    def test_the_accounts_kept_aside_never_reach_the_settings_the_studio_reads(self):
+        self.sign_in_as({"id": "org-a", "name": "Acme"}, "at-a", "rt-a")
+        self.sign_in_as({"id": "org-b", "name": "Globex"}, "at-b", "rt-b")
+        shown = httpd.dispatch("GET", "/settings", {}, {})
+        text = json.dumps(shown, default=str)
+        self.assertNotIn("rt-a", text)
+        self.assertNotIn("at-a", text)
+        self.assertNotIn("supabase_account_credentials", text)
+
+    def test_the_routes_switch_and_remove(self):
+        self.sign_in_as({"id": "org-a", "name": "Acme"}, "at-a", "rt-a")
+        self.sign_in_as({"id": "org-b", "name": "Globex"}, "at-b", "rt-b")
+        switched = httpd.dispatch("POST", "/supabase/oauth/switch", {"id": "org-a"}, {})
+        self.assertEqual(switched["active"], "org-a")
+        removed = httpd.dispatch("POST", "/supabase/oauth/remove", {"id": "org-b"}, {})
+        self.assertEqual([row["id"] for row in removed["accounts"]], ["org-a"])
 
 
 if __name__ == "__main__":

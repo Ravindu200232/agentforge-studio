@@ -66,6 +66,7 @@ function toolPaths() {
     path.join(tools, 'aws', 'Amazon', 'AWSCLIV2'),
     path.join(tools, 'az', 'bin'),
     path.join(tools, 'az', 'wbin'),
+    path.join(tools, 'atlas', 'bin'),            // MongoDB Atlas CLI: the browser sign-in for MongoDB
   ]
   return candidates.filter(folder => fs.existsSync(folder))
 }

@@ -3,10 +3,15 @@
 # Secrets, set once with `npx wrangler secret put <NAME>` (never written in this file or in the app):
 #   OLLAMA_API_KEY   the ollama.com API key the engine uses
 #   APP_TOKEN        the token every copy of the app sends (server_modules/engine.json holds the same value)
+#   SUPABASE_CLIENT_SECRET   the client secret of the ONE Supabase OAuth app that "Sign in with Supabase" uses
 name = "agentforge-engine"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
 workers_dev = true
+
+# The client id of that Supabase OAuth app. It is public (it is in the authorize link), so it is a plain variable.
+[vars]
+SUPABASE_CLIENT_ID = ""
 
 # At most this many requests a minute from one address: one person's agents stay well under it, a script
 # hammering the engine does not.

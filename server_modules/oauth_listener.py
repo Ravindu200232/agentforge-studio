@@ -1,7 +1,8 @@
 """The one port the desktop app ever opens: where a browser sign-in comes back to, only while one is running.
 
-A provider's OAuth app (Supabase's, see supabase_connect.REDIRECT_URI) is registered with a fixed
-`http://localhost:<API port>/...` callback, so its browser redirect needs something listening there. The HTTP
+A provider's browser sign-in (Supabase's, see supabase_connect.REDIRECT_URI) ends with a redirect to a fixed
+`http://localhost:<API port>/...` address - from the engine's sign-in broker, or from a person's own OAuth app registered
+with that callback - so it needs something listening there. The HTTP
 backend always does; the desktop app's backend listens on nothing (stdio_bridge.py), so it opens this instead,
 answers that one path, and closes again as soon as the callback has arrived or the sign-in has expired.
 """

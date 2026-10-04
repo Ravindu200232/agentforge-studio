@@ -9,8 +9,8 @@
 #   manifest.json                           what the installer installs, with every file's sha256
 #   manifest.local.json                     the same, from the files on this computer (to test the installer offline)
 #
-# The command line tools a blank Windows computer is missing (Node.js, Git, gh, AWS and Azure CLIs, the Vercel,
-# Netlify and Supabase CLIs, Playwright's browser) are not in the zip: the installer fetches each from its official
+# The command line tools a blank Windows computer is missing (Node.js, Git, gh, AWS, Azure and MongoDB Atlas CLIs, the
+# Vercel, Netlify and Supabase CLIs, Playwright's browser) are not in the zip: the installer fetches each from its official
 # source, pinned here to the version current when the release was built.
 param(
     [string]$Repo = '',
@@ -178,6 +178,10 @@ $aws = ($awsTags | Where-Object { $_.name -match '^2\.\d+\.\d+$' } | Select-Obje
 # The same zip Microsoft's own blob store serves, from GitHub's CDN: that store can crawl at tens of KB/s.
 $azure = ((Invoke-RestMethod 'https://api.github.com/repos/Azure/azure-cli/releases/latest' -Headers $headers).assets | Where-Object { $_.name -match '^azure-cli-[\d.]+-x64\.zip$' } | Select-Object -First 1).browser_download_url
 if (-not $azure) { $azure = [Net.WebRequest]::Create('https://aka.ms/installazurecliwindowszipx64').GetResponse().ResponseUri.AbsoluteUri }
+# The Atlas CLI is released from a repository that also releases another tool: take the newest atlascli/vX.Y.Z tag.
+$atlasReleases = Invoke-RestMethod 'https://api.github.com/repos/mongodb/mongodb-atlas-cli/releases?per_page=30' -Headers $headers
+$atlas = (($atlasReleases | Where-Object { $_.tag_name -match '^atlascli/v\d+\.\d+\.\d+$' } | Select-Object -First 1).tag_name) -replace '^atlascli/v', ''
+if (-not $atlas) { throw 'could not find the latest Atlas CLI release' }
 $npmClis = foreach ($name in 'vercel', 'netlify-cli', 'supabase') { "$name@" + (npm.cmd view $name version).Trim() }
 $playwright = (npm.cmd view playwright version).Trim()
 
@@ -186,7 +190,8 @@ $tools = @(
     @{ id = 'git'; title = 'Git'; url = $mingit.browser_download_url; type = 'zip'; target = 'tools/git' },
     @{ id = 'gh'; title = 'GitHub CLI'; url = $gh.browser_download_url; type = 'zip'; target = 'tools/gh' },
     @{ id = 'aws'; title = "AWS CLI $aws"; url = "https://awscli.amazonaws.com/AWSCLIV2-$aws.msi"; type = 'msi-extract'; target = 'tools/aws' },
-    @{ id = 'az'; title = 'Azure CLI'; url = "$azure"; type = 'zip'; target = 'tools/az' }
+    @{ id = 'az'; title = 'Azure CLI'; url = "$azure"; type = 'zip'; target = 'tools/az' },
+    @{ id = 'atlas'; title = "MongoDB Atlas CLI $atlas"; url = "https://fastdl.mongodb.org/mongocli/mongodb-atlas-cli_${atlas}_windows_x86_64.zip"; type = 'zip'; target = 'tools/atlas' }
 )
 $components = @()
 $localComponents = @()

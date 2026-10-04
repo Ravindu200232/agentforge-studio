@@ -32,6 +32,7 @@ class FakeProcess:
         self.returncode = None
         self._exit = exit_code
         self.pid = 4242
+        self.typed = []
 
     def poll(self):
         return self.returncode
@@ -39,8 +40,11 @@ class FakeProcess:
     def finish(self):
         self.returncode = self._exit
 
+    def send(self, text):          # a login run in a terminal is answered at its prompts
+        self.typed.append(text)
 
-def cli(tools=("gh", "aws", "vercel", "netlify", "az")):
+
+def cli(tools=("gh", "aws", "vercel", "netlify", "az", "atlas")):
     """Pretend these tools are installed."""
     return mock.patch.object(cli_signin, "_where", lambda name: f"/bin/{name}" if name in tools else "")
 
@@ -209,6 +213,161 @@ class LoginFlowTests(unittest.TestCase):
         with cli(), mock.patch.object(cli_signin, "_run", lambda command, timeout=30: subprocess.CompletedProcess(command, 1, "", "")):
             with self.assertRaisesRegex(ValueError, "not signed in"):
                 cli_signin.SIGNINS.use_existing("github")
+
+    # What `atlas auth login --noBrowser` printed through a terminal (recorded from the real CLI).
+    ATLAS_LOGIN = [
+        "? Select authentication type:  [Use arrows to move, type to filter]",
+        "> UserAccount - (best for getting started)",
+        "ServiceAccount - (best for automation)",
+        "APIKeys - (for existing automations)",
+        "? Select authentication type: UserAccount",
+        "To verify your account, copy your one-time verification code:",
+        "9PXK-D7YC",
+        "Paste the code in the browser when prompted to activate your Atlas CLI. Your code will expire after 3 minutes.",
+        "To continue, go to https://account.mongodb.com/account/connect",
+    ]
+
+    def wait_for_output(self):
+        for thread in [t for t in __import__("threading").enumerate() if t.daemon]:
+            thread.join(0.3)
+
+    def test_atlas_is_signed_in_through_its_terminal_menu_and_shows_its_code_and_link(self):
+        process = FakeProcess(self.ATLAS_LOGIN)
+        with cli(), mock.patch.object(cli_signin.pty_process, "spawn", return_value=process) as spawn, \
+                mock.patch.object(cli_signin.SIGNINS, "available", lambda *a, **k: {"atlas": {"identity": None}}):
+            started = cli_signin.SIGNINS.start("atlas")
+            self.wait_for_output()
+            pending = cli_signin.SIGNINS.poll(started["flow_id"])
+        self.assertEqual(spawn.call_args.args[0], ["/bin/atlas", "auth", "login", "--noBrowser"])
+        self.assertEqual((pending["status"], pending["user_code"]), ("pending", "9PXK-D7YC"))
+        self.assertEqual(pending["verification_uri"], "https://account.mongodb.com/account/connect")
+        # The menu is answered once (its first entry is the browser sign-in), not again when it redraws.
+        self.assertEqual(process.typed, ["\r"])
+
+    def test_atlas_later_questions_take_their_default_once_each(self):
+        process = FakeProcess(self.ATLAS_LOGIN + ["Successfully logged in as me@example.com.",
+                                                  "? Select default organization:  [Use arrows to move, type to filter]",
+                                                  "> Acme", "? Select default organization: Acme",
+                                                  "? Select default project:  [Use arrows to move, type to filter]"])
+        with cli(), mock.patch.object(cli_signin.pty_process, "spawn", return_value=process), \
+                mock.patch.object(cli_signin.SIGNINS, "available", lambda *a, **k: {"atlas": {"identity": None}}):
+            cli_signin.SIGNINS.start("atlas")
+            self.wait_for_output()
+        self.assertEqual(process.typed, ["\r", "\r", "\r"])
+
+    def test_atlas_is_finished_once_it_says_so_even_while_it_waits_at_a_question(self):
+        self.atlas_settings()
+        process = FakeProcess(self.ATLAS_LOGIN + ["Successfully logged in as me@example.com."])
+        whoami = subprocess.CompletedProcess([], 0, "Logged in as me@example.com [Atlas CLI]", "")
+        with cli(), mock.patch.object(cli_signin.pty_process, "spawn", return_value=process), \
+                mock.patch.object(cli_signin.SIGNINS, "available", lambda *a, **k: {"atlas": {"identity": None}}), \
+                mock.patch.object(cli_signin.SIGNINS, "_stop") as stop, \
+                mock.patch.object(cli_signin, "_run", lambda command, timeout=30: whoami):
+            started = cli_signin.SIGNINS.start("atlas")
+            self.wait_for_output()
+            self.assertEqual(cli_signin.SIGNINS.poll(started["flow_id"])["status"], "pending")   # not yet: a moment's grace
+            cli_signin.SIGNINS._flows[started["flow_id"]].done_at -= cli_signin.FINISH_GRACE_SECONDS + 1
+            done = cli_signin.SIGNINS.poll(started["flow_id"])
+        stop.assert_called_once_with(process)
+        self.assertEqual(done, {"status": "ready", "values": {"mongodb_atlas_account": "me@example.com",
+                                                              "mongodb_atlas_profile": ""}})
+
+    def test_atlas_who_is_signed_in_is_read_from_its_own_whoami(self):
+        out = subprocess.CompletedProcess([], 0, "Logged in as me@example.com [Atlas CLI]", "")
+        with mock.patch.object(cli_signin, "_run", lambda command, timeout=30: out):
+            self.assertEqual(cli_signin._atlas_identity("atlas"), {"account": "me@example.com"})
+        signed_out = subprocess.CompletedProcess([], 1, "", "Error: not logged in with an Atlas account, Service Account or API key")
+        with mock.patch.object(cli_signin, "_run", lambda command, timeout=30: signed_out):
+            self.assertIsNone(cli_signin._atlas_identity("atlas"))
+            self.assertEqual(cli_signin._atlas_read("atlas", {}), {})
+
+    def atlas_settings(self, **saved):
+        import tempfile
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        patch = mock.patch.object(config, "SETTINGS_FILE", Path(temp.name) / "settings.json")
+        patch.start()
+        self.addCleanup(patch.stop)
+        if saved:
+            config.save_settings(saved)
+
+    def test_adding_an_atlas_account_signs_in_under_a_profile_of_its_own_and_keeps_the_first(self):
+        self.atlas_settings()
+        process = FakeProcess(self.ATLAS_LOGIN)
+        listed = subprocess.CompletedProcess([], 0, json.dumps(["default", "agentforge-2"]), "")
+        with cli(), mock.patch.object(cli_signin.pty_process, "spawn", return_value=process) as spawn, \
+                mock.patch.object(cli_signin, "_run", lambda command, timeout=30: listed), \
+                mock.patch.object(cli_signin.SIGNINS, "available", lambda *a, **k: {"atlas": {"identity": None}}):
+            started = cli_signin.SIGNINS.start("atlas", {"add": True})
+        # The next free name, so the account already signed in (the default profile, and agentforge-2) is not touched.
+        self.assertEqual(spawn.call_args.args[0], ["/bin/atlas", "auth", "login", "--noBrowser", "-P", "agentforge-3"])
+        self.assertEqual(cli_signin.SIGNINS._flows[started["flow_id"]].options["profile"], "agentforge-3")
+
+    def test_signing_in_again_to_atlas_uses_the_profile_in_use(self):
+        self.atlas_settings(mongodb_atlas_profile="agentforge-2")
+        login = cli_signin.PROVIDERS["atlas"].login("atlas", {}, None)
+        self.assertEqual(login, ["atlas", "auth", "login", "--noBrowser", "-P", "agentforge-2"])
+        self.atlas_settings(mongodb_atlas_profile="")
+        self.assertEqual(cli_signin.PROVIDERS["atlas"].login("atlas", {}, None), ["atlas", "auth", "login", "--noBrowser"])
+
+    def test_the_profile_a_sign_in_used_is_what_is_kept_with_the_account(self):
+        self.atlas_settings()
+        whoami = subprocess.CompletedProcess([], 0, "Logged in as work@example.com [Atlas CLI]", "")
+        seen = []
+
+        def run(command, timeout=30):
+            seen.append(command)
+            return whoami
+        with mock.patch.object(cli_signin, "_run", run):
+            values = cli_signin.PROVIDERS["atlas"].read("atlas", {"profile": "agentforge-2"})
+        self.assertEqual(values, {"mongodb_atlas_account": "work@example.com", "mongodb_atlas_profile": "agentforge-2"})
+        self.assertEqual(seen[0], ["atlas", "auth", "whoami", "-P", "agentforge-2"])
+
+    def test_who_is_signed_in_is_asked_of_the_profile_in_use(self):
+        self.atlas_settings(mongodb_atlas_profile="agentforge-2")
+        seen = []
+
+        def run(command, timeout=30):
+            seen.append(command)
+            return subprocess.CompletedProcess(command, 0, "Logged in as work@example.com", "")
+        with mock.patch.object(cli_signin, "_run", run):
+            cli_signin._atlas_identity("atlas")
+        self.assertEqual(seen[0], ["atlas", "auth", "whoami", "-P", "agentforge-2"])
+
+    def test_a_finished_sign_in_makes_its_profile_the_account_in_use(self):
+        self.atlas_settings()
+        result = {"status": "ready", "values": {"mongodb_atlas_account": "work@example.com", "mongodb_atlas_profile": "agentforge-2"}}
+        with mock.patch.object(httpd.mongo_connect, "switch_account") as switch:
+            kept = httpd._keep_signin(result)
+        switch.assert_called_once_with("agentforge-2")
+        self.assertEqual(config.setting("mongodb_atlas_account"), "work@example.com")
+        self.assertNotIn("values", kept)
+        # Another provider's sign-in carries no profile and switches nothing.
+        with mock.patch.object(httpd.mongo_connect, "switch_account") as switch:
+            httpd._keep_signin({"status": "ready", "values": {"netlify_token": "nfp"}})
+        switch.assert_not_called()
+
+    def test_the_atlas_profiles_are_read_whatever_shape_the_cli_lists_them_in(self):
+        for text, expected in (('["default", "work"]', ["default", "work"]),
+                               ('[{"name": "default"}, {"name": "work"}]', ["default", "work"]),
+                               ("A new version is available\n[\"default\"]", ["default"]),
+                               ("[]", []), ("", []), ("not json", [])):
+            out = subprocess.CompletedProcess([], 0, text, "")
+            with mock.patch.object(cli_signin, "_run", lambda command, timeout=30: out):
+                self.assertEqual(cli_signin.atlas_profiles("atlas"), expected, text)
+
+    def test_the_route_passes_add_on_to_the_sign_in(self):
+        with mock.patch.object(cli_signin.SIGNINS, "start", return_value={"flow_id": "f"}) as start:
+            httpd.dispatch("POST", "/cli-signin/start", {"provider": "atlas", "add": True}, {})
+        self.assertEqual(start.call_args.args[1]["add"], True)
+
+    def test_a_code_on_a_line_of_its_own_counts_only_after_a_line_that_talks_about_a_code(self):
+        process = FakeProcess(["Some build id", "ABCD-1234", "copy your one-time verification code:", "WXYZ-9876"])
+        with cli(), mock.patch.object(cli_signin.pty_process, "spawn", return_value=process), \
+                mock.patch.object(cli_signin.SIGNINS, "available", lambda *a, **k: {"atlas": {"identity": None}}):
+            started = cli_signin.SIGNINS.start("atlas")
+            self.wait_for_output()
+            self.assertEqual(cli_signin.SIGNINS.poll(started["flow_id"])["user_code"], "WXYZ-9876")
 
     def test_signing_in_to_azure_never_creates_a_service_principal(self):
         source = Path(cli_signin.__file__).read_text(encoding="utf-8")

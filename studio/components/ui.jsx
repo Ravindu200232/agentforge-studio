@@ -22,6 +22,11 @@ export function Button({ variant = 'ghost', size = 'md', className, ...rest }) {
           ghost: 'border border-transparent text-muted hover:bg-ink/[.06] hover:text-ink',
           accent: 'border border-transparent bg-accent text-ink hover:bg-accent',
           subtle: 'border border-line bg-panel text-ink hover:bg-raised shadow-sm',
+          // A filled, borderless secondary button: the quiet one beside a primary action.
+          soft: 'border border-transparent bg-ink/[.07] text-ink hover:bg-ink/[.12]',
+          // The main action of a form: a dark fill, no outline. (`solid` is turned into a white outlined box by
+          // globals.css, which is right elsewhere and wrong for a form with no borders.)
+          primary: 'border border-transparent bg-ink text-bg hover:bg-ink/85',
         }[variant],
         className)}
       {...rest} />

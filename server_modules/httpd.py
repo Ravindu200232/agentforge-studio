@@ -30,7 +30,7 @@ from qa_agent import report_pdf
 from qa_agent import verify as qa
 from srs_agent import document as srs_document
 
-from . import bus, changes, cli_monitor, cli_signin, config, deploy_vars, github_device, jobs, live, ollama_cloud, pdf, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, workspace_picker
+from . import bus, changes, cli_monitor, cli_signin, config, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, workspace_picker
 from . import database_rows as database_rows_module
 from .session import session_for
 
@@ -310,7 +310,12 @@ def cli_signin_available(ctx: dict) -> Any:
 def _keep_signin(result: dict) -> dict:
     """What a finished sign-in left in the tool's own store becomes this account's settings."""
     if result.get("status") == "ready":
-        config.save_settings(result.pop("values"))
+        values = result.pop("values")
+        # A MongoDB account signed in as its own CLI profile becomes the one in use, with its own cluster record.
+        profile = values.pop(cli_signin.ATLAS_PROFILE_SETTING, None)
+        config.save_settings(values)
+        if profile is not None:
+            mongo_connect.switch_account(profile)
         result["deploy"] = read_settings({})["deploy"]
     return result
 
@@ -382,7 +387,8 @@ def cli_monitor_stop(ctx: dict) -> Any:
 
 @route("POST", r"/cli-signin/start")
 def cli_signin_start(ctx: dict) -> Any:
-    return cli_signin.SIGNINS.start(str(ctx.get("provider") or ""), {"region": str(ctx.get("region") or "")})
+    return cli_signin.SIGNINS.start(str(ctx.get("provider") or ""),
+                                    {"region": str(ctx.get("region") or ""), "add": bool(ctx.get("add"))})
 
 
 @route("POST", r"/cli-signin/poll")
@@ -416,7 +422,7 @@ def supabase_connect_status(ctx: dict) -> Any:
 
 @route("POST", r"/supabase/oauth/status")
 def supabase_oauth_status(_ctx: dict) -> Any:
-    """Whether the studio has a Supabase OAuth app registered and an account signed in."""
+    """Whether Supabase sign-in can start (the engine's OAuth app, or the person's own) and an account is signed in."""
     return supabase_connect.token_status()
 
 
@@ -435,11 +441,24 @@ def supabase_oauth_cancel(ctx: dict) -> Any:
     return supabase_connect.OAUTH.cancel(str(ctx.get("flow_id") or ""))
 
 
+@route("POST", r"/supabase/oauth/switch")
+def supabase_oauth_switch(ctx: dict) -> Any:
+    """Make another signed-in Supabase account the one new projects are made in."""
+    return supabase_connect.switch_account(str(ctx.get("id") or ""))
+
+
+@route("POST", r"/supabase/oauth/remove")
+def supabase_oauth_remove(ctx: dict) -> Any:
+    """Sign one Supabase account out of the studio."""
+    return supabase_connect.remove_account(str(ctx.get("id") or ""))
+
+
 @route("GET", r"/supabase-oauth/callback")
 def supabase_oauth_callback(ctx: dict) -> Any:
-    """Where the browser lands after approving the sign-in on supabase.com - this exact path, on
-    this studio's own API server, is what the OAuth app's callback URL is registered as
-    (`supabase_connect.REDIRECT_URI`). Only records what arrived; `poll()` does the real exchange."""
+    """Where the browser lands after approving the sign-in on supabase.com: sent here by the engine's
+    sign-in broker, or - for a person's own OAuth app - registered as that app's callback URL directly
+    (`supabase_connect.REDIRECT_URI`, this studio's own API server). Only records what arrived; `poll()`
+    does the real exchange."""
     query = ctx.get("_query") or {}
     code, state = str(query.get("code") or ""), str(query.get("state") or "")
     error = str(query.get("error_description") or query.get("error") or "")

@@ -76,6 +76,9 @@ DEFAULTS: dict[str, Any] = {
     "supabase_oauth_access_token": "",
     "supabase_oauth_refresh_token": "",
     "supabase_oauth_expires_at": 0,
+    "supabase_oauth_via": "",       # "broker" (the engine's OAuth app) or "own" (one this person registered)
+    "supabase_account_id": "",      # the active account's organisation id
+    "supabase_account_credentials": {},   # the other accounts signed in, kept aside: id -> tokens (never sent to the UI)
     "supabase_org": "",
     # The one MongoDB Atlas Service Account this studio is connected as (server_modules/mongo_connect.py):
     "mongodb_client_id": "",
@@ -83,6 +86,9 @@ DEFAULTS: dict[str, Any] = {
     "mongodb_oauth_access_token": "",
     "mongodb_oauth_expires_at": 0,
     "mongodb_org": "",
+    "mongodb_atlas_account": "",    # who signed in through the Atlas CLI (cli_signin.py); the CLI keeps the credential
+    "mongodb_atlas_profile": "",    # the Atlas CLI profile (one per account) in use; "" is the CLI's own default
+    "mongodb_clusters_credentials": {},   # the cluster made for each account not in use: profile -> project, cluster, string
     "mongodb_atlas_group_id": "",
     "mongodb_atlas_cluster_name": "",
     "aws_start_url": "",

@@ -153,7 +153,7 @@ function Home({ listing, accounts, needs, onSettings, go }) {
 
 function Connect({ name, onSettings }) {
   return (
-    <button type="button" onClick={() => onSettings?.('integrations')} title={`Connect ${name} in Settings › Integrations`}
+    <button type="button" onClick={() => onSettings?.(name.toLowerCase())} title={`Connect ${name} in Settings › ${name}`}
             className="inline-flex h-7 items-center gap-1 rounded-lg border border-bad/35 px-2.5 text-[11px] font-medium text-bad transition-colors hover:bg-bad/10">
       {name} not connected · <span className="underline">Connect</span>
     </button>

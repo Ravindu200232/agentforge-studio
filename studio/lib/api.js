@@ -303,7 +303,8 @@ export const api = {
   terminalRun: (project, command) => post('/terminal/run', { project, command }),
 
   cliSigninAvailable: (provider = '', fresh = false) => post('/cli-signin/available', { provider, fresh }),
-  cliSigninStart: (provider, region = '') => post('/cli-signin/start', { provider, region }),
+  // `add`: sign in as another account without leaving the one that is signed in (MongoDB Atlas profiles).
+  cliSigninStart: (provider, region = '', add = false) => post('/cli-signin/start', { provider, region, add }),
   cliSigninPoll: (flowId) => post('/cli-signin/poll', { flow_id: flowId }),
   cliSigninUseExisting: (provider, region = '') => post('/cli-signin/use-existing', { provider, region }),
   cliSigninCancel: (flowId) => post('/cli-signin/cancel', { flow_id: flowId }),
@@ -312,6 +313,8 @@ export const api = {
   supabaseOauthStart: () => post('/supabase/oauth/start', {}),
   supabaseOauthPoll: (flowId) => post('/supabase/oauth/poll', { flow_id: flowId }),
   supabaseOauthCancel: (flowId) => post('/supabase/oauth/cancel', { flow_id: flowId }),
+  supabaseOauthSwitch: (id) => post('/supabase/oauth/switch', { id }),
+  supabaseOauthRemove: (id) => post('/supabase/oauth/remove', { id }),
 
   // The providers this person has an account with. `plugins()` answers with the
   // catalogue and, for each one, which settings are saved and the last four

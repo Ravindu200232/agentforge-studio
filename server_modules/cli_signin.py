@@ -1,4 +1,4 @@
-"""Signing in to GitHub, AWS, Vercel, Netlify and Azure through their own command line tools.
+"""Signing in to GitHub, AWS, Vercel, Netlify, Azure and MongoDB Atlas through their own command line tools.
 
 Each of these tools has a `login` that completes a sign-in in the browser and keeps the credential
 where it always does (GitHub's keyring, AWS's login cache, Vercel's and Netlify's config files,
@@ -13,6 +13,12 @@ status`, `az account show`, ...), so the studio shows the account a deployment w
 
 Azure is signed in but no service principal is created here: that gives an identity the deployment
 can run as, and creating one changes the customer's tenant, so it stays a step they take on purpose.
+
+MongoDB Atlas is here because its own CLI signs in with MongoDB's OAuth app: the browser and a one-time
+code, with nothing for the customer to register. (Atlas's OAuth for other apps is only issued to approved
+MongoDB partners, so this studio has no app of its own to sign in with.) Its `login` opens with an
+interactive menu and exits at once without a terminal, so it is the one provider run in a pseudo-terminal
+(`pty_process.py`) and answered where it asks (`Provider.answers`).
 
 Supabase does not belong here, on purpose, not by oversight: its CLI's `login` refuses to run at all
 outside a real interactive terminal ("Cannot use automatic login flow inside non-TTY environments"),
@@ -37,11 +43,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from . import config, pty_process
+
 # How long a sign-in may stay open. The browser half is a person reading a page, so this is
 # generous; the flow is dropped either way once it passes.
 TTL_SECONDS = 600
 # What the tools say about who is signed in is asked again after this long, not on every look.
 IDENTITY_TTL = 20
+# A tool that has said "signed in" but has not exited is given this long to, then ended.
+FINISH_GRACE_SECONDS = 3
 
 HOME = Path.home()
 AWS_PROFILE = "agentforge-console"
@@ -76,7 +86,8 @@ def _where(name: str) -> str:
         roots += [Path(local) / "Programs" / "nodejs", Path(local) / "Programs" / "GitHub CLI"]
     for base in programs:
         roots += [base / "GitHub CLI", base / "Amazon" / "AWSCLIV2", base / "nodejs",
-                  base / "Microsoft SDKs" / "Azure" / "CLI2" / "wbin"]
+                  base / "Microsoft SDKs" / "Azure" / "CLI2" / "wbin", base / "MongoDB Atlas CLI",
+                  base / "MongoDB Atlas CLI" / "bin"]
     roots += [HOME / ".npm-global" / "bin", HOME / ".local" / "bin", Path("/usr/local/bin"),
               Path("/opt/homebrew/bin"), Path("/opt/az/bin")]
     suffixes = (os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";") + [""]
@@ -186,6 +197,12 @@ class Provider:
     shows_code: bool = True
     # note(values) -> something worth telling the person about what was kept, or ""
     note: Callable[[dict], str] | None = None
+    # A login that insists on a terminal (menus, prompts) is run in a pseudo-terminal, and each prompt it prints that
+    # matches one of these (pattern, keys to type) is answered once, by the title in the pattern's group 1.
+    needs_terminal: bool = False
+    answers: tuple = ()
+    # What the tool prints when the sign-in has worked; it may then sit at a prompt of its own, so it is not waited on.
+    finished: re.Pattern | None = None
 
 
 def _github_identity(tool: str) -> dict | None:
@@ -303,6 +320,70 @@ def _azure_read(tool: str, options: dict) -> dict:
     return {"azure_account": json.dumps(who)} if who else {}
 
 
+ATLAS_PROFILE_SETTING = "mongodb_atlas_profile"
+
+
+def atlas_profile_args(profile: str | None = None) -> list:
+    """`-P name` for a profile of the Atlas CLI other than its default one (the active profile when none is given).
+
+    Each account signed in through the CLI is a profile of its own, which is how there can be several at once;
+    the studio's active account is the one named in settings ("" is the CLI's own default profile)."""
+    name = str((config.setting(ATLAS_PROFILE_SETTING) or "") if profile is None else profile or "")
+    return ["-P", name] if name and name != "default" else []
+
+
+def atlas_profiles(tool: str) -> list[str]:
+    """The names of the profiles the Atlas CLI has, signed in or not."""
+    done = _run([tool, "config", "list", "-o", "json"], timeout=20)
+    found = _json_list(done.stdout)
+    names = [str(row.get("name") if isinstance(row, dict) else row or "").strip() for row in found]
+    return [name for name in names if name]
+
+
+def _json_list(text: str) -> list:
+    start = (text or "").find("[")
+    if start < 0:
+        return []
+    try:
+        found = json.loads(text[start:])
+    except ValueError:
+        return []
+    return found if isinstance(found, list) else []
+
+
+def atlas_identity(tool: str, profile: str | None = None) -> dict | None:
+    done = _run([tool, "auth", "whoami", *atlas_profile_args(profile)], timeout=30)
+    text = f"{done.stdout}\n{done.stderr}".strip()
+    if done.returncode != 0 or not text or "not logged in" in text.lower():
+        return None
+    named = re.search(r"logged in as\s+(\S+)", text, re.I)
+    return {"account": named.group(1) if named else text.splitlines()[0].strip()[:80]}
+
+
+def _atlas_identity(tool: str) -> dict | None:
+    return atlas_identity(tool)
+
+
+def _atlas_login(tool: str, options: dict, identity: dict | None) -> list:
+    """Signing in again keeps the profile in use; adding an account gets a profile of its own, so the account
+    already signed in stays signed in. The profile is recorded in `options` for `_atlas_read` to look at."""
+    if options.get("add"):
+        taken, number = set(atlas_profiles(tool)), 2
+        while f"agentforge-{number}" in taken:
+            number += 1
+        options["profile"] = f"agentforge-{number}"
+    elif "profile" not in options:
+        options["profile"] = str(config.setting(ATLAS_PROFILE_SETTING) or "")
+    return [tool, "auth", "login", "--noBrowser", *atlas_profile_args(options["profile"])]
+
+
+def _atlas_read(tool: str, options: dict) -> dict:
+    profile = options.get("profile")
+    profile = str((config.setting(ATLAS_PROFILE_SETTING) or "") if profile is None else profile or "")
+    who = atlas_identity(tool, profile)
+    return {"mongodb_atlas_account": who["account"], ATLAS_PROFILE_SETTING: profile} if who else {}
+
+
 PROVIDERS: dict[str, Provider] = {
     "github": Provider("github", "GitHub", "gh", "winget install GitHub.cli  (or: brew install gh)",
                        _github_identity, _github_login, _github_read),
@@ -315,6 +396,13 @@ PROVIDERS: dict[str, Provider] = {
     "azure": Provider("azure", "Azure", "az", "winget install Microsoft.AzureCLI  (or: brew install azure-cli)",
                       _azure_identity, lambda tool, options, identity: [tool, "login", "--use-device-code"],
                       _azure_read),
+    # `--noBrowser`: the studio shows the code and the link itself. The first menu is "Select authentication type";
+    # its first entry, a user account, is the browser sign-in. Any later question (a default organisation or project)
+    # takes its default: every command run afterwards names its project explicitly.
+    "atlas": Provider("atlas", "MongoDB Atlas", "atlas", "winget install MongoDB.AtlasCLI  (or: brew install mongodb-atlas-cli)",
+                      _atlas_identity, _atlas_login, _atlas_read,
+                      needs_terminal=True, answers=((re.compile(r"^\?\s+([^:\[]+?):"), "\r"),),
+                      finished=re.compile(r"successfully logged in", re.I)),
 }
 
 # What the tools print while they wait for the browser half.
@@ -325,6 +413,8 @@ _CODES = (
     re.compile(r"[?&]user_code=([A-Z0-9-]{6,})", re.I),                       # vercel: ".../device?user_code=ABCD-EFGH"
     re.compile(r"\bcode:\s*([A-Z0-9-]{6,})\b", re.I),
 )
+# atlas prints the code on a line of its own, after "... copy your one-time verification code:".
+_CODE_ALONE = re.compile(r"^[A-Z0-9]{3,6}-[A-Z0-9]{3,6}$")
 _URL = re.compile(r"https://[^\s\"'<>]+")
 
 
@@ -348,6 +438,8 @@ class Signin:
     verification_uri: str = ""
     started: float = field(default_factory=time.time)
     error: str = ""
+    answered: set = field(default_factory=set)   # the prompts already answered, by title
+    done_at: float = 0.0                         # when the tool said the sign-in had worked
 
 
 class CliSignins:
@@ -434,10 +526,13 @@ class CliSignins:
             identity = self.available(provider.key, fresh=True)[provider.key].get("identity")
             command = provider.login(tool, options, identity)
             try:
-                flow.process = subprocess.Popen(
-                    command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                    text=True, bufsize=1, shell=os.name == "nt", env={**os.environ, "NO_COLOR": "1"},
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                if provider.needs_terminal:
+                    flow.process = pty_process.spawn(command, {"NO_COLOR": "1"})
+                else:
+                    flow.process = subprocess.Popen(
+                        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                        text=True, bufsize=1, shell=os.name == "nt", env={**os.environ, "NO_COLOR": "1"},
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             except OSError as exc:
                 raise ValueError(f"{provider.title} could not be started: {exc}") from exc
             # Read on a thread: the tool prints as it goes, and a blocking read here would hold the
@@ -451,11 +546,13 @@ class CliSignins:
                 "verification_uri": flow.verification_uri}
 
     def _drain(self, flow: Signin) -> None:
+        provider = PROVIDERS[flow.provider]
         try:
             for line in flow.process.stdout:
                 line = line.strip()
                 if not line:
                     continue
+                previous = flow.output[-1] if flow.output else ""
                 flow.output.append(line)
                 if not flow.user_code:
                     for pattern in _CODES:
@@ -463,6 +560,16 @@ class CliSignins:
                         if found:
                             flow.user_code = found.group(1)
                             break
+                    else:
+                        if "code" in previous.lower() and _CODE_ALONE.match(line):
+                            flow.user_code = line
+                for pattern, keys in provider.answers:
+                    asked = pattern.search(line)
+                    if asked and asked.group(1).strip() not in flow.answered:
+                        flow.answered.add(asked.group(1).strip())
+                        flow.process.send(keys)
+                if provider.finished and not flow.done_at and provider.finished.search(line):
+                    flow.done_at = time.time()
                 if not flow.verification_uri:
                     url = _URL.search(line)
                     if url:
@@ -486,7 +593,11 @@ class CliSignins:
             return self._finish(flow, provider, tool)
 
         if flow.process.poll() is None:
-            return self._pending(flow, provider)
+            # Signed in, but the tool is still at a question of its own: that is not waited for.
+            if not (flow.done_at and time.time() - flow.done_at > FINISH_GRACE_SECONDS):
+                return self._pending(flow, provider)
+            self._stop(flow.process)
+            return self._finish(flow, provider, tool)
         if flow.process.returncode not in (0, None):
             with self._lock:
                 self._flows.pop(flow.flow_id, None)

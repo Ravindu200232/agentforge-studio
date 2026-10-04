@@ -1,9 +1,11 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { Check, ExternalLink, Loader2, X } from 'lucide-react'
+import { ChevronDown, ExternalLink, Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
-import { Button, Input } from '../ui'
+import { Button, Input as BaseInput } from '../ui'
+import AccountList from '../AccountList'
+import BrandIcon from '../BrandIcon'
 import CliSignIn from '../CliSignIn'
 import SupabaseConnect from '../SupabaseConnect'
 import { cn } from '@/lib/utils'
@@ -17,16 +19,21 @@ const AWS_REGIONS = ['ap-south-1', 'us-east-1', 'us-east-2', 'us-west-2',
                      'ap-southeast-1', 'ap-southeast-2', 'ap-northeast-1']
 const AWS_CONSOLE_PROFILE = 'agentforge-console'
 
-export default function DeployAccounts({ deploy, onSaved }) {
+/**
+ * One service's page in Settings: its logo, whether it is connected, and its own form. Each service is listed
+ * on its own in the Settings sidebar (`provider` is its id there), so a person sees one account at a time.
+ */
+export default function DeployAccount({ provider, deploy, onSaved }) {
   const [probe, setProbe] = useState(null)
   const [note, setNote] = useState('')
+  const needsProbe = provider === 'github' || provider === 'aws'
 
   useEffect(() => {
-    if (probe) return
+    if (probe || !needsProbe) return
     api.deployRead('/onboarding/status')
       .then(setProbe)
       .catch(e => setNote(`could not read the deployment agent — ${e.message}`))
-  }, [probe])
+  }, [probe, needsProbe])
 
   const save = async (patch) => {
     await api.saveSettings(patch)
@@ -35,29 +42,27 @@ export default function DeployAccounts({ deploy, onSaved }) {
 
   return (
     <section className="space-y-4">
-      {note && (
-        <p className="border-l-[3px] border-accent bg-tint px-2.5 py-1.5 text-[11px] text-deep">
-          {note}
-        </p>
+      {note && <p className="rounded-2xl bg-tint px-4 py-2.5 text-[11px] text-deep">{note}</p>}
+      {provider === 'github' && <Github deploy={deploy} onSave={save} probe={probe} onRecheck={() => setProbe(null)} />}
+      {provider === 'aws' && <Aws deploy={deploy} onSave={save} probe={probe} onRecheck={() => setProbe(null)} />}
+      {provider === 'vercel' && <Vercel deploy={deploy} onSave={save} />}
+      {provider === 'netlify' && (
+        <HostedCredential title="Netlify" provider="netlify" setting="netlify_token" saved={deploy?.netlify_token_set} onSave={save}
+          label="Personal access token" href="https://app.netlify.com/user/applications#personal-access-tokens"
+          hint="Create a token in your Netlify account. The deployment uses it to provision your site and as an encrypted GitHub Actions secret." />
       )}
-      <Github deploy={deploy} onSave={save} probe={probe}
-              onRecheck={() => setProbe(null)} />
-      <Aws deploy={deploy} onSave={save} probe={probe}
-           onRecheck={() => setProbe(null)} />
-      <Vercel deploy={deploy} onSave={save} />
-      <HostedCredential title="Netlify" provider="netlify" setting="netlify_token" saved={deploy?.netlify_token_set} onSave={save}
-        label="Personal access token" href="https://app.netlify.com/user/applications#personal-access-tokens"
-        hint="Create a token in your Netlify account. The deployment uses it to provision your site and as an encrypted GitHub Actions secret." />
-      <HostedCredential title="Azure" provider="azure" setting="azure_credentials" saved={Boolean(deploy?.azure_credentials_set || deploy?.azure_account)} onSave={save}
-        label="Service principal credentials (JSON)" href="https://learn.microsoft.com/en-us/azure/app-service/deploy-github-actions"
-        hint="Enter JSON containing clientId, clientSecret, tenantId and subscriptionId for your deployment service principal. Give it access to the selected resource group." />
-      <Row title="Supabase" ok={Boolean(deploy?.supabase_org)} unknown={false}
-           detail={deploy?.supabase_org ? `signed in as ${deploy.supabase_org}` : 'every Supabase-stack project gets its own real project'}>
-        <div className="mt-2 w-full">
-          <SupabaseConnect onDone={onSaved} />
-        </div>
-      </Row>
-      <Mongodb deploy={deploy} onSave={save} />
+      {provider === 'azure' && (
+        <HostedCredential title="Azure" provider="azure" setting="azure_credentials" saved={Boolean(deploy?.azure_credentials_set || deploy?.azure_account)} onSave={save}
+          label="Service principal credentials (JSON)" href="https://learn.microsoft.com/en-us/azure/app-service/deploy-github-actions"
+          hint="Enter JSON containing clientId, clientSecret, tenantId and subscriptionId for your deployment service principal. Give it access to the selected resource group." />
+      )}
+      {provider === 'supabase' && (
+        <Row title="Supabase" ok={Boolean(deploy?.supabase_org)} unknown={false}
+             detail={deploy?.supabase_org ? `signed in as ${deploy.supabase_org}` : 'every Supabase-stack project gets its own real project'}>
+          <Soft><SupabaseConnect onDone={onSaved} /></Soft>
+        </Row>
+      )}
+      {provider === 'mongodb' && <Mongodb deploy={deploy} onSave={save} />}
     </section>
   )
 }
@@ -116,6 +121,17 @@ function Mongodb({ deploy, onSave }) {
     catch (failure) { setAccountError(failure.message) } finally { setAccountBusy('') }
   }
 
+  // Use, or sign out of, one of the accounts signed in through the Atlas CLI. Each has the cluster made for it, so
+  // the connection string the deployments read changes with the account in use.
+  async function changeAccount(kind, id) {
+    setAccountBusy(`${kind}:${id}`); setAccountError('')
+    try {
+      setAccount(await api.deploy(`/mongodb/account/${kind}`, { id }))
+      await onSave({})
+      setStatus(null)
+    } catch (failure) { setAccountError(failure.message) } finally { setAccountBusy('') }
+  }
+
   async function provision() {
     setAccountBusy('provision'); setAccountError('')
     try {
@@ -133,54 +149,74 @@ function Mongodb({ deploy, onSave }) {
 
   return (
     <Row title="MongoDB" ok={saved ? connected : false} unknown={Boolean(saved) && !status} detail={detail}>
-      <div className="mt-2 w-full space-y-3">
-        <div className="space-y-2 border-b border-line pb-3">
-          <p className="text-[11px] text-muted">
+      <div className="space-y-4">
+        <Soft className="space-y-3">
+          <p className="text-[11.5px] text-muted">
             {!account ? 'Checking MongoDB Atlas…'
               : account.connected
-                ? <>Atlas account connected{account.org ? <> — <b className="text-ink">{account.org}</b></> : ''}</>
-                : 'Connect a MongoDB Atlas Service Account to auto-provision a real cluster, instead of pasting one below.'}
+                ? <>Atlas account connected{(account.account || account.org) ? <> — <b className="text-ink">{account.account || account.org}</b></> : ''}</>
+                : 'Sign in to MongoDB Atlas and AgentForge creates a real cluster for your deployments. A browser tab opens, you approve it there, and that is all.'}
           </p>
-          {account && !account.connected && (
-            <div className="space-y-2">
-              <Field label="Atlas Service Account"
-                     hint={<>One-time setup: in Atlas, go to Organization Access Manager &rarr; Service Accounts &rarr;
-                             Create, give it a role that can manage projects and clusters, then paste its Client ID
-                             and Secret here. (Atlas has no one-click browser sign-in yet for third-party apps like
-                             this one — MongoDB requires a partner approval for that — so this is the closest
-                             self-service equivalent.){' '}
-                             <a className="text-accent hover:underline" target="_blank" rel="noreferrer"
-                                href="https://cloud.mongodb.com/v2#/access/serviceAccounts">Open Atlas</a></>}>
-                <Input value={clientId} onChange={e => setClientId(e.target.value)} placeholder="Client ID" />
-              </Field>
-              <Input type="password" autoComplete="off" value={clientSecret}
-                     onChange={e => setClientSecret(e.target.value)} placeholder="Client Secret" />
-              <Button size="sm" disabled={!clientId.trim() || !clientSecret.trim() || Boolean(accountBusy)} onClick={connectAccount}>
-                {accountBusy === 'connect' && <Loader2 className="size-3 animate-spin" />}Connect account
-              </Button>
+          {account && account.via !== 'service_account' && (
+            <CliSignIn provider="atlas" label="MongoDB Atlas command line tool" onDone={loadAccount} />
+          )}
+          {account?.via === 'cli' && account.accounts?.length > 1 && (
+            <AccountList accounts={account.accounts} busy={accountBusy}
+                         onSwitch={id => changeAccount('switch', id)} onRemove={id => changeAccount('remove', id)} />
+          )}
+          {account?.via === 'cli' && (
+            <div className="space-y-1">
+              <CliSignIn provider="atlas" add onDone={loadAccount} />
+              {account.accounts?.length === 1 && (
+                <p className="text-[10.5px] leading-snug text-muted2">
+                  Have another Atlas account? Add it, then switch between them here. Each account gets its own
+                  cluster.
+                </p>
+              )}
             </div>
           )}
           {account?.connected && (
             <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" disabled={Boolean(accountBusy) || account.cluster_ready} onClick={provision}>
+              <Button size="sm" variant={account.cluster_ready ? 'soft' : 'primary'}
+                      disabled={Boolean(accountBusy) || account.cluster_ready} onClick={provision}>
                 {accountBusy === 'provision' && <Loader2 className="size-3 animate-spin" />}
                 {account.cluster_ready ? 'Cluster ready' : 'Create / use a cluster'}
               </Button>
-              <Button size="sm" variant="ghost" disabled={Boolean(accountBusy)} onClick={disconnectAccount}>
-                {accountBusy === 'disconnect' && <Loader2 className="size-3 animate-spin" />}Disconnect
-              </Button>
+              {account.via === 'service_account' && (
+                <Button size="sm" variant="ghost" disabled={Boolean(accountBusy)} onClick={disconnectAccount}>
+                  {accountBusy === 'disconnect' && <Loader2 className="size-3 animate-spin" />}Disconnect
+                </Button>
+              )}
               {accountBusy === 'provision' && <span className="text-[10.5px] text-muted2">this can take a few minutes…</span>}
             </div>
           )}
+          {account && account.via !== 'service_account' && (
+            <Advanced title="Advanced: use an Atlas Service Account instead">
+                <Field label="Atlas Service Account"
+                       hint={<>For automation, or if you already have one: in Atlas, go to Organization Access Manager
+                               &rarr; Service Accounts &rarr; Create, give it a role that can manage projects and
+                               clusters, then paste its Client ID and Secret here.{' '}
+                               <a className="text-accent hover:underline" target="_blank" rel="noreferrer"
+                                  href="https://cloud.mongodb.com/v2#/access/serviceAccounts">Open Atlas</a></>}>
+                  <Input value={clientId} onChange={e => setClientId(e.target.value)} placeholder="Client ID" />
+                </Field>
+                <Input type="password" autoComplete="off" value={clientSecret}
+                       onChange={e => setClientSecret(e.target.value)} placeholder="Client Secret" />
+                <Button size="sm" disabled={!clientId.trim() || !clientSecret.trim() || Boolean(accountBusy)} onClick={connectAccount}>
+                  {accountBusy === 'connect' && <Loader2 className="size-3 animate-spin" />}Connect account
+                </Button>
+            </Advanced>
+          )}
           {accountError && <p className="text-[10.5px] text-bad">{accountError}</p>}
-        </div>
+        </Soft>
+        <Soft className="space-y-3">
         <Field label="Or paste a production connection string directly"
                hint="A real, internet-reachable cluster — MongoDB Atlas or any host you run. A loopback address (localhost, 127.0.0.1) is refused: a deployed application cannot reach this computer. Stored encrypted with your account. Type a single - to clear it.">
           <Input type="password" autoComplete="off" value={value} onChange={e => setValue(e.target.value)}
                  placeholder={saved ? `saved (…${deploy?.deploy_mongodb_uri_hint || ''})` : 'mongodb+srv://user:pass@cluster.mongodb.net/app'} />
         </Field>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="outline" disabled={Boolean(busy) || !value.trim()} onClick={save}>
+          <Button size="sm" variant="soft" disabled={Boolean(busy) || !value.trim()} onClick={save}>
             {busy === 'save' && <Loader2 className="size-3 animate-spin" />}Save
           </Button>
           <Button size="sm" variant="ghost" disabled={Boolean(busy) || (!saved && !value.trim())}
@@ -191,6 +227,7 @@ function Mongodb({ deploy, onSave }) {
         {status && !connected && <p className="text-[10.5px] text-bad">{status.message}</p>}
         {status?.warnings?.map(w => <p key={w} className="text-[10.5px] text-muted">{w}</p>)}
         {error && <p className="text-[10.5px] text-bad">{error}</p>}
+        </Soft>
       </div>
     </Row>
   )
@@ -259,11 +296,9 @@ function Github({ deploy, onSave, probe, onRecheck }) {
          detail={ok ? `connected as ${login || 'your account'}`
                     : 'the deployment creates a private repository under your '
                       + 'account and pushes the workflows that build it'}>
-      <div className="mt-2 w-full space-y-3">
-        <CliSignIn provider="github" onDone={() => { onSave({}); onRecheck?.() }} />
-        <details className="group rounded-lg border border-line px-3 py-2">
-          <summary className="cursor-pointer text-[11px] font-semibold text-muted transition-colors hover:text-ink">Other ways to sign in</summary>
-          <div className="mt-3 space-y-3">
+      <div className="space-y-4">
+        <Soft><CliSignIn provider="github" onDone={() => { onSave({}); onRecheck?.() }} /></Soft>
+        <Advanced title="Other ways to sign in">
         <Field label="Sign in with an OAuth app"
                hint={<>Approved in your browser, the way the AWS console sign-in
                        is. Needs the <b>Client ID</b> of an OAuth app with
@@ -276,7 +311,7 @@ function Github({ deploy, onSave, probe, onRecheck }) {
                  placeholder="Iv1.0123456789abcdef" />
         </Field>
         {flow ? (
-          <div className="rounded-lg border border-line bg-panel2 p-3">
+          <div className="rounded-2xl bg-bg/60 p-4">
             <p className="text-[11px] text-muted">
               Enter this code on GitHub, then leave this open — it finishes on its own.
             </p>
@@ -298,7 +333,7 @@ function Github({ deploy, onSave, probe, onRecheck }) {
             {ok ? 'Sign in again' : 'Sign in with GitHub'}
           </Button>
           {signing && (
-            <Button size="sm" variant="outline"
+            <Button size="sm" variant="soft"
                     onClick={() => { stop.current = true; setSigning(false); setFlow(null) }}>
               Cancel
             </Button>
@@ -318,14 +353,13 @@ function Github({ deploy, onSave, probe, onRecheck }) {
                  placeholder={ok ? `connected as ${login}` : 'ghp_…'} />
         </Field>
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" variant="outline" disabled={!token.trim() || busy}
+          <Button size="sm" variant="soft" disabled={!token.trim() || busy}
                   onClick={save}>
             {busy && <Loader2 className="size-3 animate-spin" />} Save token
           </Button>
           <Button size="sm" onClick={onRecheck}>Recheck</Button>
         </div>
-          </div>
-        </details>
+        </Advanced>
         {err && <p className="text-[10.5px] text-deep">{err}</p>}
       </div>
     </Row>
@@ -434,16 +468,16 @@ function Aws({ deploy, onSave, probe, onRecheck }) {
            : deploy?.aws_profile
              ? `profile ${deploy.aws_profile} needs sign-in or has expired`
              : 'sign in through IAM Identity Center — no access keys are stored'}>
-      <div className="mt-2 w-full space-y-2">
-        <Field label="Deploy into">
-          <Select value={region} onChange={setRegion} options={AWS_REGIONS} />
-        </Field>
-        <CliSignIn provider="aws" region={region} label="AWS command line tool"
-                   onDone={() => { setProfile(AWS_CONSOLE_PROFILE); onSave({ aws_profile: AWS_CONSOLE_PROFILE, aws_region: region }); onRecheck?.() }} />
+      <div className="space-y-4">
+        <Soft className="space-y-3">
+          <Field label="Deploy into">
+            <Select value={region} onChange={setRegion} options={AWS_REGIONS} />
+          </Field>
+          <CliSignIn provider="aws" region={region} label="AWS command line tool"
+                     onDone={() => { setProfile(AWS_CONSOLE_PROFILE); onSave({ aws_profile: AWS_CONSOLE_PROFILE, aws_region: region }); onRecheck?.() }} />
+        </Soft>
 
-        <details className="group rounded-lg border border-line px-3 py-2">
-          <summary className="cursor-pointer text-[11px] font-semibold text-muted transition-colors hover:text-ink">IAM Identity Center (advanced)</summary>
-          <div className="mt-3 space-y-2">
+        <Advanced title="IAM Identity Center (advanced)">
         <Field label="Identity Center start URL">
           <Input value={startUrl} onChange={e => setStartUrl(e.target.value)}
                  placeholder="https://d-xxxxxxxxxx.awsapps.com/start" />
@@ -453,7 +487,7 @@ function Aws({ deploy, onSave, probe, onRecheck }) {
         </Field>
 
         {!flow && (
-          <Button size="sm" variant="outline"
+          <Button size="sm" variant="soft"
                   disabled={!startUrl.trim() || Boolean(busy)} onClick={begin}>
             {busy === 'starting' && <Loader2 className="size-3 animate-spin" />}
             {connected ? 'Connect a different account' : 'Sign in to AWS'}
@@ -461,7 +495,7 @@ function Aws({ deploy, onSave, probe, onRecheck }) {
         )}
 
         {flow && !accounts && (
-          <div className=" border border-line bg-bg px-2.5 py-2">
+          <div className="rounded-2xl bg-bg/60 p-4">
             <p className="text-[11px] text-muted">
               Approve this in the browser tab that opened, then come back.
             </p>
@@ -498,7 +532,7 @@ function Aws({ deploy, onSave, probe, onRecheck }) {
                         options={roles} />
               </Field>
             )}
-            <Button size="sm" variant="solid"
+            <Button size="sm" variant="primary"
                     disabled={!account || !role || Boolean(busy)} onClick={use}>
               {busy === 'selecting' && <Loader2 className="size-3 animate-spin" />}
               Use this account
@@ -506,10 +540,9 @@ function Aws({ deploy, onSave, probe, onRecheck }) {
           </div>
         )}
 
-          </div>
-        </details>
+        </Advanced>
 
-        <div className="border-t border-line pt-2">
+        <Soft>
           <Field label="Or use an AWS CLI profile you already have"
                  hint="Made by `aws configure sso`, or any profile that works.
                        Nothing secret is copied — only the name.">
@@ -526,7 +559,7 @@ function Aws({ deploy, onSave, probe, onRecheck }) {
                      placeholder="deployment-agent" />
             )}
           </Field>
-          <Button size="sm" variant="outline" className="mt-2"
+          <Button size="sm" variant="soft" className="mt-2"
                   disabled={!profile.trim() || Boolean(busy)}
                   onClick={async () => {
                     setBusy('profile'); setErr('')
@@ -540,7 +573,7 @@ function Aws({ deploy, onSave, probe, onRecheck }) {
             {busy === 'profile' && <Loader2 className="size-3 animate-spin" />}
             Use this profile
           </Button>
-        </div>
+        </Soft>
 
         {String(identity?.arn || '').endsWith(':root') && (
           <p className="text-[10.5px] text-deep">
@@ -600,8 +633,9 @@ function Vercel({ deploy, onSave }) {
     <Row title="Vercel" ok={connected}
          unknown={!status && !deploy?.vercel_token_set}
          detail={detail}>
-      <div className="mt-2 w-full space-y-3">
-        <CliSignIn provider="vercel" onDone={() => onSave({})} />
+      <div className="space-y-4">
+        <Soft><CliSignIn provider="vercel" onDone={() => onSave({})} /></Soft>
+        <Soft className="space-y-3">
         <Field label="Or paste an access token"
                hint="Your own Vercel account. Kept with your account here, encrypted,
                      and set as a GitHub Actions secret on the repository the
@@ -613,7 +647,7 @@ function Vercel({ deploy, onSave }) {
                    : 'paste a Vercel token'} />
         </Field>
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" variant="outline" disabled={!token.trim() || Boolean(busy)}
+          <Button size="sm" variant="soft" disabled={!token.trim() || Boolean(busy)}
                   onClick={saveToken}>
             {busy === 'save' && <Loader2 className="size-3 animate-spin" />} Save token
           </Button>
@@ -627,6 +661,7 @@ function Vercel({ deploy, onSave }) {
           </p>
         )}
         {err && <p className="text-[10.5px] text-deep">{err}</p>}
+        </Soft>
       </div>
     </Row>
   )
@@ -676,17 +711,16 @@ function HostedCredential({ title, provider, setting, saved, label, hint, href, 
 
   return <Row title={title} ok={saved ? connected : false} unknown={Boolean(saved) && !status}
               detail={detail}>
+    <div className="space-y-4">
     {(provider === 'netlify' || provider === 'azure') && (
-      <div className="mt-2 w-full">
-        <CliSignIn provider={provider} onDone={() => onSave({})} />
-      </div>
+      <Soft><CliSignIn provider={provider} onDone={() => onSave({})} /></Soft>
     )}
-    <div className="mt-2 w-full space-y-2">
+    <Soft className="space-y-3">
       <Field label={label} hint={<>{hint} Stored encrypted with your account. Type a single - to clear it. <a href={href} target="_blank" rel="noreferrer" className="text-accent hover:underline">Setup guide</a></>}>
         <Input type="password" autoComplete="off" value={value} onChange={e => setValue(e.target.value)} placeholder={saved ? 'saved — enter a replacement' : label} />
       </Field>
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" variant="outline" disabled={Boolean(busy) || !value.trim()} onClick={save}>
+        <Button size="sm" variant="soft" disabled={Boolean(busy) || !value.trim()} onClick={save}>
           {busy === 'save' && <Loader2 className="size-3 animate-spin" />}Save and sign in
         </Button>
         <Button size="sm" variant="ghost" disabled={Boolean(busy) || (!saved && !value.trim())}
@@ -701,34 +735,63 @@ function HostedCredential({ title, provider, setting, saved, label, hint, href, 
         <p className="text-[10.5px] text-muted">{status.message}</p>
       )}
       {error && <p className="text-[10.5px] text-bad">{error}</p>}
+    </Soft>
     </div>
   </Row>
 }
 
+/** A service's header (logo, name, whether it is connected) and then its form. No borders: soft fills only. */
 function Row({ title, ok, unknown, detail, actions, children }) {
   return (
-    <div className={cn('rounded-xl border border-line border-l-[3px] bg-panel p-3 shadow-sm transition-all',
-      unknown ? 'border-l-white/20' : ok ? 'border-l-[var(--green)]' : 'border-l-[var(--red)]')}>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="grid size-3.5 shrink-0 place-items-center">
-          {unknown ? <Loader2 className="size-3 animate-spin text-muted" />
-                   : ok ? <Check className="size-3.5 text-ink" />
-                        : <X className="size-3.5 text-bad" />}
+    <div className="space-y-5">
+      <header className="flex flex-wrap items-center gap-3.5">
+        <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-panel shadow-sm">
+          <BrandIcon name={title.toLowerCase()} className="size-6" />
         </span>
-        <span className="text-[12.5px] font-bold text-ink">{title}</span>
-        <span className="min-w-0 flex-1 truncate text-[11px] text-muted">{detail}</span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="font-display text-[15px] font-bold text-ink">{title}</h3>
+            <span className={cn('inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10.5px] font-semibold',
+              // Tints made with the colour variables: a `bg-ok` class would be redrawn as an outlined box by globals.css.
+              unknown ? 'bg-ink/[.07] text-muted'
+                : ok ? 'bg-[color-mix(in_srgb,var(--green)_14%,transparent)] text-ok'
+                     : 'bg-[color-mix(in_srgb,var(--red)_12%,transparent)] text-bad')}>
+              {unknown ? <Loader2 className="size-2.5 animate-spin" />
+                       : <span className={cn('size-1.5 rounded-full', ok ? 'bg-ok' : 'bg-bad')} />}
+              {unknown ? 'Checking' : ok ? 'Connected' : 'Not connected'}
+            </span>
+          </div>
+          <p className="mt-0.5 text-[11.5px] leading-snug text-muted">{detail}</p>
+        </div>
         {actions}
-      </div>
+      </header>
       {children}
     </div>
   )
 }
 
+/** The fields here are filled, not outlined. */
+const Input = ({ className, ...rest }) => <BaseInput className={cn('border-transparent bg-bg/60 shadow-none', className)} {...rest} />
+
+/** A collapsed section for the less usual ways in. */
+const Advanced = ({ title, children }) => (
+  <details className="group rounded-2xl bg-panel px-4 py-3 shadow-sm">
+    <summary className="flex cursor-pointer select-none list-none items-center justify-between text-[11.5px] font-semibold text-muted transition-colors hover:text-ink [&::-webkit-details-marker]:hidden">
+      {title}
+      <ChevronDown className="size-3.5 transition-transform group-open:rotate-180" />
+    </summary>
+    <div className="mt-3 space-y-3">{children}</div>
+  </details>
+)
+
+/** A quiet section inside a form (a flow in progress, the advanced options). */
+const Soft = ({ className, children }) => <div className={cn('rounded-2xl bg-panel p-4 shadow-sm', className)}>{children}</div>
+
 const Field = ({ label, hint, children }) => (
   <label className="block">
-    <span className="label-2xs mb-1 block text-muted2 font-bold uppercase tracking-wider">{label}</span>
+    <span className="mb-1.5 block text-[11.5px] font-semibold text-ink/85">{label}</span>
     {children}
-    {hint && <span className="mt-1 block text-[10px] leading-snug text-muted2">
+    {hint && <span className="mt-1.5 block text-[10.5px] leading-snug text-muted2">
                {hint}
              </span>}
   </label>
@@ -736,8 +799,8 @@ const Field = ({ label, hint, children }) => (
 
 const Select = ({ value, onChange, options, placeholder }) => (
   <select value={value} onChange={e => onChange(e.target.value)}
-          className="h-[32px] w-full rounded-xl border border-line bg-panel px-2.5
-                     text-[12px] text-ink outline-none focus:border-accent/60 transition-colors">
+          className="h-10 w-full rounded-xl border border-transparent bg-bg/60 px-3
+                     text-[12.5px] text-ink outline-none transition-colors focus:border-accent focus:ring-1 focus:ring-accent">
     {placeholder && <option value="" className="bg-panel text-ink">{placeholder}</option>}
     {options.map(o => {
       const v = typeof o === 'string' ? o : o.value
