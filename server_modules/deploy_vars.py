@@ -141,14 +141,19 @@ def check_database_uri(uri: str, allow_local: bool = False) -> str:
     return uri
 
 
-def environment() -> dict[str, str]:
+def environment(build: bool = False) -> dict[str, str]:
     """What a deployment run's commands are given, beyond its project's own Supabase connection
     (see `supabase_connect.env_for`, merged in separately since it is per-project, not a studio-wide
     setting): every variable the customer saved here by name, overriding that connection's own values
     if they chose to point production at a different Supabase project, plus the saved production
-    MongoDB connection string (`deploy_mongodb_uri`), when this project uses one."""
+    MongoDB connection string (`deploy_mongodb_uri`), when this project uses one.
+
+    `build`: for the commands of a build. Its seed scripts and end-to-end tests make and drop databases of their own, so
+    they run on the local MongoDB (what the app defaults to) and never on the production cluster saved here for
+    deployments: a cluster that is paused, deleted or unreachable stopped the seed, and with it every journey test. A
+    `MONGODB_URI` the customer saved by name is still handed over; only the studio's production string is held back."""
     env = {str(name): str(value) for name, value in (config.setting("deploy_env", {}) or {}).items()}
     database = str(config.setting("deploy_mongodb_uri", "") or "")
-    if database:
+    if database and not build:
         env.setdefault("MONGODB_URI", database)
     return env

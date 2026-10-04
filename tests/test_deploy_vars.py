@@ -105,6 +105,26 @@ class RunEnvironmentTests(SettingsCase):
         env = self._command_env("deploy")
         self.assertEqual(env["SUPABASE_URL"], "https://a-different-project.supabase.co")
 
+    PRODUCTION = "mongodb+srv://u:p@paused-cluster.ab1cd.mongodb.net/app"
+
+    def test_a_builds_commands_never_get_the_production_database_to_seed_and_test_on(self):
+        # A paused cluster has no address: the seed failed, no journey test ran, and the build ended as failed.
+        config.save_settings({"deploy_mongodb_uri": self.PRODUCTION})
+        for stage in ("build", "build-edit"):
+            env = self._command_env(stage)
+            self.assertNotIn("MONGODB_URI", env, stage)
+            self.assertEqual(env["ADMIN_EMAIL"], "a@b.example", stage)        # the other saved variables still arrive
+
+    def test_a_deployment_and_the_preview_start_still_get_the_production_database(self):
+        config.save_settings({"deploy_mongodb_uri": self.PRODUCTION})
+        for stage in ("deploy", "preview_start"):
+            self.assertEqual(self._command_env(stage)["MONGODB_URI"], self.PRODUCTION, stage)
+
+    def test_a_connection_string_the_customer_saved_by_name_still_reaches_the_build(self):
+        config.save_settings({"deploy_mongodb_uri": self.PRODUCTION})
+        deploy_vars.save("MONGODB_URI", "mongodb+srv://u:p@their-own.ab1cd.mongodb.net/app", secret=True)
+        self.assertEqual(self._command_env("build")["MONGODB_URI"], "mongodb+srv://u:p@their-own.ab1cd.mongodb.net/app")
+
 
 class MongoDatabaseUriTests(SettingsCase):
     """The production MongoDB connection string: never a loopback address, tried for real before a question

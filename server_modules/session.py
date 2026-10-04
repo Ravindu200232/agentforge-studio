@@ -370,7 +370,7 @@ class StudioTools(WorkspaceTools):
                 # (pointing production at a different Supabase project, or an unrelated variable);
                 # a build/update needs the same saved values (a database connection string, a key the
                 # customer gave before the plan) reachable by its own commands and the preview.
-                self.command_env.update(deploy_vars.environment())
+                self.command_env.update(deploy_vars.environment(build=stage in {"build", "build-edit"}))
         result = super().execute(name, args)
 
         relative = self._relative(path) if path else None
