@@ -660,6 +660,12 @@ def _execute(project: str, change_id: str, model: str) -> None:
         result = session.execute_approved(request, plan, model)
         after = _snapshot(session.workspace)
         _announce(project, before, after)
+        if result["status"] == "complete" and _srs_changed(before, after):
+            # The specification was changed: what its overview says (the open decisions, the quality review) is brought back
+            # in line with what it says now, instead of staying as it was when it was first written.
+            from srs_agent import document as srs_document
+
+            srs_document.reconcile(project, change["request"], result["text"], session)
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -694,6 +700,12 @@ def _guides(project: str = "") -> str:
         return scaffold.common_context(str((store.get(project) or {}).get("stack") or "") if project else "")
     except Exception:  # noqa: BLE001 - guidance is a help, not a requirement
         return ""
+
+
+def _srs_changed(before: dict, after: dict) -> bool:
+    """Whether a run changed any file of the specification."""
+    record = f"{config.RECORD_DIR}/srs/"
+    return any(path.startswith(record) for path in set(before) | set(after) if before.get(path) != after.get(path))
 
 
 def _announce(project: str, before: dict, after: dict) -> None:

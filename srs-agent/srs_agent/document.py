@@ -1431,6 +1431,225 @@ def _review_loop(session: ProjectSession, project: str, envelope: dict,
     return envelope
 
 
+# --- keeping the overview true after a change --------------------------------
+
+def _plain(value: Any) -> str:
+    """Text as it is compared: lower case, punctuation that does not matter gone, spaces collapsed."""
+    words = (word.strip("./-") for word in re.sub(r"[^\w%./-]+", " ", str(value or "").lower()).split())
+    return " ".join(word for word in words if word)
+
+
+def _quoted(evidence: str, source: str) -> bool:
+    """Whether the words a model gives as its evidence are really in `source`: all of them in a row, or - for a quote that
+    differs by a word - nearly all of its distinct words. A model that cannot show where it read something has not read it."""
+    want, have = _plain(evidence), _plain(source)
+    if len(want) < 8 or not have:
+        return False
+    if want in have:
+        return True
+    present = set(have.split())
+    words = {word for word in want.split() if len(word) >= 4}
+    return bool(words) and sum(1 for word in words if word in present) / len(words) >= 0.85
+
+
+def _settled_validator(open_ids: set[str], said: str):
+    """Accept the model's list of settled decisions: known ids only, each with what was decided and the words, from what the
+    customer said, that settle it."""
+    def check(data: Any) -> list[dict[str, str]]:
+        rows = data.get("settled") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError('"settled" must be a list (empty when the request settles none of them)')
+        found: dict[str, dict[str, str]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ident = str(row.get("id") or "").strip()
+            decision = str(row.get("decision") or "").strip()
+            evidence = str(row.get("evidence") or "").strip()
+            if ident in open_ids and decision and _quoted(evidence, said):
+                found.setdefault(ident, {"id": ident, "decision": decision[:400], "evidence": evidence[:400]})
+        return list(found.values())
+    return check
+
+
+def _settle_decisions(project: str, doc: dict, request: str, summary: str) -> list[dict[str, str]]:
+    """Mark the open decisions the customer's request settles as settled, and say what was decided.
+
+    The decisions are the document's `ambiguities` that still `needs_clarification`. Only the ones the request states or clearly
+    implies the answer to are settled, and only when the words the model gives as its evidence are really in what the customer
+    said or in the summary of the change."""
+    rows = [a for a in doc.get("ambiguities") or [] if isinstance(a, dict) and a.get("needs_clarification") and a.get("id")]
+    if not rows or not str(request or "").strip():
+        return []
+    listing = "\n".join(f"- {a['id']} · {a.get('area', '')}: {a.get('description', '')} (assumed: {a.get('assumption_made', '')})"
+                        for a in rows)
+    try:
+        settled = llm.complete_json(
+            system=prompts.load("srs/system"),
+            user=prompts.load("srs/reconcile", request=str(request).strip()[:4000],
+                              summary=str(summary or "(no summary)").strip()[:3000], decisions=listing),
+            validator=_settled_validator({str(a["id"]) for a in rows}, f"{request}\n{summary}"),
+            label="srs_reconcile", project=project)
+    except RunCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the decisions stay open: one more look for the customer, never a failed change
+        bus.log(project, "WARN", f"Could not tell which open decisions the change settled ({str(exc)[:200]}) — they stay open.")
+        return []
+    by_id = {str(a["id"]): a for a in rows}
+    for row in settled:
+        entry = by_id[row["id"]]
+        entry["needs_clarification"] = False
+        entry["resolution"] = row["decision"]
+        entry["resolved_by"] = "customer request"
+    return settled
+
+
+def _requirement_texts(doc: dict, finding: dict) -> str:
+    """The requirements a review finding is about, as they read now: the one it names and any other it mentions. Empty when
+    it names none that is in the document (a finding about the specification as a whole has nothing to be judged against)."""
+    by_id: dict[str, dict] = {}
+    for key in ("functional_requirements", "non_functional_requirements", "security_requirements"):
+        for item in doc.get(key) or []:
+            if isinstance(item, dict) and item.get("id"):
+                by_id[str(item["id"])] = item
+
+    def line(ident: str, item: dict) -> str:
+        return f"{ident}: " + json.dumps({k: v for k, v in item.items() if k not in ("rationale", "id")}, ensure_ascii=False)[:600]
+
+    wanted = [str(finding.get("requirement_id") or "").strip()]
+    wanted += re.findall(r"\b[A-Z]{2,4}-\d+\b", str(finding.get("problem") or ""))
+    named: list[str] = []
+    for ident in wanted:
+        if ident and ident in by_id and ident not in named:
+            named.append(ident)
+    return "\n".join(line(i, by_id[i]) for i in named[:3])[:3000]
+
+
+def _resolved_validator(shown: dict[str, str]):
+    """Accept the model's list of resolved findings: known findings only, each with words that really are in the requirement
+    text it was shown."""
+    def check(data: Any) -> list[dict[str, str]]:
+        rows = data.get("resolved") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError('"resolved" must be a list (empty when none of the findings is put right)')
+        found: dict[str, dict[str, str]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ident = str(row.get("finding") or "").strip().upper()
+            evidence = str(row.get("evidence") or "").strip()
+            if ident in shown and _quoted(evidence, shown[ident]):
+                found.setdefault(ident, {"finding": ident, "evidence": evidence[:400]})
+        return list(found.values())
+    return check
+
+
+# What a finding of the specification's own evidence audit says, because it is not a model's opinion: the audit is run again.
+AUDIT_SKILL = "corpus-evidence"
+
+
+def _settle_findings(project: str, doc: dict, request: str, summary: str) -> int:
+    """Take off the quality review the findings that the specification, as it reads now, no longer has.
+
+    The findings are the ones the specification's review listed and nobody has put right yet. A finding of the evidence audit
+    (`AUDIT_SKILL`) is cleared when the audit, run again, no longer reports it; no model is asked about it. Any other is checked
+    by a model against the current text of the requirement it is about, and is only cleared when the words that put it right
+    are really in that text. A finding that names no requirement stays. The review itself is not run again, because a new
+    review finds new things to say every time and would never get shorter. Returns how many were cleared."""
+    review = doc.get("requirements_quality_review")
+    reviewer = review.get("reviewer") if isinstance(review, dict) else None
+    findings = [f for f in (reviewer or {}).get("unresolved_findings") or [] if isinstance(f, dict)]
+    if not findings:
+        return 0
+    evidence: dict[str, str] = {}
+    shown: dict[str, str] = {}
+    blocks = []
+    still: set[str] | None = None
+    for number, finding in enumerate(findings, start=1):
+        ident = f"F{number}"
+        if finding.get("skill") == AUDIT_SKILL:
+            if still is None:
+                try:
+                    still = set(corpus_rules.blocking_findings(corpus_rules.audit_document(doc)))
+                except Exception:  # noqa: BLE001 - an audit that cannot run clears nothing
+                    still = {str(f.get("problem") or "") for f in findings}
+            if str(finding.get("problem") or "") not in still:
+                evidence[ident] = "the specification's evidence audit no longer reports it"
+            continue
+        texts = _requirement_texts(doc, finding)
+        if not texts:
+            continue
+        shown[ident] = texts
+        blocks.append(f"{ident} [{finding.get('severity', 'minor')}] {finding.get('requirement_id') or 'a requirement it mentions'}: "
+                      f"{finding.get('problem', '')}"
+                      + (f"\n    Suggested: {finding['suggested_rewrite']}" if finding.get("suggested_rewrite") else "")
+                      + f"\n    As it reads now:\n{texts}")
+    if shown:
+        try:
+            resolved = llm.complete_json(
+                system=prompts.load("srs/system"),
+                user=prompts.load("srs/reconcile-findings", request=str(request or "").strip()[:3000],
+                                  summary=str(summary or "(no summary)").strip()[:3000], findings="\n\n".join(blocks)),
+                validator=_resolved_validator(shown), label="srs_reconcile_findings", project=project)
+            evidence.update({row["finding"]: row["evidence"] for row in resolved})
+        except RunCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the findings stay: the review is only ever shortened by what is shown to be fixed
+            bus.log(project, "WARN", f"Could not tell which review findings the change put right ({str(exc)[:200]}) — they stay.")
+    kept, cleared = [], []
+    for number, finding in enumerate(findings, start=1):
+        ident = f"F{number}"
+        if ident in evidence:
+            cleared.append({**finding, "resolved_by": "customer change", "evidence": evidence[ident]})
+        else:
+            kept.append(finding)
+    if cleared:
+        reviewer["unresolved_findings"] = kept
+        reviewer["resolved_findings"] = [*(reviewer.get("resolved_findings") or []), *cleared]
+    return len(cleared)
+
+
+def reconcile(project: str, request: str, summary: str = "", session: ProjectSession | None = None) -> dict[str, Any]:
+    """After a change was made to the specification at the customer's request: bring what the overview says back in line.
+
+    The open decisions the request settles are marked settled, and the quality-review findings that the requirements no longer
+    have are taken off the review, so "decisions needed" and the quality review show where things stand after the change, not
+    where they stood when the specification was first written. Nothing is rewritten and nothing is cleared that is not shown
+    to be settled. Never raises, a Stop excepted."""
+    try:
+        if not has_document(project):
+            return {"status": "none"}
+        envelope = document(project)
+        doc = envelope.get("srs_document") or {}
+        session = session or session_for(project)
+        reviewer = (doc.get("requirements_quality_review") or {}).get("reviewer") or {}
+        open_before = sum(1 for a in doc.get("ambiguities") or [] if isinstance(a, dict) and a.get("needs_clarification"))
+        found_before = len(reviewer.get("unresolved_findings") or [])
+
+        settled = _settle_decisions(project, doc, request, summary)
+        cleared = _settle_findings(project, doc, request, summary)
+        if not settled and not cleared:
+            return {"status": "done", "settled": [], "cleared": 0, "open_decisions": open_before, "findings": found_before}
+        session.write_record(*DOCUMENT, data=envelope)
+
+        parts = []
+        if settled:
+            parts.append(f"{len(settled)} of {open_before} open decision{'s' if open_before != 1 else ''} settled "
+                         f"({', '.join(row['id'] for row in settled)})")
+        if cleared:
+            parts.append(f"{cleared} of {found_before} quality-review finding{'s' if found_before != 1 else ''} put right")
+        bus.agent_msg(project, "The specification's overview is up to date: " + "; ".join(parts) + ".",
+                      title="Specification review", kind="narration")
+        bus.sync_state(project, "clean", "Specification review updated", source="srs", srs_status="completed")
+        return {"status": "done", "settled": settled, "cleared": cleared, "open_decisions": open_before - len(settled),
+                "findings": found_before - cleared}
+    except RunCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the change itself is made; only the overview could not be refreshed
+        bus.log(project, "WARN", f"The specification's overview could not be refreshed after the change: {str(exc)[:300]}")
+        return {"status": "failed", "reason": str(exc)[:300]}
+
+
 # --- what the studio reads --------------------------------------------------
 
 def _recover_rendered_diagrams(project: str, envelope: dict[str, Any]) -> bool:

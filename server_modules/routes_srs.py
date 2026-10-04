@@ -167,6 +167,7 @@ def customize(project: str, body: dict) -> Any:
             "chat/update", message=request, stage="specification",
             artifacts="the specification, its diagrams and its wireframes",
             language=store.require(project).get("language", "English")))
+        document.reconcile(project, request, result.get("text", ""), session)
         session.finish("Specification updated.")
         return {"ok": True, "text": result.get("text", ""),
                 "srs": document.document(project)}

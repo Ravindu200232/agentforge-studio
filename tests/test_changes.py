@@ -101,10 +101,12 @@ class ChangesTestCase(unittest.TestCase):
         # them; register the intentional reuse before subscribing to events.
         bus.project_created(PROJECT)
         changes._threads.clear()
+        self.reconciled = mock.Mock(return_value={"status": "done"})
         patches = [
             mock.patch.object(changes, "session_for", lambda project: self.session),
             mock.patch.object(config, "record_dir", lambda project: self.workspace / ".agentforge"),
             mock.patch.object(changes, "_guides", lambda *args: "GUIDES"),
+            mock.patch("srs_agent.document.reconcile", self.reconciled),
         ]
         for patch in patches:
             patch.start()
@@ -284,6 +286,34 @@ class ReviseApproveCancelTests(ChangesTestCase):
         # The studio is told which stages' files changed, from the folders they are in.
         self.assertTrue(self.of_type("prototype"))
         self.assertTrue([e for e in self.of_type("sync_state") if e.get("source") == "change"])
+
+    def test_a_change_to_the_specification_brings_its_overview_back_in_line_with_it(self):
+        change_id = self.proposed()
+        self.session.edits = [".agentforge/srs/srs.json"]
+        with mock.patch("builder_agent.build.built", lambda project: False):
+            changes.decide(PROJECT, change_id, "approve")
+            self.settle(change_id)
+        # The open decisions it settles and the quality review are redone, from the customer's own words and the agent's summary.
+        self.reconciled.assert_called_once_with(PROJECT, "add a due date to every task", "Done: changed what the plan said.", self.session)
+        self.assertEqual(changes._load(PROJECT, change_id)["status"], "done")
+
+    def test_a_change_that_leaves_the_specification_alone_does_not_touch_its_overview(self):
+        change_id = self.proposed()
+        self.session.edits = ["app/page.jsx"]
+        with mock.patch("builder_agent.build.built", lambda project: False):
+            changes.decide(PROJECT, change_id, "approve")
+            self.settle(change_id)
+        self.reconciled.assert_not_called()
+
+    def test_a_change_that_was_blocked_does_not_either(self):
+        change_id = self.proposed()
+        self.session.edits = [".agentforge/srs/srs.json"]
+        self.session.execution = {"status": "blocked", "text": "Could not do it.", "rounds": 1}
+        with mock.patch("builder_agent.build.built", lambda project: False):
+            changes.decide(PROJECT, change_id, "approve")
+            self.settle(change_id)
+        self.reconciled.assert_not_called()
+        self.assertEqual(changes._load(PROJECT, change_id)["status"], "failed")
 
     def test_excluding_a_stage_drops_its_steps_before_execution(self):
         change_id = self.proposed()

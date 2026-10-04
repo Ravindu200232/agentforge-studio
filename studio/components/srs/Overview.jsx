@@ -611,10 +611,16 @@ export default function Overview({ srs, onSelectView }) {
                           <span className="text-muted">Assumed:</span> {a.assumption_made}
                         </p>
                       )}
+                      {text(a?.resolution) && (
+                        <p className="mt-1.5 text-[12px] leading-relaxed text-ink">
+                          <span className="text-muted">Decided:</span> {a.resolution}
+                        </p>
+                      )}
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         {text(a?.id) && <Chip tone="id">{a.id}</Chip>}
                         {text(a?.area) && <Chip>{a.area}</Chip>}
                         {a?.needs_clarification && <Chip tone="warn">needs an answer</Chip>}
+                        {!a?.needs_clarification && text(a?.resolution) && <Chip tone="good">settled</Chip>}
                       </div>
                     </li>
                   ))}
@@ -739,6 +745,12 @@ export default function Overview({ srs, onSelectView }) {
                     </li>
                   ))}
                 </ul>
+              )}
+              {list(reviewer.resolved_findings).length > 0 && (
+                <p className="mt-2 text-[12px] leading-relaxed text-emerald-700">
+                  {list(reviewer.resolved_findings).length} earlier finding{list(reviewer.resolved_findings).length === 1 ? '' : 's'} put right by
+                  later changes: {list(reviewer.resolved_findings).map(f => text(f?.requirement_id) || 'the specification').join(', ')}.
+                </p>
               )}
             </div>
           )}
