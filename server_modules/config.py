@@ -78,6 +78,7 @@ DEFAULTS: dict[str, Any] = {
     "supabase_oauth_expires_at": 0,
     "e2e_visual_review": True,         # after the end-to-end tests, a model that can look at pictures reviews their screenshots
     "prototype_visual_review": True,   # after drawing the prototype, a model that can look at pictures reviews every screen
+    "prototype_journey_test": True,    # then every journey is clicked through in a browser, live, with a picture at every step
     "supabase_oauth_via": "",       # "broker" (the engine's OAuth app) or "own" (one this person registered)
     "supabase_account_id": "",      # the active account's organisation id
     "supabase_account_credentials": {},   # the other accounts signed in, kept aside: id -> tokens (never sent to the UI)

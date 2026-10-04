@@ -13,6 +13,7 @@ from server_modules.session import ProjectSession, RunCancelled, session_for
 
 from . import design as design_stage
 from . import prototype_brief
+from . import journey_walk
 from . import visual_review
 from .assets import normalize_inline_svg
 
@@ -344,6 +345,12 @@ def _generate(project: str, direction: str,
         if session.cancelled:
             raise RunCancelled(project)
         drawn = routes(project) or drawn
+        # Then the journeys are clicked through in a real browser, shown live like a build's end-to-end tests, with a picture
+        # at every step; what cannot be done by clicking, or looks wrong, is fixed (see journey_walk.py).
+        journey_walk.run(project, session, drawn, _read_record(session, PROTOTYPE_DIR, "demo-accounts.json", fallback=None) or {})
+        if session.cancelled:
+            raise RunCancelled(project)
+        drawn = routes(project) or drawn
 
         previous = store.require(project)
         if not previous.get("build_available"):
@@ -402,6 +409,21 @@ def review(project: str, fix: bool = True, model: str = "") -> dict[str, Any]:
     if session.cancelled:
         raise RunCancelled(project)
     if result.get("status") == "done" and fix:
+        bus.prototype_changed(project)          # the pages may have changed: the preview reloads them
+    return result
+
+
+def journeys(project: str, fix: bool = True, model: str = "") -> dict[str, Any]:
+    """Click through the journeys of the prototype that is already drawn, in a real browser, shown live, with a picture at every
+    step, and fix what cannot be done or looks wrong (`fix`: false only walks and reports)."""
+    if not exists(project):
+        raise ValueError("there is no prototype to click through yet")
+    session = session_for(project)
+    doc = _read_record(session, PROTOTYPE_DIR, "demo-accounts.json", fallback=None) or {}
+    result = journey_walk.run(project, session, routes(project), doc, fix=fix, model=model, force=True)
+    if session.cancelled:
+        raise RunCancelled(project)
+    if result.get("status") == "done" and fix and result.get("fixed_journeys"):
         bus.prototype_changed(project)          # the pages may have changed: the preview reloads them
     return result
 

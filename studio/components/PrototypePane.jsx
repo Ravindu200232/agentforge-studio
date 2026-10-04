@@ -7,7 +7,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Monitor, Tablet, Smartphone, MousePointerClick, Pencil, RotateCw,
   ExternalLink, Layers, Eraser, Undo2, ChevronLeft, ChevronRight,
-  Rocket, Loader2, Type,
+  Rocket, Loader2, Type, Route,
   RotateCcw as UndoIcon, Save, Check,
 } from 'lucide-react'
 import { useStore } from '@/lib/store'
@@ -15,6 +15,8 @@ import { api, API } from '@/lib/api'
 import { watchFrame } from '@/lib/console-log'
 import { attachPicker, pickedFrom, pickLabel } from '@/lib/picker'
 import { Tip } from './ui'
+import AgentBrowser from './AgentBrowser'
+import LiveE2EOverlay from './LiveE2EOverlay'
 import { cn } from '@/lib/utils'
 
 const VIEWPORTS = [
@@ -75,6 +77,10 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
   const prototypeArtifactStamp = useStore(s => s.prototypeArtifactStamp[project] || 0)
   const buildAllowed = useStore(s => Boolean(s.buildAvailability[project]))
   const statusText = useStore(s => s.statusText)
+  // The prototype's journeys being clicked through in a real browser: shown live over the prototype, like a build's tests.
+  const liveFrame = useStore(s => s.browserFrame)
+  const liveStep = useStore(s => s.e2eLive)
+  const walking = Boolean(liveFrame?.frame || liveStep)
   const isBusy = busy || generating
   const resumePrototype = canResumePrototype && !protoReady && !isBusy
   const actionEnabled = buildAllowed || resumePrototype
@@ -435,6 +441,16 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     }
   }
 
+  // Click through the journeys in a real browser, watch it, and fix what cannot be done by clicking or looks wrong.
+  async function testJourneys() {
+    try {
+      await api.reviewScreens(project, 'journeys', true)
+      addLog('INFO', 'Clicking through the prototype’s journeys in a real browser…')
+    } catch (error) {
+      addLog('WARN', `The journeys could not be tested: ${error.message}`)
+    }
+  }
+
   async function handleBuildAppNow() {
     if (isBusy || !actionEnabled) return
     if (resumePrototype) {
@@ -502,6 +518,19 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
             className="inline-flex items-center gap-1.5 rounded-full bg-[#BFB9FF] px-3.5 py-1.5 text-[11.5px] font-semibold text-ink shadow-[0_8px_16px_0_rgba(191, 185, 255,0.24)] transition-all hover:bg-[#9B94E8] active:scale-95 disabled:pointer-events-none disabled:opacity-50"
           >
             <Rocket className="size-3" /> {isBusy ? 'Generating…' : resumePrototype ? 'Resume Prototype' : 'Build App Now'}
+          </button>
+        )}
+
+        {project && protoReady && (
+          <button
+            type="button"
+            onClick={testJourneys}
+            disabled={isBusy || walking}
+            title="Click through the prototype's journeys in a real browser, a screenshot at every step, and fix what cannot be done"
+            className="inline-flex items-center gap-1.5 rounded-full border border-line/80 bg-panel px-3.5 py-1.5 text-[11.5px] font-semibold text-ink shadow-sm transition-all hover:bg-ink/[.06] active:scale-95 disabled:pointer-events-none disabled:opacity-50"
+          >
+            {walking ? <Loader2 className="size-3 animate-spin" /> : <Route className="size-3" />}
+            {walking ? 'Testing…' : 'Test journeys'}
           </button>
         )}
 
@@ -620,6 +649,10 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
                 !protoReady ? "opacity-0 pointer-events-none" : "opacity-100"
               )}
             />
+
+            {/* The journeys being clicked through, live: the browser's picture and pointer, and the step it is on. */}
+            <AgentBrowser />
+            {liveStep && <LiveE2EOverlay event={liveStep} />}
 
             {!protoReady && (
               <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#F2F0EF] p-6 text-center select-none">
