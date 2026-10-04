@@ -73,12 +73,55 @@ class FlakyDnsTests(unittest.TestCase):
         self.assertEqual(result["stage"], "dns")
         self.assertIn("public DNS could not find it either", result["message"])
         self.assertIn("Check the host name", result["message"])
+        # A name that does not exist anywhere is, for an Atlas cluster, most often one that is paused.
+        self.assertIn("may be paused", result["message"])
+        self.assertIn("resume it in Atlas", result["message"])
 
     @unittest.skipUnless(public_dns_answers(), "public DNS is not reachable from here")
     def test_a_working_dns_server_changes_nothing(self):
         result = self.check(REAL_HOST_URI)
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["warnings"], [])
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to run the script")
+class InspectingAnAddressThatIsGoneTests(unittest.TestCase):
+    """The Database tab reads through the application's own driver; a paused Atlas cluster has no address to connect to."""
+
+    def inspect(self, failure: str) -> dict:
+        import json
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            driver = Path(folder) / "node_modules" / "mongodb"
+            driver.mkdir(parents=True)
+            (driver / "package.json").write_text('{"name":"mongodb","main":"index.js"}', encoding="utf-8")
+            (driver / "index.js").write_text(
+                "exports.MongoClient = class { async connect() { throw new Error(%s) } async close() {} }" % json.dumps(failure),
+                encoding="utf-8")
+            (Path(folder) / "package.json").write_text("{}", encoding="utf-8")
+            script = ROOT / "server_modules" / "scripts" / "mongo-inspect.mjs"
+            done = subprocess.run(["node", str(script), "overview"], capture_output=True, text=True, timeout=60,
+                                  env={**os.environ, "CHECK_URI": "mongodb+srv://u:not-a-real-password@gone.example.mongodb.net/app",
+                                       "DRIVER_BASE": folder})
+        return json.loads(done.stdout.strip().splitlines()[-1])
+
+    def test_an_address_that_does_not_exist_says_the_cluster_may_be_paused(self):
+        result = self.inspect("querySrv ENOTFOUND _mongodb._tcp.gone.example.mongodb.net")
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["message"].startswith("The database could not be read: querySrv ENOTFOUND"), result)
+        self.assertIn("may be paused", result["message"])
+        self.assertIn("choose another cluster", result["message"])
+
+    def test_another_failure_gets_no_such_guess(self):
+        result = self.inspect("connection timed out")
+        self.assertEqual(result["message"], "The database could not be read: connection timed out")
+        self.assertNotIn("paused", result["message"])
+
+    def test_the_password_never_reaches_the_message(self):
+        result = self.inspect("querySrv ENOTFOUND for not-a-real-password")
+        self.assertNotIn("not-a-real-password", str(result))
 
 
 if __name__ == "__main__":

@@ -74,7 +74,10 @@ try {
     done({ ok: false, stage: 'dns', message: `The cluster's address could not be looked up: this computer's DNS said ${code}, and public DNS could not be reached (${scrub(error.publicCode)}). Check this computer's internet connection and try again.` });
   }
   const agreed = error.publicCode ? ', and public DNS could not find it either' : '';
-  done({ ok: false, stage: 'dns', message: `The cluster's address could not be found (${code}${agreed}). Check the host name in the string.` });
+  // When even public DNS has no such name the address is gone, not just out of reach from here. For an Atlas cluster the usual
+  // reason is that it is paused (Atlas pauses a free cluster nobody has used for a while, and a paused cluster has no address).
+  const paused = error.publicCode ? ' If it is an Atlas cluster it may be paused: resume it in Atlas, or choose another cluster in Settings, MongoDB.' : '';
+  done({ ok: false, stage: 'dns', message: `The cluster's address could not be found (${code}${agreed}). Check the host name in the string.${paused}` });
 }
 
 // 2. Can it be reached from here? Atlas needs TLS; a plain mongodb:// host on a private network may not.

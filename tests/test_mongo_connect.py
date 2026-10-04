@@ -76,7 +76,8 @@ class AtlasCase(unittest.TestCase):
 class StatusTests(AtlasCase):
     def test_nothing_connected(self):
         self.signed_in = {}
-        self.assertEqual(mc.status(), {"connected": False, "via": "", "account": "", "org": "", "cluster_ready": False})
+        self.assertEqual(mc.status(), {"connected": False, "via": "", "account": "", "org": "", "cluster_ready": False,
+                                       "cluster": ""})
 
     def test_the_atlas_cli_signed_in_is_a_connection_with_no_service_account(self):
         status = mc.status()
@@ -198,6 +199,191 @@ class CliClusterTests(AtlasCase):
         self.assertEqual(self.calls, [])
         self.assertEqual((result["via"], result["cluster_ready"]), ("service_account", True))
         self.assertTrue(config.setting("deploy_mongodb_uri").startswith("mongodb+srv://agentforge_app:"))
+
+
+OTHER = "6f3322d28b4f6b59a6608ef4"
+
+
+class ChooseClusterTests(AtlasCase):
+    """The clusters an account already has are listed, and one of them is used; a new one is made only when asked for."""
+
+    def two_projects(self):
+        self.project_and_cluster_ready()
+        by_project = {
+            GROUP: [{"name": "shop-db", "stateName": "IDLE",
+                     "providerSettings": {"instanceSizeName": "M0", "regionName": "US_EAST_1"}}],
+            OTHER: [{"name": "blog-db", "stateName": "IDLE", "paused": True,
+                     "replicationSpecs": [{"regionConfigs": [{"regionName": "EU_WEST_1",
+                                                              "electableSpecs": {"instanceSize": "M10"}}]}]}],
+        }
+        self.answers.update({
+            "projects list": {"results": [{"id": GROUP, "name": "Shop"}, {"id": OTHER, "name": "Blog"}]},
+            "clusters list": lambda args: {"results": by_project[args[args.index("--projectId") + 1]]},
+            "clusters describe": lambda args: {
+                "stateName": "IDLE", "paused": args[args.index("--projectId") + 1] == OTHER and args[2] == "blog-db",
+                "connectionStrings": {"standardSrv": f"mongodb+srv://{args[2]}.abc12.mongodb.net"}},
+        })
+
+    def test_every_cluster_of_every_project_is_listed_with_where_it_is_and_what_state_it_is_in(self):
+        self.two_projects()
+        listing = mc.list_clusters()
+        rows = {row["name"]: row for row in listing["clusters"]}
+        self.assertEqual(set(rows), {"shop-db", "blog-db"})
+        self.assertEqual((rows["shop-db"]["project"], rows["shop-db"]["group_id"], rows["shop-db"]["tier"], rows["shop-db"]["region"], rows["shop-db"]["state"]),
+                         ("Shop", GROUP, "M0", "US_EAST_1", "IDLE"))
+        # the other API shape (replication specs) and a paused cluster
+        self.assertEqual((rows["blog-db"]["tier"], rows["blog-db"]["region"], rows["blog-db"]["state"]), ("M10", "EU_WEST_1", "PAUSED"))
+        self.assertFalse(listing["missing"])
+        self.assertFalse(any(row["selected"] for row in listing["clusters"]))
+
+    def test_the_cluster_in_use_is_marked_and_listed_first(self):
+        self.two_projects()
+        config.save_settings({mc.GROUP_ID_SETTING: OTHER, mc.CLUSTER_NAME_SETTING: "blog-db"})
+        listing = mc.list_clusters()
+        self.assertEqual([row["name"] for row in listing["clusters"]], ["blog-db", "shop-db"])
+        self.assertEqual([row["selected"] for row in listing["clusters"]], [True, False])
+        self.assertFalse(listing["missing"])
+
+    def test_a_cluster_on_record_that_is_no_longer_in_the_account_is_said_to_be_missing(self):
+        # What a deleted cluster leaves behind: "Cluster ready" for a host that no longer exists.
+        self.two_projects()
+        config.save_settings({mc.GROUP_ID_SETTING: GROUP, mc.CLUSTER_NAME_SETTING: "deleted-long-ago"})
+        listing = mc.list_clusters()
+        self.assertTrue(listing["missing"])
+        self.assertEqual(listing["selected"], {"group_id": GROUP, "name": "deleted-long-ago"})
+
+    def test_a_project_the_account_may_not_look_inside_is_left_out_and_the_rest_are_listed(self):
+        self.two_projects()
+        shop = self.answers["clusters list"]
+        self.answers["clusters list"] = lambda args: (_ for _ in ()).throw(ValueError("forbidden")) \
+            if OTHER in args else shop(args)
+        self.assertEqual([row["name"] for row in mc.list_clusters()["clusters"]], ["shop-db"])
+
+    def test_an_account_with_no_projects_has_no_clusters_to_choose(self):
+        self.project_and_cluster_ready()
+        self.assertEqual(mc.list_clusters()["clusters"], [])
+
+    def test_listing_needs_somebody_signed_in(self):
+        self.signed_in = {}
+        with self.assertRaisesRegex(ValueError, "Sign in to MongoDB Atlas"):
+            mc.list_clusters()
+
+    def test_a_service_account_lists_them_through_the_rest_api(self):
+        config.save_settings({"mongodb_client_id": "id", "mongodb_client_secret": "secret"})
+
+        def api(method, path, body=None, token=""):
+            if path == "/orgs":
+                return {"results": [{"id": ORG}]}
+            if path.startswith("/groups?orgId="):
+                return {"results": [{"id": GROUP, "name": "Shop"}]}
+            return {"results": [{"name": "shop-db", "stateName": "IDLE"}]}
+
+        with mock.patch.object(mc, "_token", return_value="t"), mock.patch.object(mc, "_api", api):
+            rows = mc.list_clusters()["clusters"]
+        self.assertEqual([(row["project"], row["name"]) for row in rows], [("Shop", "shop-db")])
+        self.assertEqual(self.calls, [])
+
+    def test_the_chosen_cluster_gets_the_user_and_access_list_and_its_connection_string_is_kept(self):
+        self.two_projects()
+        said: list[str] = []
+        result = mc.use_cluster(GROUP, "shop-db", said.append)
+        self.assertEqual((result["cluster_ready"], result["cluster"]), (True, "shop-db"))
+        # Nothing was made: the cluster, and its project, were already there.
+        self.assertEqual(self.ran("projects create"), [])
+        self.assertEqual(self.ran("clusters create"), [])
+        for key in ("clusters describe", "dbusers create", "accessLists create"):
+            self.assertIn(GROUP, self.ran(key)[0], key)
+        password = self.ran("dbusers create")[0][self.ran("dbusers create")[0].index("--password") + 1]
+        self.assertEqual(config.setting("deploy_mongodb_uri"),
+                         f"mongodb+srv://{mc.DB_USERNAME}:{password}@shop-db.abc12.mongodb.net/app?retryWrites=true&w=majority")
+        self.assertEqual((config.setting(mc.GROUP_ID_SETTING), config.setting(mc.CLUSTER_NAME_SETTING)), (GROUP, "shop-db"))
+
+    def test_choosing_another_cluster_replaces_the_one_in_use(self):
+        self.two_projects()
+        mc.use_cluster(GROUP, "shop-db")
+        self.answers["clusters describe"] = {"stateName": "IDLE", "connectionStrings": {"standardSrv": "mongodb+srv://blog-db.zz.mongodb.net"}}
+        mc.use_cluster(OTHER, "blog-db")
+        self.assertEqual((config.setting(mc.GROUP_ID_SETTING), config.setting(mc.CLUSTER_NAME_SETTING)), (OTHER, "blog-db"))
+        self.assertIn("@blog-db.zz.mongodb.net/", config.setting("deploy_mongodb_uri"))
+
+    def test_a_paused_cluster_is_refused_and_nothing_is_saved(self):
+        self.two_projects()
+        with self.assertRaisesRegex(ValueError, "paused"):
+            mc.use_cluster(OTHER, "blog-db")
+        self.assertFalse(config.setting("deploy_mongodb_uri"))
+        self.assertEqual(self.ran("dbusers create"), [])
+        self.assertEqual(self.ran("accessLists create"), [])
+
+    def test_it_has_to_be_said_which_cluster_and_somebody_has_to_be_signed_in(self):
+        with self.assertRaisesRegex(ValueError, "which cluster"):
+            mc.use_cluster("", "shop-db")
+        self.signed_in = {}
+        with self.assertRaisesRegex(ValueError, "Sign in to MongoDB Atlas"):
+            mc.use_cluster(GROUP, "shop-db")
+
+    def test_a_service_account_uses_the_chosen_cluster_through_the_rest_api(self):
+        config.save_settings({"mongodb_client_id": "id", "mongodb_client_secret": "secret"})
+        with mock.patch.object(mc, "_token", return_value="t"), \
+                mock.patch.object(mc, "_wait_idle", return_value={"connectionStrings": {"standardSrv": "mongodb+srv://c.mongodb.net"}}) as wait, \
+                mock.patch.object(mc, "_ensure_db_user") as user, mock.patch.object(mc, "_ensure_access_list") as access:
+            result = mc.use_cluster(GROUP, "shop-db")
+        wait.assert_called_once()
+        self.assertEqual(wait.call_args.args[1:3], (GROUP, "shop-db"))
+        user.assert_called_once()
+        access.assert_called_once()
+        self.assertEqual((result["via"], result["cluster"]), ("service_account", "shop-db"))
+
+    def test_a_new_cluster_is_made_when_asked_even_with_one_in_use_and_never_inside_somebody_elses_project(self):
+        self.project_and_cluster_ready()
+        config.save_settings({mc.GROUP_ID_SETTING: OTHER, mc.CLUSTER_NAME_SETTING: "blog-db"})
+        # The account has a project and a cluster of its own, which the automatic choice would have reused.
+        self.answers["projects list"] = {"results": [{"id": OTHER, "name": "Blog"}]}
+        self.answers["clusters list"] = {"results": [{"name": "blog-db"}]}
+        result = mc.ensure_cluster(create=True)
+        self.assertEqual(len(self.ran("projects create")), 1)
+        self.assertEqual(len(self.ran("clusters create")), 1)
+        self.assertEqual((result["cluster"], config.setting(mc.GROUP_ID_SETTING)), (mc.CLUSTER_NAME, GROUP))
+
+    def test_without_asking_for_a_new_one_a_cluster_in_use_is_left_alone(self):
+        self.project_and_cluster_ready()
+        config.save_settings({mc.GROUP_ID_SETTING: GROUP, mc.CLUSTER_NAME_SETTING: "shop-db"})
+        mc.ensure_cluster()
+        self.assertEqual(self.calls, [])
+
+    def test_the_database_user_of_the_rest_api_gets_a_known_password_when_it_is_already_there(self):
+        calls: list[tuple] = []
+
+        def api(method, path, body=None, token=""):
+            calls.append((method, path, body))
+            return {}
+
+        with mock.patch.object(mc, "_api", api):
+            mc._ensure_db_user("t", GROUP, "known-password")
+        self.assertEqual([c[0] for c in calls], ["GET", "PATCH"])
+        self.assertEqual(calls[1][2], {"password": "known-password"})
+
+        calls.clear()
+
+        def missing(method, path, body=None, token=""):
+            calls.append((method, path, body))
+            if method == "GET":
+                raise ValueError("no such user")
+            return {}
+
+        with mock.patch.object(mc, "_api", missing):
+            mc._ensure_db_user("t", GROUP, "known-password")
+        self.assertEqual([c[0] for c in calls], ["GET", "POST"])
+        self.assertEqual(calls[1][2]["password"], "known-password")
+
+    def test_the_two_routes_the_picker_uses(self):
+        from server_modules import routes_deploy
+
+        self.two_projects()
+        listing = routes_deploy.dispatch("GET", "/mongodb/clusters")
+        self.assertTrue(listing["ok"])
+        self.assertEqual({row["name"] for row in listing["clusters"]}, {"shop-db", "blog-db"})
+        used = routes_deploy.dispatch("POST", "/mongodb/cluster/use", {"group_id": GROUP, "name": "shop-db"})
+        self.assertEqual((used["ok"], used["cluster"]), (True, "shop-db"))
 
 
 class SeveralAccountsTests(AtlasCase):

@@ -149,11 +149,25 @@ def mongodb_account_forget(_body: dict) -> Any:
 
 
 @route("POST", r"/mongodb/provision")
-def mongodb_provision(_body: dict) -> Any:
+def mongodb_provision(body: dict) -> Any:
     """Create (or reuse) the studio's one Atlas cluster and point deploy_mongodb_uri at it. Slow
     (a few minutes) - the caller already runs this through the Deploy panel's job queue, same as
-    everything else here that takes real time."""
-    return {"ok": True, **mongo_connect.ensure_cluster()}
+    everything else here that takes real time. `create: true` makes the studio's own new cluster
+    even when one is already in use."""
+    return {"ok": True, **mongo_connect.ensure_cluster(create=body.get("create") is True)}
+
+
+@route("GET", r"/mongodb/clusters")
+def mongodb_clusters(_body: dict) -> Any:
+    """Every cluster the Atlas account in use already has, to choose one from instead of making another."""
+    return {"ok": True, **mongo_connect.list_clusters()}
+
+
+@route("POST", r"/mongodb/cluster/use")
+def mongodb_cluster_use(body: dict) -> Any:
+    """Use one of those clusters: its project gets the studio's database user and an open access list, and
+    deploy_mongodb_uri becomes the connection string for it."""
+    return {"ok": True, **mongo_connect.use_cluster(str(body.get("group_id") or ""), str(body.get("name") or ""))}
 
 
 # --- one run ----------------------------------------------------------------

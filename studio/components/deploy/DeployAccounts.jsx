@@ -79,6 +79,7 @@ function Mongodb({ deploy, onSave }) {
   const [clientSecret, setClientSecret] = useState('')
   const [accountBusy, setAccountBusy] = useState('')
   const [accountError, setAccountError] = useState('')
+  const [picker, setPicker] = useState(null)   // the list of the account's clusters while it is open
 
   const loadAccount = () => api.deploy('/mongodb/account/status').then(setAccount).catch(() => {})
   useEffect(() => { loadAccount() }, [])
@@ -126,18 +127,41 @@ function Mongodb({ deploy, onSave }) {
   async function changeAccount(kind, id) {
     setAccountBusy(`${kind}:${id}`); setAccountError('')
     try {
+      setPicker(null)   // the list belongs to the account that was in use
       setAccount(await api.deploy(`/mongodb/account/${kind}`, { id }))
       await onSave({})
       setStatus(null)
     } catch (failure) { setAccountError(failure.message) } finally { setAccountBusy('') }
   }
 
+  // Make a new free cluster. Only when asked: the ones the account already has are chosen from the list.
   async function provision() {
     setAccountBusy('provision'); setAccountError('')
     try {
-      await api.deploy('/mongodb/provision', {})
+      await api.deploy('/mongodb/provision', { create: true })
+      setPicker(null)
       await loadAccount()
       await onSave({})   // the server already wrote deploy_mongodb_uri; this just refreshes the saved/hint props
+      await test('')
+    } catch (failure) { setAccountError(failure.message) } finally { setAccountBusy('') }
+  }
+
+  // The clusters the account already has, to choose one from.
+  async function openPicker() {
+    setPicker({ loading: true, rows: [], missing: false, error: '' })
+    try {
+      const found = await api.deploy('/mongodb/clusters')
+      setPicker({ loading: false, rows: found.clusters || [], missing: Boolean(found.missing), error: '' })
+    } catch (failure) { setPicker({ loading: false, rows: [], missing: false, error: failure.message }) }
+  }
+
+  async function useCluster(row) {
+    setAccountBusy(`use:${row.group_id}:${row.name}`); setAccountError('')
+    try {
+      await api.deploy('/mongodb/cluster/use', { group_id: row.group_id, name: row.name })
+      setPicker(null)
+      await loadAccount()
+      await onSave({})
       await test('')
     } catch (failure) { setAccountError(failure.message) } finally { setAccountBusy('') }
   }
@@ -176,18 +200,24 @@ function Mongodb({ deploy, onSave }) {
             </div>
           )}
           {account?.connected && (
-            <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" variant={account.cluster_ready ? 'soft' : 'primary'}
-                      disabled={Boolean(accountBusy) || account.cluster_ready} onClick={provision}>
-                {accountBusy === 'provision' && <Loader2 className="size-3 animate-spin" />}
-                {account.cluster_ready ? 'Cluster ready' : 'Create / use a cluster'}
-              </Button>
-              {account.via === 'service_account' && (
-                <Button size="sm" variant="ghost" disabled={Boolean(accountBusy)} onClick={disconnectAccount}>
-                  {accountBusy === 'disconnect' && <Loader2 className="size-3 animate-spin" />}Disconnect
+            <div className="space-y-2.5">
+              <div className="flex flex-wrap items-center gap-2">
+                {account.cluster_ready && (
+                  <span className="text-[11.5px] text-muted">Cluster in use — <b className="text-ink">{account.cluster}</b></span>
+                )}
+                <Button size="sm" variant={account.cluster_ready ? 'soft' : 'primary'}
+                        disabled={Boolean(accountBusy) || picker?.loading}
+                        onClick={() => (picker ? setPicker(null) : openPicker())}>
+                  {picker?.loading && <Loader2 className="size-3 animate-spin" />}
+                  {picker ? 'Close' : account.cluster_ready ? 'Change cluster' : 'Choose a cluster'}
                 </Button>
-              )}
-              {accountBusy === 'provision' && <span className="text-[10.5px] text-muted2">this can take a few minutes…</span>}
+                {account.via === 'service_account' && (
+                  <Button size="sm" variant="ghost" disabled={Boolean(accountBusy)} onClick={disconnectAccount}>
+                    {accountBusy === 'disconnect' && <Loader2 className="size-3 animate-spin" />}Disconnect
+                  </Button>
+                )}
+              </div>
+              {picker && <ClusterPicker picker={picker} busy={accountBusy} onUse={useCluster} onCreate={provision} onRefresh={openPicker} />}
             </div>
           )}
           {account && account.via !== 'service_account' && (
@@ -230,6 +260,79 @@ function Mongodb({ deploy, onSave }) {
         </Soft>
       </div>
     </Row>
+  )
+}
+
+
+/** The clusters an Atlas account already has, with a button to use one, and (only if wanted) a button to make another. */
+function ClusterPicker({ picker, busy, onUse, onCreate, onRefresh }) {
+  const creating = busy === 'provision'
+  return (
+    <div className="space-y-2">
+      {picker.loading ? (
+        <p className="flex items-center gap-2 text-[11.5px] text-muted"><Loader2 className="size-3 animate-spin" /> Looking for your clusters…</p>
+      ) : picker.error ? (
+        <p className="text-[10.5px] text-bad">{picker.error}</p>
+      ) : (
+        <>
+          {picker.missing && (
+            <p className="text-[10.5px] leading-snug text-bad">
+              The cluster this studio was using is no longer in this account. Choose another one, or create a new one.
+            </p>
+          )}
+          {picker.rows.length === 0 ? (
+            <p className="text-[11.5px] text-muted">This account has no clusters yet. Create a free one below.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {picker.rows.map(row => {
+                const key = `use:${row.group_id}:${row.name}`
+                const paused = row.state === 'PAUSED'
+                return (
+                  <li key={key} className="flex items-center gap-3 rounded-xl bg-panel px-3 py-2 shadow-sm">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[12px] font-semibold text-ink">{row.name}</p>
+                      <p className="truncate text-[10.5px] text-muted">
+                        {[row.project, row.tier, row.region, row.state && row.state.toLowerCase()].filter(Boolean).join(' · ')}
+                      </p>
+                    </div>
+                    {row.selected ? (
+                      <span className="text-[10.5px] font-semibold tracking-wide text-ok">IN USE</span>
+                    ) : paused ? (
+                      // A paused cluster has no address, and Atlas resumes a free one only in its own web console.
+                      <Button size="sm" variant="ghost"
+                              onClick={() => window.open(`https://cloud.mongodb.com/v2/${row.group_id}#/overview`, '_blank', 'noopener,noreferrer')}>
+                        <ExternalLink className="size-3" />Resume in Atlas
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="soft" disabled={Boolean(busy)} onClick={() => onUse(row)}>
+                        {busy === key && <Loader2 className="size-3 animate-spin" />}Use this cluster
+                      </Button>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+          {picker.rows.some(row => row.state === 'PAUSED') && (
+            <p className="text-[10.5px] leading-snug text-muted2">
+              A paused cluster has no address, so nothing can connect to it (that is the &ldquo;address could not be found&rdquo;
+              error). Atlas pauses a free cluster nobody has used for a while. Resume it in Atlas, then press Refresh.
+            </p>
+          )}
+          <p className="text-[10.5px] leading-snug text-muted2">
+            Choosing a cluster adds a database user (agentforge_app) to its project and lets any address reach it, with that
+            user&apos;s password as the lock. The connection string saved below is replaced by the one for this cluster.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="ghost" disabled={Boolean(busy)} onClick={onCreate}>
+              {creating && <Loader2 className="size-3 animate-spin" />}Create a new free cluster
+            </Button>
+            <Button size="sm" variant="ghost" disabled={Boolean(busy)} onClick={onRefresh}>Refresh</Button>
+            {creating && <span className="text-[10.5px] text-muted2">this can take a few minutes…</span>}
+          </div>
+        </>
+      )}
+    </div>
   )
 }
 

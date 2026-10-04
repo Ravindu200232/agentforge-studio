@@ -90,6 +90,7 @@ def status(accounts: bool = False) -> dict:
         "account": str(cli.get("account") or ""),
         "org": str(config.setting(ORG_SETTING) or ""),
         "cluster_ready": bool(config.setting(CLUSTER_NAME_SETTING)),
+        "cluster": str(config.setting(CLUSTER_NAME_SETTING) or ""),
     }
     if accounts:
         answer["accounts"] = [] if service_account else cli_accounts()
@@ -277,7 +278,8 @@ def _db_password() -> str:
     return "".join(secrets.choice(alphabet) for _ in range(24))
 
 
-def _ensure_group(token: str) -> str:
+def _ensure_group(token: str, exact: bool = False) -> str:
+    """The project to use. `exact`: only the studio's own, made if it is not there, never one that is someone else's."""
     orgs = _api("GET", "/orgs", token=token).get("results") or []
     if not orgs:
         raise ValueError("This Service Account's organisation has no projects it can see. "
@@ -287,7 +289,7 @@ def _ensure_group(token: str) -> str:
     named = next((g for g in groups if g.get("name") == GROUP_NAME), None)
     if named:
         return str(named["id"])
-    if groups:
+    if groups and not exact:
         # A Service Account scoped to one existing project (Project Owner there) rather than given
         # organisation-wide "Project Creator" never has the right to create a second project - use
         # the one it can already see instead of failing on a permission most people never grant.
@@ -299,16 +301,17 @@ def _ensure_group(token: str) -> str:
     return group_id
 
 
-def _ensure_cluster(token: str, group_id: str, say, region: str = "") -> str:
+def _ensure_cluster(token: str, group_id: str, say, region: str = "", exact: bool = False) -> str:
     """The name of the cluster to use in this project - not necessarily CLUSTER_NAME: a free-tier
     project allows only one M0 cluster, so an existing one (whatever a person already made by hand)
-    is reused rather than failing to create a second one there is no room for."""
+    is reused rather than failing to create a second one there is no room for. `exact`: only CLUSTER_NAME,
+    made if it is not there (the person asked for a new cluster; the ones they have are chosen from a list)."""
     try:
         _api("GET", f"/groups/{group_id}/clusters/{CLUSTER_NAME}", token=token)
         return CLUSTER_NAME
     except ValueError:
         pass
-    others = _api("GET", f"/groups/{group_id}/clusters", token=token).get("results") or []
+    others = [] if exact else _api("GET", f"/groups/{group_id}/clusters", token=token).get("results") or []
     if others:
         return str(others[0]["name"])
     say(f"Creating the {CLUSTER_NAME} cluster (free tier)…")
@@ -333,13 +336,15 @@ def _wait_idle(token: str, group_id: str, cluster_name: str, say) -> dict:
 def _ensure_db_user(token: str, group_id: str, password: str) -> None:
     try:
         _api("GET", f"/groups/{group_id}/databaseUsers/admin/{DB_USERNAME}", token=token)
-        return  # already exists - leave its password as whatever it already is
     except ValueError:
-        pass
-    _api("POST", f"/groups/{group_id}/databaseUsers", {
-        "username": DB_USERNAME, "password": password, "databaseName": "admin",
-        "roles": [{"roleName": "readWriteAnyDatabase", "databaseName": "admin"}],
-    }, token=token)
+        _api("POST", f"/groups/{group_id}/databaseUsers", {
+            "username": DB_USERNAME, "password": password, "databaseName": "admin",
+            "roles": [{"roleName": "readWriteAnyDatabase", "databaseName": "admin"}],
+        }, token=token)
+        return
+    # It is already there (an earlier attempt, or the same cluster chosen again): the connection string needs a
+    # password that is known, so set one rather than keep a string whose password is not the user's.
+    _api("PATCH", f"/groups/{group_id}/databaseUsers/admin/{DB_USERNAME}", {"password": password}, token=token)
 
 
 def _ensure_access_list(token: str, group_id: str) -> None:
@@ -366,30 +371,120 @@ def account_facts() -> dict:
             "connection_string_saved": bool(config.setting("deploy_mongodb_uri", "") or "MONGODB_URI" in saved)}
 
 
-def ensure_cluster(log=None, region: str = "") -> dict:
-    """The studio's one Atlas cluster: the existing one, or a freshly provisioned one. Blocking
-    (cluster creation takes a few minutes) - called from a background job (routes_deploy.py), the
-    same way the Deploy panel already runs anything slow."""
-    say = log or (lambda _line: None)
-    if not credentials_saved() and not cli_account():
-        raise ValueError("Sign in to MongoDB Atlas first.")
-    if config.setting(CLUSTER_NAME_SETTING):
-        return status()  # already provisioned by this flow; the manual box can still override it
-    if not credentials_saved():
-        return _ensure_cluster_cli(say, region)
+def _refuse_paused(cluster: dict, name: str) -> None:
+    if cluster.get("paused"):
+        raise ValueError(f"The {name} cluster is paused. Resume it in Atlas, then choose it again.")
 
-    token = _token()
-    say("Finding or creating the Atlas project…")
-    group_id = _ensure_group(token)
-    cluster_name = _ensure_cluster(token, group_id, say, region)
+
+def _finish_cluster_api(token: str, group_id: str, cluster_name: str, say) -> dict:
+    """Everything after the cluster is known, with a Service Account: wait for it, a database user whose password is
+    set here, an open access list, and the connection string kept."""
     cluster = _wait_idle(token, group_id, cluster_name, say)
+    _refuse_paused(cluster, cluster_name)
     password = _db_password()
     say("Creating the database user…")
     _ensure_db_user(token, group_id, password)
     say("Opening the cluster to the deployed application…")
     _ensure_access_list(token, group_id)
-
     return _keep_cluster(cluster, group_id, cluster_name, password, say)
+
+
+def ensure_cluster(log=None, region: str = "", create: bool = False) -> dict:
+    """The studio's one Atlas cluster: the existing one, or a freshly provisioned one. Blocking
+    (cluster creation takes a few minutes) - called from a background job (routes_deploy.py), the
+    same way the Deploy panel already runs anything slow. `create`: make the studio's own cluster even when one is
+    already in use (what "create a new cluster" asks for); the ones a person has are chosen with `use_cluster`."""
+    say = log or (lambda _line: None)
+    if not credentials_saved() and not cli_account():
+        raise ValueError("Sign in to MongoDB Atlas first.")
+    if config.setting(CLUSTER_NAME_SETTING) and not create:
+        return status()  # already provisioned by this flow; the manual box can still override it
+    if not credentials_saved():
+        return _ensure_cluster_cli(say, region, exact=create)
+
+    token = _token()
+    say("Finding or creating the Atlas project…")
+    group_id = _ensure_group(token, exact=create) if create else _ensure_group(token)
+    cluster_name = (_ensure_cluster(token, group_id, say, region, exact=True) if create
+                    else _ensure_cluster(token, group_id, say, region))
+    return _finish_cluster_api(token, group_id, cluster_name, say)
+
+
+# --- choosing one of the clusters the account already has ----------------------------------------------
+
+def _cluster_row(group_id: str, project: str, cluster: dict) -> dict:
+    """One cluster as the picker shows it: the project it is in, its state, size and region. The Atlas API and the CLI
+    word the size and region differently across versions, so both shapes are read."""
+    provider = cluster.get("providerSettings") if isinstance(cluster.get("providerSettings"), dict) else {}
+    specs = cluster.get("replicationSpecs") if isinstance(cluster.get("replicationSpecs"), list) else []
+    regions = (specs[0].get("regionConfigs") if specs and isinstance(specs[0], dict) else None) or []
+    first = regions[0] if regions and isinstance(regions[0], dict) else {}
+    elect = first.get("electableSpecs") if isinstance(first.get("electableSpecs"), dict) else {}
+    return {"group_id": group_id, "project": project, "name": str(cluster.get("name") or ""),
+            "state": "PAUSED" if cluster.get("paused") else str(cluster.get("stateName") or ""),
+            "tier": str(provider.get("instanceSizeName") or elect.get("instanceSize") or ""),
+            "region": str(provider.get("regionName") or first.get("regionName") or "")}
+
+
+def _clusters_cli() -> list[dict]:
+    projects: list[tuple[str, str]] = []
+    for org in _rows(_atlas(["organizations", "list"])):
+        for project in _rows(_atlas(["projects", "list", "--orgId", str(org.get("id") or "")])):
+            projects.append((str(project.get("id") or ""), str(project.get("name") or "")))
+
+    def of(item: tuple[str, str]) -> list[dict]:
+        group_id, name = item
+        try:
+            found = _rows(_atlas(["clusters", "list", "--projectId", group_id]))
+        except ValueError:
+            return []        # a project this account may not look inside has nothing to offer
+        return [_cluster_row(group_id, name, cluster) for cluster in found]
+
+    if not projects:
+        return []
+    with ThreadPoolExecutor(max_workers=min(6, len(projects))) as pool:
+        return [row for rows in pool.map(of, projects) for row in rows]
+
+
+def _clusters_api() -> list[dict]:
+    token = _token()
+    rows: list[dict] = []
+    for org in _api("GET", "/orgs", token=token).get("results") or []:
+        for group in _api("GET", f"/groups?orgId={org.get('id')}", token=token).get("results") or []:
+            try:
+                found = _api("GET", f"/groups/{group['id']}/clusters", token=token).get("results") or []
+            except ValueError:
+                continue
+            rows += [_cluster_row(str(group["id"]), str(group.get("name") or ""), c) for c in found if isinstance(c, dict)]
+    return rows
+
+
+def list_clusters() -> dict:
+    """Every cluster the account in use can see, project by project, and which one this studio uses now.
+    `missing` says the cluster the studio has on record is no longer among them (deleted, or another account's)."""
+    if not credentials_saved() and not cli_account():
+        raise ValueError("Sign in to MongoDB Atlas first.")
+    rows = [row for row in (_clusters_api() if credentials_saved() else _clusters_cli()) if row["name"]]
+    group, name = str(config.setting(GROUP_ID_SETTING) or ""), str(config.setting(CLUSTER_NAME_SETTING) or "")
+    for row in rows:
+        row["selected"] = bool(name) and row["name"] == name and row["group_id"] == group
+    rows.sort(key=lambda row: (not row["selected"], row["project"].lower(), row["name"].lower()))
+    return {"clusters": rows, "selected": {"group_id": group, "name": name},
+            "missing": bool(name) and not any(row["selected"] for row in rows)}
+
+
+def use_cluster(group_id: str, cluster_name: str, log=None) -> dict:
+    """Use a cluster the account already has: the database user and open access list this studio needs are added to
+    its project, and the connection string for it replaces the one saved."""
+    say = log or (lambda _line: None)
+    group_id, cluster_name = str(group_id or "").strip(), str(cluster_name or "").strip()
+    if not group_id or not cluster_name:
+        raise ValueError("Say which cluster to use.")
+    if not credentials_saved() and not cli_account():
+        raise ValueError("Sign in to MongoDB Atlas first.")
+    if not credentials_saved():
+        return _finish_cluster_cli(say, group_id, cluster_name)
+    return _finish_cluster_api(_token(), group_id, cluster_name, say)
 
 
 def _keep_cluster(cluster: dict, group_id: str, cluster_name: str, password: str, say) -> dict:
@@ -437,16 +532,18 @@ def _rows(body: Any) -> list[dict]:
     return [row for row in rows or [] if isinstance(row, dict)]
 
 
-def _ensure_cluster_cli(say, region: str = "") -> dict:
+def _ensure_cluster_cli(say, region: str = "", exact: bool = False) -> dict:
     """What `ensure_cluster` does with a Service Account, with the commands of the CLI the person signed in with: the
-    project, one free M0 cluster, a database user whose password is set here, and an open access list."""
+    project, one free M0 cluster, a database user whose password is set here, and an open access list. `exact`: only
+    the studio's own project and cluster, made if they are not there, never one that is someone else's."""
     say("Finding or creating the Atlas project…")
     orgs = _rows(_atlas(["organizations", "list"]))
     if not orgs:
         raise ValueError("This Atlas account has no organisation to make a project in.")
     org_id = str(orgs[0].get("id") or "")
     projects = _rows(_atlas(["projects", "list", "--orgId", org_id]))
-    named = next((p for p in projects if p.get("name") == GROUP_NAME), None) or (projects[0] if projects else None)
+    named = next((p for p in projects if p.get("name") == GROUP_NAME), None) \
+        or (projects[0] if projects and not exact else None)
     if named:
         group_id = str(named.get("id") or "")
     else:
@@ -457,13 +554,18 @@ def _ensure_cluster_cli(say, region: str = "") -> dict:
     clusters = _rows(_atlas(["clusters", "list", "--projectId", group_id]))
     # A free-tier project allows one M0 cluster: an existing one is used rather than failing to make a second.
     cluster_name = next((c["name"] for c in clusters if c.get("name") == CLUSTER_NAME), "") \
-        or (str(clusters[0].get("name") or "") if clusters else "")
+        or (str(clusters[0].get("name") or "") if clusters and not exact else "")
     if not cluster_name:
         say(f"Creating the {CLUSTER_NAME} cluster (free tier)…")
         _atlas(["clusters", "create", CLUSTER_NAME, "--projectId", group_id, "--provider", "AWS",
                 "--region", region or DEFAULT_REGION, "--tier", "M0"], timeout=180)
         cluster_name = CLUSTER_NAME
+    return _finish_cluster_cli(say, group_id, cluster_name)
 
+
+def _finish_cluster_cli(say, group_id: str, cluster_name: str) -> dict:
+    """Everything after the cluster is known, with the Atlas CLI: wait for it, a database user whose password is set
+    here, an open access list, and the connection string kept."""
     say(f"Waiting for {cluster_name} to come up…")
     cluster: dict = {}
     for _ in range(60):  # ~5 minutes
@@ -474,6 +576,7 @@ def _ensure_cluster_cli(say, region: str = "") -> dict:
     else:
         raise ValueError(f"The {cluster_name} cluster did not finish provisioning in time. "
                          "Check the Atlas UI and try again.")
+    _refuse_paused(cluster, cluster_name)
 
     say("Creating the database user…")
     password = _db_password()

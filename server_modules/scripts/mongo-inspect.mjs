@@ -153,7 +153,11 @@ try {
   if (/auth/i.test(error.codeName || '') || /authentication failed|bad auth/i.test(text) || error.code === 18) {
     fail('auth', 'The cluster refused the saved username or password.');
   }
-  fail('connect', `The database could not be read: ${text.slice(0, 240)}`);
+  // An address that does not exist: for an Atlas cluster, most often one that is paused (Atlas pauses a free cluster nobody has used
+  // for a while, and a paused cluster has no address). Said, so that it is not taken for a typing mistake in the string.
+  const gone = /querySrv\s+ENOTFOUND|getaddrinfo\s+ENOTFOUND/i.test(text)
+    ? ' If this is an Atlas cluster it may be paused: resume it in Atlas, or choose another cluster in Settings, MongoDB.' : '';
+  fail('connect', `The database could not be read: ${text.slice(0, 240)}${gone}`);
 } finally {
   await client.close().catch(() => {});
 }
