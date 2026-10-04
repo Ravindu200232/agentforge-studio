@@ -2,6 +2,10 @@
 
 Read the finished app and write real unit tests for every module that carries logic, across both halves of it. The Testing screen shows what the unit tests actually execute, so a few test files over a large app read as an untested app. Write enough files to cover the logic, not a sample of it.
 
+## Who decides how much
+
+The customer is asked, before the build is planned, how much the unit tests should cover. When the request has their answer (a "Decided with the customer" entry marked `[unit-test coverage]`, or a "How much the unit tests cover" section), it wins over the defaults in this guide: test the modules and go as deep as it says, and reach the coverage figure it names. When it names no figure, use the floor below for the scope it chose. Everything below is the default for when nothing was decided.
+
 ## What gets its own test file
 
 Every one of these that exists in this app, each in a test file of its own:
@@ -37,7 +41,7 @@ A route handler gets at least: success, bad input, signed out, forbidden, and no
 1. Write the test files for all of the modules above first, then run them with coverage, once:
    `npx vitest run --coverage --reporter=json --outputFile=.agentforge/qa/vitest.json`
    That writes the Vitest JSON and `.agentforge/qa/coverage/coverage-summary.json` together. `npm run qa:inventory` may be run once to list the pages, routes and components that have no test of their own.
-2. Open `coverage-summary.json`. The floor is **70% of lines overall and 80% in the logic modules** (route handlers, models/services, validation, hooks, `lib`/utility code). For each logic file below it, read the lines the report says were not run and add tests for those branches — the error path, the refusal, the edge case — in that module's own test file.
+2. Open `coverage-summary.json`. The floor is the customer's figure when they named one, otherwise **70% of lines overall and 80% in the logic modules** (route handlers, models/services, validation, hooks, `lib`/utility code). For each logic file below it, read the lines the report says were not run and add tests for those branches — the error path, the refusal, the edge case — in that module's own test file.
 3. Run the same command once more and keep that result. Stop there.
 4. Record the final percentages. If a logic file is still under the floor because the code cannot be reached from a test, say why under `gaps` in `.agentforge/build/report.json`; never report the floor as met when it was not.
 
@@ -47,4 +51,4 @@ If a test fails because of a real defect, fix only the production code and rerun
 
 - A test of static markup, a snapshot that nothing reads, an assertion that cannot fail, or a mock of the very module under test.
 - Narrowing `coverage.include`/`exclude` in `vitest.config.js`, adding thresholds, or skipping a test to move the number. Never weaken a meaningful assertion either.
-- Chasing 100%. Once the floor is met and the obvious branches are covered, stop.
+- Chasing more than the floor (100% only when the customer asked for exactly that). Once the floor is met and the obvious branches are covered, stop.

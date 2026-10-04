@@ -195,8 +195,62 @@ def _check_decision(data: Any, may_ask: bool) -> dict[str, Any]:
     return changes.check_question(data, may_ask)
 
 
+# What a decision is about, when it is one every project is asked: written next to the answer so a later prompt can tell
+# it apart. The question and its options are the model's words; only this tag and its label are ours.
+COVERAGE_TOPIC = "unit_test_coverage"
+TOPIC_LABELS = {COVERAGE_TOPIC: "unit-test coverage"}
+
+
 def _qa_rows(rows: list[dict[str, str]]) -> str:
-    return "\n".join(f"- Q: {row.get('question', '')}\n  A: {row.get('answer', '')}" for row in rows)
+    return "\n".join((f"- [{TOPIC_LABELS[row['topic']]}] " if row.get("topic") in TOPIC_LABELS else "- ")
+                     + f"Q: {row.get('question', '')}\n  A: {row.get('answer', '')}" for row in rows)
+
+
+def _check_coverage_question(data: Any) -> dict[str, Any]:
+    asked = changes.check_question(data if isinstance(data, dict) else {}, True)
+    if len(asked["options"]) < 2:
+        raise ValueError('offer two to four "options" the customer can choose between')
+    return asked
+
+
+def _ask_coverage(project: str, session: Any, agent: Any, stack: str, direction: str,
+                  earlier: list[dict[str, str]]) -> dict[str, str] | None:
+    """How much the unit tests should cover is the customer's to decide, so every project is asked once.
+
+    The question is not ours: the model writes it, and its options, from this project's own specification. Only that it is
+    asked (and tagged, so the plan and the Testing run can find the answer) is decided here. Asked once per project: an
+    earlier build's answer stands. Returns the row to keep, or None when there was nothing to ask.
+    """
+    if any(row.get("topic") == COVERAGE_TOPIC for row in earlier):
+        return None
+    prompt = prompts.load("builder/coverage", stack=stack,
+                          direction=("The customer asked for this on top of the specification:\n\n" + direction.strip())
+                          if direction.strip() else "")
+    with session.lock:
+        agent.set_mode("plan")
+    try:
+        reply = session.ask_json(prompt, validator=_check_coverage_question)
+    finally:
+        with session.lock:
+            agent.set_mode("act")
+    bus.phase(project, "build:decide", "Asking you before the build is planned", detail=reply["question"])
+    given = bus.ask_and_wait(project, "question", reply["question"], options=reply["options"], agent=bus.DEVELOPER,
+                             cancelled=lambda: session.cancelled, why=reply["why"], assumption=reply["assumption"])
+    if given is None:
+        raise RunCancelled(project)
+    return {"question": reply["question"], "answer": given.strip() or prompts.load("changes/unanswered").strip(),
+            "topic": COVERAGE_TOPIC}
+
+
+def coverage_decision(session: Any) -> str:
+    """What the customer decided about unit-test coverage, as a block for a prompt, or "" when nothing was decided."""
+    saved = session.read_record(*DECISIONS, fallback=None)
+    rows = [row for row in saved if isinstance(row, dict) and row.get("topic") == COVERAGE_TOPIC] \
+        if isinstance(saved, list) else []
+    if not rows:
+        return ""
+    return ("\n\n## How much the unit tests cover — the customer's decision\n\n" + _qa_rows(rows[-1:])
+            + "\n\nThis decision wins over the default scope and floor in `unit-tests.md`.")
 
 
 def _decide(project: str, session: Any, stack: str, direction: str) -> list[dict[str, str]]:
@@ -211,8 +265,15 @@ def _decide(project: str, session: Any, stack: str, direction: str) -> list[dict
     saved = session.read_record(*DECISIONS, fallback=None)
     earlier = [row for row in saved if isinstance(row, dict)] if isinstance(saved, list) else []
     answers: list[dict[str, str]] = []
+    coverage: dict[str, str] | None = None
     try:
         agent = session.agent("")
+        try:
+            coverage = _ask_coverage(project, session, agent, stack, direction, earlier)
+        except RunCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - not asking about coverage is not a reason to skip the other questions
+            bus.log(project, "WARN", f"The unit-test coverage question could not be asked, so the default applies: {exc}")
         while True:
             left = QUESTIONS - len(answers)
             prompt = prompts.load(
@@ -224,7 +285,8 @@ def _decide(project: str, session: Any, stack: str, direction: str) -> list[dict
                 if direction.strip() else "",
                 earlier=("Already decided in an earlier build of this project, so not asked again:\n\n"
                          + _qa_rows(earlier) + "\n\n") if earlier else "",
-                answers=("Asked and answered just now:\n\n" + _qa_rows(answers) + "\n\n") if answers else "",
+                answers=("Asked and answered just now:\n\n" + _qa_rows(([coverage] if coverage else []) + answers) + "\n\n")
+                if (answers or coverage) else "",
                 questions_left=(prompts.load("changes/questions-left", count=left).strip() if left > 0
                                 else prompts.load("changes/no-questions").strip()))
             with session.lock:
@@ -250,6 +312,7 @@ def _decide(project: str, session: Any, stack: str, direction: str) -> list[dict
         raise
     except Exception as exc:  # noqa: BLE001 - what was answered so far still counts; the build goes on without more
         bus.log(project, "WARN", f"The questions before the plan stopped, so the build goes on without them: {exc}")
+    answers = ([coverage] if coverage else []) + answers
     if answers:
         session.write_record(*DECISIONS, data=earlier + answers)
         bus.phase(project, "build:decide", "Decided with you", status="complete",
