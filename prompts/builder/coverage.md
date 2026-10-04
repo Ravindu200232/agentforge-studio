@@ -10,6 +10,8 @@ Ask exactly one question: how much of the app should the unit tests cover. Write
 
 Give two to four options, your recommendation first, ranging from the business rules and the API alone to every function that has logic. Say what each option means for them: what is tested, what is not, and how much longer the build takes. When a coverage percentage is a good way to say it, put the figure in the option. What the build does when nothing is decided is a test file for every module that carries logic, with at least 70% of the lines covered overall and 80% in the logic modules: make that your recommendation unless this project is a reason to say otherwise.
 
+Keep the question itself to two or three sentences and the `why` to one or two: the detail of what each option tests and leaves out goes in that option's `hint`, so the customer can read the choices at a glance.
+
 Put in `assumption` what you will do if they leave it to you.
 
 Reply with ONLY one JSON object:
