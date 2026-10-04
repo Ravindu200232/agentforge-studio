@@ -115,6 +115,12 @@ export default function PreviewPane({ hidden, onBuild }) {
     api.previewLink(project)
       .then(state => { useStore.getState().setRuntime(state); setPublishing('') })
       .catch(error => {
+        // This build publishes no address for an app (there is no tunnel): not a failure of the app or of the run,
+        // so it is said once, where the address would be, and not as a warning in the log.
+        if (/no public preview tunnel/i.test(error.message || '')) {
+          setPublishing('this app can only be previewed on the computer AgentForge runs on')
+          return
+        }
         setPublishing(error.message)
         addLog('WARN', `This app has no public address — ${error.message}`)
       })

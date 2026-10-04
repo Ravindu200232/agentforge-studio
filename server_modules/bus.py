@@ -260,6 +260,7 @@ def forget(project: str) -> None:
         _discarded.add(project)
         _history.pop(project, None)
         _runs.pop(project, None)
+        _last_failure.pop(project, None)
         _loaded.discard(project)
         for decision_id, question in list(_pending_decisions.items()):
             if question.get("project") == project:
@@ -297,6 +298,8 @@ def run_state(project: str, status: str, run_id: str = "", agent: str = DEVELOPE
     """queued | running | completed | paused | failed."""
     with _lock:
         _runs.setdefault(project, {})[agent] = {"status": status, "run_id": run_id}
+        if status in {"queued", "running"}:
+            _last_failure.pop(project, None)       # a new run: its failure is its own, never an echo of the last one
     emit({"type": "run_state", "project": project, "agent": agent,
           "status": status, "run_id": run_id})
 
@@ -479,7 +482,20 @@ def done(project: str, text: str = "", agent: str = DEVELOPER) -> None:
     emit({"type": "done", "project": project, "agent": agent, "text": text})
 
 
+# A run that fails is reported by the session that was running it and then, when the exception reaches the worker thread,
+# by the worker as well, in the same words. The chat read "Run failed" twice. The second report of the same failure within
+# a few seconds is dropped; a new run clears the memory (`run_state`), so a retry that fails the same way is still shown.
+FAILURE_ECHO_SECONDS = 5.0
+_last_failure: dict[str, tuple[str, float]] = {}
+
+
 def failed(project: str, text: str, agent: str = DEVELOPER) -> None:
+    now = time.time()
+    with _lock:
+        before = _last_failure.get(project)
+        if before and before[0] == text and now - before[1] < FAILURE_ECHO_SECONDS:
+            return
+        _last_failure[project] = (text, now)
     run_state(project, "failed", agent=agent)
     emit({"type": "error", "project": project, "agent": agent, "text": text})
 
