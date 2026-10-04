@@ -374,6 +374,11 @@ def _atlas_login(tool: str, options: dict, identity: dict | None) -> list:
         options["profile"] = f"agentforge-{number}"
     elif "profile" not in options:
         options["profile"] = str(config.setting(ATLAS_PROFILE_SETTING) or "")
+    if identity and not options.get("add"):
+        # The CLI will not sign in over an account that is signed in ("already authenticated with an account ... To log
+        # out, run: atlas auth logout"), so signing in again starts by signing this profile out. If that fails, the login
+        # that follows says what is wrong.
+        _run([tool, "auth", "logout", "--force", *atlas_profile_args(options["profile"])], timeout=30)
     return [tool, "auth", "login", "--noBrowser", *atlas_profile_args(options["profile"])]
 
 

@@ -310,6 +310,36 @@ class LoginFlowTests(unittest.TestCase):
         self.atlas_settings(mongodb_atlas_profile="")
         self.assertEqual(cli_signin.PROVIDERS["atlas"].login("atlas", {}, None), ["atlas", "auth", "login", "--noBrowser"])
 
+    def test_signing_in_again_while_signed_in_signs_that_profile_out_first(self):
+        # The Atlas CLI refuses: "already authenticated with an account ... To log out, run: atlas auth logout".
+        self.atlas_settings(mongodb_atlas_profile="agentforge-2")
+        ran = []
+        with mock.patch.object(cli_signin, "_run", lambda command, timeout=30: ran.append(command)):
+            login = cli_signin.PROVIDERS["atlas"].login("atlas", {}, {"account": "me@example.com"})
+        self.assertEqual(ran, [["atlas", "auth", "logout", "--force", "-P", "agentforge-2"]])
+        self.assertEqual(login, ["atlas", "auth", "login", "--noBrowser", "-P", "agentforge-2"])
+
+    def test_the_default_profile_is_signed_out_without_a_profile_flag(self):
+        self.atlas_settings(mongodb_atlas_profile="")
+        ran = []
+        with mock.patch.object(cli_signin, "_run", lambda command, timeout=30: ran.append(command)):
+            cli_signin.PROVIDERS["atlas"].login("atlas", {}, {"account": "me@example.com"})
+        self.assertEqual(ran, [["atlas", "auth", "logout", "--force"]])
+
+    def test_nobody_is_signed_out_when_nobody_is_signed_in_or_another_account_is_added(self):
+        self.atlas_settings(mongodb_atlas_profile="")
+        ran = []
+        listed = subprocess.CompletedProcess([], 0, json.dumps(["default"]), "")
+
+        def run(command, timeout=30):
+            ran.append(command)
+            return listed
+
+        with mock.patch.object(cli_signin, "_run", run):
+            cli_signin.PROVIDERS["atlas"].login("atlas", {}, None)                                   # signed out already
+            cli_signin.PROVIDERS["atlas"].login("atlas", {"add": True}, {"account": "me@example.com"})   # a new profile
+        self.assertFalse([command for command in ran if "logout" in command])
+
     def test_the_profile_a_sign_in_used_is_what_is_kept_with_the_account(self):
         self.atlas_settings()
         whoami = subprocess.CompletedProcess([], 0, "Logged in as work@example.com [Atlas CLI]", "")
