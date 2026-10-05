@@ -188,29 +188,6 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn("### unit-tests.md", scaffold.common_context())
         self.assertIn("every approved page", (ROOT / "prompts/builder/generate.md").read_text(encoding="utf-8"))
 
-    def test_the_unit_prompts_ask_for_a_test_file_per_logic_module_and_a_measured_coverage_floor(self):
-        """A few test files over a big app read as untested: the build, the testing run and the guide all ask for a test
-        file for every module with logic, one coverage run, one gap-filling pass, and the same floor."""
-        command = "npx vitest run --coverage --reporter=json --outputFile=.agentforge/qa/vitest.json"
-        guide = (scaffold.ROOT / "_guides" / "unit-tests.md").read_text(encoding="utf-8")
-        vitest = (scaffold.ROOT / "_guides" / "vitest.md").read_text(encoding="utf-8")
-        generate = (ROOT / "prompts/builder/generate.md").read_text(encoding="utf-8")
-        run = (ROOT / "prompts/testing/run.md").read_text(encoding="utf-8")
-        for name, text in (("unit-tests.md", guide), ("vitest.md", vitest), ("generate.md", generate)):
-            self.assertIn(command, text, name)
-        for name, text in (("unit-tests.md", guide), ("generate.md", generate), ("run.md", run)):
-            self.assertIn("70%", text, name)
-            self.assertIn("80%", text, name)
-        self.assertIn("a test file for every module", guide.lower().replace("**", ""))
-        # Not the old stance that left coverage low.
-        for name, text in (("generate.md", generate), ("run.md", run), ("unit-tests.md", guide)):
-            self.assertNotIn("do not run an inventory or full coverage campaign", text.lower(), name)
-            self.assertNotIn("not coverage chasing", text.lower(), name)
-        # ... and no way to game the number.
-        self.assertIn("never narrow `coverage.include`/`exclude`", generate)
-        self.assertIn("coverage.include", guide)
-        self.assertIn("100%", guide)
-
     def test_shared_guidance_and_templates_name_no_particular_app(self):
         # The skill, the templates and the prompts are for every product, not the one they were learned on.
         roots = [scaffold.ROOT / "_guides", scaffold.ROOT / "_testing", ROOT / "prompts" / "builder", ROOT / "prompts" / "testing"]

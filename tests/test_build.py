@@ -135,10 +135,6 @@ class RunSession:
 class StraightThroughCase(unittest.TestCase):
     """A build or update is one run that never parks a question on the customer."""
 
-    # The question about how much the unit tests cover is asked on its own turn before the model's free questions; these
-    # cases are about those, so that turn is left out unless a case says it is about it (`CoverageQuestionTests`).
-    coverage_turn = False
-
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -160,8 +156,6 @@ class StraightThroughCase(unittest.TestCase):
             mock.patch("prototype_agent.design.approved_customization", return_value={}),
         ):
             self.enterContext(patch)
-        if not self.coverage_turn:
-            self.enterContext(mock.patch.object(build, "_ask_coverage", return_value=None))
 
     def assertNothingWasAsked(self):
         self.ask.assert_not_called()
@@ -399,129 +393,6 @@ class AskingBeforeThePlanTests(StraightThroughCase):
         with self.assertRaisesRegex(ValueError, "no more questions may be asked"):
             build._check_decision({"kind": "question", "question": "Again?"}, False)
         self.assertEqual(build._check_decision({"kind": "ready"}, False), {"kind": "ready"})
-
-
-class CoverageQuestionTests(StraightThroughCase):
-    """How much the unit tests cover is the customer's to decide: every project is asked once, before the plan, in a question
-    the model writes from the project's own specification. The code holds no wording of it, only that it is asked."""
-
-    coverage_turn = True
-
-    def setUp(self):
-        super().setUp()
-        self.ensure_project.return_value = {"ref": "abc"}
-        self.enterContext(mock.patch("builder_agent.scaffold.install",
-                                     mock.Mock(return_value={"scaffolded": True, "files": ["package.json"]})))
-        self.waited = mock.Mock(return_value="Business rules and the API, about 70%")
-        self.enterContext(mock.patch.object(build.bus, "ask_and_wait", self.waited))
-        self.session.results.append({"status": "complete", "text": "done", "plan": "p"})
-
-    def coverage(self, text="How much of the booking and pricing rules should the unit tests cover?"):
-        return {"question": text, "why": "it sets how long the build takes",
-                "options": [{"label": "Business rules and the API", "hint": "about 70% of lines"},
-                            {"label": "Every function with logic", "hint": "slower, about 90%"}],
-                "assumption": "business rules and every API route, 70% of lines"}
-
-    def free(self, text="Which payment provider should checkout use?"):
-        return {"kind": "question", "question": text, "why": "none is named", "options": [{"label": "Stripe"}, {"label": "PayPal"}],
-                "assumption": "use Stripe"}
-
-    def test_the_customer_is_asked_in_the_models_own_words_and_the_answer_is_kept_with_its_topic(self):
-        self.session.says += [self.coverage(), {"kind": "ready"}]
-        build.run(RUN_PROJECT)
-        args, kwargs = self.waited.call_args
-        self.assertEqual(args[:3], (RUN_PROJECT, "question", "How much of the booking and pricing rules should the unit tests cover?"))
-        self.assertEqual([o["label"] for o in kwargs["options"]], ["Business rules and the API", "Every function with logic"])
-        self.assertEqual(kwargs["assumption"], "business rules and every API route, 70% of lines")
-        self.assertEqual(self.session.read_record(*build.DECISIONS),
-                         [{"question": args[2], "answer": "Business rules and the API, about 70%", "topic": build.COVERAGE_TOPIC}])
-
-    def test_the_plan_is_told_the_decision_and_which_one_it_is(self):
-        self.session.says += [self.coverage(), {"kind": "ready"}]
-        build.run(RUN_PROJECT)
-        request = self.session.requests[0]
-        self.assertIn("## Decided with the customer before this plan", request)
-        self.assertIn("- [unit-test coverage] Q: How much of the booking and pricing rules should the unit tests cover?\n"
-                      "  A: Business rules and the API, about 70%", request)
-
-    def test_the_model_writes_the_question_from_a_prompt_that_names_no_wording_of_it(self):
-        self.session.says += [self.coverage(), {"kind": "ready"}]
-        build.run(RUN_PROJECT, direction="make checkout quick")
-        prompt = self.session.before_plan[0]
-        self.assertNotIn("{{", prompt)
-        self.assertIn("nextjs-supabase", prompt)
-        self.assertIn("make checkout quick", prompt)
-        self.assertIn("Name the project's own business rules", prompt)
-        self.assertIn("70% of the lines", prompt)                  # the default the build applies, as the recommendation
-        self.assertEqual(self.session._agent.modes[:2], ["plan", "act"])
-
-    def test_an_earlier_build_that_asked_it_is_not_asked_again(self):
-        self.session.write_record(*build.DECISIONS, data=[{"question": "How much?", "answer": "Everything", "topic": build.COVERAGE_TOPIC}])
-        self.session.says += [{"kind": "ready"}]
-        build.run(RUN_PROJECT)
-        self.waited.assert_not_called()
-        self.assertEqual(len(self.session.before_plan), 1)         # only the model's own turn
-        self.assertNotIn("how much should the unit tests cover", self.session.before_plan[0])
-        self.assertIn("[unit-test coverage] Q: How much?", self.session.requests[0])
-
-    def test_the_models_own_questions_see_the_answer_and_do_not_repeat_it(self):
-        self.session.says += [self.coverage(), {"kind": "ready"}]
-        build.run(RUN_PROJECT)
-        self.assertIn("Asked and answered just now", self.session.before_plan[1])
-        self.assertIn("A: Business rules and the API, about 70%", self.session.before_plan[1])
-
-    def test_it_does_not_use_up_the_models_own_question_budget(self):
-        self.session.says += [self.coverage()] + [self.free(f"Question {number}?") for number in range(build.QUESTIONS + 2)]
-        self.assertEqual(build.run(RUN_PROJECT), {"status": "complete"})
-        self.assertEqual(self.waited.call_count, build.QUESTIONS + 1)
-
-    def test_a_question_with_fewer_than_two_options_to_choose_between_is_refused(self):
-        with self.assertRaisesRegex(ValueError, "options"):
-            build._check_coverage_question({"question": "How much?", "options": [{"label": "All"}]})
-        with self.assertRaisesRegex(ValueError, "question text"):
-            build._check_coverage_question("not an object")
-        self.assertEqual(len(build._check_coverage_question(self.coverage())["options"]), 2)
-
-    def test_a_turn_that_fails_never_stops_the_other_questions_or_the_build(self):
-        self.session.says += [ValueError("the model could not produce valid JSON after 3 attempts"), self.free(), {"kind": "ready"}]
-        self.assertEqual(build.run(RUN_PROJECT), {"status": "complete"})
-        self.assertEqual(self.waited.call_count, 1)                  # the model's own question was still asked
-        self.assertEqual(self.session.failed, [])
-        self.assertEqual([row.get("topic") for row in self.session.read_record(*build.DECISIONS)], [None])
-        self.assertEqual(self.session._agent.modes, ["plan", "act", "plan", "act", "plan", "act"])
-
-    def test_leaving_it_to_the_model_is_an_answer_too(self):
-        self.waited.return_value = "  "
-        self.session.says += [self.coverage(), {"kind": "ready"}]
-        build.run(RUN_PROJECT)
-        self.assertIn(prompts.load("changes/unanswered").strip(), self.session.requests[0])
-
-    def test_stopping_the_run_while_it_waits_stops_the_build(self):
-        self.waited.return_value = None
-        self.session.says.append(self.coverage())
-        with self.assertRaises(RunCancelled):
-            build.run(RUN_PROJECT)
-        self.assertEqual((self.session.failed, self.session.requests), ([], []))
-
-    def test_the_testing_run_is_given_the_customers_decision_and_nothing_when_there_is_none(self):
-        self.assertEqual(build.coverage_decision(self.session), "")
-        self.session.write_record(*build.DECISIONS, data=[
-            {"question": "Which provider?", "answer": "Stripe"},
-            {"question": "How much?", "answer": "Business rules only", "topic": build.COVERAGE_TOPIC}])
-        block = build.coverage_decision(self.session)
-        self.assertIn("[unit-test coverage] Q: How much?\n  A: Business rules only", block)
-        self.assertIn("wins over the default scope and floor", block)
-        self.assertNotIn("Which provider?", block)                  # only this decision, not the others
-
-    def test_the_prompts_that_set_the_floor_say_the_customers_answer_wins(self):
-        verify = (ROOT / "qa-agent/qa_agent/verify.py").read_text(encoding="utf-8")
-        self.assertIn("builder.coverage_decision(session)", verify)
-        self.assertIn("`[unit-test coverage]`", prompts.load("builder/generate", stack="nextjs-supabase", report_template="r.json"))
-        self.assertIn("it wins over everything below", prompts.load("builder/generate", stack="nextjs-supabase", report_template="r.json"))
-        guide = (ROOT / "builder-agent/builder_agent/assets/templates/_guides/unit-tests.md").read_text(encoding="utf-8")
-        self.assertIn("## Who decides how much", guide)
-        self.assertIn("wins over the defaults", guide)
-        self.assertIn("How much the unit tests cover", prompts.load("testing/run", project="p", report_template="r.json"))
 
 
 class HoldStillForAnswerTests(unittest.TestCase):

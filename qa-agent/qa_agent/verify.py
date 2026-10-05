@@ -88,8 +88,6 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         from server_modules.validation import build_report
         request = prompts.load("testing/run", project=project,
                                report_template=build_report.stage_template(session.workspace))
-        # How much the unit tests cover was the customer's decision when the build was planned: this run holds to it.
-        request += builder.coverage_decision(session)
         guide_paths = reference_staging.stage(session.workspace, f"{config.RECORD_DIR}/{QA_DIR}/guides",
                                               guide_files(stack))
         request += ("\n\n## Selected scaffold and test guides\n\nRead these yourself before planning:\n"
