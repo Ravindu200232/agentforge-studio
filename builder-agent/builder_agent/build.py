@@ -8,8 +8,10 @@ from typing import Any
 from server_modules import (auth_guide, bus, changes, config, plugins, prompts, reference_staging, store,
                             supabase_connect)
 from server_modules.qa_report import summary_counts
-from server_modules.session import RunCancelled, session_for
+from server_modules.session import Phases, RunCancelled, session_for
 from server_modules.validation import build_report
+
+from . import phases as build_phases
 
 BUILD_DIR = "build"
 REPORT = (BUILD_DIR, "report.json")
@@ -130,6 +132,8 @@ def _conform_reports(project: str, session: Any, plan: str) -> None:
 
 
 def _finish_run(project: str, session: Any, build_result: dict[str, Any], plan: str = "") -> dict[str, Any]:
+    # A page of the prototype that was not built fails the build by name, whatever the later phases found.
+    build_phases.gate(session)
     _conform_reports(project, session, plan)
     bus.phase(project, "build:write", "Building the application", status="complete")
 
@@ -169,6 +173,7 @@ def _finish_run(project: str, session: Any, build_result: dict[str, Any], plan: 
                  build_available=True,
                  status="tested-with-failures" if failed else "tested")
     store.advance(project, "test")
+    build_phases.finish_state(session)
     bus.agent_msg(project, "The single build plan is complete: app, focused unit tests and final checks."
                   + (f" {len(gaps)} disclosed gap(s) remain." if gaps else "")
                   + (f" {failed} test failure(s) are recorded." if failed else ""),
@@ -264,6 +269,36 @@ def _decided_block(answers: list[dict[str, str]]) -> str:
             "and do not ask any of them again:\n\n" + _qa_rows(answers))
 
 
+def _build_in_phases(project: str, session: Any, stack: str, request: str, direction: str) -> dict[str, Any]:
+    """Plan the application, then build it one numbered phase at a time (`phases.py`), however many pages it has.
+
+    A build that was stopped carries on from the phase it reached, with the plan it already made. A prototype that lists no pages
+    is built the way it always was, in one go."""
+    routes = build_phases.routes_of(session.workspace)
+    if not routes:
+        return session.run_task(request, plan_directory="plan", audit=False)
+    finger = build_phases.fingerprint(routes, stack, direction)
+    saved = build_phases.resume_state(session, finger)
+    items = saved["phases"] if saved else build_phases.plan(routes)
+    state = {"fingerprint": finger, "plan_file": str(saved["plan_file"]) if saved else "", "phases": items, "finished": False}
+
+    def save(plan_file: str) -> None:
+        state["plan_file"] = plan_file or state["plan_file"]
+        build_phases.save_state(session, state)
+
+    phased = Phases(
+        items=items,
+        request_for=lambda number, phase: build_phases.request_for(phase, number, len(items), routes, request),
+        repair_for=lambda number, phase, problems: build_phases.repair_for(phase, number, len(items), problems),
+        verify=lambda phase: build_phases.problems(session.workspace, phase), save=save,
+        summary=lambda phase: build_phases.summary(session.workspace, phase))
+    if saved:
+        plan_file = str(saved["plan_file"])
+        return session.resume_phases((session.workspace / plan_file).read_text(encoding="utf-8", errors="replace"),
+                                     plan_file, phased)
+    return session.run_task(request, plan_directory="plan", audit=False, phases=phased)
+
+
 def run(project: str, direction: str = "") -> dict[str, Any]:
     """Build the application from everything the project already settled.
 
@@ -329,7 +364,7 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         if direction.strip():
             request += f"\n\n## What the customer asked for on top of that\n\n{direction.strip()}"
 
-        build_result = session.run_task(request, plan_directory="plan", audit=False)
+        build_result = _build_in_phases(project, session, stack, request, direction)
         if build_result.get("status") == "blocked":
             raise ValueError(build_result.get("text") or "the build was blocked")
         # The plan's own end-to-end tests are done: a model that can look at pictures looks at their screenshots, and what

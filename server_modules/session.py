@@ -19,6 +19,7 @@ import queue
 import re
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -34,6 +35,23 @@ from . import bus, config, connection, deploy_vars, live, plugins, prompts, stag
 
 class RunCancelled(Exception):
     """Raised inside a run when the studio asked for it to stop."""
+
+
+PHASE_REPAIRS = 2            # how many times a phase that is not finished is asked for again
+
+
+@dataclass
+class Phases:
+    """A build given to the model one numbered phase at a time (see `builder_agent/phases.py`).
+
+    `items` are the phases, each a dict with at least `title`, `detail` and `status`; the functions say what to ask for, what a
+    phase has delivered (the problems it still has, none when it is done), and where the state is kept so a stopped build resumes."""
+    items: list[dict[str, Any]]
+    request_for: Callable[[int, dict[str, Any]], str]
+    repair_for: Callable[[int, dict[str, Any], list[str]], str]
+    verify: Callable[[dict[str, Any]], list[str]] = field(default=lambda phase: [])
+    save: Callable[[str], None] = field(default=lambda plan_file: None)
+    summary: Callable[[dict[str, Any]], str] = field(default=lambda phase: "")     # what a finished phase delivered, in words
 
 
 class EngineUnavailable(RuntimeError):
@@ -1007,13 +1025,16 @@ class ProjectSession:
                          f"{attempts} attempts: {last[:300]}")
 
     def run_task(self, request: str, model: str = "", thinking_level: str = "", plan_directory: str = "",
-                 audit: bool = False, parallel_write_limit: int = 1) -> dict[str, Any]:
+                 audit: bool = False, parallel_write_limit: int = 1, phases: Phases | None = None) -> dict[str, Any]:
         """Plan silently, then carry the plan out.
 
         The CLI shows its plan and waits for a person. Here nobody is waiting: the
         studio already approved this stage by starting it, so the plan is produced
         and immediately executed in the same conversation. Callers may skip the
         extra audit pass when later phases already provide the relevant checks.
+
+        With `phases` the plan is carried out one numbered phase at a time (`_run_phases`) instead of in one go, so a plan
+        too big for one turn is still done in full.
         """
         # Keep the one-argument call shape for lightweight adapters/tests that
         # provide an ``agent(model)`` callable. A real chat turn passes the
@@ -1051,6 +1072,11 @@ class ProjectSession:
             raise RunCancelled(self.project)
 
         bus.agent_state(self.project, "building", agent=self.role)
+        if phases is not None:
+            phases.save(plan_file)                     # a build stopped in its first phase still carries on with this plan
+            done = self._run_phases(agent, plan, plan_file, phases, parallel_write_limit)
+            bus.agent_state(self.project, "", agent=self.role)
+            return {"plan": plan, "plan_file": plan_file, **done}
         with self.lock:
             execution_request = request
             if plan_file:
@@ -1066,6 +1092,87 @@ class ProjectSession:
         bus.agent_state(self.project, "", agent=self.role)
         return {"plan": plan, "plan_file": plan_file, "status": result.status,
                 "text": result.text, "rounds": result.rounds}
+
+    def _phase_turn(self, agent: Agent, request: str, pointer: str, parallel_write_limit: int = 1) -> Any:
+        """One phase's turn, or the repeat of it, in the one conversation."""
+        try:
+            with self.lock:
+                return agent.execute_plan(request, pointer, audit=False, parallel_write_limit=parallel_write_limit)
+        finally:
+            self.report_memory()
+            self.save_context()
+
+    def _run_phases(self, agent: Agent, plan: str, plan_file: str, phases: Phases, parallel_write_limit: int = 1) -> dict[str, Any]:
+        """Carry out a plan one numbered phase at a time, each in full.
+
+        A phase is given to the model with only its own work in it; what it delivered is checked (`phases.verify`), and one that is
+        not finished is asked for again up to `PHASE_REPAIRS` times, with what is missing written out. A phase that is still not
+        finished is recorded as such and the build goes on to the next, so the tests and the checks still run; what is left undone is
+        for the build's own gate to refuse, by name, never to report as the application. Phases already done are skipped, which is how
+        a stopped build carries on."""
+        total = len(phases.items)
+        pointer = (f"The approved plan is saved at {plan_file}. Read the parts of it this phase needs, once; do not reread all of it."
+                   if plan_file else plan[:6000])
+        rounds, last = 0, ""
+        for number, phase in enumerate(phases.items, start=1):
+            if phase.get("status") == "done":
+                continue
+            if self.cancelled:
+                raise RunCancelled(self.project)
+            key, title = f"build:phase-{number}", f"Phase {number} of {total} · {phase['title']}"
+            bus.phase(self.project, key, title, detail=str(phase.get("detail") or ""), number=number, agent=self.role)
+            if phase.get("detail"):
+                bus.agent_msg(self.project, str(phase["detail"]), title=f"Phase {number} of {total}", kind="narration",
+                              agent=self.role)
+            bus.agent_state(self.project, "building", agent=self.role)
+            result = self._phase_turn(agent, phases.request_for(number, phase), pointer, parallel_write_limit)
+            rounds += result.rounds
+            last = result.text or last
+            if result.status == "blocked":
+                phase["note"] = str(result.text or "")[:300]
+                bus.log(self.project, "WARN", f"{title} ended blocked: {phase['note']}", agent=self.role)
+            problems = phases.verify(phase)
+            for attempt in range(1, PHASE_REPAIRS + 1):
+                if not problems:
+                    break
+                if self.cancelled:
+                    raise RunCancelled(self.project)
+                bus.agent_msg(self.project, f"{phase['title']} is not finished yet: " + "; ".join(problems[:2])
+                              + (f" (and {len(problems) - 2} more)" if len(problems) > 2 else "")
+                              + f". Finishing it ({attempt} of {PHASE_REPAIRS}).",
+                              title=f"Phase {number} of {total}", kind="narration", agent=self.role)
+                result = self._phase_turn(agent, phases.repair_for(number, phase, problems), pointer, parallel_write_limit)
+                rounds += result.rounds
+                last = result.text or last
+                problems = phases.verify(phase)
+            phase["problems"] = problems
+            phase["status"] = "done" if not problems else "incomplete"
+            phases.save(plan_file)
+            bus.phase(self.project, key, title, status="complete" if not problems else "failed",
+                      detail="; ".join(problems[:3]), number=number, agent=self.role)
+            delivered = phases.summary(phase) if not problems else ""
+            if delivered:
+                bus.agent_msg(self.project, delivered, title=f"Phase {number} of {total} done", kind="narration", agent=self.role)
+        unfinished = [phase["title"] for phase in phases.items if phase.get("status") != "done"]
+        return {"status": "incomplete" if unfinished else "complete", "text": last, "rounds": rounds,
+                "phases": phases.items}
+
+    def resume_phases(self, plan: str, plan_file: str, phases: Phases, model: str = "") -> dict[str, Any]:
+        """Carry on with a plan already made and the phases not done yet: what a stopped build does, instead of planning again."""
+        agent = self.agent(model)
+        if self.cancelled:
+            raise RunCancelled(self.project)
+        done = sum(1 for phase in phases.items if phase.get("status") == "done")
+        bus.agent_msg(self.project, f"Carrying on from the plan already made: {done} of {len(phases.items)} phases are done.",
+                      title="Build resumed", kind="narration", agent=self.role)
+        bus.agent_state(self.project, "building", agent=self.role)
+        try:
+            finished = self._run_phases(agent, plan, plan_file, phases)
+        finally:
+            bus.agent_state(self.project, "", agent=self.role)
+            self.report_memory()
+            self.save_context()
+        return {"plan": plan, "plan_file": plan_file, **finished}
 
     def execute_approved(self, request: str, plan: str, model: str = "") -> dict[str, Any]:
         """Carry out a plan the customer has already approved.

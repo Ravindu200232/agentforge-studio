@@ -368,7 +368,7 @@ class WiredInTests(unittest.TestCase):
         verify = (ROOT / "qa-agent/qa_agent/verify.py").read_text(encoding="utf-8")
         build = (ROOT / "builder-agent/builder_agent/build.py").read_text(encoding="utf-8")
         for name, text, after in (("verify", verify, "result = session.run_task(request, audit=False)"),
-                                  ("build", build, 'build_result = session.run_task(request, plan_directory="plan", audit=False)')):
+                                  ("build", build, "build_result = _build_in_phases(project, session, stack, request, direction)")):
             self.assertIn("e2e_review.run(project, session)", text, name)
             self.assertLess(text.index(after), text.index("e2e_review.run(project, session)"), name)
         self.assertLess(build.index("e2e_review.run(project, session)"), build.index("return _finish_run(project, session, build_result"))

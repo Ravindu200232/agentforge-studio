@@ -92,6 +92,12 @@ Create exactly one short execution plan, including the complete Prototype parity
 
 Implement every approved page, route, role, business rule, data record and main workflow. Match the prototype at 100% parity, use real validation, persistence, authorization, responsive states and useful errors. Keep the existing scaffold and existing application work.
 
+## How the work is given to you
+
+You make this plan once, for the **whole** application: the Prototype parity map names every approved route and its destination files, however many there are. After the plan the Studio gives you the work as numbered phases, one at a time: the foundation, then the prototype's pages a few at a time, then the wiring and the seed, the unit tests, and the final checks. Carry out each phase when it is given to you, in full, and only that phase.
+
+The application is never cut down to fit: not to a subset of the pages, not to "a coherent working part", not because the session is long. Its length is the Studio's to manage (it splits the work and summarises your memory as it grows), never a reason to leave a page out, stub it or hand it back unfinished. Every page of the prototype is built, and the Studio refuses a build in which one is not.
+
 ## Phase 1 — complete the real application
 
 Finish the entire application before creating or running any tests. Run only the minimum build command needed to compile it. Update `.agentforge/build/report.json` in place with delivered routes, real commands, exit codes and honest gaps, in the shape written down in `{{report_template}}` — the Testing screen reads exactly those keys.
