@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -211,6 +212,49 @@ class FrameHookTests(unittest.TestCase):
             self.assertEqual(frame_options is None, expect_open)
             self.assertEqual("http://localhost:*" in policy, expect_open)
             self.assertEqual("'none'" in policy, not expect_open)
+
+
+class FramedCookieTests(unittest.TestCase):
+    """The desktop app's Studio is at agentforge://app: another site than the app it frames, so the app's cookies must be ones a framed page keeps."""
+
+    SCRIPT = (
+        "const http=require('node:http');"
+        "const s=http.createServer((q,r)=>{"
+        "r.setHeader('Content-Security-Policy',\"frame-ancestors 'none'\");"
+        "r.setHeader('Set-Cookie',['sid=1; Path=/; HttpOnly; SameSite=Lax','theme=dark; Path=/; Secure; SameSite=Strict','plain=1']);"
+        "r.end('x')})"
+        ".listen(0,async()=>{const r=await fetch('http://127.0.0.1:'+s.address().port);"
+        "console.log(JSON.stringify([r.headers.getSetCookie(),r.headers.get('content-security-policy')]));s.close()})")
+
+    def run_node(self, hook=True, framed=False):
+        env = {**os.environ}
+        env.pop("AGENTFORGE_FRAMED_CROSS_SITE", None)
+        if framed:
+            env["AGENTFORGE_FRAMED_CROSS_SITE"] = "1"
+        command = ["node", *(["--require", str(preview_runtime.FRAME_HOOK)] if hook else []), "-e", self.SCRIPT]
+        done = subprocess.run(command, capture_output=True, text=True, timeout=30, env=env)
+        return json.loads(done.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "node is needed to run the hook")
+    def test_in_the_desktop_app_every_cookie_the_app_sets_is_one_a_framed_page_may_keep(self):
+        cookies, policy = self.run_node(framed=True)
+        self.assertEqual(cookies, ["sid=1; Path=/; HttpOnly; Secure; SameSite=None",
+                                   "theme=dark; Path=/; Secure; SameSite=None",          # Secure once, never twice
+                                   "plain=1; Secure; SameSite=None"])
+        self.assertIn("agentforge:", policy)                                              # and the desktop app may frame it at all
+        self.assertIn("http://localhost:*", policy)
+        self.assertNotIn("'none'", policy)
+
+    @unittest.skipUnless(shutil.which("node"), "node is needed to run the hook")
+    def test_anywhere_else_the_apps_cookies_are_left_exactly_as_it_set_them(self):
+        original = ["sid=1; Path=/; HttpOnly; SameSite=Lax", "theme=dark; Path=/; Secure; SameSite=Strict", "plain=1"]
+        self.assertEqual(self.run_node(framed=False)[0], original)
+        self.assertEqual(self.run_node(hook=False, framed=True)[0], original)             # no hook, no change
+
+    def test_the_preview_is_started_told_which_it_is_only_in_the_desktop_app(self):
+        source = (ROOT / "server_modules" / "preview_runtime.py").read_text(encoding="utf-8")
+        self.assertIn('if os.environ.get("AGENTFORGE_TRANSPORT") == "stdio":', source)
+        self.assertIn('environment["AGENTFORGE_FRAMED_CROSS_SITE"] = "1"', source)
 
 
 class LiveBrowserTests(unittest.TestCase):

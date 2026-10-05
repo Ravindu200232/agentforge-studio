@@ -1,7 +1,8 @@
 /**
  * Which address this browser can actually load a project's app from.
  *
- * On the machine AgentForge runs on, that is the app's own local host name.
+ * On the machine AgentForge runs on - in a browser opened on it, or in the desktop app, which is always a window of it - that is the
+ * app's own local host name.
  * From anywhere else - a phone, another computer - that name means nothing, so
  * the app is loaded from the address AgentForge published for it. Until there
  * is one, there is nowhere to load it from and this answers "".
@@ -14,10 +15,12 @@ export function previewHref(runtime) {
 }
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
+// The desktop app shows the Studio at agentforge://app/..., a name no browser could reach from another computer.
+const DESKTOP = 'agentforge:'
 
 export function onThisMachine() {
   if (typeof location === 'undefined') return true
-  return LOOPBACK.has(location.hostname)
+  return LOOPBACK.has(location.hostname) || location.protocol === DESKTOP
 }
 
 /**
@@ -27,6 +30,7 @@ export function onThisMachine() {
  * gets through. Both names reach the same machine, so only the name changes.
  */
 function sameSite(url) {
+  if (location.protocol === DESKTOP) return url          // there is no host name of the Studio's own to match
   try {
     const target = new URL(url)
     if (!LOOPBACK.has(target.hostname) || target.hostname === location.hostname) return url

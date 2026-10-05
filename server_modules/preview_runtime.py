@@ -545,6 +545,10 @@ def open_preview(project: str) -> dict:
         # own headers say; only this preview process is affected (see preview_hooks).
         environment["NODE_OPTIONS"] = " ".join(
             part for part in (environment.get("NODE_OPTIONS", ""), f'--require "{FRAME_HOOK.as_posix()}"') if part)
+        # In the desktop app the Studio is at agentforge://app, another site than this preview: its cookies have to be ones a
+        # framed page may keep, or nothing the app signs in survives (frame-headers.cjs).
+        if os.environ.get("AGENTFORGE_TRANSPORT") == "stdio":
+            environment["AGENTFORGE_FRAMED_CROSS_SITE"] = "1"
         process = _launch(command, root, environment, log_path)
         url = f"http://127.0.0.1:{port}/"
         _processes[project] = {"process": process, "status": "starting", "url": url,

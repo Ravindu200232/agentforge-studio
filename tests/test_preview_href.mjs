@@ -22,6 +22,18 @@ globalThis.location = { hostname: 'studio.example.test' }
 assert.equal(previewHref(runtime), 'https://app.example.test/')
 assert.equal(needsAddress({ previewUrl: runtime.previewUrl }), true)
 
+// The desktop app shows the Studio at agentforge://app/...: a window of this machine, whatever that name is. The app is loaded from its
+// own local address, as it is, and never asks for a public one.
+globalThis.location = { hostname: 'app', protocol: 'agentforge:' }
+assert.equal(previewHref(runtime), 'http://127.0.0.1:4173/')
+assert.equal(previewHref({ previewUrl: 'http://localhost:5000/admin?x=1' }), 'http://localhost:5000/admin?x=1')
+assert.equal(needsAddress({ previewUrl: runtime.previewUrl }), false)
+assert.equal(needsAddress({}), false)
+
+// A computer that only has the Studio's address in a browser still needs the published one.
+globalThis.location = { hostname: 'studio.example.test', protocol: 'https:' }
+assert.equal(needsAddress({ previewUrl: runtime.previewUrl }), true)
+
 delete globalThis.location
 assert.equal(previewHref(runtime), 'http://127.0.0.1:4173/')
 console.log('preview href: ok')
