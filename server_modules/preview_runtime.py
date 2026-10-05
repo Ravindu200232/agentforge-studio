@@ -283,7 +283,8 @@ def _log_secrets(project: str) -> list[str]:
     if uri:
         from urllib.parse import unquote, urlparse
 
-        hidden += [uri, unquote(urlparse(uri).password or "")]
+        hidden += [uri, *(row for row in deploy_vars.build_databases(project) if row),
+                   unquote(urlparse(uri).password or "")]
     return [value for value in hidden if value and len(value) >= 6]
 
 
@@ -535,7 +536,7 @@ def open_preview(project: str) -> dict:
         # The same variables the build ran and tested this app with (session.py's command_env): a
         # MongoDB-stack preview reads the database the build seeded, not a local fallback.
         environment = {**os.environ, **plugins.environment(enabled),
-                       **supabase_connect.env_for(project), **deploy_vars.environment(),
+                       **supabase_connect.env_for(project), **deploy_vars.environment(build=True, project=project),
                        "PORT": str(port), "HOST": "127.0.0.1", "BROWSER": "none",
                        # A runner that starts several parts says where each one is (the Ports view).
                        "AGENTFORGE_PORTS_FILE": str(_ports_file(project)),

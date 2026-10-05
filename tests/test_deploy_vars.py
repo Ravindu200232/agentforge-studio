@@ -105,25 +105,148 @@ class RunEnvironmentTests(SettingsCase):
         env = self._command_env("deploy")
         self.assertEqual(env["SUPABASE_URL"], "https://a-different-project.supabase.co")
 
-    PRODUCTION = "mongodb+srv://u:p@paused-cluster.ab1cd.mongodb.net/app"
+    PRODUCTION = "mongodb+srv://u:p4ssw0rd-long@cluster0.ab1cd.mongodb.net/app?retryWrites=true&w=majority"
+    BUILD = "mongodb+srv://u:p4ssw0rd-long@cluster0.ab1cd.mongodb.net/app_build?retryWrites=true&w=majority"
+    TEST = "mongodb+srv://u:p4ssw0rd-long@cluster0.ab1cd.mongodb.net/app_test?retryWrites=true&w=majority"
 
-    def test_a_builds_commands_never_get_the_production_database_to_seed_and_test_on(self):
-        # A paused cluster has no address: the seed failed, no journey test ran, and the build ended as failed.
+    def setUp(self):
+        super().setUp()
+        deploy_vars._checked.clear()
+        deploy_vars._noted.clear()
+        self.told: list[dict] = []
+        for patch in (mock.patch.object(bus, "agent_msg", lambda project, text, agent="", title="", kind="", design=None, images=None:
+                                        self.told.append({"project": project, "text": text, "title": title})
+                                        if title == "MongoDB cluster not reachable" else None),     # not the command lines
+                      mock.patch.object(bus, "log", lambda *a, **k: None)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def connected(self, answers=True, why=""):
         config.save_settings({"deploy_mongodb_uri": self.PRODUCTION})
+        patcher = mock.patch.object(deploy_vars, "cluster_answers", return_value=(answers, why))
+        self.addCleanup(patcher.stop)
+        return patcher.start()
+
+    def test_a_builds_commands_get_databases_of_their_own_on_the_cluster_the_customer_connected(self):
+        # Not a MongoDB on this computer, which may not exist, and not the database the deployed application will use.
+        self.connected()
         for stage in ("build", "build-edit"):
             env = self._command_env(stage)
-            self.assertNotIn("MONGODB_URI", env, stage)
+            self.assertEqual((env["MONGODB_URI"], env["TEST_MONGODB_URI"]), (self.BUILD, self.TEST), stage)
             self.assertEqual(env["ADMIN_EMAIL"], "a@b.example", stage)        # the other saved variables still arrive
 
-    def test_a_deployment_and_the_preview_start_still_get_the_production_database(self):
-        config.save_settings({"deploy_mongodb_uri": self.PRODUCTION})
-        for stage in ("deploy", "preview_start"):
-            self.assertEqual(self._command_env(stage)["MONGODB_URI"], self.PRODUCTION, stage)
+    def test_the_stage_that_starts_the_preview_reads_the_database_the_seed_filled(self):
+        self.connected()
+        self.assertEqual(self._command_env("preview_start")["MONGODB_URI"], self.BUILD)
 
-    def test_a_connection_string_the_customer_saved_by_name_still_reaches_the_build(self):
-        config.save_settings({"deploy_mongodb_uri": self.PRODUCTION})
+    def test_a_deployment_still_gets_the_production_database_as_it_was_saved(self):
+        self.connected()
+        env = self._command_env("deploy")
+        self.assertEqual(env["MONGODB_URI"], self.PRODUCTION)
+        self.assertNotIn("TEST_MONGODB_URI", env)
+
+    def test_the_studios_preview_of_what_was_built_reads_the_same_database_as_the_build(self):
+        source = (ROOT / "server_modules" / "preview_runtime.py").read_text(encoding="utf-8")
+        self.assertIn("**deploy_vars.environment(build=True, project=project)", source)
+
+    def test_a_connection_string_the_customer_saved_by_name_reaches_the_build_as_it_is(self):
+        self.connected()
         deploy_vars.save("MONGODB_URI", "mongodb+srv://u:p@their-own.ab1cd.mongodb.net/app", secret=True)
-        self.assertEqual(self._command_env("build")["MONGODB_URI"], "mongodb+srv://u:p@their-own.ab1cd.mongodb.net/app")
+        deploy_vars.save("TEST_MONGODB_URI", "mongodb+srv://u:p@their-own.ab1cd.mongodb.net/app_test", secret=True)
+        env = self._command_env("build")
+        self.assertEqual((env["MONGODB_URI"], env["TEST_MONGODB_URI"]),
+                         ("mongodb+srv://u:p@their-own.ab1cd.mongodb.net/app", "mongodb+srv://u:p@their-own.ab1cd.mongodb.net/app_test"))
+
+    def test_with_no_cluster_connected_nothing_is_handed_over_and_nothing_is_checked(self):
+        with mock.patch.object(deploy_vars, "cluster_answers") as asked:
+            env = self._command_env("build")
+        asked.assert_not_called()
+        self.assertNotIn("MONGODB_URI", env)
+        self.assertNotIn("TEST_MONGODB_URI", env)
+
+    def test_a_cluster_that_does_not_answer_is_not_handed_over_and_the_customer_is_told_why_once(self):
+        # A paused cluster has no address: every command would wait for it and fail.
+        self.connected(answers=False, why="querySrv ENOTFOUND _mongodb._tcp.cluster0.ab1cd.mongodb.net")
+        env = self._command_env("build")
+        self.assertNotIn("MONGODB_URI", env)
+        self.assertEqual(env["ADMIN_EMAIL"], "a@b.example")
+        self.assertEqual(len(self.told), 1)
+        self.assertEqual((self.told[0]["project"], self.told[0]["title"]), (PROJECT, "MongoDB cluster not reachable"))
+        self.assertIn("ENOTFOUND", self.told[0]["text"])
+        self.assertIn("resume it", self.told[0]["text"])
+        self._command_env("build")
+        self.assertEqual(len(self.told), 1)                                   # not on every command
+        self.assertNotIn("p4ssw0rd", self.told[0]["text"])
+
+    def test_the_customer_is_told_again_after_a_while_and_each_project_is_told_for_itself(self):
+        self.connected(answers=False, why="no answer")
+        deploy_vars.environment(build=True, project="prj_a")
+        deploy_vars.environment(build=True, project="prj_b")
+        self.assertEqual([row["project"] for row in self.told], ["prj_a", "prj_b"])
+        deploy_vars._noted["prj_a"] -= deploy_vars.NOTE_SECONDS + 1
+        deploy_vars.environment(build=True, project="prj_a")
+        self.assertEqual(len(self.told), 3)
+
+
+class BuildDatabaseTests(SettingsCase):
+    def setUp(self):
+        super().setUp()
+        deploy_vars._checked.clear()
+
+    def saved(self, uri):
+        config.save_settings({"deploy_mongodb_uri": uri})
+
+    def test_the_databases_are_named_after_the_one_the_saved_string_names(self):
+        self.saved("mongodb+srv://u:p@c.mongodb.net/Hotel-Booking?retryWrites=true")
+        self.assertEqual(deploy_vars.build_databases(),
+                         ("mongodb+srv://u:p@c.mongodb.net/hotel_booking_build?retryWrites=true",
+                          "mongodb+srv://u:p@c.mongodb.net/hotel_booking_test?retryWrites=true"))
+
+    def test_a_string_that_names_no_database_takes_the_name_of_the_project(self):
+        self.saved("mongodb+srv://u:p@c.mongodb.net/?retryWrites=true")
+        with mock.patch("server_modules.store.get", return_value={"name": "Example Hotel"}):
+            self.assertEqual(deploy_vars.build_databases("prj_x")[0], "mongodb+srv://u:p@c.mongodb.net/example_hotel_build?retryWrites=true")
+        with mock.patch("server_modules.store.get", return_value=None):
+            self.assertEqual(deploy_vars.build_databases("prj_x")[1], "mongodb+srv://u:p@c.mongodb.net/prj_x_test?retryWrites=true")
+        self.assertEqual(deploy_vars.build_databases()[0], "mongodb+srv://u:p@c.mongodb.net/app_build?retryWrites=true")
+
+    def test_the_test_database_always_ends_in_the_suffix_the_templates_require_and_credentials_and_options_are_kept(self):
+        self.saved("mongodb://user:p%40ss%2Fword@h1.example.net:27017,h2.example.net:27017/shop?replicaSet=rs0&tls=true")
+        build, test = deploy_vars.build_databases()
+        self.assertTrue(test.split("?")[0].endswith("_test"))
+        self.assertIn("user:p%40ss%2Fword@h1.example.net:27017,h2.example.net:27017/shop_build?replicaSet=rs0&tls=true", build)
+
+    def test_nothing_connected_means_no_databases(self):
+        self.assertEqual(deploy_vars.build_databases(), ("", ""))
+
+    def test_whether_the_cluster_answers_is_asked_for_real_once_and_remembered_for_a_couple_of_minutes(self):
+        from server_modules import mongo_check
+
+        with mock.patch.object(mongo_check, "check", return_value={"ok": True, "message": "Connected and signed in."}) as asked:
+            self.assertEqual(deploy_vars.cluster_answers("mongodb+srv://u:p@c.mongodb.net/app"), (True, "Connected and signed in."))
+            self.assertEqual(deploy_vars.cluster_answers("mongodb+srv://u:p@c.mongodb.net/app")[0], True)
+            self.assertEqual(asked.call_count, 1)
+            stamp, ok, why = deploy_vars._checked["mongodb+srv://u:p@c.mongodb.net/app"]
+            deploy_vars._checked["mongodb+srv://u:p@c.mongodb.net/app"] = (stamp - deploy_vars.BUILD_CHECK_SECONDS - 1, ok, why)
+            deploy_vars.cluster_answers("mongodb+srv://u:p@c.mongodb.net/app")
+            self.assertEqual(asked.call_count, 2)
+
+    def test_a_cluster_that_refuses_or_a_check_that_cannot_run_is_not_an_answer_yes(self):
+        from server_modules import mongo_check
+
+        with mock.patch.object(mongo_check, "check", return_value={"ok": False, "message": "the cluster refused the password"}):
+            self.assertEqual(deploy_vars.cluster_answers("mongodb+srv://u:p@a.mongodb.net/app"), (False, "the cluster refused the password"))
+        with mock.patch.object(mongo_check, "check", side_effect=RuntimeError("node is not installed")):
+            ok, why = deploy_vars.cluster_answers("mongodb+srv://u:p@b.mongodb.net/app")
+        self.assertFalse(ok)
+        self.assertIn("node is not installed", why)
+
+    def test_what_a_build_was_handed_is_hidden_wherever_a_tool_might_print_it(self):
+        self.saved("mongodb+srv://u:p4ssw0rd-long@c.mongodb.net/app")
+        hidden = deploy_vars.secret_values()
+        self.assertIn("mongodb+srv://u:p4ssw0rd-long@c.mongodb.net/app", hidden)
+        self.assertIn("mongodb+srv://u:p4ssw0rd-long@c.mongodb.net/app_build", hidden)
+        self.assertIn("p4ssw0rd-long", hidden)                                  # whatever name the database goes by
 
 
 class MongoDatabaseUriTests(SettingsCase):

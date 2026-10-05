@@ -14,8 +14,10 @@ saved credential.
 from __future__ import annotations
 
 import re
+import threading
+import time
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse, urlsplit, urlunsplit
 
 from . import config
 
@@ -82,7 +84,11 @@ def secret_values() -> list[str]:
         if secret and isinstance(value, str) and len(value) >= 8:
             found.append(value)
     database = config.setting("deploy_mongodb_uri", "") or ""
-    return [*found, database] if database else found
+    if not database:
+        return found
+    # The databases a build is handed are this string with another name in it, so the password is hidden on its own too.
+    password = unquote(urlparse(database).password or "")
+    return [*found, database, *(uri for uri in build_databases() if uri), *([password] if len(password) >= 8 else [])]
 
 
 # What a question may ask the studio to try before it accepts a value. Supabase needs none - the
@@ -141,19 +147,102 @@ def check_database_uri(uri: str, allow_local: bool = False) -> str:
     return uri
 
 
-def environment(build: bool = False) -> dict[str, str]:
+# --- the database a build runs on ---------------------------------------------------------------------------------------
+
+BUILD_CHECK_SECONDS = 120          # how long "the connected cluster answers" (or does not) is remembered
+NOTE_SECONDS = 600                 # how often the customer is told, per project, that it does not
+_checked: dict[str, tuple[float, bool, str]] = {}
+_noted: dict[str, float] = {}
+_check_lock = threading.Lock()
+
+
+def _slug(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")[:30]
+
+
+def with_database(uri: str, database: str) -> str:
+    """`uri` pointed at `database` on the same cluster, its credentials and options as they were."""
+    parts = urlsplit(uri)
+    return urlunsplit((parts.scheme, parts.netloc, "/" + database, parts.query, ""))
+
+
+def build_databases(project: str = "") -> tuple[str, str]:
+    """The connected cluster's databases for a build, (the app's, the tests'), or ("", "") when no cluster is connected.
+
+    They are databases of their own on the cluster the customer connected - `<name>_build`, which the seed fills and the
+    preview and the end-to-end tests use, and `<name>_test`, which the unit tests empty between tests (the templates refuse any
+    name that does not end in `_test`) - so a build neither needs a MongoDB on this computer nor touches the data of the
+    database the deployed application will use. `<name>` is the database the saved string names, else the project's own name."""
+    uri = str(config.setting("deploy_mongodb_uri", "") or "")
+    if not uri:
+        return "", ""
+    base = _slug(unquote(urlsplit(uri).path.strip("/")))
+    if not base:
+        from . import store
+
+        base = _slug((store.get(project) or {}).get("name")) if project else ""
+        base = base or _slug(project) or "app"
+    return with_database(uri, f"{base}_build"), with_database(uri, f"{base}_test")
+
+
+def cluster_answers(uri: str) -> tuple[bool, str]:
+    """Whether the connected cluster answers right now, and if not what it said (a paused cluster has no address, a wrong
+    password is refused). Asked for real - the same driver the app uses - and remembered for a couple of minutes, because a build
+    asks on every command."""
+    with _check_lock:
+        seen = _checked.get(uri)
+        if seen and time.time() - seen[0] < BUILD_CHECK_SECONDS:
+            return seen[1], seen[2]
+        from . import mongo_check
+
+        try:
+            result = mongo_check.check(uri)
+            answer = (bool(result.get("ok")), str(result.get("message") or ""))
+        except Exception as exc:  # noqa: BLE001 - a check that cannot run is not an answer from the cluster either way
+            answer = (False, f"it could not be checked ({str(exc)[:120]})")
+        _checked[uri] = (time.time(), *answer)
+        return answer
+
+
+def _tell_unreachable(project: str, why: str) -> None:
+    """Say, once in a while, that the connected cluster cannot be used and what the build is doing instead."""
+    if not project or time.time() - _noted.get(project, 0) < NOTE_SECONDS:
+        return
+    _noted[project] = time.time()
+    from . import bus
+
+    text = (f"The MongoDB cluster you connected could not be reached ({why or 'no answer'}), so this build's database commands "
+            "use a MongoDB on this computer (localhost:27017), which may not be running. If the cluster is paused, resume it in "
+            "MongoDB Atlas: the next command uses it again.")
+    bus.log(project, "WARN", text)
+    bus.agent_msg(project, text, title="MongoDB cluster not reachable", kind="narration")
+
+
+def environment(build: bool = False, project: str = "") -> dict[str, str]:
     """What a deployment run's commands are given, beyond its project's own Supabase connection
     (see `supabase_connect.env_for`, merged in separately since it is per-project, not a studio-wide
     setting): every variable the customer saved here by name, overriding that connection's own values
     if they chose to point production at a different Supabase project, plus the saved production
     MongoDB connection string (`deploy_mongodb_uri`), when this project uses one.
 
-    `build`: for the commands of a build. Its seed scripts and end-to-end tests make and drop databases of their own, so
-    they run on the local MongoDB (what the app defaults to) and never on the production cluster saved here for
-    deployments: a cluster that is paused, deleted or unreachable stopped the seed, and with it every journey test. A
-    `MONGODB_URI` the customer saved by name is still handed over; only the studio's production string is held back."""
+    `build`: for the commands of a build, and for the preview of what it built. Its seed scripts and end-to-end tests make and
+    empty databases of their own, so they are not handed the production database: they get `MONGODB_URI` and `TEST_MONGODB_URI`
+    pointing at databases of their own on the cluster the customer connected (`build_databases`), when it answers - never a
+    MongoDB on this computer that may not exist. When it does not answer (paused, deleted, no network) the customer is told, and
+    the build goes on with the app's own default, a local MongoDB. A `MONGODB_URI` or `TEST_MONGODB_URI` the customer saved by
+    name is still handed over as it is."""
     env = {str(name): str(value) for name, value in (config.setting("deploy_env", {}) or {}).items()}
     database = str(config.setting("deploy_mongodb_uri", "") or "")
-    if database and not build:
+    if not database:
+        return env
+    if not build:
         env.setdefault("MONGODB_URI", database)
+        return env
+    answers, why = cluster_answers(database)
+    if answers:
+        app, tests = build_databases(project)
+        env.setdefault("MONGODB_URI", app)
+        env.setdefault("TEST_MONGODB_URI", tests)
+    else:
+        _tell_unreachable(project, why)
     return env
