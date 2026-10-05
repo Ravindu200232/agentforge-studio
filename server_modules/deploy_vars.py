@@ -223,20 +223,23 @@ def environment(build: bool = False, project: str = "") -> dict[str, str]:
     (see `supabase_connect.env_for`, merged in separately since it is per-project, not a studio-wide
     setting): every variable the customer saved here by name, overriding that connection's own values
     if they chose to point production at a different Supabase project, plus the saved production
-    MongoDB connection string (`deploy_mongodb_uri`), when this project uses one.
+    MongoDB connection, when this project uses one.
 
-    `build`: for the commands of a build, and for the preview of what it built. Its seed scripts and end-to-end tests make and
-    empty databases of their own, so they are not handed the production database: they get `MONGODB_URI` and `TEST_MONGODB_URI`
-    pointing at databases of their own on the cluster the customer connected (`build_databases`), when it answers - never a
-    MongoDB on this computer that may not exist. When it does not answer (paused, deleted, no network) the customer is told, and
-    the build goes on with the app's own default, a local MongoDB. A `MONGODB_URI` or `TEST_MONGODB_URI` the customer saved by
-    name is still handed over as it is."""
+    That connection is the same one the build ran on: the cluster the customer connected (`deploy_mongodb_uri`) with the database
+    the build's seed filled (`build_databases`), never the saved string as it stands, so the deployed application finds the data the
+    build made, and what looks at the deployed data (the database monitors, the data viewer) looks at the same database.
+
+    `build`: for the commands of a build, and for the preview of what it built, which also get `TEST_MONGODB_URI`: a database
+    for the unit tests, which empty it between tests. The cluster is asked first whether it answers - never a MongoDB on this
+    computer that may not exist is what they run on. When it does not answer (paused, deleted, no network) the customer is told,
+    and the build goes on with the app's own default, a local MongoDB. A deployment is not asked: it is handed the connection and
+    says itself what it could not reach. A `MONGODB_URI` or `TEST_MONGODB_URI` the customer saved by name is handed over as it is."""
     env = {str(name): str(value) for name, value in (config.setting("deploy_env", {}) or {}).items()}
     database = str(config.setting("deploy_mongodb_uri", "") or "")
     if not database:
         return env
     if not build:
-        env.setdefault("MONGODB_URI", database)
+        env.setdefault("MONGODB_URI", build_databases(project)[0])
         return env
     answers, why = cluster_answers(database)
     if answers:

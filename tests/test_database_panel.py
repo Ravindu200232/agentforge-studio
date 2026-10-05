@@ -35,7 +35,7 @@ class Base(unittest.TestCase):
                       mock.patch.object(config, "SETTINGS_FILE", Path(self.temp.name) / "settings.json"),
                       mock.patch.object(store, "get", lambda project: {"id": project, "stack": self.stack}),
                       mock.patch.object(supabase_connect, "status", lambda project: self.linked),
-                      mock.patch.object(cli_monitor, "mongodb_uri", lambda: self.uri)):
+                      mock.patch.object(cli_monitor, "mongodb_uri", lambda project="": self.uri)):
             patch.start()
             self.addCleanup(patch.stop)
 

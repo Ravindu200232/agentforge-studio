@@ -139,11 +139,31 @@ class RunEnvironmentTests(SettingsCase):
         self.connected()
         self.assertEqual(self._command_env("preview_start")["MONGODB_URI"], self.BUILD)
 
-    def test_a_deployment_still_gets_the_production_database_as_it_was_saved(self):
-        self.connected()
+    def test_a_deployment_is_handed_the_database_the_build_ran_on_not_the_saved_string_as_it_stands(self):
+        # So the deployed application finds the data the build's seed made.
+        asked = self.connected()
         env = self._command_env("deploy")
-        self.assertEqual(env["MONGODB_URI"], self.PRODUCTION)
-        self.assertNotIn("TEST_MONGODB_URI", env)
+        self.assertEqual(env["MONGODB_URI"], self.BUILD)
+        self.assertNotEqual(env["MONGODB_URI"], self.PRODUCTION)
+        self.assertNotIn("TEST_MONGODB_URI", env)                              # the unit tests' database is for the build only
+        asked.assert_not_called()                                              # a deployment is handed it, not asked first
+
+    def test_a_deployment_is_handed_it_even_when_the_cluster_does_not_answer_and_says_nothing_about_it_here(self):
+        self.connected(answers=False, why="no answer")
+        self.assertEqual(self._command_env("deploy")["MONGODB_URI"], self.BUILD)
+        self.assertEqual(self.told, [])
+
+    def test_what_looks_at_the_deployed_data_looks_at_the_database_the_build_made(self):
+        from server_modules import cli_monitor
+
+        self.connected()
+        self.assertEqual(cli_monitor.mongodb_uri(PROJECT), self.BUILD)
+        with mock.patch.object(supabase_connect, "env_for", lambda project: {}):
+            env, hidden = cli_monitor._project_environment(PROJECT)           # noqa: SLF001 - the terminal's variables
+        self.assertEqual(env["MONGODB_URI"], self.BUILD)
+        self.assertIn(self.BUILD, hidden)
+        rows = (ROOT / "server_modules" / "database_rows.py").read_text(encoding="utf-8")
+        self.assertIn("cli_monitor.mongodb_uri(project)", rows)
 
     def test_the_studios_preview_of_what_was_built_reads_the_same_database_as_the_build(self):
         source = (ROOT / "server_modules" / "preview_runtime.py").read_text(encoding="utf-8")
@@ -283,10 +303,10 @@ class MongoDatabaseUriTests(SettingsCase):
         self.assertEqual(ok, "")
         self.assertEqual(deploy_vars.names(), [{"name": "MONGODB_URI", "hint": "/app"}])
 
-    def test_the_saved_production_uri_reaches_a_deployment_as_mongodb_uri(self):
+    def test_the_connected_cluster_reaches_a_deployment_as_mongodb_uri_on_the_database_the_build_used(self):
         config.save_settings({"deploy_mongodb_uri": "mongodb+srv://u:p@cluster0.ab1cd.mongodb.net/app"})
         env = deploy_vars.environment()
-        self.assertEqual(env["MONGODB_URI"], "mongodb+srv://u:p@cluster0.ab1cd.mongodb.net/app")
+        self.assertEqual(env["MONGODB_URI"], "mongodb+srv://u:p@cluster0.ab1cd.mongodb.net/app_build")
 
     def test_a_saved_deploy_env_variable_of_the_same_name_is_not_overridden(self):
         config.save_settings({"deploy_mongodb_uri": "mongodb+srv://u:p@cluster0.ab1cd.mongodb.net/app"})

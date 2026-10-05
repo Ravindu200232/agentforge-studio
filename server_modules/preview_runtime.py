@@ -279,7 +279,7 @@ def _log_secrets(project: str) -> list[str]:
     hidden = list(deploy_vars.secret_values())
     supabase = supabase_connect.env_for(project)
     hidden += [value for key, value in supabase.items() if "KEY" in key or "DB_URL" in key]
-    uri = deploy_vars.environment().get("MONGODB_URI", "")
+    uri = deploy_vars.environment(project=project).get("MONGODB_URI", "")
     if uri:
         from urllib.parse import unquote, urlparse
 

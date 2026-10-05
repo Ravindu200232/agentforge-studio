@@ -126,7 +126,7 @@ def _mongodb_rows(project: str, database: str, collection: str) -> dict[str, Any
         raise ValueError(f"{collection!r} is not a collection name")
     if database and not re.match(r"^[A-Za-z0-9_.\- ]{1,64}$", database):
         raise ValueError(f"{database!r} is not a database name")
-    if not cli_monitor.mongodb_uri():
+    if not cli_monitor.mongodb_uri(project):
         raise ValueError("no MongoDB connection string is saved yet")
     env, hidden = cli_monitor._set_environment("mongodb", project)  # noqa: SLF001
     node = cli_monitor.cli_signin._where("node")  # noqa: SLF001

@@ -158,9 +158,9 @@ def _display(item: dict) -> str:
 
 # --- what a project's databases are ------------------------------------------------------------
 
-def mongodb_uri() -> str:
-    """The MongoDB connection string a build, its preview and its deployment are given."""
-    return str(deploy_vars.environment().get("MONGODB_URI") or "")
+def mongodb_uri(project: str = "") -> str:
+    """The MongoDB connection a build, its preview and its deployment are given: the same database for all of them."""
+    return str(deploy_vars.environment(project=project).get("MONGODB_URI") or "")
 
 
 def uses_mongodb(project: str) -> bool:
@@ -185,7 +185,7 @@ def database_context(project: str) -> dict[str, Any]:
     if linked.get("connected"):
         context["supabase"] = {"ref": linked.get("ref", ""), "name": linked.get("name", ""), "url": linked.get("url", "")}
         context["targets"].append("supabase")
-    uri = mongodb_uri()
+    uri = mongodb_uri(project)
     if uri and uses_mongodb(project):
         context["mongodb"] = {"database": mongodb_database(uri)}
         context["targets"].append("mongodb")
@@ -210,7 +210,7 @@ def _set_environment(kind: str, project: str) -> tuple[dict[str, str], list[str]
         hidden = [token, *(str(row.get(key) or "") for key in ("anon_key", "service_role_key", "db_password"))]
         return {"SUPABASE_ACCESS_TOKEN": token}, hidden
     if kind == "mongodb":
-        uri = mongodb_uri()
+        uri = mongodb_uri(project)
         password = unquote(urlparse(uri).password or "") if uri else ""
         return {"CHECK_URI": uri, "DRIVER_BASE": _driver_base(project)}, [uri, password]
     return {}, []
@@ -331,7 +331,7 @@ def _project_environment(project: str) -> tuple[dict[str, str], list[str]]:
     except ValueError:
         enabled = []
     supabase = supabase_connect.env_for(project)
-    env = {**plugins.environment(enabled), **supabase, **deploy_vars.environment()}
+    env = {**plugins.environment(enabled), **supabase, **deploy_vars.environment(project=project)}
     hidden = [value for key, value in supabase.items() if "KEY" in key or "DB_URL" in key]
     uri = env.get("MONGODB_URI", "")
     hidden += [uri, unquote(urlparse(uri).password or "")] if uri else []
