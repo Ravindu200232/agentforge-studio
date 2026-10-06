@@ -13,6 +13,19 @@ from __future__ import annotations
 
 import threading
 
+import httpx
+
+# How long a request to the model service may go without a single byte coming back before it is given up on (and asked
+# for again, `session.RetryingClient`). Without a bound a request the service never answers waits for ever and the run
+# with it: a deployment sat for twenty minutes on one.
+MODEL_READ_SECONDS = 900.0
+MODEL_CONNECT_SECONDS = 30.0
+
+
+def model_timeout() -> httpx.Timeout:
+    return httpx.Timeout(MODEL_READ_SECONDS, connect=MODEL_CONNECT_SECONDS)
+
+
 _lock = threading.Lock()
 _pressed: dict[str, int] = {}
 

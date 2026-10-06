@@ -15,6 +15,25 @@ PowerShell host may label lines "NativeCommandError"; the exit code is what coun
 `--non-interactive` (or `--yes` where the command has it) so nothing waits for a keypress.
 `vercel --help` and `vercel <command> --help` are the truth for the installed version.
 
+## Fast path (about ten minutes)
+
+No local install, test or build: Vercel builds in its own cloud. In this order, in as few calls as possible
+(the sections below are the reference for when something differs):
+
+1. `vercel --version` and `vercel whoami` in one call (the scope is the account or `--scope <slug>` the plan names).
+2. Reuse `.vercel/project.json` when it exists; otherwise `vercel link --yes --project <name> [--scope <slug>]`.
+   Create `.vercelignore` only when it is missing (the list in section 2).
+3. Every variable of the plan in one loop: `vercel env add <NAME> production --sensitive --force` with the value
+   piped from the environment (section 4); plain settings with `--value`. On a redeploy skip what `vercel env ls`
+   already shows.
+4. `vercel deploy --prod --yes` (add `--logs` only if it fails). The last line is the deployment URL;
+   `vercel inspect <url>` must say Ready, and the alias `<project>.vercel.app` is the address.
+5. The smoke proof (`core` section 10) against the alias, record (section 9), finish.
+
+Skip: `vercel deploy --dry`, preview deployments, `vercel git connect`, domains, a region change the plan did not
+choose, and reading logs while the checks hold. A deployment behind Vercel sign-in (a 401 sign-in page) is
+reported to the customer, never switched off.
+
 ## 1. Identity and scope
 
 - `vercel --version`, then `vercel whoami`. The plan names the account; use the customer's chosen
@@ -74,7 +93,7 @@ Check these in the source before uploading; fix in the code when they are wrong:
 
 ## 5. Build and release
 
-- Local gate first (`core` section 7): install from the lockfile, tests, production build.
+- No local gate (`core` section 0): nothing is installed, tested or built on this computer.
 - Release with the remote build: `vercel deploy --prod --yes --logs`. Vercel builds it in the
   customer's project with the production environment, the last line printed is the deployment URL.
   Building remotely avoids local platform differences (Windows paths, native modules). Use
@@ -95,10 +114,9 @@ Check these in the source before uploading; fix in the code when they are wrong:
 
 ## 7. Prove it live
 
-Run `core` section 10 against `https://<project>.vercel.app` (the alias printed by `vercel inspect`):
-status of every route, the health route, a sign-in and one write/read-back round trip, one refused
-request, and `vercel logs <deployment-url>` for errors during those calls. Check that a server-side
-database call really succeeded (a page that reads data, not only the static shell).
+Run the smoke proof of `core` section 10 against `https://<project>.vercel.app` (the alias printed by
+`vercel inspect`): six read-only requests at most, one of them a server-side read of real data (a page or route
+that reads the database, not only the static shell). `vercel logs <deployment-url>` only when one fails.
 
 ## 8. Roll back and remove
 
@@ -143,6 +161,8 @@ quota that is short (a decision with a price the customer makes). Say in the pla
 bite first for the traffic the customer described.
 
 ## 12. Questions to ask the customer
+
+Take these as defaults, not as questions: `core` section 12 caps a whole deployment at three questions, so most of what follows is a choice to state in the plan, not to ask.
 
 These are prompts, not a script: write each question yourself for this project and ask only what the
 project, an earlier answer and the pages do not already settle (see `core` section 12):

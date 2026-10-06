@@ -98,12 +98,15 @@ class MidwayTests(unittest.TestCase):
         self.assertEqual(outcome["status"], "failed")
         self.assertEqual(len(self.session.requests), 2)
 
-    def test_the_rules_ask_midway_for_stuck_refused_and_unsolvable(self):
-        rules = deploy.prompts.load("deployment/execute")
-        for needle in ("Ask in the middle of the deployment", "the same failure came back after two",
-                       "a free tier that is not available", "then ask\n  what to do",
-                       'never offer an\n  option that only means "I will type it"'):
+    def test_the_rules_ask_midway_only_for_what_cannot_go_on_and_never_for_being_stuck(self):
+        rules = " ".join(deploy.prompts.load("deployment/execute").split())
+        for needle in ("Ask in the middle of the deployment only when it cannot go on without the customer",
+                       "not more than twice in the whole run", "a free tier that is not available",
+                       "never ask about the database connection", 'never offer an option that only means "I will type it"'):
             self.assertIn(needle, rules)
+        # Being stuck is not a question: one repair round, then an honest FAILED (the speed contract).
+        self.assertNotIn("the same failure came back after two", rules)
+        self.assertIn("One repair round", rules)
 
 
 class QuestionIdTests(unittest.TestCase):

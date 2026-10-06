@@ -2,6 +2,7 @@
 - Command line tools, measured just now:
 {{tools}}
 - This project's Supabase project: {{database}}
+- This project's MongoDB: {{mongodb}}
 - Other variables saved in Settings for deployments (names only; each arrives in your commands under its own name): {{variables}}
 - Your commands run in: {{shell}}
 - The project's git state: {{git}}

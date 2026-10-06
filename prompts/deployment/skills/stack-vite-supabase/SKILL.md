@@ -56,16 +56,15 @@ that is a client-side check run by the QA suite, not a server route.
 
 ## What "live" means for this stack
 
-Beyond `core` section 10: `index.html` loads and renders the application's own content, not a blank
-shell or a build error; a protected route redirects to sign-in when there is no session and never
-renders protected data (a client-side redirect, since there is no server to answer 401); a full round
-trip (sign in through Supabase Auth, create a row, read it back) succeeds only within what RLS allows
-for that user — separately, confirm a **different** signed-in user, or a signed-out visitor, is refused
-by RLS when they read or write the same row, which is the real test of this stack's security; a file
-uploaded to Storage is retrievable; refreshing on a deep link does not 404; and the Supabase project's
-own logs show no unexpected errors during those requests.
+Within the smoke proof of `core` section 10 (read-only requests: no sign-in, no write, no test data):
+`index.html` loads and renders the application's own content, not a blank shell or a build error; a deep link
+returns the app shell instead of a 404; and one read through the project's REST endpoint with the public key from
+the environment (not printed) answers with rows or an empty list that RLS allows, never an error. Whether a
+protected screen redirects is decided in the browser and is not probed.
 
 ## Questions to ask the customer
+
+Take these as defaults, not as questions: `core` section 12 caps a whole deployment at three questions, so most of what follows is a choice to state in the plan, not to ask.
 
 These are prompts, not a script: write each question yourself for this project and ask only what the
 project, an earlier answer and the skill pages do not already settle. One at a time, recommendation

@@ -11,6 +11,25 @@ target, so `core/SKILL.md` section 5 (repository, README, commits) is the standa
 done with `git` and the `gh` command line tool the customer signed in to. `gh <command> --help` is the
 truth for the installed version.
 
+## Fast path (about eight minutes)
+
+Nothing is built, installed or tested here. In this order, in as few calls as possible (the sections below are
+the reference for when something differs):
+
+1. `gh --version` and `gh auth status` in one call (`repo` scope; `workflow` only when a workflow file is pushed).
+2. `git status`; `git init -b main` only when there is no repository; set this repository's commit identity
+   (`core` section 4).
+3. `.gitignore`, `.env.example` and the short README (`core` section 5); one search of the files to be staged for
+   secrets.
+4. `gh repo create <owner>/<name> --private --description "<one line>" --source . --remote origin` (visibility
+   from the plan).
+5. Two or three Conventional Commits, then `git push -u origin main`.
+6. The proof: `gh repo view <owner>/<name> --json url,visibility,defaultBranchRef` and `git ls-remote origin main`
+   equal to `git rev-parse HEAD`. Record (section 9), finish.
+
+Skip: a fresh-clone build or test, waiting for a workflow run, branch protection, Dependabot, topics, a tagged
+release and Pages, unless the plan chose them.
+
 ## 1. Identity and permission
 
 - `gh --version`, `gh auth status`: the account, and the token's scopes. Pushing workflow files needs
@@ -44,8 +63,7 @@ truth for the installed version.
 
 ## 4. Commits and push
 
-Make the history described in `core` section 5: several Conventional Commits in a sensible order, each
-one building. Look at `git diff --cached --stat` and the file list before every commit. Then
+Make the history described in `core` section 5: two or three Conventional Commits. Look at `git diff --cached --stat` and the file list before every commit. Then
 `git push -u origin main` (no force, ever). If the push is rejected, read why (permission, protected
 branch, large file over 100 MB, secret scanning) and fix the cause.
 
@@ -55,9 +73,8 @@ branch, large file over 100 MB, secret scanning) and fix the cause.
 `actions/setup-node` with the Node version from `engines` and dependency caching, `npm ci`, the
 project's test command, the production build with placeholder environment values that are not
 secrets; least-privilege `permissions: contents: read`; pin third-party actions to a major version or
-commit. No deployment credentials in it. After the push, follow the run: `gh run list --limit 3`,
-`gh run watch <id>`, and on failure `gh run view <id> --log-failed`: fix the cause and push again
-until the run is green. A red workflow is a defect of the delivery.
+commit. No deployment credentials in it. Push it and move on: do not wait for the run, and do not add tests to it. If the customer
+asks to see it, `gh run list --limit 1` says how it went.
 
 ## 6. Optional: Pages and releases
 
@@ -73,12 +90,8 @@ until the run is green. A red workflow is a defect of the delivery.
 
 - `gh repo view <owner>/<name> --json url,visibility,defaultBranchRef,pushedAt`; the remote `main`
   commit equals the local one (`git ls-remote origin main` against `git rev-parse HEAD`).
-- The latest workflow run for that commit succeeded.
-- A fresh clone builds: clone into a temporary folder outside the project, `npm ci`, run the tests
-  and the production build there. This proves nothing needed is missing from the repository. Delete
-  the temporary clone afterwards.
-- The README renders (headings, tables, code fences) and every command in it was run or is marked
-  untested; the repository contains no `.agentforge`, no `.env`, no secret.
+- `git ls-files` shows no `.agentforge`, no `.env`, no `node_modules` and no build output, and the staged
+  files held no secret. Nothing is cloned, installed, built or tested to prove it.
 
 ## 8. Roll back and remove
 
@@ -109,6 +122,8 @@ A repository does not scale. If the customer uses Actions minutes or storage hea
 account's plan allows.
 
 ## 12. Questions to ask the customer
+
+Take these as defaults, not as questions: `core` section 12 caps a whole deployment at three questions, so most of what follows is a choice to state in the plan, not to ask.
 
 These are prompts, not a script: write each question yourself for this project and ask only what the
 project, an earlier answer and the pages do not already settle (see `core` section 12):

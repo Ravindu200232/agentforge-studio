@@ -37,15 +37,7 @@ one place the client calls `/api` — relative URLs only), `.env.example`, `scri
 
 ## The MongoDB connection
 
-`MONGODB_URI` is asked for and verified for real before it is accepted, not assumed: a value-only
-question (`.agentforge/build/question.json`, `"variable": "MONGODB_URI"`, `"secret": true`, `"check":
-"mongodb"`) runs `mongo_check.py` against the string — DNS, TCP/TLS reachability, then an actual
-`MongoClient` ping — before it is saved, and a loopback address is refused outright. If the project is
-already connected (the Studio's Integrations panel records `deploy_mongodb_uri_set`), read it from the
-deployment's saved variables rather than asking again. Both EC2 and ECS Fargate have a fixed outbound
-address (the instance's Elastic IP, or a NAT gateway for the Fargate task) — put exactly that address on
-the Atlas cluster's Network Access list, not `0.0.0.0/0`, since this stack is never served from a
-serverless target with no fixed address.
+`MONGODB_URI` is **not asked for**. The Studio provides it: the machine facts above say what this project's MongoDB is, and your commands receive `MONGODB_URI` in their environment - the customer's connected Atlas cluster with this project's own database, the one the build's seed filled, as a real, internet-reachable string (a loopback address is never handed over). When only an Atlas account is signed in, the Studio makes the cluster and the database before the run starts; when nothing is connected it does not start the deployment at all and tells the customer to connect MongoDB in Settings, so a deployment never reaches you without one. So never ask the customer for a connection string, an address, an Atlas account or whether to use a local database, never write `localhost` for it, never print it, and never run or probe a MongoDB on this computer to check it: the live check of this stack (a real round trip against the deployed address) is the proof. 
 
 ## Health
 
@@ -56,14 +48,15 @@ the project has not changed it.
 
 ## What "live" means for this stack
 
-Beyond `core` section 10: the built client's home page loads and renders the application's own content
-(proof `client/dist` was actually built and is being served, not the 503 placeholder `server/src/app.js`
-shows when it is missing); a protected `/api` route refuses a request with no session; a full round trip
-through the real UI (sign up or sign in with a real password check, create a document through the API,
-read it back) works against the real Atlas cluster, not a local fallback; the session cookie is `Secure`
-and `HttpOnly` over HTTPS; and the platform's logs show no connection errors during those requests.
+Within the smoke proof of `core` section 10 (read-only requests: no sign-in, no write, no test data): the
+built client's home page loads and renders the application's own content (proof `client/dist` was built and is
+served, not the 503 placeholder `server/src/app.js` shows when it is missing); a protected `/api` route refuses a
+request with no session; one API route that lists data reads real documents from the Atlas database (proof it is
+not the local fallback).
 
 ## Questions to ask the customer
+
+Take these as defaults, not as questions: `core` section 12 caps a whole deployment at three questions, so most of what follows is a choice to state in the plan, not to ask.
 
 These are prompts, not a script: write each question yourself for this project and ask only what the
 project, an earlier answer and the skill pages do not already settle. One at a time, recommendation
@@ -71,7 +64,7 @@ first, and let "you decide" be an answer:
 
 1. AWS EC2 (cheapest, one small instance), AWS ECS Fargate (no server to patch, costs more), or Azure
    App Service? State the trade-off and the estimated monthly cost of each.
-2. Is there already a MongoDB Atlas cluster connected for this project, or should one be created now?
+2. The database is not a question: the Studio provides the cluster and this project's database (see "The MongoDB connection"). Do not ask about it; carry on with the next one.
 3. Which region should the application and the cluster both run in?
 4. Should the production database start empty, with only required reference data, or with the demo data
    the specification describes? (Never default to demo accounts on a public address.)

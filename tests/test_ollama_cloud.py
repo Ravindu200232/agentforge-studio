@@ -130,7 +130,8 @@ class BuiltInEngineTests(Base):
             client = ollama_cloud.for_engine(config.settings())
         self.assertEqual(made.call_args.kwargs["host"], ENGINE["url"])
         self.assertEqual(made.call_args.kwargs["headers"], {"Authorization": f"Bearer {ENGINE['token']}"})
-        self.assertNotIn(KEY, json.dumps(made.call_args.kwargs))
+        self.assertNotIn(KEY, json.dumps({k: v for k, v in made.call_args.kwargs.items() if k != "timeout"}))
+        self.assertEqual(made.call_args.kwargs["timeout"].read, 900.0)       # a request the service never answers ends
         client.web_search(query="best layouts", max_results=2)     # the engine's own address, not ollama.com
         path = made.return_value._request.call_args.args[2]
         self.assertEqual(path, "/api/web_search")

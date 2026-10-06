@@ -40,13 +40,7 @@ cached), `models/` (the schemas actually shipped), `.env.example`, `scripts/seed
 
 ## The MongoDB connection
 
-`MONGODB_URI` is asked for and verified for real before it is accepted, not assumed: a value-only
-question (`.agentforge/build/question.json`, `"variable": "MONGODB_URI"`, `"secret": true`, `"check":
-"mongodb"`) runs `mongo_check.py` against the string — DNS, TCP/TLS reachability, then an actual
-`MongoClient` ping — before it is saved, and a loopback address is refused outright
-(`deploy_vars.check_database_uri`). If the project is already connected (the Studio's Integrations panel
-records `deploy_mongodb_uri_set`), read it from the deployment's saved variables rather than asking
-again. On Atlas, the cluster's Network Access list must allow the target's outbound addresses — a
+`MONGODB_URI` is **not asked for**. The Studio provides it: the machine facts above say what this project's MongoDB is, and your commands receive `MONGODB_URI` in their environment - the customer's connected Atlas cluster with this project's own database, the one the build's seed filled, as a real, internet-reachable string (a loopback address is never handed over). When only an Atlas account is signed in, the Studio makes the cluster and the database before the run starts; when nothing is connected it does not start the deployment at all and tells the customer to connect MongoDB in Settings, so a deployment never reaches you without one. So never ask the customer for a connection string, an address, an Atlas account or whether to use a local database, never write `localhost` for it, never print it, and never run or probe a MongoDB on this computer to check it: the live check of this stack (a real round trip against the deployed address) is the proof. On Atlas, the cluster's Network Access list must allow the target's outbound addresses — a
 serverless target (Vercel, Netlify) has no fixed address, so Atlas needs `0.0.0.0/0` there (the
 connection string's username/password is still the real access control); a self-hosted target (EC2,
 ECS, Azure) has a fixed outbound address or NAT gateway that can be listed exactly instead.
@@ -60,22 +54,21 @@ database on every check.
 
 ## What "live" means for this stack
 
-Beyond `core` section 10: the server-rendered home page contains the application's own content; a
-protected page requested without a session redirects to sign-in (or answers 401) and never renders
-protected data; a full round trip (sign up or sign in with a real password check against the hashed
-value, create a document, read it back) works against the real Atlas cluster, not a local fallback; the
-session cookie is `Secure` and `HttpOnly` over HTTPS; a static asset from `/_next/static` loads; and the
-platform's logs show no connection errors during those requests.
+Within the smoke proof of `core` section 10 (read-only requests: no sign-in, no write, no test data): the
+server-rendered home page contains the application's own content; a protected page requested without a session
+redirects to sign-in (or answers 401) and never renders protected data; one server-rendered page or API route
+reads real documents from the Atlas database (proof it is not the local fallback); a static asset from
+`/_next/static` loads.
 
 ## Questions to ask the customer
+
+Take these as defaults, not as questions: `core` section 12 caps a whole deployment at three questions, so most of what follows is a choice to state in the plan, not to ask.
 
 These are prompts, not a script: write each question yourself for this project and ask only what the
 project, an earlier answer and the skill pages do not already settle. One at a time, recommendation
 first, and let "you decide" be an answer:
 
-1. Is there already a MongoDB Atlas cluster connected for this project, or should one be created now?
-   (Recommend reusing what is already connected unless the customer wants to separate staging from
-   production.)
+1. The database is not a question: the Studio provides the cluster and this project's database (see "The MongoDB connection"). Do not ask about it; carry on with the next one.
 2. Which region should the application and the cluster both run in?
 3. Should the production database start empty, with only required reference data, or with the demo data
    the specification describes? (Never default to demo accounts on a public address.)

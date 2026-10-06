@@ -65,15 +65,16 @@ body and no data, plus an optional deeper one that runs one cheap Postgres query
 
 ## What "live" means for this stack
 
-Beyond `core` section 10: the server-rendered home page contains the application's own content; a
-protected page requested without a session redirects to sign-in (or answers 401) and never renders
-protected data; a full round trip (sign up or sign in through Supabase Auth, create a row, read it back)
-works through the real project and its RLS policies — not just through the service-role key; a file
-uploaded to Storage is retrievable at its public or signed URL; the session cookie is `Secure` and
-`HttpOnly` over HTTPS; a static asset from `/_next/static` loads; and the platform's logs and the
-Supabase project's own logs show no errors during those requests.
+Within the smoke proof of `core` section 10 (read-only requests: no sign-in, no write, no test data): the
+server-rendered home page contains the application's own content; a protected page requested without a session
+redirects to sign-in (or answers 401) and never renders protected data; one server-rendered page or API route reads
+real rows through the project (proof of the Supabase connection and its RLS policies, not only the service-role
+key); a static asset from `/_next/static` loads. Cookie flags are read from a response that sets one, not by
+signing in. Nothing is uploaded to Storage to prove it.
 
 ## Questions to ask the customer
+
+Take these as defaults, not as questions: `core` section 12 caps a whole deployment at three questions, so most of what follows is a choice to state in the plan, not to ask.
 
 These are prompts, not a script: write each question yourself for this project and ask only what the
 project, an earlier answer and the skill pages do not already settle. One at a time, recommendation

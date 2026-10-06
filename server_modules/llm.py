@@ -194,7 +194,7 @@ def client() -> Any:
             except ValueError as exc:
                 raise LLMUnavailable(str(exc)) from exc
         else:
-            inner = ollama.Client(host=saved.get("ollama_host") or "http://localhost:11434")
+            inner = ollama.Client(host=saved.get("ollama_host") or "http://localhost:11434", timeout=connection.model_timeout())
         from .session import RetryingClient
         _local.client = RetryingClient(inner, cancelled=_stopped, wait_for_cancel=_wait_for_stop,
                                        on_connection=_connection_report, presses=_connection_presses,

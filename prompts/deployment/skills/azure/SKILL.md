@@ -11,6 +11,25 @@ address `https://<app>.azurewebsites.net` and a certificate included. Everything
 that apply to every target. `az <group> <command> --help` is the truth for the installed version, and
 `az webapp list-runtimes --os linux` lists the runtime strings it accepts.
 
+## Fast path (about fifteen minutes)
+
+1. `az --version` and `az account show` in one call (`az account set --subscription <id>` only when it differs
+   from the plan's).
+2. Reuse the web app when `az webapp show` finds it; otherwise three create calls with the tags of section 2:
+   `az group create`, `az appservice plan create --is-linux --sku <the plan's size>` and
+   `az webapp create --runtime "<matching list-runtimes>"`.
+3. One call for the hardening and the start command (`az webapp update --https-only true`, `az webapp config set
+   --min-tls-version 1.2 --ftps-state Disabled --always-on true --startup-file "<start command>"`) and one
+   `az webapp config appsettings set --settings @<file>` (the file outside the project, deleted afterwards).
+4. Package: reuse the Studio's standalone or build output when it is current, otherwise `npm run build` once; zip
+   with the files at the root of the archive (section 4).
+5. `az webapp deploy --resource-group <rg> --name <app> --src-path <zip> --type zip` (it waits for the result).
+6. The smoke proof against `https://<app>.azurewebsites.net`. The first request may take up to a minute after the
+   deployment (a cold start): that is waited out, not a failure.
+
+Skip: slots, Key Vault, Application Insights, autoscale, a custom domain, and `az webapp log tail` while the
+checks hold.
+
 ## 1. Identity and subscription
 
 - `az --version`, `az account show` (subscription id and name, tenant, signed-in user). The plan
@@ -55,7 +74,7 @@ Reuse what exists on a redeploy (`az webapp show`), never a second group, plan o
 
 ## 4. Build and release
 
-- Local gate first (`core` section 7). Build on this machine, then package what runs: for Next.js the
+- No test gate (`core` section 0). Reuse the Studio's build output when it is current, otherwise build once here, then package what runs: for Next.js the
   standalone output with `.next/static` and `public` copied beside `server.js`, plus the production
   `package.json` when the runtime installs dependencies; zip with the files at the root of the archive,
   excluding `.agentforge`, tests, `.env*` and development dependencies.
@@ -85,9 +104,9 @@ add on their database and asks them to confirm it is done.
 
 ## 7. Prove it live
 
-Run `core` section 10 against `https://<app>.azurewebsites.net`: routes, health route, sign-in and a
-write/read-back through the real database, a refused request, and the application log for errors.
-Check the first request after a cold start too: a slow first response is expected, a failure is not.
+Run the smoke proof of `core` section 10 against `https://<app>.azurewebsites.net`. The first request after a
+cold start may take up to a minute: a slow first response is expected, a failure is not. The application log
+only when a request fails.
 
 ## 8. Record
 
@@ -128,6 +147,8 @@ nothing: sessions and files must not live in one instance's memory or disk. Stat
 of each step in the plan, and never move up a tier on a failure.
 
 ## 11. Questions to ask the customer
+
+Take these as defaults, not as questions: `core` section 12 caps a whole deployment at three questions, so most of what follows is a choice to state in the plan, not to ask.
 
 These are prompts, not a script: write each question yourself for this project and ask only what the
 project, an earlier answer and the pages do not already settle (see `core` section 12):

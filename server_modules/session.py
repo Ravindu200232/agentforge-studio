@@ -595,7 +595,7 @@ class ProjectSession:
             except ValueError as exc:
                 raise EngineUnavailable(str(exc)) from exc
         else:
-            inner = ollama.Client(host=saved.get("ollama_host") or "http://localhost:11434")
+            inner = ollama.Client(host=saved.get("ollama_host") or "http://localhost:11434", timeout=connection.model_timeout())
         # A run that is working on the person's project holds still for "Try again" when the model service stops answering,
         # rather than failing with all it has done so far: the chat shows it (`bus.connection`) and says what to press.
         return RetryingClient(inner, announce=self._announce,
@@ -799,6 +799,31 @@ class ProjectSession:
             # Same posture as save_context(): a line that cannot be written is not a
             # reason to break the turn that is already in progress.
             pass
+
+    def shed_history(self, note: str = "", keep_tokens: int = 40_000) -> int:
+        """Start a stage from a small conversation: the turns so far are archived, verbatim (`_archive_summary`), and what is
+        left is the memory summary the project already has plus `note`. Returns how many turns were set aside, 0 when the
+        conversation is already small.
+
+        A project is one conversation, so a deployment used to be asked for inside everything the build said and did: seven
+        hundred thousand tokens (two and a half megabytes) sent with every command's answer, slow, and past what the model
+        service accepts in one request. What a deployment needs is on disk (the build and test records, the specification);
+        the prompts say where, and the archive has the rest."""
+        from ollama_terminal.agent import _approx_tokens
+
+        agent = self._agent or self.agent()
+        with self.lock:
+            if _approx_tokens(agent.messages) <= keep_tokens or len(agent.messages) <= 1:
+                return 0
+            old = agent.messages[1:]
+            self._archive_summary(old)
+            if note and note not in agent.memory_summary:
+                agent.memory_summary = (agent.memory_summary + "\n" + note).strip()[-12_000:]
+            del agent.messages[1:]
+            agent.messages[0]["content"] = agent._system_message()
+            agent.last_prompt_tokens = 0
+        self.save_context()
+        return len(old)
 
     def save_context(self) -> None:
         if self._agent is None or self._is_discarded():

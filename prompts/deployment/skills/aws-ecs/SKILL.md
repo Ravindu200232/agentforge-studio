@@ -11,7 +11,22 @@ this computer and none is used here: the Dockerfile is source code that AWS buil
 `core/SKILL.md` and `aws/SKILL.md` first; this page is what is specific to ECS.
 
 This target is not free-tier: the load balancer and Fargate tasks bill by the hour. Say the estimate in
-the plan and ask if the customer wants the cheaper single-instance target instead.
+the plan, with the cheaper and faster single-instance target (EC2) as the alternative the customer can ask for;
+it is not a question.
+
+## Fast path (about thirty-five minutes; ECS bills by the hour, so say so in the plan)
+
+1. Profile, region and `aws sts get-caller-identity`. When the stack exists this is a redeploy: steps 3 to 5 with a
+   new image tag.
+2. Write `Dockerfile`, `.dockerignore`, `buildspec.yml` and `deploy/aws/ecs.yml` once (sections 1 and 2) and create
+   the stack in one `aws cloudformation create-stack` call with the service at desired count 0 (ECR, CodeBuild,
+   cluster, load balancer, CloudFront).
+3. While it creates: zip the source (no build here) and upload it as soon as the bucket exists.
+4. `aws codebuild start-build` once the stack is created; wait for the build (budget ten minutes), then one
+   `aws cloudformation deploy` with the commit tag and desired count 1, and `aws ecs wait services-stable`.
+5. The smoke proof through the CloudFront address; target health and task counts only when a request failed.
+
+Skip: image-scan gates, manual approvals, autoscaling, NAT gateways, more than one task, any test or audit.
 
 ## 1. Container source in the repository
 
@@ -45,7 +60,7 @@ clearer):
 
 ## 3. First release: image in the cloud
 
-1. Local gate (`core` section 7).
+1. No test gate (`core` section 0); nothing is built here.
 2. Create the stack once with the ECR repository and CodeBuild project (so the image exists before
    the service starts), or deploy with the service at desired count 0 and raise it after the first
    image. A service whose image does not exist crash-loops.
@@ -67,9 +82,9 @@ mutable `latest` as the deployed tag.
 
 ## 5. Proving it live
 
-Follow `core` section 10 against the CloudFront address. Also confirm the target group is healthy
-(`aws elbv2 describe-target-health`), the running task count equals the desired count, and the log
-group has the requests you just made.
+Run the smoke proof of `core` section 10 against the CloudFront address. Only when a request fails: the
+target group's health (`aws elbv2 describe-target-health`), the running task count against the desired count,
+and the log group.
 
 ## 6. Rolling back and removing
 
@@ -100,6 +115,8 @@ least two tasks in two zones when availability matters. A bigger task is a new t
 Remember that maximum tasks times each task's pool must stay under the database's connection limit.
 
 ## 9. Questions to ask the customer
+
+Take these as defaults, not as questions: `core` section 12 caps a whole deployment at three questions, so most of what follows is a choice to state in the plan, not to ask.
 
 These are prompts, not a script: write each question yourself for this project and ask only what the
 project, an earlier answer and the pages do not already settle (see `core` section 12 and `aws/SKILL.md`

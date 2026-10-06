@@ -90,24 +90,20 @@ steps; the `<NAME>_URL` environment variable on the gateway's app is the other s
 
 ## The MongoDB connection
 
-`MONGODB_URI` is asked for and verified for real before it is accepted (`"check": "mongodb"`, see
-`stack-vite-mongo/SKILL.md`'s identical section) - never a loopback address. Each service may use its
-own database name within the one real cluster the deployment was given (a separate database per bounded
-context is the usual pattern here); the connection string's host is the same real, internet-reachable
-cluster for all of them. List the fixed outbound address of whichever target was chosen (NAT gateway,
+`MONGODB_URI` is **not asked for**. The Studio provides it: the machine facts above say what this project's MongoDB is, and your commands receive `MONGODB_URI` in their environment - the customer's connected Atlas cluster with this project's own database, the one the build's seed filled, as a real, internet-reachable string (a loopback address is never handed over). When only an Atlas account is signed in, the Studio makes the cluster and the database before the run starts; when nothing is connected it does not start the deployment at all and tells the customer to connect MongoDB in Settings, so a deployment never reaches you without one. So never ask the customer for a connection string, an address, an Atlas account or whether to use a local database, never write `localhost` for it, never print it, and never run or probe a MongoDB on this computer to check it: the live check of this stack (a real round trip against the deployed address) is the proof. Each service may use its own database name within the one cluster (a separate database per bounded context is the usual pattern here); the connection string's host is the same real, internet-reachable cluster for all of them. List the fixed outbound address of whichever target was chosen (NAT gateway,
 Elastic IP, or VNet gateway) on the Atlas cluster's Network Access list.
 
 ## What "live" means for this stack
 
-Beyond `core` section 10: the gateway's public address serves the built client's own content; a request
-that needs a service (for example `/api/products`) is actually forwarded and answered by that service
-running on its own instance, not a 503 ("Upstream service unavailable" is the honest failure, never a
-silent empty 200); a service is confirmed unreachable from the internet directly (only the gateway's
-public address is live); a full round trip through the real UI (sign in, create something, read it back)
-works against the real cluster; and each instance's own logs show it is the one that actually handled
-the request (proof the services are truly separate, not one process pretending to be several).
+Within the smoke proof of `core` section 10 (read-only requests: no sign-in, no write, no test data): the
+gateway's public address serves the built client's own content; one request that needs a service (for example
+`/api/products`) is forwarded and answered by that service running on its own instance, not a 503 ("Upstream
+service unavailable" is the honest failure, never a silent empty 200). Only the gateway has a public address;
+that is read from the stack's outputs and its security groups, not probed from outside.
 
 ## Questions to ask the customer
+
+Take these as defaults, not as questions: `core` section 12 caps a whole deployment at three questions, so most of what follows is a choice to state in the plan, not to ask.
 
 These are prompts, not a script: write each question yourself for this project and ask only what the
 project, an earlier answer and the skill pages do not already settle. One at a time, recommendation
@@ -119,7 +115,7 @@ first, and let "you decide" be an answer:
 2. How many packages exist under `packages/` right now, and does the customer expect more before
    launch (more services, more task definitions/instances to size and price)?
 3. Per-service CPU/memory (Fargate) or instance size (EC2), and whether each should scale automatically.
-4. Is there already a MongoDB Atlas cluster connected for this project, or should one be created now?
+4. The database is not a question: the Studio provides the cluster and this project's database (see "The MongoDB connection"). Do not ask about it; carry on with the next one.
 5. Which region should the cluster and every instance run in?
 6. Should the production database start empty, with only required reference data, or with demo data?
 7. Does the customer have a custom domain for the gateway's public address?

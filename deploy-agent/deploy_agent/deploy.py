@@ -33,11 +33,12 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 import httpx
 
-from server_modules import bus, changes, cli_signin, config, deploy_vars, prompts, reference_staging, store, supabase_connect
+from server_modules import (bus, changes, cli_signin, config, deploy_vars, mongo_connect, prompts, reference_staging, store,
+                            supabase_connect)
 from server_modules.session import RunCancelled, session_for
 
 DEPLOY_DIR = "deploy"
@@ -51,12 +52,17 @@ TERMINAL = {"LIVE", "FAILED", "ROLLED_BACK", "DESTROYED", "CANCELLED"}
 # The stages the studio and the chat show for this flow (see `changes._execute_flow`).
 STAGE_PLAN = "deploy_plan"
 STAGE_RUN = "deploy"
-# A deployment has many decisions the customer may make: account, names, layout, region, database, domain,
-# cost, and every choice the target's and the stack's pages list. A guard against an endless interview only.
-MAX_QUESTIONS = 20
-# How many times a live address that does not hold is handed back to the agent before the run fails.
-REPAIR_ROUNDS = 2
+# A deployment is fast: what the customer can change is a default stated in the plan, and only what nobody else can decide
+# is asked (the account, a choice that costs money, a value only they have). The prompts say three; this is the guard.
+MAX_QUESTIONS = 3
+# How many times a live address that does not hold is handed back to the agent before the run fails. One: a second round
+# of "fix a little, redeploy a little" is the loop a deployment must not have; it fails with the cause instead.
+REPAIR_ROUNDS = 1
 PROBE_SECONDS = 25
+# A host that has only just been released may answer the first request slowly or with a gateway error while it wakes up:
+# that is waited out (these many seconds before each further try), not handed to the agent as a failure to repair.
+PROBE_PATIENCE = (5, 10)
+PROBE_TRANSIENT = {429, 502, 503, 504}
 
 # Which skill pages each target reads, first the shared foundation, last the target's own. The pack
 # decides what a target can do; this only says where to find it.
@@ -316,6 +322,25 @@ def _database_fact(project: str) -> str:
             f"SUPABASE_SERVICE_ROLE_KEY; never print the keys)")
 
 
+def _mongodb_fact(project: str) -> str:
+    """Whether this project's MongoDB is connected, said so the model never asks the customer for a connection string."""
+    from builder_agent import scaffold
+
+    if not scaffold.uses_mongodb(stack_of(project)):
+        return "not used - this stack has no MongoDB"
+    state = deploy_vars.database_state()
+    never = ("Never ask the customer for a connection string, an address, an Atlas account or where the data lives, never print "
+             "the string, and never use localhost.")
+    if state["saved"]:
+        database = urlsplit(deploy_vars.build_databases(project)[0]).path.strip("/") or "the project's database"
+        return (f"connected: the customer's MongoDB Atlas cluster, with this project's own database `{database}` - the one the "
+                f"build seeded - handed to your commands as MONGODB_URI (a real, internet-reachable string). {never}")
+    if state["atlas"]:
+        return ("an Atlas account is signed in: the Studio makes the cluster and this project's database before the run and "
+                f"hands them to your commands as MONGODB_URI. {never}")
+    return "not connected - the Studio does not start a deployment before it is, so this does not arise"
+
+
 def _variables_fact() -> str:
     """The names of the values the customer saved for deployments (never the values)."""
     saved = [row["name"] for row in deploy_vars.names()]
@@ -350,7 +375,8 @@ def machine_facts(project: str, target: str, workspace: Path) -> str:
     shell = "Windows PowerShell" if os.name == "nt" else "a POSIX shell (/bin/sh)"
     stack = stack_of(project)
     return prompts.load("deployment/machine", stack=f"{stack} ({stack_info(stack).get('name', stack)})",
-                        tools=_tool_lines(target), database=_database_fact(project), variables=_variables_fact(),
+                        tools=_tool_lines(target), database=_database_fact(project), mongodb=_mongodb_fact(project),
+                        variables=_variables_fact(),
                         shell=f"{shell} on {platform.system()}", git=_git_fact(workspace),
                         tests=_tests_fact(project)).strip()
 
@@ -365,10 +391,22 @@ def _previous_run(project: str) -> str:
     return prompts.load("deployment/previous-run", summary=json.dumps(summary, ensure_ascii=False, indent=2))
 
 
+FRESH_NOTE = ("Everything before this deployment (the interview, the specification, the prototype, the build and its tests) is "
+              "archived, so do not rely on remembering it. What a deployment needs is on disk: `.agentforge/build/report.json`, "
+              "`.agentforge/qa/report.json`, `.agentforge/srs/handoff/` and, for what an earlier deployment did, `.agentforge/deploy/`.")
+
+
+def fresh_context(session: Any) -> int:
+    """A deployment starts from a small conversation, not from the build's (see `ProjectSession.shed_history`)."""
+    shed = getattr(session, "shed_history", None)
+    return int(shed(FRESH_NOTE) or 0) if callable(shed) else 0
+
+
 def plan_prompt(project: str, change: dict, session: Any, history: str, previous_plan: str,
                 questions_left: str, language: str) -> str:
     """The planning prompt for this deployment (the flow's half of `changes._propose`)."""
     target = str(change["target"])
+    fresh_context(session)
     paths = stage_skills(project, target)
     return prompts.load(
         "deployment/plan", target=target, target_label=label_of(target), project=project,
@@ -480,6 +518,20 @@ def _require_cli(target: str) -> None:
                          f"Install it with `{row.get('install') or provider.install}` and try again.")
 
 
+def _require_mongodb(project: str, stack: str) -> None:
+    """A MongoDB application is deployed on the database the build used, so one has to be connected - in Settings, never in a
+    question in the chat, where a connection string would be typed to a model."""
+    from builder_agent import scaffold
+
+    if not scaffold.uses_mongodb(stack):
+        return
+    state = deploy_vars.database_state()
+    if not (state["saved"] or state["atlas"]):
+        raise ValueError("Connect MongoDB before deploying: sign in to MongoDB Atlas, or save a connection string, under Settings, "
+                         "Integrations. The deployment uses the same database the build ran on, and nothing about it is asked "
+                         "in the chat.")
+
+
 def start(project: str, target: str, model: str = "") -> dict[str, Any]:
     """Deploy pressed: plan it. Nothing is deployed until the customer approves what comes back."""
     known = {row["id"] for row in targets()}
@@ -493,6 +545,7 @@ def start(project: str, target: str, model: str = "") -> dict[str, Any]:
                          f"it {info.get('reason', 'is not supported there')}. "
                          f"Choose one of: {', '.join(label_of(t) for t in allowed_targets(stack))}.")
     _require_cli(target)
+    _require_mongodb(project, stack)
     session_for(project)
     _archive(project)
     run_id = f"dep_{uuid.uuid4().hex[:12]}"
@@ -573,6 +626,26 @@ def _public_https(url: str) -> str:
     return ""
 
 
+def _pause(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _get_patiently(url: str) -> httpx.Response:
+    """GET `url`, trying again after a short wait when the host is only just waking up (it did not answer, or said 429 or a
+    gateway error). Whatever the last try gives is returned, or its error raised."""
+    for wait in (*PROBE_PATIENCE, None):
+        try:
+            answer = httpx.get(url, follow_redirects=True, timeout=PROBE_SECONDS, headers={"User-Agent": "agentforge-recheck"})
+        except httpx.HTTPError:
+            if wait is None:
+                raise
+        else:
+            if wait is None or answer.status_code not in PROBE_TRANSIENT:
+                return answer
+        _pause(wait)
+    raise AssertionError("unreachable")
+
+
 def probe(run: dict) -> tuple[list[str], list[dict[str, str]]]:
     """Call the run's public address and every check it recorded, from this side. Returns (failures, evidence)."""
     wanted = [{"name": "the public address", "url": run.get("url") or (run.get("repository") or {}).get("url"),
@@ -593,8 +666,7 @@ def probe(run: dict) -> tuple[list[str], list[dict[str, str]]]:
             continue
         started = time.monotonic()
         try:
-            answer = httpx.get(url, follow_redirects=True, timeout=PROBE_SECONDS,
-                               headers={"User-Agent": "agentforge-recheck"})
+            answer = _get_patiently(url)
         except httpx.HTTPError as exc:
             failures.append(f"{name}: {url} did not answer ({exc.__class__.__name__}: {exc})")
             continue
@@ -620,7 +692,17 @@ def execute(project: str, change: dict, session: Any, model: str) -> dict[str, A
     """The flow's half of `changes._execute_flow`: carry out the approved plan and check the result."""
     target, plan = str(change["target"]), change["plan"]
     resume = change.get("resume") if isinstance(change.get("resume"), dict) else None
+    fresh_context(session)
     session.write_record(*QUESTION, data={})
+    from builder_agent import scaffold
+
+    if scaffold.uses_mongodb(stack_of(project)):
+        # The database the build ran on is handed over as MONGODB_URI; a cluster is made first when only an Atlas account exists.
+        found = mongo_connect.ensure_for_project(
+            project, log=lambda line: bus.agent_msg(project, line, title="MongoDB", kind="narration"))
+        if found["status"] in {"failed", "not_connected"}:
+            return _settle(project, session, target, failed="The MongoDB database for this deployment is not available: "
+                           + (found["reason"] or "no MongoDB is connected (Settings, Integrations)."))
     paths = stage_skills(project, target)
     titles = {step["id"]: step["title"] for step in plan.get("steps", [])}
     resumed = ""
@@ -652,6 +734,14 @@ def execute(project: str, change: dict, session: Any, model: str) -> dict[str, A
         for attempt in range(REPAIR_ROUNDS + 1):
             question = pending_question(project)
             if result["status"] == "blocked" and question:
+                held = deploy_vars.provided(question, always=scaffold.uses_mongodb(stack_of(project)))
+                if held:
+                    # It asked for the database connection, which the studio provides: answered here, and the run goes on.
+                    session.write_record(*QUESTION, data={})
+                    _record(project, {"state": "STARTING"})
+                    result = carry(request + "\n\n" + prompts.load(
+                        "deployment/resume", question=str(question.get("question") or ""), answer=held))
+                    continue
                 asked = changes.check_question({"kind": "question", **question}, True)
                 _record(project, {"state": "NEEDS_INPUT"})
                 return {"status": "asking", "question": asked}

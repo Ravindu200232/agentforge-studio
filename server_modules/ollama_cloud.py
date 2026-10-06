@@ -21,7 +21,7 @@ import httpx
 import ollama
 from ollama._types import WebFetchRequest, WebFetchResponse, WebSearchRequest, WebSearchResponse
 
-from . import config
+from . import config, connection
 
 HOST = "https://ollama.com"
 CACHE_SECONDS = 300
@@ -125,7 +125,7 @@ def client(key: str, host: str = HOST) -> Any:
     if not key:
         raise ValueError("Add your ollama.com API key in Settings first.")
     remote_names(host=host, token=key if host != HOST else "")   # fills the list `remote_name` matches against
-    return _Names(ollama.Client(host=host, headers={"Authorization": f"Bearer {key}"}), host)
+    return _Names(ollama.Client(host=host, headers={"Authorization": f"Bearer {key}"}, timeout=connection.model_timeout()), host)
 
 
 def for_engine(saved: dict[str, Any]) -> Any:

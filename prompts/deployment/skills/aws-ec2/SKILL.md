@@ -10,6 +10,23 @@ application under systemd, releases delivered as an artifact through S3 and exec
 Manager (no SSH, no key pair). HTTPS comes from CloudFront. Read `core/SKILL.md` and
 `aws/SKILL.md` first; this page is what is specific to EC2.
 
+## Fast path (about twenty-five minutes, most of it AWS creating the stack and CloudFront)
+
+1. Profile, region and `aws sts get-caller-identity`. When the stack `<app>-<env>` exists this is a redeploy: go
+   straight to step 4.
+2. Write `deploy/aws/ec2.yml` once (section 1), validate it once, and create the stack with
+   `aws cloudformation create-stack` with the tags of `aws/SKILL.md`.
+3. While it creates: package the release here (section 3; reuse the Studio's standalone output when it is
+   current, otherwise `npm run build` once), write the secrets to Secrets Manager, and upload the archive as soon
+   as the bucket exists.
+4. `aws cloudformation wait stack-create-complete`, confirm the instance is `Online` in SSM, send the release
+   command once (section 4) and follow it to its exit code.
+5. The smoke proof against `https://<id>.cloudfront.net`; a distribution still deploying is waited on within the
+   budget of `core` section 0, rule 8.
+
+Skip: SSH and a key pair, snapshots, alarms, auto-recovery, Auto Scaling, a second instance, any test or audit,
+and the read-only SSM checks of section 5 unless a request failed.
+
 ## 1. What is built
 
 A CloudFormation stack `<app>-<env>` in `deploy/aws/ec2.yml` creating:
@@ -50,7 +67,7 @@ Confirm before continuing that the instance is registered with SSM:
 
 ## 3. Build and package (on this machine)
 
-Local gate first (`core` section 7). Then produce the smallest runnable artifact for the framework
+No test gate (`core` section 0). Produce the smallest runnable artifact for the framework
 (for Next.js, the standalone output with `.next/static` and `public` copied beside `server.js`),
 create `release-<git short sha>-<timestamp>.tar.gz`, and upload it:
 `aws s3 cp <file> s3://<bucket>/releases/<file>`. Do not include `.agentforge`, tests, `.env*` or
@@ -78,9 +95,9 @@ failed release, already rolled back by the script; diagnose from the output, fix
 
 ## 5. Proving it live
 
-Follow `core` section 10 against the CloudFront address. Also: `aws ssm send-command` a read-only check
-(`systemctl is-active <app>`, `curl -s localhost:<port>/<health>`, the last 50 lines of
-`journalctl -u <app>`) and confirm the log group receives lines.
+Run the smoke proof of `core` section 10 against the CloudFront address. Only when a request fails:
+`aws ssm send-command` a read-only check (`systemctl is-active <app>`, `curl -s localhost:<port>/<health>`, the
+last 50 lines of `journalctl -u <app>`).
 
 ## 6. Rolling back and removing
 
@@ -108,6 +125,8 @@ planned, never done silently. Say in the plan how many concurrent users the chos
 status-check alarm are recommended (`aws cloudwatch put-metric-alarm`).
 
 ## 9. Questions to ask the customer
+
+Take these as defaults, not as questions: `core` section 12 caps a whole deployment at three questions, so most of what follows is a choice to state in the plan, not to ask.
 
 These are prompts, not a script: write each question yourself for this project and ask only what the
 project, an earlier answer and the pages do not already settle (see `core` section 12 and `aws/SKILL.md`
