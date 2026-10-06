@@ -395,6 +395,140 @@ class AskingBeforeThePlanTests(StraightThroughCase):
         self.assertEqual(build._check_decision({"kind": "ready"}, False), {"kind": "ready"})
 
 
+class MongoDatabaseBuildTests(StraightThroughCase):
+    """A MongoDB stack's database is the Studio's to provide: made before anything is built, never a question to the customer."""
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(mock.patch("builder_agent.scaffold.install",
+                                     mock.Mock(return_value={"scaffolded": True, "files": ["package.json"]})))
+        self.waited = mock.Mock(return_value="Use the sandbox")
+        self.enterContext(mock.patch.object(build.bus, "ask_and_wait", self.waited))
+        self.session.results.append({"status": "complete", "text": "done", "plan": "p"})
+        self.enterContext(mock.patch.object(build.store, "require", return_value={"stack": "nextjs-mongo-only", "name": "Shop"}))
+        self.found = {"status": "ready", "database": "shop_build", "reason": ""}
+        self.made = mock.Mock(side_effect=lambda project, log=None: self.found)
+        self.enterContext(mock.patch.object(build.mongo_connect, "ensure_for_project", self.made))
+        self.cluster = (True, "")                                              # whether the connected cluster answers
+        self.enterContext(mock.patch.object(build.deploy_vars, "cluster_answers", lambda uri: self.cluster))
+        build.deploy_vars._noted.clear()
+        self.told: list[dict] = []
+        self.enterContext(mock.patch.object(build.bus, "agent_msg", lambda project, text, agent="", title="", kind="", design=None,
+                                            images=None: self.told.append({"text": text, "title": title})))
+
+    def question(self, text="Which payment provider should checkout use?", **extra):
+        return {"kind": "question", "question": text, "why": "the specification names none",
+                "options": [{"label": "Stripe", "hint": "cards"}, {"label": "PayPal"}],
+                "assumption": "use Stripe", **extra}
+
+    def said_about_mongodb(self):
+        return [row["text"] for row in self.told if row["title"] == "MongoDB"]
+
+    def test_the_database_is_made_after_the_customer_has_answered_and_before_anything_is_planned(self):
+        order = []
+        self.waited.side_effect = lambda *args, **kwargs: order.append("answered") or "Stripe"
+        self.made.side_effect = lambda project, log=None: order.append("database") or self.found
+        self.session.says += [self.question(), {"kind": "ready"}]
+        self.session.run_task = lambda request, **options: order.append("plan") or {"status": "complete", "plan": ""}
+        build.run(RUN_PROJECT)
+        self.assertEqual(order, ["answered", "database", "plan"])
+        self.made.assert_called_once()
+        self.assertEqual(self.made.call_args.args, (RUN_PROJECT,))
+
+    def test_the_customer_is_told_which_database_the_build_runs_on_and_the_string_is_not_shown(self):
+        build.run(RUN_PROJECT)
+        text = self.said_about_mongodb()[0]
+        self.assertIn("`shop_build`", text)
+        self.assertIn("is not shown here", text)
+        self.assertNotIn("mongodb+srv", text)
+
+    def refused(self, repairs=True):
+        """The saved password is refused (the first look), and the repair, when it runs, makes the second look answer."""
+        looks = iter([(False, "The cluster answered but refused the username or password."), (True, "")])
+        self.enterContext(mock.patch.object(build.deploy_vars, "cluster_answers", lambda uri: next(looks)))
+        self.enterContext(mock.patch.object(build.deploy_vars, "refused_login", lambda uri: True))
+        self.enterContext(mock.patch.object(build.mongo_connect, "can_repair", lambda uri="": repairs))
+        self.fixed = mock.Mock(return_value={"cluster_ready": True})
+        self.enterContext(mock.patch.object(build.mongo_connect, "repair_connection", self.fixed))
+
+    def test_a_refused_password_is_mended_by_the_build_itself_with_a_database_user_of_this_computers_own(self):
+        self.refused()
+        self.assertEqual(build.run(RUN_PROJECT), {"status": "complete"})
+        self.fixed.assert_called_once()
+        said = self.said_about_mongodb()
+        self.assertIn("Atlas refused the saved database password", said[0])
+        self.assertIn("`shop_build`", said[-1])                                # and then the database is claimed, because it answers
+        self.assertNotIn("MongoDB cluster not reachable", [row["title"] for row in self.told])
+        self.waited.assert_not_called()
+
+    def test_a_string_the_studio_cannot_mend_is_told_not_attempted(self):
+        self.refused(repairs=False)
+        build.run(RUN_PROJECT)
+        self.fixed.assert_not_called()
+        self.assertIn("MongoDB cluster not reachable", [row["title"] for row in self.told])
+
+    def test_a_repair_that_fails_is_a_line_in_the_chat_and_the_build_goes_on(self):
+        self.refused()
+        self.fixed.side_effect = ValueError("Atlas session expired")
+        self.assertEqual(build.run(RUN_PROJECT), {"status": "complete"})
+        text = next(row["text"] for row in self.told if row["title"] == "MongoDB cluster not reachable")
+        self.assertIn("could not be fixed automatically: Atlas session expired", text)
+        self.assertEqual(self.session.failed, [])
+
+    def test_a_cluster_that_refuses_the_saved_password_is_told_at_once_not_claimed_as_ready(self):
+        self.cluster = (False, "The cluster answered but refused the username or password.")
+        self.assertEqual(build.run(RUN_PROJECT), {"status": "complete"})
+        self.assertEqual([row["title"] for row in self.told if row["title"].startswith("MongoDB")], ["MongoDB cluster not reachable"])
+        text = next(row["text"] for row in self.told if row["title"] == "MongoDB cluster not reachable")
+        self.assertIn("refused the username or password", text)
+        self.assertNotIn("quicknotes", " ".join(row["text"] for row in self.told).lower())
+        self.waited.assert_not_called()                                         # and still not a question to the customer
+        self.assertEqual(self.session.failed, [])
+
+    def test_with_nothing_connected_the_customer_is_told_where_to_connect_it_and_the_build_goes_on(self):
+        self.found = {"status": "not_connected", "database": "", "reason": ""}
+        self.assertEqual(build.run(RUN_PROJECT), {"status": "complete"})
+        self.assertIn("Connect MongoDB Atlas under Settings, Integrations", self.said_about_mongodb()[0])
+        self.waited.assert_not_called()
+        self.assertEqual(self.session.failed, [])
+
+    def test_a_cluster_that_could_not_be_made_is_a_line_in_the_chat_never_a_failed_build_or_a_question(self):
+        self.found = {"status": "failed", "database": "", "reason": "Atlas refused the project"}
+        self.assertEqual(build.run(RUN_PROJECT), {"status": "complete"})
+        self.assertIn("Atlas refused the project", self.said_about_mongodb()[0])
+        self.waited.assert_not_called()
+        self.assertEqual(self.session.failed, [])
+
+    def test_the_model_is_told_never_to_ask_about_the_database(self):
+        build.run(RUN_PROJECT)
+        prompt = self.session.before_plan[0]
+        self.assertIn("Never ask for anything about the database", prompt)
+        self.assertIn("MONGODB_URI", prompt)
+        self.assertNotIn("{{", prompt)
+
+    def test_a_question_asking_for_the_connection_string_is_refused_so_the_model_replies_again(self):
+        for asked in (self.question("What is your MongoDB connection string?", variable="MONGODB_URI", secret=True, check="mongodb"),
+                      self.question("Please paste the connection URL of the cluster."),
+                      self.question("Which database should the app use?", variable="DATABASE_URL")):
+            with self.assertRaisesRegex(ValueError, "not the customer's to give") as refused:
+                build._check_decision(asked, True, mongodb=True)
+            self.assertIn('{"kind": "ready"}', str(refused.exception))
+        self.assertEqual(build._check_decision(self.question(), True, mongodb=True)["kind"], "question")   # any other question is fine
+
+    def test_a_model_that_asks_anyway_does_not_ask_the_customer_and_the_build_goes_on(self):
+        self.session.says += [self.question("What is your MongoDB connection string?", variable="MONGODB_URI", secret=True)]
+        self.assertEqual(build.run(RUN_PROJECT), {"status": "complete"})
+        self.waited.assert_not_called()
+        self.assertEqual(self.session.failed, [])
+
+    def test_a_stack_without_mongodb_makes_no_database_and_says_nothing_about_one(self):
+        self.enterContext(mock.patch.object(build.store, "require", return_value={"stack": "nextjs-supabase", "name": "Shop"}))
+        build.run(RUN_PROJECT)
+        self.made.assert_not_called()
+        self.assertEqual(self.said_about_mongodb(), [])
+        self.assertNotIn("Never ask for anything about the database", self.session.before_plan[0])
+
+
 class HoldStillForAnswerTests(unittest.TestCase):
     """A run holding still for the customer: the card, the answer from the card or the chat, and being stopped."""
 
@@ -493,8 +627,8 @@ class NoQuestionsInTheBuildPromptsTests(unittest.TestCase):
             self.assertIn("ever stop to ask", text, name)
 
     def test_the_question_before_the_plan_is_left_to_the_model_in_its_own_words(self):
-        text = prompts.load("builder/decide", stack="nextjs-supabase", supabase="", direction="", earlier="", answers="",
-                            questions_left="You may ask up to 5 more question(s) in total for this request.")
+        text = prompts.load("builder/decide", stack="nextjs-supabase", supabase="", database="", direction="", earlier="",
+                            answers="", questions_left="You may ask up to 5 more question(s) in total for this request.")
         self.assertNotIn("{{", text)
         self.assertNotIn("question.json", text)
         self.assertNotIn("blocked marker", text)

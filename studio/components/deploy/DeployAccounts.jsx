@@ -107,6 +107,16 @@ function Mongodb({ deploy, onSave }) {
     } catch (failure) { setError(failure.message) } finally { setBusy('') }
   }
 
+  async function repair() {
+    setBusy('repair'); setError('')
+    try {
+      await api.deploy('/mongodb/repair', {})
+      await loadAccount()
+      await onSave({})
+      await test('')
+    } catch (failure) { setError(failure.message) } finally { setBusy('') }
+  }
+
   async function connectAccount() {
     setAccountBusy('connect'); setAccountError('')
     try {
@@ -255,6 +265,13 @@ function Mongodb({ deploy, onSave }) {
           </Button>
         </div>
         {status && !connected && <p className="text-[10.5px] text-bad">{status.message}</p>}
+        {status && !connected && status.repairable && (
+          // Atlas refuses the saved password (another computer set the shared database user's password again): this makes
+          // this computer a database user of its own on the same cluster and saves the new string.
+          <Button size="sm" variant="primary" disabled={Boolean(busy)} onClick={repair}>
+            {busy === 'repair' && <Loader2 className="size-3 animate-spin" />}Fix the connection
+          </Button>
+        )}
         {status?.warnings?.map(w => <p key={w} className="text-[10.5px] text-muted">{w}</p>)}
         {error && <p className="text-[10.5px] text-bad">{error}</p>}
         </Soft>

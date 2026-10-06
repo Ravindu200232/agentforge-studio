@@ -114,7 +114,13 @@ def mongodb_status(body: dict) -> Any:
         result = {"ok": False, "stage": "error", "message": str(exc)[:300]}
     return {"ok": True, "connected": bool(result.get("ok")), "using_saved": saved,
             "message": result.get("message", ""), "stage": result.get("stage", ""),
-            "warnings": result.get("warnings") or []}
+            "repairable": bool(result.get("repairable")), "warnings": result.get("warnings") or []}
+
+
+@route("POST", r"/mongodb/repair")
+def mongodb_repair(_body: dict) -> Any:
+    """The saved string's password is refused by Atlas: make this computer a database user of its own and save the new string."""
+    return {"ok": True, **mongo_connect.repair_connection()}
 
 
 @route("GET", r"/mongodb/account/status")

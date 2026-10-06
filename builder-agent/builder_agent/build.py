@@ -5,8 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from server_modules import (auth_guide, bus, changes, config, plugins, prompts, reference_staging, store,
-                            supabase_connect)
+from server_modules import (auth_guide, bus, changes, config, deploy_vars, mongo_connect, plugins, prompts, reference_staging,
+                            store, supabase_connect)
 from server_modules.qa_report import summary_counts
 from server_modules.session import Phases, RunCancelled, session_for
 from server_modules.validation import build_report
@@ -190,14 +190,60 @@ def _finish_run(project: str, session: Any, build_result: dict[str, Any], plan: 
             "plans": [build_result.get("plan_file")]}
 
 
-def _check_decision(data: Any, may_ask: bool) -> dict[str, Any]:
-    """The model's turn before the plan: ready, or one question asked the way every flow asks one."""
+def _check_decision(data: Any, may_ask: bool, mongodb: bool = False) -> dict[str, Any]:
+    """The model's turn before the plan: ready, or one question asked the way every flow asks one.
+    `mongodb`: the stack runs on MongoDB, whose connection the Studio provides - never a question to the customer."""
     kind = data.get("kind") if isinstance(data, dict) else None
     if kind == "ready":
         return {"kind": "ready"}
     if kind != "question":
         raise ValueError('"kind" must be "ready" or "question"')
+    held = deploy_vars.provided(data, always=True) if mongodb else ""
+    if held:
+        raise ValueError(held + ' Reply with {"kind": "ready"} if nothing else needs the customer.')
     return changes.check_question(data, may_ask)
+
+
+def _mongodb_ready(project: str, record: dict[str, Any]) -> None:
+    """A MongoDB stack's database, before the build writes anything: the connected cluster's (databases of this project's own),
+    or one made now when an Atlas account is signed in, so the seed and the tests run on a real database. Never a question, and
+    never a reason to fail: what cannot be made is said in the chat, and the build goes on."""
+    name = str(record.get("name") or project)
+    found = mongo_connect.ensure_for_project(
+        project, log=lambda line: bus.agent_msg(project, line, title="MongoDB", kind="narration"))
+    if found["status"] in {"ready", "created"}:
+        # Said only when the cluster really answers with the saved connection (the same check every command makes): a string
+        # whose password Atlas no longer accepts is told now, not minutes later when the first command fails on it.
+        saved = str(config.setting("deploy_mongodb_uri", "") or "")
+        answers, why = deploy_vars.cluster_answers(saved)
+        if not answers and deploy_vars.refused_login(saved) and mongo_connect.can_repair(saved):
+            # The password Atlas holds for the saved user is not the one saved here (another computer set it again): this
+            # computer gets a database user of its own and a new string, and the build goes on with it.
+            bus.agent_msg(project, "Atlas refused the saved database password, so this computer is being given a database user of "
+                                   "its own on the same cluster.", title="MongoDB", kind="narration")
+            try:
+                mongo_connect.repair_connection(log=lambda line: bus.agent_msg(project, line, title="MongoDB", kind="narration"))
+                saved = str(config.setting("deploy_mongodb_uri", "") or "")
+                answers, why = deploy_vars.cluster_answers(saved)
+            except Exception as exc:  # noqa: BLE001 - a connection that cannot be mended is told, and the build goes on
+                why = f"{why} It could not be fixed automatically: {str(exc)[:200]}"
+        if not answers:
+            deploy_vars.tell_unreachable(project, why)
+            return
+        bus.agent_msg(project, f"This project's MongoDB database is `{found['database']}` on the connected Atlas cluster. "
+                               "The seed, the preview and the tests all use it; the connection is in the environment of every "
+                               "command and is not shown here.", title="MongoDB", kind="narration")
+    elif found["status"] == "failed":
+        bus.log(project, "WARN", f"A MongoDB database could not be made for {name}: {found['reason']}")
+        bus.agent_msg(project, f"A MongoDB database could not be made for this project: {found['reason']}. The build goes on "
+                               "with a MongoDB on this computer (localhost:27017), which may not be running. Fix the Atlas "
+                               "connection under Settings, Integrations; the next build uses it.",
+                      title="MongoDB", kind="narration")
+    else:
+        bus.agent_msg(project, "No MongoDB is connected, so this build uses a MongoDB on this computer (localhost:27017), which "
+                               "may not be running. Connect MongoDB Atlas under Settings, Integrations: from the next build on, "
+                               "a cluster and a database for this project are made and used by themselves.",
+                      title="MongoDB", kind="narration")
 
 
 def _qa_rows(rows: list[dict[str, str]]) -> str:
@@ -216,6 +262,7 @@ def _decide(project: str, session: Any, stack: str, direction: str) -> list[dict
     saved = session.read_record(*DECISIONS, fallback=None)
     earlier = [row for row in saved if isinstance(row, dict)] if isinstance(saved, list) else []
     answers: list[dict[str, str]] = []
+    mongodb = scaffold.uses_mongodb(stack)
     try:
         agent = session.agent("")
         while True:
@@ -225,6 +272,10 @@ def _decide(project: str, session: Any, stack: str, direction: str) -> list[dict
                 supabase=("Never ask for anything Supabase: this project's Supabase project is already connected."
                           if scaffold.uses_supabase(stack) else
                           "This stack has no Supabase: never ask for anything Supabase, and never add it."),
+                database=("Never ask for anything about the database: its MongoDB connection is the Studio's to provide (it is "
+                          "in the environment of every command as `MONGODB_URI`, made on the customer's Atlas account when one is "
+                          "signed in). A connection string, an Atlas account, a cluster, a local or a cloud database: none of "
+                          "these is a question." if mongodb else ""),
                 direction=("The customer asked for this on top of the specification:\n\n" + direction.strip())
                 if direction.strip() else "",
                 earlier=("Already decided in an earlier build of this project, so not asked again:\n\n"
@@ -235,7 +286,7 @@ def _decide(project: str, session: Any, stack: str, direction: str) -> list[dict
             with session.lock:
                 agent.set_mode("plan")
             try:
-                reply = session.ask_json(prompt, validator=lambda data: _check_decision(data, left > 0))
+                reply = session.ask_json(prompt, validator=lambda data: _check_decision(data, left > 0, mongodb))
             finally:
                 with session.lock:
                     agent.set_mode("act")
@@ -327,6 +378,10 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         if scaffold.uses_supabase(stack):
             supabase_connect.ensure_project(project, name=str(record.get("name") or project),
                                             log=lambda line: bus.agent_msg(project, line, title="Supabase"))
+        # A MongoDB stack gets its database the same way, so nothing about it is ever asked: the connected cluster's (databases
+        # of this project's own), or a cluster made now when an Atlas account is signed in.
+        if scaffold.uses_mongodb(stack):
+            _mongodb_ready(project, record)
         installed = scaffold.install(session.workspace, stack)
         bus.agent_msg(project,
                       f"{stack} scaffold copied ({len(installed['files'])} files)."
@@ -364,12 +419,14 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         if direction.strip():
             request += f"\n\n## What the customer asked for on top of that\n\n{direction.strip()}"
 
-        build_result = _build_in_phases(project, session, stack, request, direction)
+        # The end-to-end screenshots are copied as the tests take them: the next test run empties Playwright's output folder.
+        from qa_agent import e2e_review, screen_keeper
+        with screen_keeper.Keeper(session.workspace):
+            build_result = _build_in_phases(project, session, stack, request, direction)
         if build_result.get("status") == "blocked":
             raise ValueError(build_result.get("text") or "the build was blocked")
         # The plan's own end-to-end tests are done: a model that can look at pictures looks at their screenshots, and what
-        # it finds is fixed (a model that cannot skips this, with a line in the chat saying so).
-        from qa_agent import e2e_review
+        # it finds is fixed. Whatever keeps it from looking is said in the chat, and the screens are shown either way.
         e2e_review.run(project, session)
         if session.cancelled:
             raise RunCancelled(project)

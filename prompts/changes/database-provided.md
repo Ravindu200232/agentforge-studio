@@ -1,0 +1,3 @@
+The MongoDB connection is not the customer's to give and not yours to ask for: the Studio provides it. Every command you run, and the preview, already has `MONGODB_URI` in its environment, naming this project's own database on the customer's connected MongoDB Atlas cluster (the Studio makes the cluster when an Atlas account is signed in, and tells the customer in the chat when nothing is connected; they connect it in Settings, never in a question).
+
+So do not ask for a connection string, a MongoDB address or account, whether to use Atlas or a local database, or where the data should live, and do not write `localhost` or `127.0.0.1` anywhere as the database. If nothing else needs the customer, say so (a plan, or ready); if something else does, ask only that.

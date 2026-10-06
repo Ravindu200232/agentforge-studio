@@ -45,7 +45,9 @@ def public_dns_answers() -> bool:
 class FlakyDnsTests(unittest.TestCase):
     def check(self, uri: str, **env: str) -> dict:
         clean = {k: v for k, v in os.environ.items() if k not in ("CHECK_DNS_SERVERS", "CHECK_PUBLIC_DNS_SERVERS")}
-        with mock.patch.dict(os.environ, {**clean, **env}, clear=True):
+        # These tests are about finding the host, with a made-up password: with a MongoDB driver on this computer (any project
+        # that was built here installed one) the check goes on to the password and, rightly, refuses it. No driver, as on a clean one.
+        with mock.patch.dict(os.environ, {**clean, **env}, clear=True), mock.patch.object(mongo_check, "_driver_base", lambda: ""):
             return mongo_check.check(uri)
 
     def test_no_dns_server_answering_at_all_is_said_to_be_a_connection_problem_not_a_wrong_host(self):
@@ -82,6 +84,45 @@ class FlakyDnsTests(unittest.TestCase):
         result = self.check(REAL_HOST_URI)
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["warnings"], [])
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to run the check")
+class WhatTheCheckSaysTests(unittest.TestCase):
+    """The words the check gives back arrive as written, and a refused login says what can be done about it."""
+
+    def run_script(self, body: str):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            script = Path(folder) / "ping.mjs"
+            script.write_text(body, encoding="utf-8")
+            with mock.patch.object(mongo_check, "SCRIPT", script),                     mock.patch.object(mongo_check.deploy_vars, "check_database_uri", lambda uri, allow_local=False: uri):
+                return mongo_check.check("mongodb+srv://u:pw@c.mongodb.net/app")
+
+    ARROW = ("console.log(JSON.stringify({ok: false, stage: 'auth', message: "
+             "'The cluster answered but refused the username or password. Check the database user in Atlas → Database Access.'}))")
+
+    def test_an_arrow_in_the_message_is_not_turned_into_garbage_on_windows(self):
+        with mock.patch("server_modules.mongo_connect.can_repair", return_value=False):
+            result = self.run_script(self.ARROW)
+        self.assertIn("Atlas → Database Access", result["message"])
+        self.assertNotIn("â", result["message"])                       # what the arrow became when read as Windows-1252
+
+    def test_a_refused_login_the_studio_can_mend_says_so_and_flags_it(self):
+        with mock.patch("server_modules.mongo_connect.can_repair", return_value=True):
+            result = self.run_script(self.ARROW)
+        self.assertTrue(result["repairable"])
+        self.assertIn("Fix the connection", result["message"])
+
+    def test_one_it_cannot_mend_is_not_flagged_and_adds_nothing(self):
+        with mock.patch("server_modules.mongo_connect.can_repair", return_value=False):
+            result = self.run_script(self.ARROW)
+        self.assertFalse(result["repairable"])
+        self.assertNotIn("Fix the connection", result["message"])
+
+    def test_the_results_are_read_as_utf8_whatever_the_computers_own_encoding_is(self):
+        source = (ROOT / "server_modules" / "mongo_check.py").read_text(encoding="utf-8")
+        self.assertIn('encoding="utf-8"', source)
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to run the script")

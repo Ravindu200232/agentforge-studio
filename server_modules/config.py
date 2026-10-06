@@ -94,6 +94,7 @@ DEFAULTS: dict[str, Any] = {
     "mongodb_clusters_credentials": {},   # the cluster made for each account not in use: profile -> project, cluster, string
     "mongodb_atlas_group_id": "",
     "mongodb_atlas_cluster_name": "",
+    "mongodb_db_user": "",           # the Atlas database user this installation connects as: its own, never shared (mongo_connect.db_username)
     "aws_start_url": "",
     "aws_sso_region": "",
     "aws_profile": "",

@@ -147,12 +147,54 @@ def check_database_uri(uri: str, allow_local: bool = False) -> str:
     return uri
 
 
+# --- the database connection is the studio's to provide, never a question ---------------------------------------------------
+
+_DATABASE_VARIABLE = re.compile(r"^(MONGO\w*|DATABASE_URL|DB_URI|DB_URL)$")
+_DATABASE_WORDS = re.compile(r"mongo\w*\W+(?:\w+\W+){0,2}(?:connection|uri|url|string)|connection\s+(?:string|uri|url)|\bMONGODB_URI\b",
+                             re.IGNORECASE)
+
+
+def asks_for_database(question: dict) -> bool:
+    """Whether a question asks the customer for the database connection: a MongoDB connection string, an address, a variable
+    that holds one. A question about what goes in the database, or which region to run in, is not one."""
+    if _DATABASE_VARIABLE.match(str(question.get("variable") or "").strip().upper()) or str(question.get("check") or "") == "mongodb":
+        return True
+    return bool(_DATABASE_WORDS.search(" ".join(str(question.get(key) or "") for key in ("question", "why"))))
+
+
+def database_state() -> dict[str, bool]:
+    """Where the database connection stands: `saved` (a connection string, or MONGODB_URI saved by name) and `atlas` (an Atlas
+    account is signed in, so the studio can make a cluster itself)."""
+    from . import mongo_connect
+
+    saved = bool(config.setting("deploy_mongodb_uri", "") or "MONGODB_URI" in (config.setting("deploy_env", {}) or {}))
+    return {"saved": saved, "atlas": bool(mongo_connect.credentials_saved() or mongo_connect.cli_account())}
+
+
+def provided(question: dict, always: bool = False) -> str:
+    """The reason a question about the database connection is not asked, or "" when it is the customer's to answer.
+
+    The studio hands every command the connection (`environment`), makes a cluster when an Atlas account is signed in
+    (`mongo_connect.ensure_for_project`) and says in the chat what is missing when neither is so: a model that asks for the
+    string anyway is told so, whatever it was told before. `always`: for a build, which never asks for it."""
+    from . import prompts
+
+    if not asks_for_database(question):
+        return ""
+    if not always:
+        state = database_state()
+        if not (state["saved"] or state["atlas"]):
+            return ""
+    return prompts.load("changes/database-provided").strip()
+
+
 # --- the database a build runs on ---------------------------------------------------------------------------------------
 
 BUILD_CHECK_SECONDS = 120          # how long "the connected cluster answers" (or does not) is remembered
 NOTE_SECONDS = 600                 # how often the customer is told, per project, that it does not
 _checked: dict[str, tuple[float, bool, str]] = {}
 _noted: dict[str, float] = {}
+_stages: dict[str, str] = {}              # how far the last look at each string got (`mongo_check` stage)
 _check_lock = threading.Lock()
 
 
@@ -177,12 +219,36 @@ def build_databases(project: str = "") -> tuple[str, str]:
     if not uri:
         return "", ""
     base = _slug(unquote(urlsplit(uri).path.strip("/")))
-    if not base:
-        from . import store
-
-        base = _slug((store.get(project) or {}).get("name")) if project else ""
-        base = base or _slug(project) or "app"
+    if project and (not base or base in GENERIC_DATABASES):
+        base = _project_database(project, base)
+    base = base or "app"
     return with_database(uri, f"{base}_build"), with_database(uri, f"{base}_test")
+
+
+# The database a string names when the studio made it before strings named none: every project built then shares it.
+GENERIC_DATABASES = {"app"}
+
+
+def _project_database(project: str, shared: str) -> str:
+    """The name a project's databases are built from when the saved string names none of its own (or only the shared `app`).
+
+    A project gets databases named after itself, so two projects on one cluster never mix their users and notes. The choice is
+    kept in the project's record the first time it is made, because the name must never change afterwards: the deployed
+    application reads the same database the build seeded. A project that was already built on the shared database keeps it."""
+    from . import store
+
+    record = store.get(project) or {}
+    pinned = str(record.get("mongo_database") or "")
+    if pinned:
+        return pinned
+    built = bool(shared) and (config.record_dir(project) / "build" / "report.json").is_file()
+    chosen = shared if built else (_slug(record.get("name")) or _slug(project) or shared)
+    if record.get("id") == project and chosen:
+        try:
+            store.update(project, mongo_database=chosen)
+        except Exception:  # noqa: BLE001 - not pinned this time is only asked again next time
+            pass
+    return chosen
 
 
 def cluster_answers(uri: str) -> tuple[bool, str]:
@@ -198,13 +264,21 @@ def cluster_answers(uri: str) -> tuple[bool, str]:
         try:
             result = mongo_check.check(uri)
             answer = (bool(result.get("ok")), str(result.get("message") or ""))
+            _stages[uri] = str(result.get("stage") or "")
         except Exception as exc:  # noqa: BLE001 - a check that cannot run is not an answer from the cluster either way
             answer = (False, f"it could not be checked ({str(exc)[:120]})")
+            _stages[uri] = "error"
         _checked[uri] = (time.time(), *answer)
         return answer
 
 
-def _tell_unreachable(project: str, why: str) -> None:
+def refused_login(uri: str) -> bool:
+    """Whether the last look at this connection string found that Atlas answers but refuses its username or password."""
+    seen = _checked.get(uri)
+    return bool(seen and not seen[1] and _stages.get(uri) == "auth")
+
+
+def tell_unreachable(project: str, why: str) -> None:
     """Say, once in a while, that the connected cluster cannot be used and what the build is doing instead."""
     if not project or time.time() - _noted.get(project, 0) < NOTE_SECONDS:
         return
@@ -247,5 +321,5 @@ def environment(build: bool = False, project: str = "") -> dict[str, str]:
         env.setdefault("MONGODB_URI", app)
         env.setdefault("TEST_MONGODB_URI", tests)
     else:
-        _tell_unreachable(project, why)
+        tell_unreachable(project, why)
     return env

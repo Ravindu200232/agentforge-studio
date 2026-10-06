@@ -311,6 +311,11 @@ def _check(data: Any, may_ask: bool) -> dict:
                 allowed = ", ".join(deploy_vars.CHECKS) or "nothing right now"
                 raise ValueError(f'"check" must be left out ({allowed} is offered)')
             asked.update(variable=variable, secret=bool(data.get("secret", True)), check=check)
+        # The database connection is the studio's to provide: a model that asks the customer for it is told why not (the
+        # repair turn), so the customer is never asked for a connection string in the chat.
+        held = deploy_vars.provided(asked)
+        if held:
+            raise ValueError(held)
         return asked
     if kind != "plan":
         raise ValueError('"kind" must be "answer", "question" or "plan"')

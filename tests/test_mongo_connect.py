@@ -33,6 +33,7 @@ class AtlasCase(unittest.TestCase):
             mock.patch.object(cli_signin, "_run", self.fake_run),
             mock.patch.object(cli_signin.SIGNINS, "available", self.fake_available),
             mock.patch.object(mc.time, "sleep", lambda seconds: None),
+            mock.patch.object(mc, "_wait_until_accepted", lambda uri, say, seconds=75: {}),     # the real one asks the cluster
         ):
             patch.start()
             self.addCleanup(patch.stop)
@@ -66,8 +67,8 @@ class AtlasCase(unittest.TestCase):
             "clusters create": {"name": mc.CLUSTER_NAME},
             "clusters describe": {"stateName": "IDLE", "connectionStrings": {"standardSrv": "mongodb+srv://agentforge.abc12.mongodb.net"}},
             "dbusers describe": ValueError("not found"),
-            "dbusers create": {"username": mc.DB_USERNAME},
-            "dbusers update": {"username": mc.DB_USERNAME},
+            "dbusers create": {"username": mc.db_username()},
+            "dbusers update": {"username": mc.db_username()},
             "accessLists list": {"results": []},
             "accessLists create": {"results": []},
         })
@@ -124,7 +125,7 @@ class CliClusterTests(AtlasCase):
         password = self.ran("dbusers create")[0][self.ran("dbusers create")[0].index("--password") + 1]
         self.assertGreaterEqual(len(password), 20)
         self.assertEqual(config.setting("deploy_mongodb_uri"),
-                         f"mongodb+srv://{mc.DB_USERNAME}:{password}@agentforge.abc12.mongodb.net/app?retryWrites=true&w=majority")
+                         f"mongodb+srv://{mc.db_username()}:{password}@agentforge.abc12.mongodb.net/?retryWrites=true&w=majority")
         self.assertEqual((config.setting(mc.GROUP_ID_SETTING), config.setting(mc.CLUSTER_NAME_SETTING)), (GROUP, mc.CLUSTER_NAME))
         self.assertTrue(any("Creating the agentforge cluster" in line for line in said))
 
@@ -146,7 +147,7 @@ class CliClusterTests(AtlasCase):
 
     def test_a_database_user_left_by_an_earlier_attempt_gets_a_known_password(self):
         self.project_and_cluster_ready()
-        self.answers["dbusers describe"] = {"username": mc.DB_USERNAME}
+        self.answers["dbusers describe"] = {"username": mc.db_username()}
         mc.ensure_cluster()
         self.assertEqual(self.ran("dbusers create"), [])
         update = self.ran("dbusers update")[0]
@@ -198,7 +199,7 @@ class CliClusterTests(AtlasCase):
         group.assert_called_once()
         self.assertEqual(self.calls, [])
         self.assertEqual((result["via"], result["cluster_ready"]), ("service_account", True))
-        self.assertTrue(config.setting("deploy_mongodb_uri").startswith("mongodb+srv://agentforge_app:"))
+        self.assertTrue(config.setting("deploy_mongodb_uri").startswith(f"mongodb+srv://{mc.db_username()}:"))
 
 
 OTHER = "6f3322d28b4f6b59a6608ef4"
@@ -295,7 +296,7 @@ class ChooseClusterTests(AtlasCase):
             self.assertIn(GROUP, self.ran(key)[0], key)
         password = self.ran("dbusers create")[0][self.ran("dbusers create")[0].index("--password") + 1]
         self.assertEqual(config.setting("deploy_mongodb_uri"),
-                         f"mongodb+srv://{mc.DB_USERNAME}:{password}@shop-db.abc12.mongodb.net/app?retryWrites=true&w=majority")
+                         f"mongodb+srv://{mc.db_username()}:{password}@shop-db.abc12.mongodb.net/?retryWrites=true&w=majority")
         self.assertEqual((config.setting(mc.GROUP_ID_SETTING), config.setting(mc.CLUSTER_NAME_SETTING)), (GROUP, "shop-db"))
 
     def test_choosing_another_cluster_replaces_the_one_in_use(self):
@@ -530,6 +531,235 @@ class RunningTheCliTests(AtlasCase):
     def test_a_missing_cli_says_so(self):
         with mock.patch.object(cli_signin, "_where", lambda name: ""), self.assertRaisesRegex(ValueError, "not installed"):
             mc._atlas(["organizations", "list"])
+
+
+class DatabaseUserTests(AtlasCase):
+    """Each studio connects as a database user of its own, so setting one up never changes what another is signed in with."""
+
+    def test_an_installation_makes_its_own_user_once_and_keeps_it(self):
+        first = mc.db_username()
+        self.assertRegex(first, r"^agentforge_[0-9a-f]{8}$")
+        self.assertNotEqual(first, mc.LEGACY_DB_USERNAME)
+        self.assertEqual(mc.db_username(), first)
+        self.assertEqual(config.setting(mc.DB_USER_SETTING), first)
+
+    def test_another_installation_has_another_user(self):
+        first = mc.db_username()
+        config.save_settings({mc.DB_USER_SETTING: ""})              # a different computer starts with nothing saved
+        self.assertNotEqual(mc.db_username(), first)
+
+    def test_making_a_cluster_ready_creates_that_user_and_never_touches_the_one_every_studio_used_to_share(self):
+        self.project_and_cluster_ready()
+        mc.ensure_cluster()
+        created = self.ran("dbusers create")[0]
+        self.assertEqual(created[created.index("--username") + 1], mc.db_username())
+        for args in self.calls:
+            if args[0] == "dbusers":
+                self.assertNotIn(mc.LEGACY_DB_USERNAME, args)
+        self.assertIn(f"mongodb+srv://{mc.db_username()}:", config.setting("deploy_mongodb_uri"))
+
+    def test_the_password_that_is_reset_is_this_studios_own_user_never_the_shared_one(self):
+        self.project_and_cluster_ready()
+        self.answers["dbusers describe"] = {"username": "whoever"}      # a user is already there: its password is set again
+        mc.ensure_cluster()
+        updated = self.ran("dbusers update")[0]
+        self.assertEqual(updated[2], mc.db_username())
+        self.assertNotEqual(updated[2], mc.LEGACY_DB_USERNAME)
+
+    def test_a_service_account_does_the_same_through_the_rest_api(self):
+        config.save_settings({mc.CLIENT_ID_SETTING: "id", mc.CLIENT_SECRET_SETTING: "secret"})
+        sent: list[tuple[str, str, dict | None]] = []
+
+        def api(method, path, body=None, token=""):
+            sent.append((method, path, body))
+            if method == "GET" and "databaseUsers" in path:
+                raise ValueError("not found")
+            return {}
+
+        with mock.patch.object(mc, "_api", api):
+            mc._ensure_db_user("tok", GROUP, "pw")
+        posted = next(body for method, _path, body in sent if method == "POST")
+        self.assertEqual(posted["username"], mc.db_username())
+        self.assertTrue(all(mc.LEGACY_DB_USERNAME not in path for _m, path, _b in sent))
+
+
+class WaitingForANewUserTests(unittest.TestCase):
+    """Atlas refuses a database user it has just made for a few seconds; the connection is called ready only once it is accepted."""
+
+    URI = "mongodb+srv://agentforge_ab12cd34:pw@c.mongodb.net/?retryWrites=true"
+
+    def setUp(self):
+        self.enterContext(mock.patch.object(mc.time, "sleep", lambda seconds: None))
+
+    def test_it_waits_while_the_login_is_refused_and_stops_when_it_is_accepted(self):
+        from server_modules import mongo_check
+
+        answers = iter([{"ok": False, "stage": "auth"}, {"ok": False, "stage": "auth"}, {"ok": True, "stage": "ping"}])
+        said: list[str] = []
+        with mock.patch.object(mongo_check, "check", lambda uri, timeout=0: next(answers)):
+            result = mc._wait_until_accepted(self.URI, said.append)
+        self.assertTrue(result["ok"])
+        self.assertEqual(said, ["Waiting for Atlas to start accepting the new database user…"])         # said once, not every time
+
+    def test_any_other_answer_ends_the_wait_at_once_it_is_not_a_login_problem(self):
+        from server_modules import mongo_check
+
+        calls = []
+        with mock.patch.object(mongo_check, "check", lambda uri, timeout=0: calls.append(1) or {"ok": False, "stage": "network"}):
+            result = mc._wait_until_accepted(self.URI, lambda line: None)
+        self.assertEqual((result["stage"], len(calls)), ("network", 1))
+
+    def test_a_login_that_is_never_accepted_ends_the_wait_at_its_limit(self):
+        from server_modules import mongo_check
+
+        clock = iter(range(0, 1000, 20))
+        with mock.patch.object(mc.time, "time", lambda: next(clock)), \
+                mock.patch.object(mongo_check, "check", lambda uri, timeout=0: {"ok": False, "stage": "auth"}):
+            result = mc._wait_until_accepted(self.URI, lambda line: None, seconds=60)
+        self.assertEqual(result["stage"], "auth")
+
+
+class RepairTests(AtlasCase):
+    """A string whose password Atlas refuses is replaced by one for a database user of this computer's own."""
+
+    STUDIO = "mongodb+srv://agentforge_app:old-password@agentforge.abc12.mongodb.net/?retryWrites=true&w=majority"
+
+    def known_cluster(self, uri=STUDIO):
+        self.project_and_cluster_ready()
+        config.save_settings({"deploy_mongodb_uri": uri, mc.GROUP_ID_SETTING: GROUP, mc.CLUSTER_NAME_SETTING: mc.CLUSTER_NAME})
+
+    def test_a_string_the_studio_made_on_a_cluster_it_knows_can_be_repaired_while_an_account_is_signed_in(self):
+        self.known_cluster()
+        self.assertTrue(mc.can_repair())
+        self.assertTrue(mc.can_repair(self.STUDIO))
+
+    def test_a_string_someone_typed_in_is_never_replaced(self):
+        self.known_cluster("mongodb+srv://me:mine@theirs.mongodb.net/shop")
+        self.assertFalse(mc.can_repair())
+
+    def test_nothing_can_be_repaired_without_a_known_cluster_or_without_an_account(self):
+        self.known_cluster()
+        config.save_settings({mc.CLUSTER_NAME_SETTING: ""})
+        self.assertFalse(mc.can_repair())
+        self.known_cluster()
+        self.signed_in = {}
+        self.assertFalse(mc.can_repair())
+
+    def test_a_different_string_being_tried_is_not_the_one_that_gets_replaced(self):
+        self.known_cluster()
+        self.assertFalse(mc.can_repair("mongodb+srv://agentforge_other:pw@elsewhere.mongodb.net/"))
+
+    def test_repairing_gives_this_computer_its_own_user_and_saves_the_new_string_and_touches_nobody_elses(self):
+        self.known_cluster()
+        said: list[str] = []
+        result = mc.repair_connection(said.append)
+        saved = config.setting("deploy_mongodb_uri")
+        own = mc.db_username()
+        self.assertNotEqual(own, mc.LEGACY_DB_USERNAME)
+        self.assertTrue(saved.startswith(f"mongodb+srv://{own}:"))
+        self.assertNotIn("old-password", saved)
+        self.assertTrue(result["cluster_ready"])
+        self.assertTrue(any("refused the saved database password" in line for line in said))
+        for args in self.calls:
+            if args[0] == "dbusers":
+                self.assertNotIn(mc.LEGACY_DB_USERNAME, args)             # the shared user's password is left as it is
+
+    def test_a_connection_that_cannot_be_repaired_says_what_to_do_instead(self):
+        self.known_cluster("mongodb+srv://me:mine@theirs.mongodb.net/shop")
+        with self.assertRaisesRegex(ValueError, "Sign in to MongoDB Atlas below"):
+            mc.repair_connection()
+        self.assertEqual(self.calls, [])
+
+    def test_the_repair_route_and_the_status_route_tell_the_page(self):
+        from server_modules import routes_deploy
+
+        self.known_cluster()
+        refused = {"ok": False, "stage": "auth", "message": "The cluster answered but refused the username or password.",
+                   "repairable": True}
+        with mock.patch.object(routes_deploy.mongo_check, "check", return_value=refused):
+            answer = routes_deploy.mongodb_status({})
+        self.assertEqual((answer["connected"], answer["stage"], answer["repairable"]), (False, "auth", True))
+        fixed = routes_deploy.mongodb_repair({})
+        self.assertTrue(fixed["ok"])
+        self.assertIn(f"mongodb+srv://{mc.db_username()}:", config.setting("deploy_mongodb_uri"))
+
+
+class ForAProjectTests(AtlasCase):
+    """A MongoDB-stack project gets its database without anyone being asked: the connected cluster's, or one made now."""
+
+    SAVED = "mongodb+srv://u:p4ssw0rd-long@cluster0.ab1cd.mongodb.net/?retryWrites=true&w=majority"
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(mock.patch("server_modules.store.get", return_value={"name": "Example Hotel"}))
+
+    def test_with_nothing_connected_nothing_is_made_and_the_caller_is_told(self):
+        self.signed_in = {}
+        found = mc.ensure_for_project("prj_x")
+        self.assertEqual(found, {"status": "not_connected", "database": "", "reason": ""})
+        self.assertEqual(self.calls, [])
+        self.assertEqual(config.setting("deploy_mongodb_uri", ""), "")
+
+    def test_a_saved_connection_gives_the_project_databases_of_its_own_and_makes_nothing(self):
+        config.save_settings({"deploy_mongodb_uri": self.SAVED})
+        found = mc.ensure_for_project("prj_x")
+        self.assertEqual(found, {"status": "ready", "database": "example_hotel_build", "reason": ""})
+        self.assertEqual(self.calls, [])                                    # no CLI command, no cluster, no user
+
+    def test_two_projects_never_share_a_database_on_a_cluster_the_studio_made(self):
+        self.project_and_cluster_ready()
+        first = mc.ensure_for_project("prj_a")
+        with mock.patch("server_modules.store.get", return_value={"name": "Pet Shop"}):
+            second = mc.ensure_for_project("prj_b")
+        self.assertEqual((first["database"], second["database"]), ("example_hotel_build", "pet_shop_build"))
+
+    def test_an_atlas_account_with_no_string_gets_a_cluster_made_and_its_string_kept_where_everything_reads_it(self):
+        self.project_and_cluster_ready()
+        said: list[str] = []
+        found = mc.ensure_for_project("prj_x", log=said.append)
+        self.assertEqual((found["status"], found["database"]), ("created", "example_hotel_build"))
+        saved = config.setting("deploy_mongodb_uri")
+        self.assertTrue(saved.startswith(f"mongodb+srv://{mc.db_username()}:"))
+        self.assertIn("@agentforge.abc12.mongodb.net/?retryWrites=true&w=majority", saved)     # names no database of its own
+        self.assertTrue(any("Creating the agentforge cluster" in line for line in said))
+        from server_modules import deploy_vars
+        app, tests = deploy_vars.build_databases("prj_x")
+        self.assertIn("/example_hotel_build?", app)
+        self.assertIn("/example_hotel_test?", tests)
+        self.assertEqual(len(self.ran("clusters create")), 1)
+
+    def test_a_second_project_reuses_the_cluster_and_makes_nothing_more(self):
+        self.project_and_cluster_ready()
+        mc.ensure_for_project("prj_a")
+        before = len(self.calls)
+        again = mc.ensure_for_project("prj_b")
+        self.assertEqual(again["status"], "ready")
+        self.assertEqual(len(self.calls), before)
+
+    def test_a_cluster_the_studio_knows_but_whose_string_is_gone_gets_its_string_made_again_not_a_second_cluster(self):
+        self.project_and_cluster_ready()
+        mc.ensure_for_project("prj_a")
+        config.save_settings({"deploy_mongodb_uri": ""})
+        found = mc.ensure_for_project("prj_a")
+        self.assertEqual(found["status"], "created")
+        self.assertEqual(len(self.ran("clusters create")), 1)
+        self.assertTrue(config.setting("deploy_mongodb_uri"))
+
+    def test_a_cluster_that_cannot_be_made_says_why_and_never_raises(self):
+        self.project_and_cluster_ready()
+        self.answers["organizations list"] = ValueError("Atlas is down")
+        found = mc.ensure_for_project("prj_x")
+        self.assertEqual(found["status"], "failed")
+        self.assertIn("Atlas is down", found["reason"])
+        self.assertEqual(config.setting("deploy_mongodb_uri", ""), "")
+
+    def test_a_paused_cluster_is_a_failure_with_its_own_words(self):
+        self.project_and_cluster_ready()
+        self.answers["clusters describe"] = {"stateName": "IDLE", "paused": True,
+                                             "connectionStrings": {"standardSrv": "mongodb+srv://agentforge.abc12.mongodb.net"}}
+        found = mc.ensure_for_project("prj_x")
+        self.assertEqual(found["status"], "failed")
+        self.assertIn("paused", found["reason"])
 
 
 if __name__ == "__main__":

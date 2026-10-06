@@ -54,7 +54,7 @@ def check(uri: str = "", allow_local: bool = False) -> dict[str, Any]:
     if not node:
         return {"ok": False, "stage": "tool", "message": "Node.js is not installed on this computer, so the check cannot run."}
     try:
-        done = subprocess.run([node, str(SCRIPT)], capture_output=True, text=True, timeout=TIMEOUT, errors="replace",
+        done = subprocess.run([node, str(SCRIPT)], capture_output=True, text=True, timeout=TIMEOUT, encoding="utf-8", errors="replace",
                               env={**os.environ, "CHECK_URI": uri, "DRIVER_BASE": _driver_base()},
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except subprocess.TimeoutExpired:
@@ -66,4 +66,13 @@ def check(uri: str = "", allow_local: bool = False) -> dict[str, Any]:
         return {"ok": False, "stage": "tool", "message": "The check did not finish: " + _scrub((done.stderr or "")[-200:], uri)}
     result["message"] = _scrub(result.get("message", ""), uri)
     result["warnings"] = [_scrub(item, uri) for item in result.get("warnings") or []]
+    if result.get("stage") == "auth":
+        # A password Atlas no longer accepts is the most common way a connection that worked stops working (another computer,
+        # or an earlier studio, set the database user's password again). When the studio made the string itself it can make
+        # this computer a database user of its own and a new string: say so, and say what is needed when it cannot.
+        from . import mongo_connect
+
+        result["repairable"] = mongo_connect.can_repair(uri)
+        result["message"] += (" Press “Fix the connection” to give this computer a database user of its own."
+                              if result["repairable"] else "")
     return result
