@@ -157,38 +157,117 @@ class WhichScreenshotsTests(Harness):
 
 
 class SkipTests(Harness):
-    def test_a_run_that_left_no_screenshots_is_skipped_without_a_word(self):
+    def test_a_run_that_left_no_screenshots_says_so_and_what_the_test_runs_on_disk_show(self):
         self.assertEqual(e2e_review.run("p", FakeSession(self.workspace))["status"], "skipped")
-        self.assertEqual(self.messages, [])
+        self.assertEqual([m["title"] for m in self.messages], ["Screenshot review skipped"])
+        self.assertIn("no end-to-end test run was recorded", self.messages[0]["text"])
+        self.assertIn("npm run qa:e2e", self.messages[0]["text"])
+
+    def test_a_run_whose_screenshot_files_are_gone_is_told_how_many_tests_it_had(self):
+        # The accessibility run (or a re-run of one test) emptied Playwright's output folder, and nothing kept the pictures.
+        import shutil
+        self.standard()
+        shutil.rmtree(self.workspace / "test-results" / "artifacts")
+        result = e2e_review.run("p", FakeSession(self.workspace))
+        self.assertEqual(result["status"], "skipped")
+        self.assertIn("4 test(s)", self.messages[0]["text"])
+        self.assertIn("none of them has a screenshot file left", self.messages[0]["text"])
 
     def test_a_review_asked_for_says_why_when_there_are_no_screenshots(self):
-        # A later run (the accessibility check) clears what the end-to-end run left; asking must not end in silence.
         result = e2e_review.run("p", FakeSession(self.workspace), force=True)
         self.assertEqual(result["status"], "skipped")
         self.assertEqual([m["title"] for m in self.messages], ["Screenshot review skipped"])
         self.assertIn("no end-to-end screenshots", self.messages[0]["text"])
-        self.assertIn("run the end-to-end tests", self.messages[0]["text"])
+        self.assertIn("npm run qa:e2e", self.messages[0]["text"])
 
-    def test_a_model_that_cannot_look_at_pictures_skips_it_and_says_so(self):
+    def test_a_model_that_cannot_look_at_pictures_still_shows_the_screens_and_says_they_were_not_checked(self):
         self.standard()
         with mock.patch("server_modules.vision.supports", return_value=False), \
                 mock.patch("server_modules.llm.complete_json", side_effect=AssertionError("asked")):
             result = e2e_review.run("p", FakeSession(self.workspace, model="plain-model"))
         self.assertEqual(result["status"], "skipped")
         self.assertIn("vision", result["reason"])
-        self.assertEqual([m["title"] for m in self.messages], ["Screenshot review skipped"])
+        self.assertEqual(self.messages[0]["title"], "Screenshot review skipped")
+        self.assertIn("were not checked by looking at them", self.messages[0]["text"])
+        cards = [m for m in self.messages if m["kind"] == "visual_review"]
+        self.assertEqual(sorted(m["title"] for m in cards), sorted([f"{JOURNEY} · passed", f"{OTHER} · passed"]))
+        journey = next(m for m in cards if m["title"].startswith("[UJ-001]"))
+        self.assertEqual([i["label"] for i in journey["images"]], [f"{JOURNEY} · desktop", f"{JOURNEY} · mobile"])
+        self.assertIn("Not checked by looking", journey["text"])
 
-    def test_a_model_nobody_could_ask_about_is_skipped(self):
+    def test_a_model_nobody_could_ask_about_is_skipped_and_the_screens_are_shown(self):
         self.standard()
         with mock.patch("server_modules.vision.supports", return_value=None):
             result = e2e_review.run("p", FakeSession(self.workspace))
         self.assertEqual(result["status"], "skipped")
+        self.assertEqual(len([m for m in self.messages if m["kind"] == "visual_review"]), 2)
 
-    def test_the_setting_turns_it_off_without_a_word(self):
+    def test_the_setting_turns_it_off_and_the_chat_says_so(self):
         self.standard()
         with mock.patch.object(config, "setting", lambda name, fallback=None: False if name == "e2e_visual_review" else fallback):
             self.assertEqual(e2e_review.run("p", FakeSession(self.workspace)), {"status": "off"})
-        self.assertEqual(self.messages, [])
+        self.assertEqual([m["title"] for m in self.messages], ["Screenshot review skipped"])
+        self.assertIn("turned off", self.messages[0]["text"])
+
+
+class KeptScreensTests(Harness):
+    """Playwright empties its output folder at the start of every run; the journeys' screens must still be looked at."""
+
+    def test_a_later_run_that_emptied_the_output_folder_does_not_take_the_journeys_screens_away(self):
+        import shutil
+        from qa_agent import screen_keeper
+        self.standard()
+        self.assertGreater(screen_keeper.sweep(self.workspace, settled=False), 0)
+        shutil.rmtree(self.workspace / "test-results" / "artifacts")                        # the accessibility run began
+        found = e2e_review.screens(self.workspace)
+        self.assertEqual([g["title"] for g in found], [JOURNEY, OTHER])
+        for group in found:
+            for picture in group["pictures"].values():
+                self.assertTrue(picture.startswith(".agentforge/qa/screens/"), picture)       # the kept copy, served by /qa-screenshot
+                self.assertTrue((self.workspace / picture).is_file())
+
+    def test_without_the_keeper_the_same_run_leaves_nothing_to_look_at(self):
+        import shutil
+        self.standard()
+        shutil.rmtree(self.workspace / "test-results" / "artifacts")
+        self.assertEqual(e2e_review.screens(self.workspace), [])
+
+    def test_the_original_is_used_while_it_exists_and_a_newer_picture_replaces_its_copy(self):
+        import os
+        from qa_agent import screen_keeper
+        self.standard()
+        screen_keeper.sweep(self.workspace, settled=False)
+        found = e2e_review.screens(self.workspace)
+        self.assertTrue(all(p.startswith("test-results/artifacts/") for g in found for p in g["pictures"].values()))
+        picture = next(iter((self.workspace / "test-results" / "artifacts").rglob("*.png")))
+        picture.write_bytes(png("NEWER") + b"!" * 50)
+        os.utime(picture, (picture.stat().st_atime + 50, picture.stat().st_mtime + 50))
+        self.assertEqual(screen_keeper.sweep(self.workspace, settled=False), 1)
+        self.assertEqual(screen_keeper.sweep(self.workspace, settled=False), 0)               # nothing new: nothing copied
+        self.assertEqual(screen_keeper.kept_for(self.workspace, picture).read_bytes(), picture.read_bytes())
+
+    def test_a_picture_still_being_written_waits_for_the_next_sweep_and_the_last_sweep_takes_everything(self):
+        from qa_agent import screen_keeper
+        self.standard()
+        self.assertEqual(screen_keeper.sweep(self.workspace), 0)                              # all of them were just written
+        self.assertEqual(screen_keeper.sweep(self.workspace, settled=False), 4)
+
+    def test_only_what_is_inside_the_output_folder_has_a_kept_copy(self):
+        from qa_agent import screen_keeper
+        outside = self.workspace / "somewhere" / "a.png"
+        outside.parent.mkdir(parents=True)
+        outside.write_bytes(png("o"))
+        self.assertIsNone(screen_keeper.kept_for(self.workspace, outside))
+        self.assertIsNone(screen_keeper.kept_for(self.workspace, "../../etc/passwd"))
+
+    def test_the_keeper_copies_while_the_block_runs_and_once_more_when_it_ends_and_never_raises(self):
+        from qa_agent import screen_keeper
+        with screen_keeper.Keeper(self.workspace, every=0.05):
+            self.standard()                                                                   # the tests take their pictures
+        self.assertEqual(len(list((self.workspace / screen_keeper.KEPT).rglob("*.png"))), 4)
+        with mock.patch.object(screen_keeper, "sweep", side_effect=OSError("disk gone")):
+            with screen_keeper.Keeper(self.workspace, every=0.05):
+                pass
 
 
 class ReviewTests(Harness):
@@ -372,6 +451,12 @@ class WiredInTests(unittest.TestCase):
             self.assertIn("e2e_review.run(project, session)", text, name)
             self.assertLess(text.index(after), text.index("e2e_review.run(project, session)"), name)
         self.assertLess(build.index("e2e_review.run(project, session)"), build.index("return _finish_run(project, session, build_result"))
+
+    def test_the_screens_are_kept_while_the_tests_run_in_the_build_and_in_the_testing_run(self):
+        verify = (ROOT / "qa-agent/qa_agent/verify.py").read_text(encoding="utf-8")
+        build = (ROOT / "builder-agent/builder_agent/build.py").read_text(encoding="utf-8")
+        self.assertIn("with screen_keeper.Keeper(session.workspace):\n            build_result = _build_in_phases(", build)
+        self.assertIn("with Keeper(session.workspace):\n            result = session.run_task(request, audit=False)", verify)
 
 
 if __name__ == "__main__":

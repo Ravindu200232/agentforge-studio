@@ -127,9 +127,12 @@ def _from_line_log(text: str) -> dict | None:
 
 
 def _screenshot_of(result: dict, workspace: Path | None) -> str:
-    """The screenshot Playwright attached to a test result, workspace-relative, if it still exists."""
+    """The screenshot Playwright attached to a test result, workspace-relative, if it still exists - or its kept copy
+    (`screen_keeper`), because the next test run empties the folder the original was in."""
     if workspace is None:
         return ""
+    from . import screen_keeper
+
     root = workspace.resolve()
     for attachment in _rows(result.get("attachments")):
         if attachment.get("name") != "screenshot" or not attachment.get("path"):
@@ -138,6 +141,9 @@ def _screenshot_of(result: dict, workspace: Path | None) -> str:
         path = (path if path.is_absolute() else workspace / path).resolve()
         if path.is_relative_to(root) and path.is_file():
             return path.relative_to(root).as_posix()
+        kept = screen_keeper.kept_for(workspace, path)
+        if kept:
+            return kept.resolve().relative_to(root).as_posix()
     return ""
 
 

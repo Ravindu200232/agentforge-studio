@@ -7,9 +7,15 @@ are given to the agent to fix in the application's source, and told to run the j
 evidence is current. The tests whose screens had problems are then looked at once more, from their new screenshots, and what
 is still wrong is reported as it is. All of it is in the chat stream, with the pictures.
 
+The pictures are kept while the tests run (`screen_keeper.py`): Playwright empties its output folder at the start of every run,
+so without that a later run (the accessibility check, a re-run of one test) would take the journeys' screens away before they
+are looked at.
+
 A model that cannot look at pictures (Ollama says so: `server_modules/vision.py`, and the model picker marks the ones that can)
-skips this, with one line saying why; so does a run that left no screenshots. Neither is an error, and nothing here ever fails
-the testing: it is a review, not a gate.
+does not review, but the screens are still shown in the chat, with a line saying they were not checked. A review that is turned
+off, and a run that left no screenshots, say so in the chat too, with what the test runs on disk show: the person is never
+left wondering why the screens were not looked at. None of this is an error, and nothing here ever fails the testing: it is a
+review, not a gate.
 """
 from __future__ import annotations
 
@@ -93,26 +99,57 @@ def _review_group(project: str, model: str, workspace: Path, group: dict[str, An
             "heading": f"### {group['title']} — `{spec}` ({' and '.join(widths)})"}
 
 
+def _why_none(workspace: Path) -> str:
+    """What the test runs on disk say about why there is not one screenshot to look at."""
+    runs = build_evidence._runs_found(workspace)  # noqa: SLF001
+    if not runs:
+        return ("no end-to-end test run was recorded (there is no test-results/results.json, and no run was kept in "
+                ".agentforge/qa/runs)")
+    tests = [t for run in runs for t in run.get("tests") or []]
+    seen = sorted({str(t.get("project") or "?") for t in tests})
+    if not any(t.get("screenshot") for t in tests):
+        return (f"{len(runs)} test run(s) with {len(tests)} test(s) ({', '.join(seen)}) were recorded, but none of them has a "
+                "screenshot file left")
+    return ("the only screenshots left are the accessibility checks' and other browsers', and only the desktop and mobile "
+            "ones of the journeys and pages are reviewed")
+
+
+def _show(project: str, workspace: Path, groups: list[dict[str, Any]], why: str) -> None:
+    """The screenshots in the chat without a verdict, for when nothing can look at them: the person still sees what the tests saw."""
+    plural = screen_review.plural
+    bus.agent_msg(project, f"Showing the screens of {plural(len(groups), 'end-to-end test')} below, but they were not checked "
+                           f"by looking at them: {why}.", title="Screenshot review skipped", kind="narration", agent=bus.DEVELOPER)
+    for group in groups:
+        try:
+            _data, thumbs, widths = _pictures(workspace, group)
+        except OSError:
+            continue
+        outcome = {"failed": "this test FAILED, so the screen shows where it stopped", "flaky": "this test was flaky"}.get(
+            group["status"], "this test passed")
+        bus.agent_msg(project, f"{outcome.capitalize()} ({' and '.join(widths)}). Not checked by looking.",
+                      title=f"{group['title']} · {group['status']}", kind="visual_review", agent=bus.DEVELOPER, images=thumbs)
+
+
 def run(project: str, session: Any, fix: bool = True, model: str = "", force: bool = False) -> dict[str, Any]:
     """Review the end-to-end screenshots with a vision model and fix what it finds (`fix`: false only looks and reports).
     `model` is the one this run chose, else the project's; `force` runs it even when the setting turns it off, because it
-    was asked for. Always returns a result, never raises."""
+    was asked for. Always returns a result, never raises, and never ends without saying in the chat why it did not look."""
     if not enabled() and not force:
+        bus.agent_msg(project, "The end-to-end screenshots were not looked at: the screenshot review is turned off "
+                               "(the e2e_visual_review setting).", title="Screenshot review skipped", kind="narration",
+                      agent=bus.DEVELOPER)
         return {"status": "off"}
     try:
         groups = screens(session.workspace)
         if not groups:
-            if force:                                   # asked for: say why there is nothing, rather than end without a word
-                bus.agent_msg(project, "There are no end-to-end screenshots to look at. A later test run (the accessibility "
-                                       "check, say) clears the ones an earlier run left; run the end-to-end tests, then ask "
-                                       "for this review again.", title="Screenshot review skipped", kind="narration",
-                              agent=bus.DEVELOPER)
+            bus.agent_msg(project, f"There are no end-to-end screenshots to look at: {_why_none(session.workspace)}. "
+                                   "Run the end-to-end tests (`npm run qa:e2e`), then ask for this review again.",
+                          title="Screenshot review skipped", kind="narration", agent=bus.DEVELOPER)
             return {"status": "skipped", "reason": "the end-to-end tests left no screenshots"}
         model = str(session.agent(model).model)
         ok, why = screen_review.can_review(model)
         if not ok:
-            bus.agent_msg(project, f"The end-to-end screenshots were not checked by looking at them: {why}.",
-                          title="Screenshot review skipped", kind="narration", agent=bus.DEVELOPER)
+            _show(project, session.workspace, groups, why)
             return {"status": "skipped", "reason": why}
         return _review(project, session, model, groups, fix)
     except RunCancelled:

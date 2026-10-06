@@ -98,13 +98,16 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         # The plan already runs and records every requested layer. A second
         # agent audit repeats expensive builds/browser runs without adding UI
         # evidence, so finish from the runner-owned JSON instead.
-        result = session.run_task(request, audit=False)
+        # The journeys' screenshots are copied as the tests take them: the next test run empties Playwright's output folder.
+        from .screen_keeper import Keeper
+        with Keeper(session.workspace):
+            result = session.run_task(request, audit=False)
         stop_feed.set()
         watcher.join(timeout=2)
         _publish(session, project, published[0])
 
         # The end-to-end tests are done: a model that can look at pictures looks at the screenshots they left, and what it
-        # finds is fixed (a model that cannot skips this, with a line in the chat saying so).
+        # finds is fixed. Whatever keeps it from looking is said in the chat, and the screens are shown either way.
         from . import e2e_review
         e2e_review.run(project, session)
         if session.cancelled:
