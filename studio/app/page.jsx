@@ -153,6 +153,9 @@ export default function Studio() {
   // the account connections whenever Settings closes, since that is where they are made.
   const [settingsTab, setSettingsTab] = useState('')
   const [settingsClosed, setSettingsClosed] = useState(0)
+  // A count of account changes made in Settings while it is open (a sign-in finishing, a token saved): the Deploy
+  // panel behind it reads who is signed in again each time, instead of showing "not connected" until it is reopened.
+  const [accountsChanged, setAccountsChanged] = useState(0)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [mobileView, setMobileView] = useState('view') // 'chat' | 'view'
   const opening = useRef(0)
@@ -563,8 +566,10 @@ export default function Studio() {
       {settingsOpen && (
         <SettingsModal initialTab={settingsTab}
                        onClose={() => { setSettingsOpen(false); setSettingsTab(''); setSettingsClosed(n => n + 1) }}
-                       onSaved={() => api.models().then(r => setCat(catalogue(r)))
-                                         .catch(() => { })}
+                       onSaved={() => {
+                         setAccountsChanged(n => n + 1)
+                         return api.models().then(r => setCat(catalogue(r))).catch(() => { })
+                       }}
                        onImport={importFolder}
                        onZip={downloadZip}
                        onOpenInNewTab={openPreviewInNewTab}
@@ -837,7 +842,8 @@ export default function Studio() {
               )}
               {view === 'deploy' && (
                 <DeployPanel key={`deploy-${project}`}
-                             onSettings={() => setSettingsOpen(true)} />
+                             onSettings={() => setSettingsOpen(true)}
+                             accountsRevision={accountsChanged + settingsClosed} />
               )}
               {view === 'versions' && <VersionsPanel key={`versions-${project}`} />}
               {view === 'database' && (

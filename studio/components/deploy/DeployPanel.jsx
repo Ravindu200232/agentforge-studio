@@ -105,12 +105,28 @@ export default function DeployPanel({ onSettings, accountsRevision = 0 }) {
   }, [view, monitors.loaded, current])
 
   // Which command line tools are installed and who each is signed in as: every deployment goes through the target's own tool.
+  // Read again whenever an account changes in Settings (`accountsRevision`) and whenever this window or tab is shown
+  // again (a sign-in finished in the browser, or a tool signed in from a terminal): asked fresh each time, so the list never
+  // says "not connected" about an account that was connected a moment ago. A quiet refresh keeps the last answer on screen.
+  const [shownAgain, setShownAgain] = useState(0)
+  const lastLook = useRef(0)
+  useEffect(() => {
+    const again = () => {
+      if (document.visibilityState === 'hidden' || Date.now() - lastLook.current < 4000) return
+      setShownAgain(n => n + 1)
+    }
+    window.addEventListener('focus', again)
+    document.addEventListener('visibilitychange', again)
+    return () => { window.removeEventListener('focus', again); document.removeEventListener('visibilitychange', again) }
+  }, [])
   useEffect(() => {
     let ok = true
-    setCli(null)
-    api.cliSigninAvailable().then(r => { if (ok) setCli(r?.providers || {}) }).catch(() => { if (ok) setCli({}) })
+    lastLook.current = Date.now()
+    api.cliSigninAvailable('', accountsRevision > 0 || shownAgain > 0)
+      .then(r => { if (ok) setCli(r?.providers || {}) })
+      .catch(() => { if (ok) setCli(prior => prior || {}) })
     return () => { ok = false }
-  }, [accountsRevision])
+  }, [accountsRevision, shownAgain])
 
   // A stack that only some targets can host offers only those; which is the deployment pack's own data.
   const allowed = mine?.allowed_targets

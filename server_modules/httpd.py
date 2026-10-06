@@ -275,7 +275,14 @@ def write_settings(ctx: dict) -> Any:
     patch.pop("cloud", None)
     config.save_settings(patch)
     prompts.clear_cache()
+    if any(_ACCOUNT_SETTING.match(key) for key in patch):
+        cli_signin.SIGNINS.forget()        # an account was just connected or changed: the panels must not be shown the old answer
     return read_settings({})
+
+
+# The settings that make a service connected (a token, a profile, a connection string): saving one changes who the command
+# line tools are signed in as, so what was remembered of it is dropped (`cli_signin.CliSignins.forget`).
+_ACCOUNT_SETTING = re.compile(r"^(github|vercel|netlify|azure|aws|mongodb|atlas|supabase)_|^deploy_mongodb_uri$")
 
 
 @route("POST", r"/github/device/start")
@@ -290,6 +297,7 @@ def github_device_poll(ctx: dict) -> Any:
     if result.get("status") == "ready":
         token = result.pop("token", "")
         config.save_settings({"github_token": token})
+        cli_signin.SIGNINS.forget()
         result["deploy"] = read_settings({})["deploy"]
     return result
 

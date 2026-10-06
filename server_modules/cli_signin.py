@@ -491,6 +491,12 @@ class CliSignins:
                     out[key] = row
         return out
 
+    def forget(self) -> None:
+        """Drop what was remembered of who is signed in, so the next look asks the tools again. Called when something a
+        sign-in depends on has just changed (a token saved, an account connected): what the panels would otherwise show
+        for the next `IDENTITY_TTL` seconds is the state from before."""
+        self._seen.clear()
+
     def use_existing(self, provider_key: str, options: dict | None = None) -> dict:
         """Keep the account the tool is already signed in as: no browser."""
         provider, tool = self._tool(provider_key)
