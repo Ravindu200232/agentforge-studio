@@ -157,10 +157,18 @@ class AppTests(unittest.TestCase):
         for refused in ("src/App.tsx", "package.json", "../../srs/srs.json", "..\\..\\x", "node_modules/react/index.js"):
             self.assertIsNone(web_app.served_file(self.project, "wireframe", refused), refused)
 
-    def test_the_preview_headers_stop_a_page_calling_out_or_submitting_anywhere(self):
-        csp = web_app.PREVIEW_HEADERS["Content-Security-Policy"]
+    def test_the_preview_policy_stops_a_page_calling_out_or_submitting_anywhere(self):
         for directive in ("connect-src 'none'", "form-action 'none'", "frame-src 'none'", "base-uri 'none'"):
-            self.assertIn(directive, csp)
+            self.assertIn(directive, web_app.PREVIEW_POLICY)
+
+    def test_the_policy_is_put_in_the_served_page_not_in_the_file(self):
+        page = b"<!doctype html><html><HEAD data-x=1><title>x</title></HEAD><body>hi</body></html>"
+        served = web_app.preview_page(page)
+        self.assertIn(b'http-equiv="Content-Security-Policy"', served)
+        self.assertLess(served.index(b"Content-Security-Policy"), served.index(b"<title>"),
+                        "the policy must come before anything the page loads")
+        self.assertNotIn(b"Content-Security-Policy", page)
+        self.assertTrue(web_app.preview_page(b"<p>no head</p>").startswith(b"<meta"))
 
     def test_a_label_is_retyped_in_the_source_only_when_it_is_found_exactly_once(self):
         app = self.make_wireframe()

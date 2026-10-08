@@ -445,6 +445,11 @@ def prototype_changed(project: str) -> None:
     emit({"type": "prototype", "project": project, "agent": DESIGNER})
 
 
+def wireframe_changed(project: str) -> None:
+    """The wireframe app was built or edited: the studio's wireframe preview reloads."""
+    emit({"type": "wireframe", "project": project, "agent": DESIGNER})
+
+
 def change(project: str, change: dict, agent: str = DEVELOPER) -> None:
     """A request typed into the chat, at the stage it has reached (see `changes.py`).
 

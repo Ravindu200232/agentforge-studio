@@ -2,8 +2,8 @@
 
 The schema says the document is the right shape and the standards review says the
 requirements are well written. Neither of them notices that a seven-screen
-product was specified with three requirements, that a database with two tables
-has no entity-relationship diagram, or that every wireframe is four lines long.
+product was specified with three requirements, or that a database with two tables
+has no entity-relationship diagram.
 
 Those are the failures that survive both other gates, because each artifact is
 individually valid. What catches them is counting: the plan says what exists, so
@@ -13,22 +13,6 @@ from __future__ import annotations
 
 import re
 from typing import Any
-
-# A wireframe here is one complete, self-contained HTML document: doctype, head,
-# an inline stylesheet and a body that holds the whole screen.
-WIREFRAME_MARKERS = ("<!doctype", "<html")
-
-# How much page one section is worth. These are calibrated against the reference
-# implementation's own output, where a real page runs from fifteen to
-# thirty-four thousand characters — a sign-in screen at the bottom of that range
-# and an admin table at the top. The floors below sit deliberately under those
-# numbers: they catch the page that was abandoned half-drawn, not the page that
-# is merely compact.
-#
-# Sections and functions overlap — a page's "form" section and its "sign in"
-# function are one thing on screen, not two — so functions count half.
-WIREFRAME_CHARS_PER_SECTION = 1500
-WIREFRAME_FLOOR = 6000
 
 
 def _dig(doc: dict, path: str) -> list:
@@ -182,42 +166,6 @@ def traceability_coverage(doc: dict) -> list[str]:
     if missing:
         return [f"these requirements are in no traceability row: {', '.join(missing[:8])}"]
     return []
-
-
-def _page_weight(doc: dict, route: str) -> int:
-    """How much page the specification says this route carries."""
-    for page in _dig(doc, "public_pages") + _dig(doc, "protected_pages"):
-        if str(page.get("route") or "").rstrip("/") == route.rstrip("/"):
-            return max(1, len(page.get("sections") or [])
-                       + len(page.get("functions") or []) // 2)
-    return 3
-
-
-def wireframe_depth(pages: list[tuple[str, str]], doc: dict | None = None) -> list[str]:
-    """Wireframes drawn without the skill's design system, or without a page on them."""
-    doc = doc or {}
-    gaps = []
-    for route, html in pages:
-        text = (html or "").strip()
-        weight = _page_weight(doc, route)
-        expected = max(WIREFRAME_FLOOR, weight * WIREFRAME_CHARS_PER_SECTION)
-
-        if not text.lower().startswith(WIREFRAME_MARKERS):
-            gaps.append(f"the wireframe for {route} is not a complete HTML document — "
-                        f"it must open with <!DOCTYPE html> and carry its own <head> "
-                        f"and inline <style>")
-            continue
-        if len(text) < expected:
-            gaps.append(f"the wireframe for {route} is {len(text):,} characters, but the "
-                        f"specification gives that page {weight} section(s) and "
-                        f"function(s) to draw — draw the whole screen: its shell, every "
-                        f"section, every control its functions need, and its loading, "
-                        f"empty and error states, with realistic sample content "
-                        f"throughout (aim for {expected:,}+)")
-        if "<style" not in text.lower():
-            gaps.append(f"the wireframe for {route} has no inline <style> block, so it "
-                        f"renders unstyled — the document must carry its own CSS")
-    return gaps
 
 
 def check_document(doc: dict, plan: dict) -> list[str]:

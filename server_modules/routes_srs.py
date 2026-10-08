@@ -198,29 +198,38 @@ def wireframes(project: str, _body: dict) -> Any:
     return document.wireframes(project)
 
 
-@route("POST", rf"/projects/{P}/wireframes/html")
-def draw_wireframe(project: str, body: dict) -> Any:
-    """The Wireframe tab's own draw button.
+@route("POST", rf"/projects/{P}/wireframes/generate")
+def generate_wireframe(project: str, body: dict) -> Any:
+    """The Wireframe tab's Generate / Regenerate button: the whole app again, from the specification."""
+    from srs_agent import wireframe
 
-    One focused call per screen, reading the handoff documents the specification
-    stage wrote. Previously this asked the agent to "redraw following the skill",
-    which is how seven pages came back as four-line stubs.
-    """
-    return document.redraw(project, str(body.get("route") or "").strip(),
-                            quiet=bool(body.get("quiet")))
+    return wireframe.run(project, str(body.get("prompt") or ""))
 
 
-@route("POST", rf"/projects/{P}/wireframes/html/edit")
-def edit_wireframe(project: str, body: dict) -> Any:
-    return document.save_wireframe_html(project, str(body.get("route") or ""),
-                                        str(body.get("html") or ""))
-
-
-@route("POST", rf"/projects/{P}/wireframes/html/ai-edit")
+@route("POST", rf"/projects/{P}/wireframes/ai-edit")
 def ai_edit_wireframe(project: str, body: dict) -> Any:
-    """Make one direct, page-scoped AI change without entering plan mode."""
-    return document.ai_edit_wireframe(project, str(body.get("route") or ""),
-                                      str(body.get("prompt") or ""))
+    """One change asked for in words (about the picked element, when one was picked); the agent edits the app."""
+    from srs_agent import wireframe
+
+    return wireframe.edit(project, str(body.get("prompt") or ""), str(body.get("route") or ""),
+                          str(body.get("element") or ""))
+
+
+@route("POST", rf"/projects/{P}/app/text-edit")
+def edit_app_text(project: str, body: dict) -> Any:
+    """Retype one label in the preview: swapped in the source when it is there exactly once, then rebuilt."""
+    from . import bus, web_app
+
+    kind = str(body.get("kind") or "")
+    if kind not in web_app.KINDS:
+        raise ValueError("say which app: wireframe or prototype")
+    done = web_app.replace_text(project, kind, str(body.get("old") or ""), str(body.get("new") or ""))
+    if done.get("ok"):
+        built, log = web_app.bundle(project, kind)
+        if not built:
+            raise ValueError("the app did not build after that edit: " + log[-300:])
+        (bus.wireframe_changed if kind == "wireframe" else bus.prototype_changed)(project)
+    return done
 
 
 @route("POST", rf"/projects/{P}/wireframes/approve")

@@ -317,10 +317,11 @@ def record_dir(project: str) -> Path:
 # workspace layout fact, not a setting — kept here for the same reason
 # `workspace_for()` and `record_dir()` are.
 SCAFFOLD_DIRS = (
-    "srs/handoff", "srs/wireframes", "srs/diagrams", "srs/diagram-context",
-    "srs/reviews", "srs/wireframe-system",
+    "srs/handoff", "srs/diagrams", "srs/diagram-context",
+    "srs/reviews",
+    "wireframe",
     "design",
-    "prototype/input", "prototype/assets/uploads",
+    "prototype/input",
     "build/guides", "build/plan",
     "qa/guides",
     "deploy/skills", "deploy/runs",

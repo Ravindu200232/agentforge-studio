@@ -79,7 +79,7 @@ Everything above is the official skill, unchanged. AgentForge runs on Windows wi
 
 ```
 node scripts/init-artifact.mjs <project-name>     # replaces: bash scripts/init-artifact.sh
-node scripts/bundle-artifact.mjs                  # replaces: bash scripts/bundle-artifact.sh (run inside the project)
+node scripts/bundle-artifact.mjs [project-folder] # replaces: bash scripts/bundle-artifact.sh (inside the project, or name its folder)
 ```
 
 - `node_modules` is a link to one shared toolkit that is already installed: React 18, TypeScript, Tailwind 3.4, all shadcn/ui components and their Radix packages, lucide-react, framer-motion, recharts, react-router-dom, react-hook-form, zod, date-fns, sonner. **Do not run npm, pnpm or yarn install and do not add packages**; use what is there.

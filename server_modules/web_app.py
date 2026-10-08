@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -38,15 +39,21 @@ MIME = {
 
 # What the preview may do. It can run its own scripts and draw, but it cannot call out, submit a form
 # anywhere, nest another page or change the base address: a button in a wireframe goes nowhere outside it.
-PREVIEW_HEADERS = {
-    "Content-Security-Policy": (
-        "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' data: blob:; "
-        "connect-src 'none'; form-action 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'"
-    ),
-    "X-Content-Type-Options": "nosniff",
-    "Referrer-Policy": "no-referrer",
-}
+PREVIEW_POLICY = (
+    "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' data: blob:; "
+    "connect-src 'none'; form-action 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'"
+)
+_HEAD = re.compile(rb"<head[^>]*>", re.IGNORECASE)
+
+
+def preview_page(html: bytes) -> bytes:
+    """`bundle.html` as the preview serves it: the policy goes into its head here, at serving time, so it
+    is the preview's rule and never something the agent wrote (or could leave out). A `<meta>` rather than
+    a header because the desktop app's bridge carries only a content type."""
+    meta = f'<meta http-equiv="Content-Security-Policy" content="{PREVIEW_POLICY}">'.encode("utf-8")
+    found = _HEAD.search(html)
+    return html[:found.end()] + meta + html[found.end():] if found else meta + html
 
 
 # --- where things are ---------------------------------------------------------------------------
@@ -210,6 +217,31 @@ def bundle(project: str, kind: str) -> tuple[bool, str]:
     script = SKILL_SOURCE / "scripts" / "bundle-artifact.mjs"
     ok, text = _run([str(script)], app, timeout=900)
     return (ok and built(project, kind)), text
+
+
+class BuildFailed(RuntimeError):
+    """The app would not build, even after the agent was asked to fix it once."""
+
+
+def ensure_built(session, project: str, kind: str, agent: str = "") -> None:
+    """Leave a current bundle behind: build it when it is missing or older than the source, and when the
+    build fails give the agent the build output once to fix its own source. Never edits the app itself."""
+    from . import bus, prompts
+
+    app = app_dir(project, kind)
+    if not (app / "index.html").is_file():
+        raise BuildFailed("the agent did not create the app (there is no index.html)")
+    if built(project, kind) and not stale(project, kind):
+        return
+    ok, log = bundle(project, kind)
+    if not ok:
+        bus.log(project, "WARN", "The app did not build yet; asking the agent to fix it.\n" + log[-500:],
+                **({"agent": agent} if agent else {}))
+        session.run_direct(prompts.load("shared/build-fix", app=app.relative_to(config.workspace_for(project)).as_posix(),
+                                        log=log[-3500:]))
+        ok, log = bundle(project, kind)
+    if not ok:
+        raise BuildFailed(log[-1200:] or "the app did not build")
 
 
 def _is_link(path: Path) -> bool:

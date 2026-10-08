@@ -1270,37 +1270,6 @@ class ProjectSession:
             raise RunCancelled(self.project)
         return {"status": "complete", "text": text or "", "rounds": 1}
 
-    def plan_focused_task(self, request: str, model: str = "", subject: str = "the pages") -> str:
-        """Use the agent's /plan mode before a focused, per-file generation run.
-
-        The caller executes the approved plan with independent model calls, so
-        large multi-page outputs are not constrained by the tool-agent step cap.
-        """
-        agent = self.agent(model)
-        if self.cancelled:
-            raise RunCancelled(self.project)
-        bus.agent_state(self.project, "planning", thinking=True, agent=self.role)
-        bus.log(self.project, "INFO",
-                "Planning: reviewing the handoff context and choosing the files to inspect.",
-                agent=self.role)
-        with self.lock:
-            agent.set_mode("plan")
-            try:
-                plan = agent.ask(request) or ""
-            finally:
-                agent.set_mode("act")
-        if self.cancelled:
-            raise RunCancelled(self.project)
-        self.report_memory()
-        self.save_context()
-        if self.cancelled:
-            raise RunCancelled(self.project)
-        if not plan.strip():
-            raise ValueError("the plan was empty")
-        bus.log(self.project, "INFO", f"Plan ready — approved automatically; drawing {subject}.",
-                agent=self.role)
-        return plan
-
     # --- the project's own record ------------------------------------------
 
     def record_path(self, *parts: str) -> Path:

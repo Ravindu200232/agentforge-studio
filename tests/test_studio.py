@@ -661,20 +661,9 @@ class ReviewRuleTests(unittest.TestCase):
         self.assertNotIn("structural_readout", doc["requirements_quality_review"]["reviewer"])
 
 
-def a_wireframe(body: str = "", pad: int = 8000) -> str:
-    """A complete HTML document of roughly the size a real page has."""
-    return ("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-            "<title>Page</title><style>body{font-family:system-ui}"
-            ".shell{display:flex}</style></head><body>"
-            f"{body}<!--{'x' * pad}--></body></html>")
-
-
 class CompletenessTests(unittest.TestCase):
     def test_a_covered_specification_has_no_gaps(self):
-        pages = [("/", a_wireframe("<main><h1>Our Cakes</h1></main>"))]
         self.assertEqual(completeness.check_document(a_document(), a_plan()), [])
-        self.assertEqual(completeness.wireframe_depth(pages, a_document()), [])
 
     def test_a_screen_the_plan_promised_and_the_document_dropped(self):
         plan = a_plan(screens=[
@@ -732,32 +721,6 @@ class CompletenessTests(unittest.TestCase):
                                 "The owner can export monthly revenue to a spreadsheet"])
         gaps = completeness.requirement_coverage(a_document(), plan)
         self.assertTrue(any("revenue" in gap for gap in gaps))
-
-    def test_the_wireframe_floor_is_sized_to_the_page(self):
-        # A sign-in screen is a finished screen at the floor; a page the
-        # specification says carries eight things is not.
-        sign_in = a_wireframe("<form><label>Email</label><input></form>", pad=7000)
-
-        small = a_document(public_pages=[{"page_name": "Sign in", "route": "/login",
-                                          "sections": ["form"], "functions": ["sign in"]}])
-        self.assertEqual(completeness.wireframe_depth([("/login", sign_in)], small), [])
-
-        big = a_document(public_pages=[{"page_name": "Dashboard", "route": "/login",
-                                        "sections": ["a", "b", "c", "d"],
-                                        "functions": ["e", "f", "g", "h"]}])
-        self.assertTrue(completeness.wireframe_depth([("/login", sign_in)], big))
-
-    def test_a_wireframe_that_is_only_a_fragment(self):
-        """The old section-fragment shape renders as unstyled text in the studio."""
-        fragment = '<section class="wf-header">Bakery</section>' + "x" * 9000
-        gaps = completeness.wireframe_depth([("/", fragment)], a_document())
-        self.assertTrue(any("complete HTML document" in gap for gap in gaps))
-
-    def test_a_wireframe_with_no_stylesheet_of_its_own(self):
-        naked = ("<!DOCTYPE html><html><head><title>x</title></head><body>"
-                 + "y" * 9000 + "</body></html>")
-        gaps = completeness.wireframe_depth([("/", naked)], a_document())
-        self.assertTrue(any("<style>" in gap for gap in gaps))
 
 
 class StructuralRubricTests(unittest.TestCase):
@@ -1290,115 +1253,6 @@ class OneContextTests(unittest.TestCase):
                 self.assertIn("number 199", digest)
             finally:
                 config.WORKSPACES = original
-
-
-class WireframeGenerationTests(unittest.TestCase):
-    def test_page_prompt_points_at_the_handoff_files_and_carries_the_approved_plan(self):
-        """The handoff is read by the model itself, not pasted into the prompt."""
-        from srs_agent import document as srs_document
-
-        class Session:
-            def __init__(self, root):
-                self.workspace = root
-                self.record = root / ".agentforge"
-
-            def record_path(self, *parts):
-                path = self.record.joinpath(*parts)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                return path
-
-        html = "<!DOCTYPE html><html><head><style>body{color:#111;background:#fff}</style>" \
-               "</head><body>" + "Detailed section. " * 420 + "</body></html>"
-        handoff = "Contract " + "x" * 21000 + " FINAL_HANDOFF_DETAIL"
-        captured = []
-
-        def complete_html(**kwargs):
-            captured.append(kwargs["user"])
-            return html
-
-        with tempfile.TemporaryDirectory() as folder, \
-             patch.object(srs_document.llm, "complete_html", side_effect=complete_html), \
-             patch.object(srs_document.plan_stage, "markdown", return_value="# Approved /plan"), \
-             patch.object(srs_document.bus, "file_written"), \
-             patch.object(srs_document.bus, "log"):
-            srs_document._draw_page(Session(Path(folder)), "test", a_document(),
-                                    a_document()["public_pages"][0],
-                                    {"app.md": handoff, "sitemap.md": "All routes"})
-
-        self.assertNotIn("FINAL_HANDOFF_DETAIL", captured[0])
-        self.assertIn(".agentforge/srs/handoff/app.md", captured[0])
-        self.assertIn(".agentforge/srs/handoff/sitemap.md", captured[0])
-        self.assertIn("# Approved /plan", captured[0])
-
-    def test_every_plan_route_gets_a_grid_card_even_when_one_drawing_fails(self):
-        from srs_agent import document as srs_document
-
-        approved = a_plan(screens=[
-            {"name": "Home", "route": "/", "purpose": "Browse", "who": ["Visitor"]},
-            {"name": "Checkout", "route": "/checkout", "purpose": "Pay", "who": ["Visitor"]},
-            {"name": "Orders", "route": "/orders", "purpose": "Review", "who": ["Owner"]},
-        ])
-        doc = a_document()
-
-        class Session:
-            stage = "srs"
-
-            def __init__(self, root):
-                self.workspace = root
-                self.record = root / ".agentforge"
-                self.saved = {}
-
-            def read_record(self, *parts, fallback=None):
-                return copy.deepcopy(self.saved.get(parts, fallback))
-
-            def write_record(self, *parts, data):
-                self.saved[parts] = copy.deepcopy(data)
-                return self.record.joinpath(*parts)
-
-        with tempfile.TemporaryDirectory() as folder:
-            session = Session(Path(folder))
-
-            systems = []
-
-            def draw(_session, _project, _doc, page, _docs, _request, system, **_kwargs):
-                systems.append(system)
-                if page["route"] == "/checkout":
-                    raise ValueError("model unavailable")
-                slug = srs_document._slug(page["route"])
-                relative = f".agentforge/srs/wireframes/{slug}.html"
-                path = session.workspace / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("<!DOCTYPE html><html><style></style></html>", encoding="utf-8")
-                return {"route": page["route"], "name": page["page_name"],
-                        "slug": slug, "file": relative}
-
-            with patch.object(srs_document, "handoff_docs", return_value={"app.md": "contract"}), \
-                 patch.object(srs_document, "_draw_page", side_effect=draw), \
-                 patch.object(srs_document, "_wireframe_system", return_value={"ideas": "IDEAS", "layout": "LAYOUT", "new": []}) as prepared, \
-                 patch.object(srs_document, "session_for", return_value=session), \
-                 patch.object(srs_document, "document", return_value={"srs_document": doc}), \
-                 patch.object(srs_document.plan_stage, "approved_plan", return_value=approved), \
-                 patch.object(srs_document.bus, "phase"), \
-                 patch.object(srs_document.bus, "agent_msg") as messages, \
-                 patch.object(srs_document.bus, "log"):
-                self.assertEqual(srs_document._generate_wireframes(session, "test", doc, approved), 2)
-                self.assertTrue(any(call.kwargs.get("title") == "Wireframe generation"
-                                    for call in messages.call_args_list))
-                grid = srs_document.wireframes("test")
-                # the ideas and the shared layout are made once, before any page, and every page is given the same ones
-                self.assertEqual(prepared.call_count, 1)
-                self.assertTrue(prepared.call_args.kwargs["fresh"])            # every page again: a new pass
-                self.assertEqual(len(systems), 3)
-                self.assertTrue(all(s["layout"] == "LAYOUT" and s["ideas"] == "IDEAS" for s in systems))
-                srs_document._generate_wireframes(session, "test", doc, approved, route="/orders")
-                self.assertFalse(prepared.call_args.kwargs["fresh"])           # one page again: the kept ones are reused
-
-            self.assertEqual([p["route"] for p in grid["pages"]],
-                             ["/", "/checkout", "/orders"])
-            self.assertEqual([p["has_html"] for p in grid["pages"]],
-                             [True, False, True])
-            self.assertIn("model unavailable", grid["pages"][1]["error"])
-            self.assertFalse(grid["drawing"])
 
 
 class PrototypeFromWireframesTests(unittest.TestCase):

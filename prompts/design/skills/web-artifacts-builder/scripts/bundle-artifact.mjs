@@ -5,6 +5,7 @@
 // per-project pnpm install.
 //
 //   cd <project> && node bundle-artifact.mjs
+//   node bundle-artifact.mjs <project-folder>          (the same, from anywhere)
 import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
@@ -12,6 +13,14 @@ import { spawnSync } from 'node:child_process'
 import { fail, runtimeDir, ensureRuntime, linkNodeModules } from './lib.mjs'
 
 console.log('Bundling React app to single HTML artifact...')
+
+if (process.argv[2]) {
+  try {
+    process.chdir(process.argv[2])
+  } catch {
+    fail('Project folder not found: ' + process.argv[2])
+  }
+}
 
 if (!fs.existsSync('package.json')) fail('No package.json found. Run this script from your project root.')
 if (!fs.existsSync('index.html')) fail('No index.html found in project root. This script requires an index.html entry point.')

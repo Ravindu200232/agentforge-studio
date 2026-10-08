@@ -72,23 +72,6 @@ def extract_json(text: str) -> Any:
     raise ValueError("the model did not return JSON")
 
 
-def extract_html(text: str) -> str:
-    """The HTML document in a model reply, without its commentary or fence."""
-    raw = (text or "").strip()
-    fenced = re.search(r"```(?:html)?\s*(.+?)```", raw, re.DOTALL)
-    if fenced:
-        raw = fenced.group(1).strip()
-    start = raw.lower().find("<!doctype")
-    if start < 0:
-        start = raw.lower().find("<html")
-    if start > 0:
-        raw = raw[start:]
-    end = raw.lower().rfind("</html>")
-    if end > 0:
-        raw = raw[:end + len("</html>")]
-    return raw.strip()
-
-
 _local = threading.local()
 
 
@@ -413,54 +396,6 @@ def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None
             continue
         return data if checked is None else checked
     raise LLMRepairFailed(label, last, f"no valid JSON after {attempts} attempts")
-
-
-def complete_html(system: str, user: str, model: str = "", minimum: int = 0,
-                  label: str = "html", attempts: int = 2,
-                  think: bool | None = None,
-                  project: str = "", workspace: Path | None = None, role: str = "",
-                  on_stream_start: Callable[[], None] | None = None,
-                  on_stream_token: Callable[[str], None] | None = None) -> str:
-    """One call answered as a complete HTML document. When `project`/`workspace`
-    are given, the model gets a read-only tool instead of pre-embedded file content.
-
-    `on_stream_start`/`on_stream_token`, when given, are called as the model
-    writes — the caller decides what "streaming" means to it (a bus event, a
-    log line); this module stays oblivious to that, same as it stays
-    oblivious to `bus` everywhere else.
-    """
-    from . import llm_tools
-    tools = _tools_for(project, workspace, role)
-    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-    last = ""
-    for _ in range(max(1, attempts)):
-        kwargs: dict[str, Any] = {"model": _model(model), "messages": messages,
-                                  "stream": bool(config.setting("cloud"))}
-        kwargs["think"] = config.thinking_enabled() if think is None else think
-        context = _context_for(kwargs["model"])
-        if context and not config.setting("cloud"):
-            kwargs["options"] = {"num_ctx": context}
-        message = llm_tools.run_chat(client().chat, kwargs, tools,
-                                     on_stream_start=on_stream_start, on_stream_token=on_stream_token,
-                                     on_usage=_focused_usage(project, kwargs["model"], context, role))
-        llm_tools.tag_effort(tools, kwargs["think"], label)
-        last = ((getattr(message, "content", "") or "")
-                or (getattr(message, "thinking", "") or "")).strip()
-        html = extract_html(last)
-
-        if html.lower().startswith(("<!doctype", "<html")) and len(html) >= minimum:
-            return html
-
-        why = ("it was not a complete HTML document starting with <!DOCTYPE html>"
-               if not html.lower().startswith(("<!doctype", "<html"))
-               else f"it was only {len(html)} characters, and this page needs at "
-                    f"least {minimum} — you left the page half drawn")
-        messages += [{"role": "assistant", "content": html[:1500]},
-                     {"role": "user", "content":
-                      f"That is not usable: {why}. Use the supplied project files again if "
-                      f"you need to resolve a missing detail, then draw the whole page and "
-                      f"return the complete HTML document and nothing else."}]
-    raise LLMRepairFailed(label, last, "no complete HTML document")
 
 
 def web_search(query: str, max_results: int = 4) -> list[dict[str, str]]:

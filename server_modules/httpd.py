@@ -30,7 +30,7 @@ from qa_agent import report_pdf
 from qa_agent import verify as qa
 from srs_agent import document as srs_document
 
-from . import bus, changes, cli_monitor, cli_signin, config, connection, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, workspace_picker
+from . import bus, changes, cli_monitor, cli_signin, config, connection, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, web_app, workspace_picker
 from . import database_rows as database_rows_module
 from .session import session_for
 
@@ -941,12 +941,22 @@ def srs_pdf(ctx: dict) -> Any:
                "application/pdf", "SRS.pdf")
 
 
-@route("GET", r"/srs/projects/(?P<project>[^/]+)/wireframes/html")
-def wireframe_page(ctx: dict) -> Any:
+@route("GET", r"/app/(?P<project>[^/]+)/(?P<kind>wireframe|prototype)(?:/(?P<name>.*))?")
+def app_file(ctx: dict) -> Any:
+    """The wireframe or the prototype, as the preview frames it: `bundle.html`, and the built files it points at.
+
+    Pages are chosen inside the app by its hash route (`bundle.html#/orders`), so the address never changes."""
     project = _project(ctx)
-    route_name = str(ctx.get("_query", {}).get("route") or "/")
-    return Raw(srs_document.wireframe_html(project, route_name).encode("utf-8"),
-               "text/html; charset=utf-8")
+    match = ctx["_match"]
+    name = unquote(match.group("name") or "").split("?")[0]
+    file = web_app.served_file(project, match.group("kind"), name)
+    if file is None:
+        raise HttpError(404, f"the {match.group('kind')} is not built yet" if not name
+                        else "that file is not part of the app")
+    body = file.read_bytes()
+    if file.name == web_app.BUNDLE:
+        body = web_app.preview_page(body)
+    return Raw(body, web_app.MIME.get(file.suffix.lower(), "application/octet-stream"))
 
 
 # The rest of `/srs/...` is the SRS router, read directly on GET. `jobs` is
