@@ -137,22 +137,6 @@ class CreatingTheAppTests(Scratch):
         self.assertFalse((self.root / "escaped.txt").exists())
 
 
-class CopyingTheAppTests(Scratch):
-    def test_the_prototype_starts_as_a_copy_that_leaves_the_wireframe_alone(self):
-        wire, proto = self.app("wire"), self.app("proto")
-        web_app.create_app(wire, "App", PAGES)
-        (wire / "src" / "pages").mkdir()
-        (wire / "src" / "pages" / "home.tsx").write_text("export default () => 'wire'", encoding="utf-8")
-        (wire / "bundle.html").write_text("<html>wire</html>", encoding="utf-8")
-        (wire / "dist").mkdir()
-        web_app.copy_app(wire, proto)
-        self.assertEqual((proto / "src" / "pages" / "home.tsx").read_text(encoding="utf-8"), "export default () => 'wire'")
-        self.assertFalse((proto / "bundle.html").exists())
-        self.assertFalse((proto / "dist").exists())
-        (proto / "src" / "pages" / "home.tsx").write_text("export default () => 'proto'", encoding="utf-8")
-        self.assertEqual((wire / "src" / "pages" / "home.tsx").read_text(encoding="utf-8"), "export default () => 'wire'")
-
-
 class BundlingTests(Scratch):
     def made(self) -> Path:
         app = self.app()

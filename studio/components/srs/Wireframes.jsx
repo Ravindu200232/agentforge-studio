@@ -2,7 +2,7 @@
 
 /** The wireframes: a low-fidelity React app the agent built, shown as it is, with its pages listed and a box to ask for a change. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ExternalLink, Loader2, RotateCw, Send } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Loader2, RotateCw, Send } from 'lucide-react'
 
 import { api, isJobCancelled } from '@/lib/api'
 import { useStore } from '@/lib/store'
@@ -33,6 +33,38 @@ function same(pattern, here) {
   return a.length === b.length && a.every((part, i) => /^\[.+\]$|^:/.test(part) || part === b[i])
 }
 
+/** One page, shown small and not clickable: the wireframe app opened at that page and scaled to the card. */
+function Thumbnail({ src, page, waiting }) {
+  const box = useRef(null)
+  const [scale, setScale] = useState(0.22)
+  useEffect(() => {
+    const el = box.current
+    if (!el) return
+    const measure = () => setScale((el.clientWidth || 280) / 1280)
+    measure()
+    const watcher = new ResizeObserver(measure)
+    watcher.observe(el)
+    return () => watcher.disconnect()
+  }, [])
+  const drawing = page.drawing || (waiting && !page.has_html)
+  return (
+    <div ref={box} className="relative h-full w-full overflow-hidden bg-white">
+      {src && page.has_html ? (
+        <iframe title={page.page_name || page.route} src={src} loading="lazy" tabIndex={-1} aria-hidden="true"
+          className="pointer-events-none origin-top-left border-0"
+          style={{ width: '1280px', height: '900px', transform: `scale(${scale})` }} />
+      ) : (
+        <div className="absolute inset-0 grid place-items-center bg-panel text-center">
+          {drawing
+            ? <span className="flex flex-col items-center gap-1.5"><Loader2 className="size-5 animate-spin text-accent" />
+                <span className="text-[11px] font-semibold text-ink">Drawing…</span></span>
+            : <span className="text-[11px] text-muted2">not drawn yet</span>}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function Wireframes({ srs, onApprove, onRetryPrototype, generating = false, approving = false }) {
   const owner = srs?.project || srs?.srs_id || srs?.id || ''
   const srsId = useSrsId(owner)
@@ -41,6 +73,7 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, generating = fals
   const [error, setError] = useState('')
   const [drawing, setDrawing] = useState(false)
   const [route, setRoute] = useState('')
+  const [open, setOpen] = useState(false)
   const [asking, setAsking] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [designApproved, setDesignApproved] = useState(false)
@@ -89,7 +122,7 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, generating = fals
 
   // A link inside the wireframes moves the frame to another page: follow it in the list.
   useEffect(() => {
-    if (!built) return
+    if (!built || !open) return
     const id = setInterval(() => {
       try {
         const hash = frame.current?.contentWindow?.location?.hash?.slice(1)
@@ -99,7 +132,7 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, generating = fals
       } catch { /* the frame is not on our own address yet */ }
     }, 500)
     return () => clearInterval(id)
-  }, [built, pages, route])
+  }, [built, open, pages, route])
 
   const src = useMemo(
     () => (srsId && built ? api.webUrl(srsId, 'wireframe', route, data?.version) : ''),
@@ -146,7 +179,7 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, generating = fals
   const current = pages.find(p => p.route === route)
 
   return (
-    <div className="flex h-full min-h-[520px] flex-col gap-3">
+    <div className={cn("flex flex-col gap-3", open && "h-full min-h-[520px]")}>
       {error && <p role="alert" className="text-xs text-rose-400">{error}</p>}
       {waiting && (
         <p className="flex items-center gap-2.5 rounded-none border border-accent/30 bg-accent px-3.5 py-2.5 text-[11.5px] leading-relaxed text-ink">
@@ -159,8 +192,8 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, generating = fals
       )}
       <div className="flex flex-wrap items-baseline justify-between gap-3">
         <p className="text-[11.5px] text-muted">
-          {pages.length} page{pages.length === 1 ? '' : 's'} as a low-fidelity React app (shadcn/ui, Tailwind), with sample data. Click
-          through them, or ask for a change.
+          {pages.length} page{pages.length === 1 ? '' : 's'} as a low-fidelity React app (shadcn/ui, Tailwind), with sample data.
+          {open ? ' Click through them, or ask for a change.' : ' Open a page to click through it, or to ask for a change.'}
           {drawn === pages.length ? ' All drawn.' : ` ${drawn} of ${pages.length} drawn so far.`}
         </p>
         <div className="flex items-center gap-2">
@@ -184,7 +217,26 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, generating = fals
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 gap-4 [grid-template-columns:230px_minmax(0,1fr)]">
+      {!open && (
+        <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
+          {pages.map((page, index) => (
+            <button key={`${page.route || 'wireframe'}-${index}`} type="button"
+              onClick={() => { setRoute(page.route); setOpen(true) }}
+              className="w-full cursor-pointer overflow-hidden rounded-none border border-line text-left transition hover:border-accent">
+              <span className="block aspect-[16/11] overflow-hidden border-b border-line bg-white">
+                <Thumbnail src={srsId && built ? api.webUrl(srsId, 'wireframe', page.route, data?.version) : ''} page={page} waiting={waiting} />
+              </span>
+              <span className="block space-y-1 p-3">
+                <span className="block truncate text-[12px] font-medium text-ink">{page.page_name}</span>
+                <span className="block truncate font-mono text-[10px] text-muted2">{page.route}</span>
+                <span className="block truncate text-[10px] text-muted2">{page.roles?.length ? page.roles.join(', ') : 'public'}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {open && <div className="grid min-h-0 flex-1 gap-4 [grid-template-columns:230px_minmax(0,1fr)]">
         <ul className="min-h-0 space-y-1 overflow-y-auto pr-1" aria-label="Wireframe pages">
           {pages.map((page, index) => (
             <li key={`${page.route || 'wireframe'}-${index}`}>
@@ -204,7 +256,13 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, generating = fals
 
         <div className="flex min-h-0 min-w-0 flex-col gap-2">
           <div className="flex items-center justify-between gap-2">
-            <span className="truncate font-mono text-[11px] text-muted2">{current ? `${current.page_name} · ${current.route}` : route}</span>
+            <span className="flex min-w-0 items-center gap-2">
+              <button type="button" onClick={() => setOpen(false)} title="Back to all the pages"
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] font-medium text-ink hover:bg-ink/[.06]">
+                <ArrowLeft className="size-3" /> All pages
+              </button>
+              <span className="truncate font-mono text-[11px] text-muted2">{current ? `${current.page_name} · ${current.route}` : route}</span>
+            </span>
             {src && (
               <span className="flex shrink-0 gap-1">
                 <button type="button" title="Reload" onClick={() => frame.current?.contentWindow?.location.reload()}
@@ -232,7 +290,7 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, generating = fals
             </Button>
           </form>
         </div>
-      </div>
+      </div>}
     </div>
   )
 }

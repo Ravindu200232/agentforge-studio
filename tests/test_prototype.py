@@ -44,7 +44,6 @@ class Scratch(unittest.TestCase):
         (handoff / "app.md").write_text("# Sweet Crumbs", encoding="utf-8")
         self.session = FakeSession(self.workspace)
         self.kit = self.workspace / "kit"
-        self.edits = 1                                   # how many times the fake agent edits the app
         for patcher in (
             mock.patch.object(prototyper, "session_for", lambda project: self.session),
             mock.patch.object(wireframe, "session_for", lambda project: self.session),
@@ -75,8 +74,11 @@ class Scratch(unittest.TestCase):
         (self.wire / "bundle.html").write_text("<html>wireframe</html>", encoding="utf-8")
 
     def agent_edits(self, session):
-        """What the agent does: it makes the home page real."""
-        (self.proto / "src" / "pages" / "home.tsx").write_text("export default () => 'FRESH CAKES'", encoding="utf-8")
+        """What the agent does: it reads the wireframes and writes a page for every screen."""
+        pages = self.proto / "src" / "pages"
+        pages.mkdir(parents=True, exist_ok=True)
+        for name in ("home", "login", "register", "orders", "kitchen"):
+            (pages / f"{name}.tsx").write_text(f"export default () => 'FRESH {name}'", encoding="utf-8")
 
     def draw(self, direction: str = "Make it warm"):
         self.session.agent = self.agent_edits
@@ -104,14 +106,30 @@ class DrawingTests(Scratch):
         self.assertIn("web-artifacts-builder", text)
         self.assertIn("high-fidelity", text)
 
-    def test_the_prototype_is_a_copy_of_the_wireframes_which_stay_as_they_were(self):
+    def test_the_agent_is_told_to_read_the_wireframes_then_plan_then_write(self):
+        self.draw()
+        request = self.session.tasks[0]
+        read, plan, write = (request.index(part) for part in ("First read the wireframes", "Then plan the prototype", "and write it"))
+        self.assertLess(read, plan)
+        self.assertLess(plan, write)
+        self.assertIn("every page under `.agentforge/wireframe/app/src/pages/`", request)
+        self.assertIn("Never change the wireframes", request)
+        self.assertNotIn("copied", request)
+
+    def test_the_prototype_is_a_new_app_and_the_wireframes_stay_as_they_were(self):
         self.draw()
 
-        self.assertEqual((self.proto / "src/pages/home.tsx").read_text(encoding="utf-8"), "export default () => 'FRESH CAKES'")
-        self.assertEqual((self.proto / "src/pages/kitchen.tsx").read_text(encoding="utf-8"), "export default () => 'WIRE kitchen'")
+        self.assertEqual((self.proto / "src/pages/home.tsx").read_text(encoding="utf-8"), "export default () => 'FRESH home'")
         self.assertEqual((self.wire / "src/pages/home.tsx").read_text(encoding="utf-8"), "export default () => 'WIRE home'")
         self.assertEqual((self.wire / "bundle.html").read_text(encoding="utf-8"), "<html>wireframe</html>")
-        self.assertFalse((self.proto / "bundle.html").exists(), "the prototype is bundled after the agent has edited it")
+        self.assertFalse((self.proto / "bundle.html").exists(), "the prototype is bundled after the agent has written it")
+
+    def test_nothing_of_the_wireframe_is_in_the_new_app_before_the_agent_writes(self):
+        self.session.agent = lambda s: self.assertFalse((self.proto / "src" / "pages").exists(), "the wireframe's pages were copied")
+        with self.assertRaises(prototyper.PrototypeIncomplete):
+            prototyper._draw_with_agent(PROJECT, {"tokens": {}}, "")
+        self.assertTrue((self.proto / "src" / "routes.ts").is_file(), "but it is set up: routes, demo accounts, router, components")
+        self.assertTrue((self.proto / "src" / "components" / "ui" / "button.tsx").is_file())
 
     def test_it_is_bundled_when_the_agent_is_done(self):
         self.draw()
@@ -150,33 +168,56 @@ class DrawingTests(Scratch):
         self.assertNotIn("signInAs", self.session.tasks[0])
         self.assertIn("export const accounts: Account[] = []", (self.proto / "src" / "demo.ts").read_text(encoding="utf-8"))
 
-    def test_an_agent_that_changed_nothing_leaves_the_run_to_be_carried_on(self):
+    def test_an_agent_that_wrote_no_pages_leaves_the_run_to_be_carried_on(self):
         self.session.agent = None
         with self.assertRaises(prototyper.PrototypeIncomplete) as raised:
             prototyper._draw_with_agent(PROJECT, {"tokens": {}}, "")
-        self.assertIn("did not change", raised.exception.missing[0])
+        self.assertEqual(raised.exception.missing, ["/", "/login", "/register", "/orders", "/kitchen"])
         web_app.build_for.assert_not_called()
         self.assertFalse((self.workspace / ".agentforge/prototype/routes.json").exists())
 
-    def test_a_run_that_was_carried_on_keeps_the_edits_it_made_and_the_direction_it_had(self):
-        self.session.agent = None
+    def test_a_screen_with_no_page_is_named_and_nothing_is_handed_over(self):
+        def writes_some(session):
+            pages = self.proto / "src" / "pages"
+            pages.mkdir(parents=True, exist_ok=True)
+            for name in ("home", "login", "register"):
+                (pages / f"{name}.tsx").write_text("export default () => null", encoding="utf-8")
+
+        self.session.agent = writes_some
+        with self.assertRaises(prototyper.PrototypeIncomplete) as raised:
+            prototyper._draw_with_agent(PROJECT, {"tokens": {}}, "")
+        self.assertEqual(raised.exception.missing, ["/orders", "/kitchen"])
+        web_app.build_for.assert_not_called()
+
+    def test_a_run_that_was_carried_on_keeps_the_pages_it_wrote_and_the_direction_it_had(self):
+        def writes_some(session):
+            pages = self.proto / "src" / "pages"
+            pages.mkdir(parents=True, exist_ok=True)
+            (pages / "home.tsx").write_text("export default () => 'HALF DONE'", encoding="utf-8")
+
+        self.session.agent = writes_some
         with self.assertRaises(prototyper.PrototypeIncomplete):
             prototyper._draw_with_agent(PROJECT, {"tokens": {}}, "warm premium direction")
-        (self.proto / "src" / "pages" / "home.tsx").write_text("export default () => 'HALF DONE'", encoding="utf-8")
 
-        self.session.agent = lambda s: (self.proto / "src" / "pages" / "kitchen.tsx").write_text("export default () => 'DONE'", encoding="utf-8")
+        def writes_the_rest(session):
+            pages = self.proto / "src" / "pages"
+            for name in ("login", "register", "orders", "kitchen"):
+                (pages / f"{name}.tsx").write_text("export default () => 'DONE'", encoding="utf-8")
+
+        self.session.agent = writes_the_rest
         prototyper._draw_with_agent(PROJECT, {"tokens": {}}, "")
 
         self.assertEqual((self.proto / "src/pages/home.tsx").read_text(encoding="utf-8"), "export default () => 'HALF DONE'")
         self.assertIn("warm premium direction", self.session.tasks[1])
         self.assertIn("Resuming an interrupted run", self.session.tasks[1])
+        self.assertIn("write only the pages that are still missing", self.session.tasks[1])
 
-    def test_a_changed_design_starts_from_the_wireframes_again(self):
+    def test_a_changed_design_starts_a_new_app(self):
         self.draw()
         self.session.agent = None
         with self.assertRaises(prototyper.PrototypeIncomplete):
             prototyper._draw_with_agent(PROJECT, {"tokens": {"light": {"accent": "#000"}}}, "Make it warm")
-        self.assertEqual((self.proto / "src/pages/home.tsx").read_text(encoding="utf-8"), "export default () => 'WIRE home'")
+        self.assertFalse((self.proto / "src/pages/home.tsx").exists(), "the earlier prototype's pages are gone")
         self.assertNotIn("Resuming", self.session.tasks[1])
 
     def test_the_customers_images_go_inside_the_app_and_the_originals_stay(self):

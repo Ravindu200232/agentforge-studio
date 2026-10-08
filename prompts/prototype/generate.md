@@ -1,8 +1,10 @@
 {{request}}
 
-Make the prototype from the approved wireframes: read the wireframes, and make a high-fidelity prototype of them. Use the web-artifacts-builder skill (`{{skill}}/SKILL.md`; read it first).
+Make the prototype from the approved wireframes, with the web-artifacts-builder skill (`{{skill}}/SKILL.md`; read it first).
 
-`{{app}}` is the approved wireframe app, copied for you to work on. Edit it in place with the file tools until it is the finished product: a high-fidelity, animated prototype that works like the real frontend. The wireframe it came from, `{{wireframe}}`, stays as it is: never change it. Do not install packages or run the skill's scripts: the Studio bundles the app when you are done.
+First read the wireframes: every page under `{{wireframe}}/src/pages/` and the components they import, to see what each page holds and how the pages link. Then plan the prototype, and write it.
+
+`{{app}}` is the new prototype app, set up for you (step 1 of the skill). Write the finished product in it with the file tools: a high-fidelity, animated prototype that works like the real frontend. Never change the wireframes. Do not install packages or run the skill's scripts: the Studio bundles the app when you are done.
 
 Read what the product is, and how it should look:
 
@@ -10,7 +12,7 @@ Read what the product is, and how it should look:
 
 {{design_direction}}
 
-Keep every one of these pages and the way they link, and make each one real, with believable content:
+One page for each screen, keeping everything the wireframe has on it and the way the pages link, made real with believable content:
 
 {{routes}}
 

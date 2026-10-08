@@ -1,10 +1,10 @@
-"""The prototype: the approved wireframe app, copied and edited into a high-fidelity React app.
+"""The prototype: a new high-fidelity React app, made by reading the approved wireframes.
 
-The wireframes stay exactly as they were approved, so the customer can still look at them. When this stage starts it copies the wireframe
-app to `.agentforge/prototype/app`, and the project's agent reads Anthropic's web-artifacts-builder skill, the wireframes, `app.md` and the
-approved design, and edits that copy into the prototype with its own file tools. Code here only copies, says which screens and which design
-there are, bundles the finished app into the one page the studio shows, and leaves what the build reads: `routes.json` and, when the product
-has sign-in, `demo-accounts.json`. How the pages look and behave is the agent's.
+The wireframes stay exactly as they were approved, so the customer can still look at them. When this stage starts it sets up a new app in
+`.agentforge/prototype/app` (the skill's first step), and the project's agent reads Anthropic's web-artifacts-builder skill, the wireframes,
+`app.md` and the approved design, plans the prototype, and writes it with its own file tools. Code here only sets the app up, says which
+screens and which design there are, bundles the finished app into the one page the studio shows, and leaves what the build reads:
+`routes.json` and, when the product has sign-in, `demo-accounts.json`. How the pages look and behave is the agent's.
 
     <workspace>/.agentforge/prototype/app/              the prototype: `src/pages/<page>.tsx` for every screen, and `bundle.html`
     <workspace>/.agentforge/prototype/routes.json       every screen and the page file it is drawn in
@@ -102,10 +102,10 @@ def _sign_in_text(accounts: list[dict], sign_in: str, rows: list[dict]) -> str:
 
 
 def _draw_with_agent(project: str, spec: dict[str, Any], direction: str) -> list[dict]:
-    """Copy the approved wireframe app, then let the project's agent edit the copy into the prototype.
+    """Set up a new app, then let the project's agent read the wireframes, plan, and write the prototype into it.
 
-    Only what is the same for every prototype is code: the copy, the skill, the route map and the demo accounts. The edits are the
-    agent's, made with its own file tools, so every read and every file appears in the chat stream as it happens."""
+    Only what is the same for every prototype is code: the new app, the skill, the route map and the demo accounts. The pages are the
+    agent's, written with its own file tools, so every read and every file appears in the chat stream as it happens."""
     from srs_agent import document as srs_document
     from srs_agent import handoff as handoff_files
     from srs_agent import wireframe as wireframe_stage
@@ -175,19 +175,18 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str) -> list
     resuming = (checkpoint.get("fingerprint") == fingerprint and not checkpoint.get("complete")
                 and (app / "index.html").is_file())
     if not resuming:
-        # A changed design, route map or wireframe owns a fresh copy. A matching interrupted run keeps the edits it made.
-        web_app.copy_app(wire, app)
+        # A changed design, route map or wireframe owns a new app. A matching interrupted run keeps the pages it wrote.
+        web_app.remove_app(app)
         (root / "routes.json").unlink(missing_ok=True)
     web_app.create_app(app, str((doc.get("app_summary") or {}).get("app_name") or project), pages,
                        accounts=accounts, sign_in=sign_in, sign_up=sign_up)
-    started_from = web_app.fingerprint(app)
     state = {"fingerprint": fingerprint, "complete": False, "direction": effective_direction}
     checkpoint_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
     uploaded = _uploaded_site_images(session, app)
     skill = web_app.stage_skill(session.workspace)
-    resume = ("## Resuming an interrupted run\n\nThe app already has the edits an earlier run made: read it, keep what is "
-              "finished, and carry on with the pages that are still low fidelity." if resuming else "")
+    resume = ("## Resuming an interrupted run\n\nThe app already has the pages an earlier run wrote: read them, keep what is "
+              "finished, and write only the pages that are still missing." if resuming else "")
     request = prompts.load(
         "prototype/generate", request=headline, skill=skill, app=app_rel, wireframe=wire_rel, inputs="\n".join(inputs),
         design_direction=design_direction,
@@ -206,9 +205,12 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str) -> list
     if result.get("status") != "complete" and result.get("text"):
         bus.log(project, "WARN", f"The agent stopped early: {str(result['text'])[:300]}", agent=bus.DESIGNER)
 
-    # An app the agent never touched is still the wireframe: stay resumable rather than hand it over as the prototype.
-    if web_app.fingerprint(app) == started_from:
-        raise PrototypeIncomplete(["the agent did not change the wireframe app"])
+    # A screen with no page is not a prototype of it: stay resumable, with the pages that were written, rather than hand it over.
+    written = app / "src" / "pages"
+    missing = [str(r["route"]) for r in routes_out
+               if not any((written / f"{files[str(r['route'])]}{ext}").is_file() for ext in (".tsx", ".jsx"))]
+    if missing:
+        raise PrototypeIncomplete(missing)
     web_app.build_for(session, project, KIND, agent=bus.DESIGNER)
 
     write("routes.json", json.dumps({"routes": routes_out}, ensure_ascii=False, indent=2))
@@ -258,13 +260,13 @@ def _generate(project: str, direction: str, *, from_wireframes: bool = False) ->
             design_stage.draft(project, direction=direction)
             design_stage.approve(project)
             spec = design_stage.approved_spec(project)
-        # The prototype is always the wireframes, edited: when they are not drawn yet they are drawn first.
+        # The prototype is made from the wireframes: when they are not drawn yet they are drawn first.
         if not wireframe_stage.built(project):
             bus.agent_msg(project, "There are no wireframes to start from yet, so they are drawn first.", title="Wireframes first",
                           kind="narration", agent=bus.DESIGNER)
             wireframe_stage.generate(project)
-        bus.phase(project, "prototype:draw", "Making the prototype", detail="The wireframes, copied and edited with the approved design.")
-        bus.agent_msg(project, "Copying the approved wireframes and editing the copy into a high-fidelity, animated prototype with "
+        bus.phase(project, "prototype:draw", "Making the prototype", detail="Reading the wireframes, planning, then writing the prototype.")
+        bus.agent_msg(project, "Reading the approved wireframes, planning, and writing a high-fidelity, animated prototype with "
                                "the design from Design Customize. The wireframes themselves stay as they were.",
                       title="Prototype generation", kind="narration", agent=bus.DESIGNER)
         drawn = _draw_with_agent(project, spec, direction)
@@ -294,7 +296,7 @@ def _generate(project: str, direction: str, *, from_wireframes: bool = False) ->
         if accounts_text:
             bus.agent_msg(project, accounts_text, title="Demo accounts", agent=bus.DESIGNER)
         session.note(
-            f"The prototype is built: a React app with {len(drawn)} screens under .agentforge/prototype/app, edited from the approved "
+            f"The prototype is built: a React app with {len(drawn)} screens under .agentforge/prototype/app, made from the approved "
             f"wireframes (which are unchanged in .agentforge/wireframe/app) and linked so the journeys can be clicked through. This is "
             f"what the customer approved the product on, and the build must match it. Routes: "
             + ", ".join(str(r.get("route")) for r in drawn)

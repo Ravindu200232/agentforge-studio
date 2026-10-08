@@ -6,7 +6,7 @@ because they are the same for every app: the project is created (step 1) and the
 What the pages look like is the agent's.
 
     <workspace>/.agentforge/wireframe/app/      the wireframe: source, and `bundle.html`, the page the studio shows
-    <workspace>/.agentforge/prototype/app/      the prototype: a copy of the wireframe, edited
+    <workspace>/.agentforge/prototype/app/      the prototype: a new app, written after reading the wireframes
     <state>/web-kit/                            the packages, installed once and linked into every app as `node_modules`
 
 An app is bundled with Vite and `vite-plugin-singlefile` (the skill bundles with Parcel; Vite is what the app is built with, so it
@@ -34,8 +34,6 @@ COMPONENTS_ARCHIVE = SKILL_SOURCE / "scripts" / "shadcn-components.tar.gz"
 KINDS = ("wireframe", "prototype")
 BUNDLE = "bundle.html"
 BUILT = ".built"
-# What is never copied from one app to another: the packages, and what a build leaves.
-_NOT_COPIED = ("node_modules", "dist", BUNDLE, BUILT)
 # Only the policy of the page the studio frames: the app can run scripts and style itself and show any picture, but it can
 # neither call out nor load anything else (but Google's fonts), so nothing it was written to do can reach the studio's own address.
 PREVIEW_POLICY = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; "
@@ -271,13 +269,6 @@ def link_node_modules(app: Path) -> None:
 def remove_app(app: Path) -> None:
     drop_link(app / "node_modules")
     shutil.rmtree(app, ignore_errors=True)
-
-
-def copy_app(source: Path, destination: Path) -> None:
-    """The prototype starts as a copy of the approved wireframe, which itself stays exactly as it was."""
-    remove_app(destination)
-    shutil.copytree(source, destination, ignore=shutil.ignore_patterns(*_NOT_COPIED))
-    link_node_modules(destination)
 
 
 # --- bundling ----------------------------------------------------------------------------------------------------------------

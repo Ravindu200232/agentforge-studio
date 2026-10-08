@@ -82,10 +82,10 @@ specification, which the build, the tests and the deployment read.
 - **Wireframes**: the agent reads the skill and `app.md` and writes `src/pages/<page>.tsx` for every screen of the site map, in
   low fidelity. The Studio only creates the app (the skill's first step: `server_modules/web_app.py`, from `server_modules/web_kit/`) and,
   when the agent is done, bundles it with Vite into one self-contained `bundle.html` (the skill's last step), which the Wireframe tab frames.
-- **Prototype**: the approved wireframe app is copied, and the agent reads the skill, the wireframes, `app.md` and the approved design,
-  and edits the copy into a high-fidelity, animated prototype. The wireframes stay as they were. When the product has sign-in, the
-  prototype signs in with one fictitious account for each role (`src/demo.ts`), the same accounts the build is seeded with
-  (`demo-accounts.json`).
+- **Prototype**: a new app is set up, and the agent reads the skill, the approved wireframes (every page and what it imports),
+  `app.md` and the approved design, plans the prototype, and writes a high-fidelity, animated page for every screen. The wireframes stay
+  as they were. When the product has sign-in, the prototype signs in with one fictitious account for each role (`src/demo.ts`), the same
+  accounts the build is seeded with (`demo-accounts.json`). A screen with no page leaves the run resumable instead of handed over.
 - The packages (about 180 MB) are installed once into `<state>/web-kit` and linked into every app as `node_modules`; Node.js is the only
   thing a computer needs. An app that does not bundle is given to the agent, with what the bundler said, to fix.
 
