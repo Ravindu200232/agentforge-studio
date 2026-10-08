@@ -83,7 +83,7 @@ def plan(routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _listing(rows: list[dict[str, Any]]) -> str:
-    return "\n".join(f"- `{row['route']}` — {row['name']} — prototype file `{row['file'] or '(none)'}`"
+    return "\n".join(f"- `{row['route']}` — {row['name']} — its component in the prototype app's route table (`{row['file'] or 'app/src/App.tsx'}`)"
                      + (f" — roles: {', '.join(row['roles'])}" if row["roles"] else "") for row in rows)
 
 

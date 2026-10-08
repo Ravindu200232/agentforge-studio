@@ -381,31 +381,22 @@ class StudioTools(WorkspaceTools):
         self.managed_preview = True
 
     def _take_picture(self, target: str, viewport: str, role: str, out: Path) -> Path:
-        """A prototype page by its file name, route or name (shown signed in as a role that can open it, or as `role`);
-        anything else - a preview URL, an HTML file - as the generic tool does."""
+        """A prototype page by its route or name (one page of the built prototype app); anything else - a preview URL, an
+        HTML file - as the generic tool does."""
         if not target.lower().startswith("http"):
             from prototype_agent import screens
 
             root = self.root / config.RECORD_DIR / "prototype"
             try:
                 rows = (json.loads((root / "routes.json").read_text(encoding="utf-8")) or {}).get("routes") or []
-                accounts = (json.loads((root / "demo-accounts.json").read_text(encoding="utf-8")) or {}).get("accounts") or []
             except (OSError, ValueError):
-                rows, accounts = [], []
-            page = screens.find_page(root, target, rows) if rows else None
+                rows = []
+            page = screens.find_page(rows, target) if rows else None
             file = self.root / target
             if page and not (file.is_file() and file.suffix.lower() in {".html", ".htm"}):
-                wanted = role.strip().lower()
-                email = None
-                if wanted:
-                    email = next((str(a.get("email") or "") for a in accounts if wanted in {
-                        str(a.get("email") or "").lower(), str(a.get("role") or "").lower(),
-                        str(a.get("role_key") or "").lower()}), "")
                 stop_requested = getattr(self, "stop_requested", None)
-                if callable(stop_requested):
-                    return screens.shoot_page(root, page, accounts, out, viewport, email,
-                                               cancelled=stop_requested)
-                return screens.shoot_page(root, page, accounts, out, viewport, email)
+                return screens.shoot_page(root, page, out, viewport,
+                                          cancelled=stop_requested if callable(stop_requested) else None)
         return super()._take_picture(target, viewport, role, out)
 
     def browser_url(self) -> str:

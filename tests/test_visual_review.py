@@ -16,13 +16,12 @@ for folder in (".", "src", "srs-agent", "prototype-agent", "builder-agent", "qa-
 
 from ollama_terminal import screenshot  # noqa: E402
 from prototype_agent import screens, visual_review  # noqa: E402
-from server_modules import bus, config  # noqa: E402
+from server_modules import bus, config, web_app  # noqa: E402
 from server_modules.session import RunCancelled  # noqa: E402
 
-ROWS = [{"route": "/", "file": "index.html", "name": "Home", "roles": [], "signed_in": False},
-        {"route": "/orders", "file": "orders.html", "name": "Orders", "roles": [], "signed_in": False},
-        {"route": "/dashboard", "file": "dashboard.html", "name": "Dashboard", "roles": ["admin"], "signed_in": True}]
-ACCOUNTS = [{"role": "Admin", "role_key": "admin", "email": "ada@example.test", "can_open": [{"route": "/dashboard"}]}]
+ROWS = [{"route": "/", "file": "app/src/App.tsx", "name": "Home", "roles": [], "signed_in": False},
+        {"route": "/orders", "file": "app/src/App.tsx", "name": "Orders", "roles": [], "signed_in": False},
+        {"route": "/dashboard", "file": "app/src/App.tsx", "name": "Dashboard", "roles": ["admin"], "signed_in": True}]
 
 OK = {"page": "x", "looks_ok": True, "summary": "Looks right.", "defects": []}
 
@@ -31,17 +30,22 @@ def defect(severity="high", viewport="mobile", problem="The menu runs off the sc
     return {"severity": severity, "viewport": viewport, "where": "the top menu", "problem": problem, "fix": "wrap it"}
 
 
+def change_the_app(root: Path, text: str = "changed") -> None:
+    """What a fix does: it edits the app's source."""
+    (root / "app" / "src" / "App.tsx").write_text(f"export default () => <h1>{text}</h1>", encoding="utf-8")
+
+
 class FakeSession:
-    """What the review asks of a project's session: its folder, the model in use, Stop, and one agent turn to fix things."""
+    """What the review asks of a project's session: its folders, the model in use, Stop, and one agent turn to fix things."""
 
     def __init__(self, folder: Path, model: str = "vision-model", fix=None):
+        self.workspace = folder
         self.record = folder / ".agentforge"
         self.root = self.record / "prototype"
-        self.root.mkdir(parents=True)
-        (self.root / "assets").mkdir()
-        (self.root / "assets" / "app.css").write_text("body{}", encoding="utf-8")
-        for row in ROWS:
-            (self.root / row["file"]).write_text(f"<h1>{row['name']}</h1>", encoding="utf-8")
+        (self.root / "app" / "src").mkdir(parents=True)
+        (self.root / "app" / "index.html").write_text("<div id=root></div>", encoding="utf-8")
+        (self.root / "app" / "src" / "App.tsx").write_text("export default () => <h1>first</h1>", encoding="utf-8")
+        (self.root / "app" / "bundle.html").write_text("<html></html>", encoding="utf-8")
         self.cancelled = False
         self.model = model
         self.fix = fix
@@ -64,6 +68,11 @@ class Harness(unittest.TestCase):
         self.folder = Path(self.temp.name)
         self.messages: list[dict] = []
         self.phases: list[tuple] = []
+        self.rebuilt = 0
+
+        def built(session, project, kind, agent=""):
+            self.rebuilt += 1
+
         for patch in (
             mock.patch.object(bus, "agent_msg", lambda project, text, agent="", title="", kind="", design=None, images=None:
                               self.messages.append({"text": text, "title": title, "kind": kind, "images": images or []})),
@@ -71,6 +80,9 @@ class Harness(unittest.TestCase):
                               self.phases.append((key, status))),
             mock.patch.object(bus, "progress", lambda *a, **k: None),
             mock.patch.object(bus, "log", lambda *a, **k: None),
+            mock.patch.object(bus, "prototype_changed", lambda *a, **k: None),
+            mock.patch.object(web_app, "stage_skill", return_value=".agentforge/skills/web-artifacts-builder"),
+            mock.patch.object(web_app, "ensure_built", side_effect=built),
             mock.patch.object(config, "setting", lambda name, fallback=None: True if name == "prototype_visual_review" else fallback),
             mock.patch("server_modules.vision.supports", return_value=True),
             mock.patch.object(screenshot, "working_browser", return_value=("b", "chrome")),
@@ -79,30 +91,29 @@ class Harness(unittest.TestCase):
             self.addCleanup(patch.stop)
         self.pictures: list[tuple[str, str]] = []
 
-    def capture(self, root, pages, accounts, viewports=screens.VIEWPORTS, on_done=None, cancelled=None):
+    def capture(self, root, pages, viewports=screens.VIEWPORTS, on_done=None, cancelled=None):
         """Stands in for the browser: a small PNG per page and width."""
         shots = []
         for row in pages:
             for viewport in viewports:
-                path = root / "review" / f"{Path(row['file']).stem}-{viewport}.png"
+                path = root / "review" / f"{web_app.route_slug(row['route'])}-{viewport}.png"
                 path.parent.mkdir(exist_ok=True)
                 path.write_bytes(b"\x89PNG" + viewport.encode() * 200)
-                self.pictures.append((row["file"], viewport))
-                shots.append({"route": row["route"], "file": row["file"], "viewport": viewport,
-                              "path": path.relative_to(root).as_posix(), "error": ""})
+                self.pictures.append((row["route"], viewport))
+                shots.append({"route": row["route"], "viewport": viewport, "path": path.relative_to(root).as_posix(), "error": ""})
         return shots
 
     def answers(self, table):
-        """The model's answer per page file: a dict, a list of them (one per ask), or an Exception."""
+        """The model's answer per page route: a dict, a list of them (one per ask), or an Exception."""
         asked: list[tuple[str, int]] = []
         counts: dict[str, int] = {}
 
         def complete_json(system, user, validator=None, label="", model="", images=None, project="", role="", **_):
-            file = next(row["file"] for row in ROWS if f"file `{row['file']}`" in user)
-            counts[file] = counts.get(file, 0) + 1
-            asked.append((file, len(images or [])))
-            value = table[file]
-            value = value[min(counts[file], len(value)) - 1] if isinstance(value, list) else value
+            route = next(row["route"] for row in ROWS if f"route `{row['route']}`" in user)
+            counts[route] = counts.get(route, 0) + 1
+            asked.append((route, len(images or [])))
+            value = table[route]
+            value = value[min(counts[route], len(value)) - 1] if isinstance(value, list) else value
             if isinstance(value, Exception):
                 raise value
             return validator(value) if validator else value
@@ -110,9 +121,9 @@ class Harness(unittest.TestCase):
         self.asked = asked
         return mock.patch("server_modules.llm.complete_json", side_effect=complete_json)
 
-    def run_review(self, session, answers, accounts=ACCOUNTS):
+    def run_review(self, session, answers):
         with mock.patch.object(screens, "capture_all", self.capture), self.answers(answers):
-            return visual_review.run("prj_review", session, ROWS, accounts)
+            return visual_review.run("prj_review", session, ROWS)
 
 
 class SkipTests(Harness):
@@ -120,7 +131,7 @@ class SkipTests(Harness):
         session = FakeSession(self.folder, model="plain-model")
         with mock.patch("server_modules.vision.supports", return_value=False), \
                 mock.patch.object(screens, "capture_all", side_effect=AssertionError("photographed")):
-            result = visual_review.run("p", session, ROWS, ACCOUNTS)
+            result = visual_review.run("p", session, ROWS)
         self.assertEqual(result["status"], "skipped")
         self.assertIn("cannot look at pictures", result["reason"])
         self.assertIn("vision", result["reason"])
@@ -129,48 +140,49 @@ class SkipTests(Harness):
 
     def test_a_model_nobody_could_ask_about_is_skipped_not_assumed_blind_or_sighted(self):
         with mock.patch("server_modules.vision.supports", return_value=None):
-            result = visual_review.run("p", FakeSession(self.folder), ROWS, ACCOUNTS)
+            result = visual_review.run("p", FakeSession(self.folder), ROWS)
         self.assertEqual(result["status"], "skipped")
         self.assertIn("could not be found out", result["reason"])
 
     def test_a_computer_with_no_browser_that_works_skips_it_too(self):
         with mock.patch.object(screenshot, "working_browser", return_value=None):
-            result = visual_review.run("p", FakeSession(self.folder), ROWS, ACCOUNTS)
+            result = visual_review.run("p", FakeSession(self.folder), ROWS)
         self.assertEqual(result["status"], "skipped")
         self.assertIn("no browser", result["reason"])
 
     def test_the_setting_turns_it_off_without_a_word(self):
         with mock.patch.object(config, "setting", lambda name, fallback=None: False if name == "prototype_visual_review" else fallback):
-            self.assertEqual(visual_review.run("p", FakeSession(self.folder), ROWS, ACCOUNTS), {"status": "off"})
+            self.assertEqual(visual_review.run("p", FakeSession(self.folder), ROWS), {"status": "off"})
         self.assertEqual(self.messages, [])
 
 
 class ReviewTests(Harness):
     def test_every_page_is_looked_at_with_both_its_pictures_and_a_page_that_looks_right_changes_nothing(self):
         session = FakeSession(self.folder)
-        result = self.run_review(session, {r["file"]: OK for r in ROWS})
+        result = self.run_review(session, {r["route"]: OK for r in ROWS})
         self.assertEqual(result["status"], "done")
         self.assertEqual(result["problems_found"], 0)
-        self.assertEqual(sorted(self.asked), sorted((r["file"], 2) for r in ROWS))      # desktop and mobile each
-        self.assertEqual(session.requests, [])                                          # nothing to fix: the agent is not asked
+        self.assertEqual(sorted(self.asked), sorted((r["route"], 2) for r in ROWS))      # desktop and mobile each
+        self.assertEqual(session.requests, [])                                           # nothing to fix: the agent is not asked
+        self.assertEqual(self.rebuilt, 0)
         self.assertIn("no problems found", self.messages[-1]["text"])
         self.assertEqual(self.phases[0][0], visual_review.PHASE)
         self.assertEqual(self.phases[-1], (visual_review.PHASE, "complete"))
 
     def test_the_chat_shows_each_pages_pictures_and_what_was_found_under_them(self):
         session = FakeSession(self.folder)
-        answers = {"index.html": OK, "orders.html": {**OK, "looks_ok": False, "defects": [defect()]}, "dashboard.html": OK}
+        answers = {"/": OK, "/orders": {**OK, "looks_ok": False, "defects": [defect()]}, "/dashboard": OK}
         self.run_review(session, answers)
         shown = [m for m in self.messages if m["kind"] == "visual_review"]
         self.assertEqual(len(shown), 3)
         orders = next(m for m in shown if m["title"].startswith("Orders"))
         self.assertEqual(orders["title"], "Orders · 1 to fix")
         self.assertIn("**high** · mobile · the top menu: The menu runs off the screen.", orders["text"])
-        self.assertEqual([i["label"] for i in orders["images"]], ["orders.html · desktop", "orders.html · mobile"])
+        self.assertEqual([i["label"] for i in orders["images"]], ["/orders · desktop", "/orders · mobile"])
         self.assertEqual(orders["images"][0]["path"], ".agentforge/prototype/review/orders-desktop.png")   # served by /qa-screenshot
         self.assertTrue(next(m for m in shown if m["title"].startswith("Home"))["title"].endswith("looks right"))
 
-    def test_a_signed_in_page_is_described_to_the_model_as_shown_signed_in(self):
+    def test_the_model_is_told_the_page_its_route_and_which_picture_is_which_width_and_nothing_about_accounts(self):
         prompts_seen = []
 
         def complete_json(system, user, validator=None, **_):
@@ -178,71 +190,76 @@ class ReviewTests(Harness):
             return validator(OK)
         session = FakeSession(self.folder)
         with mock.patch.object(screens, "capture_all", self.capture), mock.patch("server_modules.llm.complete_json", side_effect=complete_json):
-            visual_review.run("p", session, ROWS, ACCOUNTS)
-        dashboard = next(p for p in prompts_seen if "dashboard.html" in p)
-        self.assertIn("shown signed in as the demo account ada@example.test", dashboard)
-        self.assertIn("shown signed out", next(p for p in prompts_seen if "file `index.html`" in p))
+            visual_review.run("p", session, ROWS)
+        dashboard = next(p for p in prompts_seen if "route `/dashboard`" in p)
+        self.assertIn("**Dashboard**", dashboard)
         self.assertIn("picture 1 is the desktop width and picture 2 is the mobile width", dashboard)
+        for text in prompts_seen:
+            for gone in ("signed in", "signed out", "demo account", "file `"):
+                self.assertNotIn(gone, text)
 
     def test_the_problems_that_matter_are_given_to_the_agent_page_by_page_and_low_ones_are_left_alone(self):
         session = FakeSession(self.folder)
-        answers = {"index.html": OK,
-                   "orders.html": {**OK, "looks_ok": False, "defects": [defect("medium", "desktop", "The totals overlap the heading."), defect("low", "both", "Slightly uneven spacing.")]},
-                   "dashboard.html": {**OK, "looks_ok": False, "defects": [defect("high", "both", "The table is cut off.")]}}
+        answers = {"/": OK,
+                   "/orders": {**OK, "looks_ok": False, "defects": [defect("medium", "desktop", "The totals overlap the heading."), defect("low", "both", "Slightly uneven spacing.")]},
+                   "/dashboard": {**OK, "looks_ok": False, "defects": [defect("high", "both", "The table is cut off.")]}}
         self.run_review(session, answers)
         request = session.requests[0]
-        self.assertIn("### `orders.html`", request)
+        self.assertIn("### Orders (route `/orders`)", request)
         self.assertIn("The totals overlap the heading.", request)
-        self.assertIn("### `dashboard.html`", request)
+        self.assertIn("### Dashboard (route `/dashboard`)", request)
         self.assertIn("The table is cut off.", request)
         self.assertNotIn("uneven spacing", request)                    # a low one is reported, not fixed
-        self.assertNotIn("### `index.html`", request)
-        self.assertLess(request.index("### `orders.html`"), request.index("### `dashboard.html`"))   # in the order of the pages
+        self.assertNotIn("### Home", request)
+        self.assertLess(request.index("### Orders"), request.index("### Dashboard"))   # in the order of the pages
+        self.assertIn(".agentforge/prototype/app", request)
+        self.assertIn(".agentforge/skills/web-artifacts-builder/SKILL.md", request)
+        self.assertNotIn("assets/app.css", request)
 
-    def test_after_the_fix_only_the_pages_that_changed_are_photographed_and_looked_at_again(self):
-        def fix(root):
-            (root / "orders.html").write_text("<h1>Orders, fixed</h1>", encoding="utf-8")
-
-        session = FakeSession(self.folder, fix=fix)
-        answers = {"index.html": OK, "dashboard.html": OK,
-                   "orders.html": [{**OK, "looks_ok": False, "defects": [defect()]}, OK]}
+    def test_after_a_fix_the_app_is_built_again_and_the_pages_that_had_problems_are_looked_at_again(self):
+        session = FakeSession(self.folder, fix=change_the_app)
+        answers = {"/": OK, "/dashboard": OK, "/orders": [{**OK, "looks_ok": False, "defects": [defect()]}, OK]}
         result = self.run_review(session, answers)
-        self.assertEqual(result["fixed_pages"], ["orders.html"])
-        again = [f for f, _ in self.asked]
-        self.assertEqual(again.count("orders.html"), 2)
-        self.assertEqual(again.count("index.html"), 1)
-        self.assertEqual(self.pictures.count(("orders.html", "desktop")), 2)
-        self.assertEqual(self.pictures.count(("index.html", "desktop")), 1)
+        self.assertEqual(self.rebuilt, 1)
+        self.assertEqual(result["fixed_pages"], ["/orders"])
+        again = [route for route, _ in self.asked]
+        self.assertEqual(again.count("/orders"), 2)
+        self.assertEqual(again.count("/"), 1)
+        self.assertEqual(self.pictures.count(("/orders", "desktop")), 2)
+        self.assertEqual(self.pictures.count(("/", "desktop")), 1)
         self.assertEqual(result["remaining"], [])
-        self.assertIn("1 problem found, 1 screen changed to fix them; none left that matters.", self.messages[-1]["text"])
+        self.assertIn("1 problem found, 1 screen looked at again after the fix; none left that matters.", self.messages[-1]["text"])
 
-    def test_a_changed_stylesheet_means_every_page_is_looked_at_again(self):
-        session = FakeSession(self.folder, fix=lambda root: (root / "assets" / "app.css").write_text("body{margin:0}", encoding="utf-8"))
-        answers = {"index.html": OK, "dashboard.html": OK, "orders.html": [{**OK, "defects": [defect()]}, OK]}
+    def test_a_fix_that_changed_nothing_is_not_built_or_looked_at_again(self):
+        session = FakeSession(self.folder, fix=lambda root: None)
+        answers = {"/": OK, "/dashboard": OK, "/orders": {**OK, "looks_ok": False, "defects": [defect()]}}
         result = self.run_review(session, answers)
-        self.assertEqual(sorted(result["fixed_pages"]), ["dashboard.html", "index.html", "orders.html"])
-        self.assertEqual(len(self.asked), 6)
+        self.assertEqual(self.rebuilt, 0)
+        self.assertEqual(result["fixed_pages"], [])
+        self.assertEqual([route for route, _ in self.asked].count("/orders"), 1)
+        self.assertEqual(len(result["remaining"]), 1)
 
     def test_a_problem_still_there_after_the_fix_is_reported_as_it_is_never_fixed_twice(self):
-        session = FakeSession(self.folder, fix=lambda root: (root / "orders.html").write_text("<h1>changed</h1>", encoding="utf-8"))
+        session = FakeSession(self.folder, fix=change_the_app)
         still = {**OK, "looks_ok": False, "defects": [defect(problem="The menu still runs off the screen.")]}
-        result = self.run_review(session, {"index.html": OK, "dashboard.html": OK, "orders.html": still})
+        result = self.run_review(session, {"/": OK, "/dashboard": OK, "/orders": still})
         self.assertEqual(len(session.requests), 1)
         self.assertEqual([r["problem"] for r in result["remaining"]], ["The menu still runs off the screen."])
+        self.assertEqual(result["remaining"][0]["route"], "/orders")
         self.assertIn("1 still visible after the fix.", self.messages[-1]["text"])
 
     def test_a_fix_that_stops_partway_does_not_end_the_review_what_it_changed_is_looked_at_anyway(self):
         def fix(root):
-            (root / "orders.html").write_text("<h1>half fixed</h1>", encoding="utf-8")
+            change_the_app(root, "half fixed")
             raise ssl.SSLError(1, "[SSL: SSLV3_ALERT_BAD_RECORD_MAC] sslv3 alert bad record mac (_ssl.c:2580)")
 
         session = FakeSession(self.folder, fix=fix)
-        answers = {"index.html": OK, "dashboard.html": OK, "orders.html": [{**OK, "looks_ok": False, "defects": [defect()]}, OK]}
+        answers = {"/": OK, "/dashboard": OK, "/orders": [{**OK, "looks_ok": False, "defects": [defect()]}, OK]}
         result = self.run_review(session, answers)
         self.assertEqual(result["status"], "done")
-        self.assertEqual(result["fixed_pages"], ["orders.html"])                         # what it had changed is still checked
+        self.assertEqual(result["fixed_pages"], ["/orders"])                             # what it had changed is still checked
         self.assertIn("BAD_RECORD_MAC", result["fix_stopped"])
-        self.assertEqual([f for f, _ in self.asked].count("orders.html"), 2)
+        self.assertEqual([route for route, _ in self.asked].count("/orders"), 2)
         self.assertTrue(any(m["text"].startswith("The fix stopped before it was finished") for m in self.messages))
         self.assertIn("The fix stopped before it was finished (", self.messages[-1]["text"])
         self.assertEqual(self.phases[-1], (visual_review.PHASE, "complete"))
@@ -253,27 +270,27 @@ class ReviewTests(Harness):
 
         with self.assertRaises(RunCancelled):
             self.run_review(FakeSession(self.folder, fix=fix),
-                            {"index.html": OK, "dashboard.html": OK, "orders.html": {**OK, "defects": [defect()]}})
+                            {"/": OK, "/dashboard": OK, "/orders": {**OK, "defects": [defect()]}})
 
     def test_the_report_is_saved_beside_the_pictures(self):
         session = FakeSession(self.folder)
-        self.run_review(session, {r["file"]: OK for r in ROWS})
+        self.run_review(session, {r["route"]: OK for r in ROWS})
         report = json.loads((session.root / "review" / "report.json").read_text(encoding="utf-8"))
         self.assertEqual((report["model"], report["pages"], report["problems_found"]), ("vision-model", 3, 0))
 
     def test_a_page_the_model_failed_on_is_named_and_the_others_still_count(self):
         session = FakeSession(self.folder)
-        result = self.run_review(session, {"index.html": OK, "dashboard.html": OK, "orders.html": ValueError("no valid JSON")})
+        result = self.run_review(session, {"/": OK, "/dashboard": OK, "/orders": ValueError("no valid JSON")})
         self.assertEqual(result["status"], "done")
         self.assertEqual(result["pages_not_reviewed"], ["Orders"])
         self.assertIn("Could not be reviewed: Orders.", self.messages[-1]["text"])
 
     def test_a_browser_that_could_not_draw_a_single_screen_ends_the_review_without_failing_anything(self):
         session = FakeSession(self.folder)
-        broken = [{"route": r["route"], "file": r["file"], "viewport": v, "path": "", "error": "took too long"}
+        broken = [{"route": r["route"], "viewport": v, "path": "", "error": "took too long"}
                   for r in ROWS for v in screens.VIEWPORTS]
         with mock.patch.object(screens, "capture_all", return_value=broken):
-            result = visual_review.run("p", session, ROWS, ACCOUNTS)
+            result = visual_review.run("p", session, ROWS)
         self.assertEqual(result["status"], "failed")
         self.assertIn("could not draw any screen", result["reason"])
         self.assertEqual(self.phases[-1], (visual_review.PHASE, "failed"))
@@ -281,23 +298,23 @@ class ReviewTests(Harness):
     def test_an_error_anywhere_in_the_review_is_never_raised_into_the_prototype(self):
         session = FakeSession(self.folder)
         with mock.patch.object(screens, "capture_all", side_effect=RuntimeError("disk full")):
-            result = visual_review.run("p", session, ROWS, ACCOUNTS)
+            result = visual_review.run("p", session, ROWS)
         self.assertEqual((result["status"], result["reason"]), ("failed", "disk full"))
 
     def test_stop_ends_the_review_with_the_runs_own_cancellation(self):
         session = FakeSession(self.folder)
         session.cancelled = True
-        with mock.patch.object(screens, "capture_all", self.capture), self.answers({r["file"]: OK for r in ROWS}), \
+        with mock.patch.object(screens, "capture_all", self.capture), self.answers({r["route"]: OK for r in ROWS}), \
                 self.assertRaises(RunCancelled):
-            visual_review.run("p", session, ROWS, ACCOUNTS)
+            visual_review.run("p", session, ROWS)
 
 
 class ReviewOnlyTests(Harness):
     def test_a_review_only_looks_and_reports_and_never_asks_the_agent_to_change_anything(self):
         session = FakeSession(self.folder)
-        answers = {"index.html": OK, "orders.html": {**OK, "looks_ok": False, "defects": [defect(), defect("medium")]}, "dashboard.html": OK}
+        answers = {"/": OK, "/orders": {**OK, "looks_ok": False, "defects": [defect(), defect("medium")]}, "/dashboard": OK}
         with mock.patch.object(screens, "capture_all", self.capture), self.answers(answers):
-            result = visual_review.run("p", session, ROWS, ACCOUNTS, fix=False)
+            result = visual_review.run("p", session, ROWS, fix=False)
         self.assertEqual(session.requests, [])
         self.assertEqual(result["problems_found"], 2)
         self.assertEqual(result["fixed_pages"], [])
@@ -313,9 +330,9 @@ class ReviewOnlyTests(Harness):
 
         off = lambda name, fallback=None: False if name == "prototype_visual_review" else fallback  # noqa: E731
         with mock.patch.object(config, "setting", off):
-            self.assertEqual(visual_review.run("p", Session(self.folder), ROWS, ACCOUNTS)["status"], "off")
-            with mock.patch.object(screens, "capture_all", self.capture), self.answers({r["file"]: OK for r in ROWS}):
-                forced = visual_review.run("p", Session(self.folder / "x"), ROWS, ACCOUNTS, model="vision-model", force=True)
+            self.assertEqual(visual_review.run("p", Session(self.folder), ROWS)["status"], "off")
+            with mock.patch.object(screens, "capture_all", self.capture), self.answers({r["route"]: OK for r in ROWS}):
+                forced = visual_review.run("p", Session(self.folder / "x"), ROWS, model="vision-model", force=True)
         self.assertEqual(forced["status"], "done")
         self.assertEqual(forced["model"], "vision-model")
         self.assertIn("vision-model", picked)
@@ -347,7 +364,7 @@ class ReadsPicturesTests(Harness):
             return validator(OK)
         session = FakeSession(self.folder)
         with mock.patch.object(screens, "capture_all", self.capture), mock.patch("server_modules.llm.complete_json", side_effect=complete_json):
-            visual_review.run("p", session, ROWS[:1], ACCOUNTS)
+            visual_review.run("p", session, ROWS[:1])
         self.assertEqual([i[:4] for i in captured["images"]], [b"\x89PNG", b"\x89PNG"])
         self.assertIn(b"desktop", captured["images"][0])
         self.assertIn(b"mobile", captured["images"][1])

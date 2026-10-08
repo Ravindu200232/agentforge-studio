@@ -111,8 +111,8 @@ class RequestTests(unittest.TestCase):
         rows = [page("/rooms", "Rooms", "rooms.html", ("Guest", "Staff")), page("/book", "Book", "book.html")] + routes(7)
         items = phases.plan(rows)
         text = self.ask(items[1], rows=rows)
-        self.assertIn("`/rooms` — Rooms — prototype file `rooms.html` — roles: Guest, Staff", text)
-        self.assertIn("`/book` — Book — prototype file `book.html`", text)
+        self.assertIn("`/rooms` — Rooms — its component in the prototype app's route table (`rooms.html`) — roles: Guest, Staff", text)
+        self.assertIn("`/book` — Book — its component in the prototype app's route table (`book.html`)", text)
         self.assertNotIn("`/page-5`", text)                                 # the next phase's
         self.assertIn(".agentforge/build/progress.json", text)
         self.assertIn('{"routes": {"/the/route"', text)

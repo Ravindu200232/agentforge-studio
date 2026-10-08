@@ -1,7 +1,7 @@
 # Authentication, roles and navigation
 
-The standard for how people sign up, sign in, stay signed in, see their own area and sign out — for the
-wireframes, the prototype and the real application alike. app.md decides **what exists**: the roles, which pages
+The standard for how people sign up, sign in, stay signed in, see their own area and sign out in the real
+application. The wireframe and the prototype draw only what a page looks like; they carry no sign-in logic. app.md decides **what exists**: the roles, which pages
 need sign-in and for whom, whether people may create their own account and which role it gets, who creates the
 other accounts. This file decides **how it works**. Use only the roles, pages and fields app.md has; never add a
 role, a page or a sign-in method of your own.
@@ -83,32 +83,7 @@ password follows the sign-up rule; afterwards the person signs in.
   to where they were.
 - Every step is a click away. No dead ends, no page without a way forward or back.
 
-## 5. In the wireframes
-
-Plan and draw the public navigation and one signed-in navigation per role (section 1) as the shells of the
-shared layout. Every public page uses the public shell; every signed-in page uses its role's shell. Draw the
-sign-in, sign-up and reset pages with everything in section 3, their error states included, and each role's
-dashboard as section 2 describes, with that role's own content.
-
-## 6. In the prototype
-
-The prototype has no guards — every page opens directly — but it shows both states, from the demo session that
-`assets/flow.js` keeps:
-
-- `data-auth="in"` on anything only a signed-in person sees (the signed-in navigation, the account menu, "Go to my
-  dashboard"); `data-auth="out"` on anything only a signed-out person sees (Sign in, Sign up, "Create account").
-  flow.js shows and hides them by the session.
-- A public page carries both headers — the public one with `data-auth="out"` and the signed-in one with
-  `data-auth="in"` — so it shows the right one. A signed-in page carries only its role's navigation.
-- `data-roles="role_key"` on items only some roles see, `data-user="name"` (or `email`, `role`) where the person's
-  details show.
-- Every Sign out is a `<button type="button" data-sign-out>`, with no `data-roles`: flow.js ends the session and opens
-  the sign-in page.
-- The sign-up form is `<form data-sign-up>`: once it is valid, flow.js signs the new account in as the role sign-ups
-  get and opens that role's dashboard. No redirect, success panel or submit handler of the page's own.
-- Each role's dashboard is drawn as that role's real home, with its own sample data.
-
-## 7. In the real application
+## 5. In the real application
 
 **Sessions and access**
 - The session lives in a cookie the server sets: `HttpOnly`, `Secure` in production, `SameSite=Lax`, `Path=/`,

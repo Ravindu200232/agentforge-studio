@@ -1,4 +1,4 @@
-"""One authentication guide, read by the wireframes, the prototype and the build alike, like the design's DESIGN.md."""
+"""One authentication guide, read by the build like the design's DESIGN.md. The wireframe and the prototype carry no sign-in logic."""
 from __future__ import annotations
 
 import sys
@@ -12,7 +12,6 @@ for folder in (".", "prototype-agent", "srs-agent"):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from prototype_agent import prototype_brief  # noqa: E402
 from server_modules import auth_guide, prompts  # noqa: E402
 
 SIGNED_IN = {"protected_pages": [{"route": "/dashboard", "login_required": True, "allowed_roles": ["member"]}]}
@@ -38,57 +37,14 @@ class GuideTests(unittest.TestCase):
         text = prompts.load("shared/authentication")
         for needle in ("HttpOnly", "SameSite=Lax", "localStorage", "Row Level Security", "403",
                        "Signed out — the public navigation", "Signed in — the navigation of the person's role",
-                       "its own dashboard", 'data-auth="in"', 'data-auth="out"'):
+                       "its own dashboard"):
             self.assertIn(needle, text)
 
-
-class PrototypeNavigationTests(unittest.TestCase):
-    def test_a_page_is_signed_in_by_its_flag_or_by_who_opens_it(self):
-        self.assertTrue(prototype_brief.signed_in_page({"login_required": True}))
-        self.assertFalse(prototype_brief.signed_in_page({"login_required": False, "allowed_roles": ["admin"]}))
-        self.assertTrue(prototype_brief.signed_in_page({"allowed_roles": ["Admin"]}))
-        self.assertFalse(prototype_brief.signed_in_page({"allowed_roles": ["Visitor", "Admin"]}))
-        self.assertFalse(prototype_brief.signed_in_page({}))
-
-    def test_flow_js_switches_the_navigation_by_the_demo_session(self):
-        routes = [{"route": "/", "file": "index.html", "name": "Home", "roles": [], "signed_in": False},
-                  {"route": "/dashboard", "file": "dashboard.html", "name": "Dashboard", "roles": ["member"], "signed_in": True}]
-        self.assertEqual([r["signedIn"] for r in prototype_brief.route_map(routes)], [False, True])
-        script = prototype_brief.flow_script(routes, {"journeys": [], "leads": {}}, [], "")
-        self.assertIn('"signedIn": true', script)
-        self.assertIn("[data-auth]", script)
-        self.assertIn("[hidden]{display:none!important}", script)
-
-    def test_sign_up_signs_the_new_account_in_and_every_sign_out_ends_the_session(self):
-        routes = [{"route": "/login", "file": "login.html", "name": "Sign in", "roles": [], "signed_in": False},
-                  {"route": "/register", "file": "register.html", "name": "Create account", "roles": [], "signed_in": False},
-                  {"route": "/home", "file": "home.html", "name": "My home", "roles": ["member"], "signed_in": True}]
-        accounts = [{"role": role, "role_key": role.lower(), "display_name": f"Demo {role}", "email": f"{role.lower()}@example.com",
-                     "password": "pw", "lands_on": "/home", "can_open": []} for role in ("Admin", "Member")]
-        doc = {"authentication_requirement": {"self_registration": True, "registration_mode": "open",
-                                              "sign_up_route": "/register", "registration_role": "Member"}}
-        sign_up = prototype_brief.sign_up_of(doc, routes, accounts)
-        self.assertEqual((sign_up["file"], sign_up["role_key"]), ("register.html", "member"))
-        self.assertIsNone(prototype_brief.sign_up_of({"authentication_requirement": {"registration_mode": "admin_created"}},
-                                                     routes, accounts))
-        script = prototype_brief.flow_script(routes, {"journeys": [], "leads": {}}, accounts, "/login", sign_up)
-        self.assertIn('"roleKey": "member"', script)
-        for needle in ("P.register", "data-sign-up", "keepProfile(null)", "signOutControl"):
-            self.assertIn(needle, script)
-        # The link handler leaves a sign-out to the demo session, so a Sign out with a data-go still ends the session.
-        self.assertIn("el.closest('[data-sign-out], [data-login-as]')", script)
-        text = prototype_brief.sign_in_text(accounts, "/login", routes, sign_up)
-        for needle in ("<form data-sign-up>", '<button type="button" data-sign-out>', "no `data-roles` on it",
-                       "inside the screen", "Member"):
-            self.assertIn(needle, text)
-
-    def test_the_prototype_is_told_to_mark_both_navigations(self):
-        accounts = [{"role": "Member", "role_key": "member", "email": "m@example.com", "password": "pw",
-                     "lands_on": "/dashboard"}]
-        text = prototype_brief.sign_in_text(accounts, "/login", [{"route": "/login", "file": "login.html", "name": "Sign in"}])
-        self.assertIn('data-auth="in"', text)
-        self.assertIn('data-auth="out"', text)
-        self.assertIn("own dashboard", text)
+    def test_the_wireframe_and_the_prototype_have_no_part_in_it(self):
+        text = prompts.load("shared/authentication")
+        for gone in ("In the wireframes", "In the prototype", "data-auth", "flow.js", "data-sign-out", "demo session"):
+            self.assertNotIn(gone, text)
+        self.assertIn("## 5. In the real application", text)
 
 
 if __name__ == "__main__":

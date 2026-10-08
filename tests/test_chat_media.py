@@ -102,7 +102,7 @@ class ChatMediaTests(unittest.TestCase):
                                        "data_base64": base64.b64encode(b"text").decode()})
         self.assertEqual(raised.exception.status, 400)
 
-    def test_prototype_stages_selected_media_without_moving_original(self):
+    def test_prototype_puts_selected_media_inside_its_app_without_moving_the_original(self):
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             image = workspace / "media/logo.png"
@@ -113,11 +113,11 @@ class ChatMediaTests(unittest.TestCase):
                 read_record=lambda *args, **kwargs: [
                     {"path": "media/logo.png", "purpose": "Brand logo"},
                     {"path": "media/../other.png", "purpose": "Unsafe"}])
-            staged = prototype._uploaded_site_images(session, workspace / ".agentforge/prototype")
+            staged = prototype._uploaded_site_images(session, workspace / ".agentforge/prototype/app")
             self.assertEqual(staged, [{"name": "logo.png", "usage": "Brand logo",
                                        "source": "media/logo.png",
-                                       "prototype_url": "assets/uploads/logo.png"}])
-            self.assertEqual((workspace / ".agentforge/prototype/assets/uploads/logo.png").read_bytes(), b"logo")
+                                       "file": "src/assets/uploads/logo.png"}])
+            self.assertEqual((workspace / ".agentforge/prototype/app/src/assets/uploads/logo.png").read_bytes(), b"logo")
             self.assertEqual(image.read_bytes(), b"logo")
 
 

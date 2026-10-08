@@ -1,9 +1,9 @@
 """A model that can look at pictures reviews every prototype page, and what it finds is fixed.
 
-After the prototype is drawn, every page is photographed in a browser that is already on the computer (`screens.py`, silent:
+After the prototype is made, every page is photographed in a browser that is already on the computer (`screens.py`, silent:
 no window, nothing the person is signed in to touched) at desktop and mobile width, and the pictures go to the model. It says
-what is visibly wrong with each page (cut-off text, broken layout, a missing image, unreadable contrast, a signed-out header
-on a signed-in page); the problems that matter are given to the agent to fix in the prototype's files; the pages that changed
+what is visibly wrong with each page (cut-off text, broken layout, a missing image, unreadable contrast); the problems that
+matter are given to the agent to fix in the prototype app's source, which is then built again; the pages that had problems
 are photographed and looked at once more, and what is still wrong is reported as it is. All of it is in the chat stream, with
 the pictures.
 
@@ -13,12 +13,11 @@ error, and nothing here ever fails the prototype: it is a review, not a gate.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
-from server_modules import bus, config, llm, prompts, screen_review
+from server_modules import bus, config, llm, prompts, screen_review, web_app
 from server_modules.session import RunCancelled
 
 from . import screens
@@ -44,50 +43,34 @@ def can_review(model: str, cancelled=None) -> tuple[bool, str]:
         raise RunCancelled("prototype") from exc
 
 
-def _images(root: Path, shots: list[dict[str, Any]], file: str) -> tuple[list[bytes], list[dict[str, str]], list[str]]:
+def _images(root: Path, shots: list[dict[str, Any]], route: str) -> tuple[list[bytes], list[dict[str, str]], list[str]]:
     """The pictures of one page: their bytes, the chat's thumbnails, and which viewports they are, desktop first."""
-    mine = sorted((s for s in shots if s["file"] == file and s["path"]),
+    mine = sorted((s for s in shots if s["route"] == route and s["path"]),
                   key=lambda s: list(screens.VIEWPORTS).index(s["viewport"]))
     return ([(root / s["path"]).read_bytes() for s in mine],
-            [{"path": f"{config.RECORD_DIR}/prototype/{s['path']}", "label": f"{file} · {s['viewport']}"} for s in mine],
+            [{"path": f"{config.RECORD_DIR}/prototype/{s['path']}", "label": f"{route} · {s['viewport']}"} for s in mine],
             [s["viewport"] for s in mine])
 
 
-def _review_page(project: str, model: str, root: Path, row: dict[str, Any], shots: list[dict[str, Any]],
-                 email: str) -> dict[str, Any] | None:
-    data, thumbs, viewports = _images(root, shots, str(row["file"]))
+def _review_page(project: str, model: str, root: Path, row: dict[str, Any], shots: list[dict[str, Any]]) -> dict[str, Any] | None:
+    data, thumbs, viewports = _images(root, shots, str(row["route"]))
     if not data:
         return None
+    name = row.get("name") or row["route"]
     request = prompts.load(
-        "prototype/visual-review", page=row.get("name") or row["route"], route=row["route"], file=row["file"],
-        pictures=" and ".join(f"picture {i + 1} is the {name} width" for i, name in enumerate(viewports)) + ".",
-        signed_in=f", shown signed in as the demo account {email}" if email else ", shown signed out")
+        "prototype/visual-review", page=name, route=row["route"],
+        pictures=" and ".join(f"picture {i + 1} is the {width} width" for i, width in enumerate(viewports)) + ".")
     answer = llm.complete_json(SYSTEM, request, _clean, label="visual review", model=model, images=data,
                                project=project, role=bus.DESIGNER)
-    name = row.get("name") or row["route"]
-    return {"route": row["route"], "file": row["file"], "name": name, **answer, "thumbs": thumbs,
-            "heading": f"### `{row['file']}` — {name} (route `{row['route']}`)"}
+    return {"route": row["route"], "name": name, **answer, "thumbs": thumbs,
+            "heading": f"### {name} (route `{row['route']}`)"}
 
 
 def _tell(project: str, result: dict[str, Any]) -> None:
     screen_review.tell(project, result, bus.DESIGNER)
 
 
-def _fingerprint(root: Path, rows: list[dict[str, Any]]) -> dict[str, str]:
-    """What each page and the shared stylesheet say now, to know after the fix which pages changed."""
-    state = {}
-    for name in [str(r["file"]) for r in rows] + ["assets/app.css", "assets/app.js"]:
-        path = root / name
-        state[name] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
-    return state
-
-
-def _fix_request(findings: list[dict[str, Any]], accounts: list[dict[str, Any]]) -> tuple[str, int]:
-    """The problems worth fixing, written out page by page for the agent."""
-    return screen_review.fix_request(findings)
-
-
-def run(project: str, session: Any, rows: list[dict[str, Any]], accounts: list[dict[str, Any]],
+def run(project: str, session: Any, rows: list[dict[str, Any]],
         fix: bool = True, model: str = "", force: bool = False) -> dict[str, Any]:
     """Review the prototype's pages with a vision model and fix what it finds (`fix`: false only looks and reports).
     `model` is the one this run chose, else the project's; `force` runs it even when the setting turns it off, because it
@@ -101,7 +84,7 @@ def run(project: str, session: Any, rows: list[dict[str, Any]], accounts: list[d
             bus.agent_msg(project, f"The screens were not checked by looking at them: {why}.",
                           title="Visual review skipped", kind="narration", agent=bus.DESIGNER)
             return {"status": "skipped", "reason": why}
-        return _review(project, session, model, rows, accounts, fix)
+        return _review(project, session, model, rows, fix)
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001 - a review is never a reason to fail the prototype
@@ -111,17 +94,15 @@ def run(project: str, session: Any, rows: list[dict[str, Any]], accounts: list[d
         return {"status": "failed", "reason": str(exc)[:300]}
 
 
-def _review(project: str, session: Any, model: str, rows: list[dict[str, Any]], accounts: list[dict[str, Any]],
-            fix: bool = True) -> dict[str, Any]:
+def _review(project: str, session: Any, model: str, rows: list[dict[str, Any]], fix: bool = True) -> dict[str, Any]:
     root = session.record / "prototype"
-    emails = {str(r["file"]): screens.role_for(r, accounts) for r in rows}
     bus.phase(project, PHASE, "Checking the screens with a vision model",
               detail=f"{model} looks at every screen at desktop and mobile width.", agent=bus.DESIGNER)
     bus.agent_msg(project, f"Taking a silent screenshot of each of the {len(rows)} screens, at desktop and mobile width, "
                            f"for {model} to look at.", title="Visual review", kind="narration", agent=bus.DESIGNER)
 
     def photograph(pages: list[dict[str, Any]], label: str) -> list[dict[str, Any]]:
-        return screens.capture_all(root, pages, accounts, on_done=lambda done, total: bus.progress(
+        return screens.capture_all(root, pages, on_done=lambda done, total: bus.progress(
             project, label, done * 100 / total, agent=bus.DESIGNER),
             cancelled=lambda: bool(session.cancelled))
 
@@ -131,7 +112,7 @@ def _review(project: str, session: Any, model: str, rows: list[dict[str, Any]], 
         def one(row: dict[str, Any]) -> dict[str, Any] | None:
             if session.cancelled:
                 raise RunCancelled(project)
-            result = _review_page(project, model, root, row, shots, emails.get(str(row["file"]), ""))
+            result = _review_page(project, model, root, row, shots)
             counted[0] += 1
             bus.progress(project, label, counted[0] * 100 / len(pages), agent=bus.DESIGNER)
             if result:
@@ -139,7 +120,7 @@ def _review(project: str, session: Any, model: str, rows: list[dict[str, Any]], 
             return result
 
         found = llm.in_lanes(pages, one, on_error=lambda row, exc: {
-            "route": row["route"], "file": row["file"], "name": row.get("name") or row["route"], "looks_ok": False,
+            "route": row["route"], "name": row.get("name") or row["route"], "looks_ok": False,
             "summary": "", "defects": [], "error": str(exc)[:200], "thumbs": []})
         if session.cancelled:
             raise RunCancelled(project)
@@ -156,35 +137,39 @@ def _review(project: str, session: Any, model: str, rows: list[dict[str, Any]], 
     fixed_pages: list[str] = []
     fix_stopped = ""
     second: list[dict[str, Any]] = []
-    request, count = _fix_request(first, accounts)
+    request, count = screen_review.fix_request(first)
     if count and fix:
         if session.cancelled:
             raise RunCancelled(project)
-        bus.agent_msg(project, f"{count} problem{'s' if count != 1 else ''} worth fixing found on "
-                               f"{len({f['file'] for f in first if any(d['severity'] in FIX_SEVERITIES for d in f['defects'])})} "
-                               "screen(s). Fixing them in the prototype's files.", title="Visual review",
+        worth = [f for f in first if any(d["severity"] in FIX_SEVERITIES for d in f["defects"])]
+        bus.agent_msg(project, f"{count} problem{'s' if count != 1 else ''} worth fixing found on {len(worth)} "
+                               "screen(s). Fixing them in the prototype app.", title="Visual review",
                       kind="narration", agent=bus.DESIGNER)
-        before = _fingerprint(root, rows)
-        fix_stopped = screen_review.run_fix(project, session, prompts.load("prototype/visual-fix", defects=request), model,
-                                            bus.DESIGNER, "Visual review")
-        after = _fingerprint(root, rows)
-        shared = before.get("assets/app.css") != after.get("assets/app.css") or before.get("assets/app.js") != after.get("assets/app.js")
-        # A changed stylesheet can change every page; otherwise only the pages whose own file changed.
-        again = [r for r in rows if shared or before.get(str(r["file"])) != after.get(str(r["file"]))]
-        fixed_pages = [str(r["file"]) for r in again]
-        if again:
-            bus.agent_msg(project, f"Looking again at the {len(again)} screen{'s' if len(again) != 1 else ''} that changed.",
+        app = root / "app"
+        before = web_app.fingerprint(app)
+        fix_stopped = screen_review.run_fix(
+            project, session, prompts.load("prototype/visual-fix", defects=request,
+                                           skill=web_app.stage_skill(project),
+                                           app=app.relative_to(session.workspace).as_posix()),
+            model, bus.DESIGNER, "Visual review")
+        if web_app.fingerprint(app) != before:
+            web_app.ensure_built(session, project, "prototype", agent=bus.DESIGNER)
+            bus.prototype_changed(project)
+            # One app: what changed may be shared by every page, so the pages that had problems are looked at again.
+            again = [r for r in rows if r["route"] in {f["route"] for f in worth}]
+            fixed_pages = [str(r["route"]) for r in again]
+            bus.agent_msg(project, f"Looking again at the {len(again)} screen{'s' if len(again) != 1 else ''} that had problems.",
                           title="Visual review", kind="narration", agent=bus.DESIGNER)
             second = look(again, photograph(again, "Taking screenshots again"), "Looking at the changed screens")
     bus.progress(project, "Looking at the screens", 100, agent=bus.DESIGNER)
 
-    final = {f["file"]: f for f in first}
-    final.update({f["file"]: f for f in second if not f.get("error")})
+    final = {f["route"]: f for f in first}
+    final.update({f["route"]: f for f in second if not f.get("error")})
     remaining = [(f, d) for f in final.values() for d in f["defects"] if d["severity"] in FIX_SEVERITIES]
     report = {"model": model, "pages": len(rows), "problems_found": problems, "fixed_pages": fixed_pages,
               "fix_stopped": fix_stopped,
-              "remaining": [{"file": f["file"], **d} for f, d in remaining],
-              "pages_not_reviewed": unreviewed, "screens_without_picture": [s["file"] + " " + s["viewport"] for s in failed]}
+              "remaining": [{"route": f["route"], **d} for f, d in remaining],
+              "pages_not_reviewed": unreviewed, "screens_without_picture": [s["route"] + " " + s["viewport"] for s in failed]}
     try:
         (root / screens.REVIEW_DIR).mkdir(parents=True, exist_ok=True)
         (root / screens.REVIEW_DIR / REPORT).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -194,7 +179,7 @@ def _review(project: str, session: Any, model: str, rows: list[dict[str, Any]], 
                + ("no problems found." if not problems else
                   f"{problems} problem{'s' if problems != 1 else ''} found; nothing was changed, this was a review only." if not fix else
                   f"{problems} problem{'s' if problems != 1 else ''} found"
-                  + (f", {len(fixed_pages)} screen{'s' if len(fixed_pages) != 1 else ''} changed to fix them" if fixed_pages else "")
+                  + (f", {len(fixed_pages)} screen{'s' if len(fixed_pages) != 1 else ''} looked at again after the fix" if fixed_pages else "")
                   + (f"; {len(remaining)} still visible after the fix." if remaining else "; none left that matters.")))
     if fix_stopped:
         summary += f" The fix stopped before it was finished ({fix_stopped})."

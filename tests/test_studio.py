@@ -7,6 +7,7 @@ worth asserting about them is whether their output passes these gates.
 """
 import json
 import copy
+import shutil
 import sys
 import tempfile
 import threading
@@ -1255,131 +1256,44 @@ class OneContextTests(unittest.TestCase):
                 config.WORKSPACES = original
 
 
-class PrototypeFromWireframesTests(unittest.TestCase):
-    def test_the_agent_reads_the_three_inputs_plans_silently_and_writes_every_page(self):
-        from prototype_agent import prototype as prototyper
-        from srs_agent import document as srs_document
+class PrototypeFromWireframeAppTests(unittest.TestCase):
+    """The prototype is the approved wireframe app, copied, then edited by the agent: the wireframe itself stays as it was."""
 
-        doc = a_document(
-            authentication_requirement={"login_required": True, "sign_in_route": "/login"},
-            public_pages=[{"page_name": "Home", "route": "/", "sections": ["hero", "list"], "functions": ["browse"]},
-                          {"page_name": "Sign in", "route": "/login", "sections": ["form"], "functions": ["sign in"]}])
-        approved = a_plan(screens=[
-            {"name": "Home", "route": "/", "purpose": "Browse", "who": ["Visitor"]},
-            {"name": "Checkout", "route": "/checkout", "purpose": "Pay", "who": ["Visitor"]},
-        ])
-        runs = []
+    PROJECT = "prj_protoapp"
 
-        class Session:
-            cancelled = False
+    def setUp(self):
+        from server_modules import config as server_config
 
-            def __init__(self, root):
-                self.workspace = root
-                self.record = root / ".agentforge"
+        self.workspace = server_config.workspace_for(self.PROJECT)
+        shutil.rmtree(self.workspace, ignore_errors=True)
+        wire = self.workspace / ".agentforge" / "wireframe" / "app"
+        (wire / "src" / "pages").mkdir(parents=True)
+        (wire / "index.html").write_text("<div id=root></div>", encoding="utf-8")
+        (wire / "package.json").write_text("{}", encoding="utf-8")
+        (wire / "src" / "App.tsx").write_text("export default () => <h1>WIREFRAME_HOME</h1>", encoding="utf-8")
+        (wire / "src" / "pages" / "Checkout.tsx").write_text("export default () => <h1>WIREFRAME_CHECKOUT</h1>", encoding="utf-8")
+        (wire / "bundle.html").write_text("<html>wireframe bundle</html>", encoding="utf-8")
+        handoff = self.workspace / ".agentforge" / "srs" / "handoff"
+        handoff.mkdir(parents=True)
+        (handoff / "app.md").write_text("FINAL_HANDOFF_DETAIL", encoding="utf-8")
+        self.wire = wire
+        self.prototype = self.workspace / ".agentforge" / "prototype"
+        self.requests: list[str] = []
+        self.built: list[str] = []
 
-            def run_task(self, request, **kwargs):
-                runs.append((request, kwargs))
-                pages = self.record / "prototype"
-                (pages / "assets" / "app.css").write_text(":root{--accent:#c2410c}", encoding="utf-8")
-                (pages / "assets" / "app.js").write_text("window.appReady=true", encoding="utf-8")
-                (pages / "index.html").write_text(
-                    "<!DOCTYPE html><html><head></head><body><h1>Fresh cakes</h1></body></html>", encoding="utf-8")
-                (pages / "login.html").write_text(
-                    "<!DOCTYPE html><html><head></head><body><form data-sign-in></form>"
-                    "<div data-demo-login></div></body></html>", encoding="utf-8")
-                (pages / "checkout.html").write_text(
-                    "<!DOCTYPE html><html><head></head><body><main class='checkout-shell'>"
-                    "<h1>Secure checkout</h1><form><label>Card details</label><input></form>"
-                    "</main></body></html>", encoding="utf-8")
-                return {"plan": "THE SILENT PLAN", "status": "complete", "text": "done"}
+    def tearDown(self):
+        shutil.rmtree(self.workspace, ignore_errors=True)
 
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            handoff = root / ".agentforge" / "srs" / "handoff"
-            handoff.mkdir(parents=True)
-            (handoff / "app.md").write_text("FINAL_HANDOFF_DETAIL", encoding="utf-8")
-            with patch.object(prototyper, "session_for", return_value=Session(root)), \
-                 patch.object(prototyper.design_stage, "approved_customization", return_value={
-                     "design_md_path": "prompts/design/themes/terracotta/DESIGN.md",
-                     "design_md": "SELECTED_DESIGN_MARKDOWN",
-                     "design_md_workspace_path": "design/theme.md",
-                     "customizer_prompt": "CUSTOMIZER_EXTRA_PROMPT",
-                     "customizer_spec": {"mode": "theme", "theme": {"slug": "terracotta"}},
-                 }), \
-                 patch.object(srs_document, "document", return_value={"srs_document": doc}), \
-                 patch.object(srs_document.plan_stage, "approved_plan", return_value=approved), \
-                 patch.object(prototyper.bus, "file_written"), \
-                 patch.object(prototyper.bus, "progress"), \
-                 patch.object(prototyper.bus, "log"), \
-                 patch.object(prototyper.bus, "agent_msg") as messages:
-                rows = prototyper._draw_with_agent(
-                    "test", {"tokens": {"light": {"accent": "#c2410c"}}}, "Make a realistic prototype",
-                    wireframe_source={"/": "<html><head><style>.box{}</style></head><body><h1 class='box'>HOME_WIREFRAME</h1></body></html>",
-                                      "/checkout": "<html><body><form>CHECKOUT_WIREFRAME</form></body></html>"})
-
-            prototype = root / ".agentforge" / "prototype"
-            self.assertEqual([row["route"] for row in rows], ["/", "/login", "/checkout"])
-            self.assertEqual(len(runs), 1)
-            request, kwargs = runs[0]
-            # the builder's own run: silent plan, then write; no audit pass
-            self.assertFalse(kwargs["audit"])
-            # only the three inputs: app.md, the wireframes and what Design Customize produced
-            for expected in (".agentforge/srs/handoff/app.md", ".agentforge/prototype/input/design-spec.json",
-                             "design/theme.md", ".agentforge/prototype/input/wireframes/index.html",
-                             ".agentforge/prototype/input/wireframes/checkout.html",
-                             "CUSTOMIZER_EXTRA_PROMPT", "Make a realistic prototype"):
-                self.assertIn(expected, request)
-            self.assertNotIn("SKILL", request)
-            self.assertNotIn("premium-frontend", request.lower())
-            # sample data, every piece of wireframe content, role-based demo login and no guards are asked for in the prompt
-            for expected in ("realistic sample data", "Do not miss a single piece of wireframe content",
-                             "**No guards.**", "data-demo-login", "owner@example.com"):
-                self.assertIn(expected, request)
-            blueprint = (prototype / "input" / "wireframes" / "index.html").read_text(encoding="utf-8")
-            self.assertIn("HOME_WIREFRAME", blueprint)
-            self.assertNotIn("<style", blueprint)
-            # what the agent wrote is kept, only wired to the shared files
-            home = (prototype / "index.html").read_text(encoding="utf-8")
-            self.assertIn("Fresh cakes", home)
-            self.assertIn("assets/flow.js", home)
-            self.assertIn("assets/app.css", home)
-            # The generated checkout is kept; the low-fidelity blueprint is
-            # never copied into the published prototype.
-            checkout = (prototype / "checkout.html").read_text(encoding="utf-8")
-            self.assertIn("Secure checkout", checkout)
-            self.assertNotIn("CHECKOUT_WIREFRAME", checkout)
-            flow = (prototype / "assets" / "flow.js").read_text(encoding="utf-8")
-            self.assertIn("owner@example.com", flow)
-            self.assertIn("P.loginAs", flow)
-            self.assertNotIn("location.replace", flow)
-            self.assertEqual((prototype / "plan.md").read_text(encoding="utf-8"), "THE SILENT PLAN")
-            saved = json.loads((prototype / "routes.json").read_text(encoding="utf-8"))
-            self.assertEqual([row["file"] for row in saved["routes"]], ["index.html", "login.html", "checkout.html"])
-            checkpoint = json.loads((prototype / "generation.json").read_text(encoding="utf-8"))
-            self.assertTrue(checkpoint["draw_complete"])
-            self.assertFalse(checkpoint["complete"])
-
-    def test_an_incomplete_draw_keeps_real_pages_and_resumes_with_the_saved_direction(self):
-        from prototype_agent import prototype as prototyper
-        from srs_agent import document as srs_document
-
-        doc = a_document(public_pages=[
-            {"page_name": "Home", "route": "/", "sections": ["hero"], "functions": ["browse"]},
-            {"page_name": "Checkout", "route": "/checkout", "sections": ["form"], "functions": ["pay"]},
-        ])
-        approved = a_plan(screens=[
-            {"name": "Home", "route": "/", "purpose": "Browse", "who": ["Visitor"]},
-            {"name": "Checkout", "route": "/checkout", "purpose": "Pay", "who": ["Visitor"]},
-        ])
-        prompts_seen = []
+    def session(self, edit):
+        """A project session whose agent runs `edit(app_dir)` when it is asked to make the prototype."""
+        outer = self
 
         class Session:
             cancelled = False
 
-            def __init__(self, root):
-                self.workspace = root
-                self.record = root / ".agentforge"
-                self.round = 0
+            def __init__(self):
+                self.workspace = outer.workspace
+                self.record = outer.workspace / ".agentforge"
 
             def read_record(self, *parts, fallback=None):
                 path = self.record.joinpath(*parts)
@@ -1388,117 +1302,162 @@ class PrototypeFromWireframesTests(unittest.TestCase):
                 except (OSError, ValueError):
                     return fallback
 
-            def run_task(self, request, **_kwargs):
-                prompts_seen.append(request)
-                self.round += 1
-                root = self.record / "prototype"
-                if self.round == 1:
-                    (root / "assets" / "app.css").write_text("body{color:#123}", encoding="utf-8")
-                    (root / "assets" / "app.js").write_text("window.ready=true", encoding="utf-8")
-                    (root / "index.html").write_text(
-                        "<!doctype html><html><body><h1>Approved visual home</h1></body></html>", encoding="utf-8")
-                else:
-                    (root / "checkout.html").write_text(
-                        "<!doctype html><html><body><h1>Polished checkout</h1></body></html>", encoding="utf-8")
-                return {"status": "complete", "text": "done"}
+            def run_task(self, request, **kwargs):
+                outer.requests.append(request)
+                assert kwargs["audit"] is False          # the builder's own run: silent plan, then write; no audit pass
+                edit(self, outer.prototype / "app")
+                return {"plan": "THE SILENT PLAN", "status": "complete", "text": "done"}
 
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            handoff = root / ".agentforge" / "srs" / "handoff"
-            handoff.mkdir(parents=True)
-            (handoff / "app.md").write_text("approved app", encoding="utf-8")
-            session = Session(root)
-            patches = (
-                patch.object(prototyper, "session_for", return_value=session),
-                patch.object(prototyper.design_stage, "approved_customization", return_value={}),
-                patch.object(srs_document, "document", return_value={"srs_document": doc}),
-                patch.object(srs_document.plan_stage, "approved_plan", return_value=approved),
-                patch.object(prototyper.bus, "file_written"),
-                patch.object(prototyper.bus, "progress"),
-                patch.object(prototyper.bus, "log"),
-            )
-            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
-                with self.assertRaises(prototyper.PrototypeIncomplete):
-                    prototyper._draw_with_agent("test", {"tokens": {}}, "warm premium direction",
-                                                wireframe_source={"/": "<main>HOME_WIRE</main>",
-                                                                  "/checkout": "<form>CHECKOUT_WIRE</form>"})
-                prototype = session.record / "prototype"
-                saved_home = (prototype / "index.html").read_text(encoding="utf-8")
-                self.assertFalse((prototype / "checkout.html").exists())
-                partial = json.loads((prototype / "routes.json").read_text(encoding="utf-8"))
-                self.assertEqual([row["route"] for row in partial["routes"]], ["/"])
+        return Session()
 
-                rows = prototyper._draw_with_agent("test", {"tokens": {}}, "",
-                                                   wireframe_source={"/": "<main>HOME_WIRE</main>",
-                                                                     "/checkout": "<form>CHECKOUT_WIRE</form>"})
-
-            self.assertEqual((prototype / "index.html").read_text(encoding="utf-8"), saved_home)
-            self.assertEqual([row["route"] for row in rows], ["/", "/checkout"])
-            self.assertIn("warm premium direction", prompts_seen[1])
-            self.assertIn("Resuming an interrupted run", prompts_seen[1])
-            self.assertNotIn("HOME_WIRE", (prototype / "index.html").read_text(encoding="utf-8"))
-            checkpoint = json.loads((prototype / "generation.json").read_text(encoding="utf-8"))
-            self.assertTrue(checkpoint["draw_complete"])
-            self.assertFalse(checkpoint["complete"])
-
-    def test_each_demo_role_opens_its_own_pages_and_lands_on_the_top_of_its_area(self):
-        from prototype_agent import prototype_brief
-
-        def protected(route, roles):
-            return {"page_name": route.strip("/").title() or "Home", "route": route,
-                    "login_required": True, "allowed_roles": roles}
-
-        doc = {"authentication_requirement": {"login_required": True, "sign_in_route": "/login"},
-               "roles": [{"role_key": "shopper", "role_name": "Shopper"},
-                         {"role_key": "store_owner", "role_name": "Store Owner"},
-                         {"role_key": "guest", "role_name": "Guest"}],
-               # an access matrix that names the pages differently from the page list
-               "role_access_matrix": [{"role": "Shopper", "allowed_pages": "Storefront and the account area"},
-                                      {"role": "store_owner", "allowed_pages": "/admin/staff"}],
-               "public_pages": [{"page_name": "Home", "route": "/"}, {"page_name": "Sign in", "route": "/login"}],
-               "protected_pages": [protected("/account/orders", ["Shopper"]), protected("/account", ["Shopper"]),
-                                   protected("/admin/products", "Store Owner"), protected("/admin", ["store_owner"]),
-                                   protected("/admin/staff", [])]}
-        routes = [{"route": p["route"], "file": "x.html", "name": p["page_name"]} for p in prototype_brief.pages_of(doc)]
-        accounts = {a["role"]: a for a in prototype_brief.draw_accounts(doc, routes, {"journeys": [], "leads_to": {}}, "")}
-
-        self.assertEqual(set(accounts), {"Shopper", "Store Owner"})
-        self.assertEqual(accounts["Shopper"]["lands_on"], "/account")
-        self.assertEqual(accounts["Store Owner"]["lands_on"], "/admin")
-        owner = {p["route"] for p in accounts["Store Owner"]["can_open"]}
-        self.assertTrue({"/admin", "/admin/products", "/admin/staff"} <= owner)
-        self.assertNotIn("/account", owner)
-        self.assertNotIn("/admin", {p["route"] for p in accounts["Shopper"]["can_open"]})
-
-    def test_a_missing_wireframe_does_not_block_the_prototype(self):
-        """A route whose wireframe is not drawn is prototyped from the SRS and handoff; the ready ones are honoured."""
+    def draw(self, session, direction="Generate a high-fidelity, animated prototype.", customization=None):
         from prototype_agent import prototype as prototyper
+        from server_modules import web_app
         from srs_agent import document as srs_document
 
-        drawn = {}
+        doc = a_document(
+            authentication_requirement={"login_required": True, "sign_in_route": "/login"},
+            public_pages=[{"page_name": "Home", "route": "/", "sections": ["hero", "list"], "functions": ["browse"]},
+                          {"page_name": "Sign in", "route": "/login", "sections": ["form"], "functions": ["sign in"]}],
+            business_workflows=[{"workflow_name": "Ordering a cake", "who": "Visitor", "steps": ["open Home", "open Checkout"]}])
+        approved = a_plan(screens=[{"name": "Home", "route": "/", "purpose": "Browse", "who": ["Visitor"]},
+                                   {"name": "Checkout", "route": "/checkout", "purpose": "Pay", "who": ["Visitor"]}])
 
-        def draw(project, spec, direction, *, wireframe_source=None):
-            drawn["source"] = wireframe_source
-            raise RuntimeError("stop after the draw was started")
+        def built(_session, project, kind, agent=""):
+            self.built.append(kind)
+            (web_app.app_dir(project, kind) / "bundle.html").write_text("<html>prototype bundle</html>", encoding="utf-8")
 
-        with patch.object(srs_document, "has_document", return_value=True), \
-             patch.object(prototyper.design_stage, "current", return_value={"approved": True}), \
-             patch.object(prototyper.design_stage, "approved_spec", return_value={"tokens": {}}), \
-             patch.object(srs_document, "wireframes", return_value={"pages": [
-                 {"route": "/", "has_html": True},
-                 {"route": "/checkout", "has_html": False},
-             ]}), \
-             patch.object(srs_document, "wireframe_html", return_value="<html></html>"), \
-             patch.object(prototyper, "_draw_with_agent", draw), \
-             patch.object(prototyper.store, "update"), \
-             patch.object(prototyper, "session_for") as session:
-            with self.assertRaisesRegex(RuntimeError, "stop after the draw"):
-                prototyper.generate_from_wireframes("test", "direction")
-        session.return_value.begin.assert_called_once()
-        self.assertEqual(drawn["source"], {"/": "<html></html>"})
+        with patch.object(prototyper, "session_for", return_value=session), \
+             patch.object(prototyper.design_stage, "approved_customization", return_value=customization or {}), \
+             patch.object(srs_document, "document", return_value={"srs_document": doc}), \
+             patch.object(srs_document.plan_stage, "approved_plan", return_value=approved), \
+             patch.object(web_app, "runtime_ready", return_value=True), \
+             patch.object(web_app, "prepare_runtime", return_value=(True, "ready")), \
+             patch.object(web_app, "stage_skill", return_value=".agentforge/skills/web-artifacts-builder"), \
+             patch.object(web_app, "ensure_built", side_effect=built), \
+             patch.object(prototyper.bus, "file_written"), \
+             patch.object(prototyper.bus, "log"), \
+             patch.object(prototyper.bus, "agent_msg"):
+            return prototyper._draw_with_agent(self.PROJECT, {"tokens": {"light": {"accent": "#c2410c"}}}, direction)
 
-    def test_an_omitted_generated_page_keeps_building_disabled(self):
+    @staticmethod
+    def edit_home(session, app):
+        (app / "src" / "App.tsx").write_text("export default () => <h1>Fresh cakes, finished</h1>", encoding="utf-8")
+
+    def test_the_wireframe_is_copied_the_copy_is_edited_and_the_wireframe_stays_as_it_was(self):
+        before = {p.relative_to(self.wire).as_posix(): p.read_bytes() for p in self.wire.rglob("*") if p.is_file()}
+        rows = self.draw(self.session(self.edit_home), customization={
+            "design_md_path": "prompts/design/themes/terracotta/DESIGN.md", "design_md": "SELECTED_DESIGN_MARKDOWN",
+            "design_md_workspace_path": ".agentforge/design/theme/DESIGN.md", "customizer_prompt": "CUSTOMIZER_EXTRA_PROMPT",
+            "customizer_spec": {"mode": "theme", "theme": {"slug": "terracotta"}}})
+
+        after = {p.relative_to(self.wire).as_posix(): p.read_bytes() for p in self.wire.rglob("*") if p.is_file()}
+        self.assertEqual(before, after, "the wireframe is only ever read")
+        app = self.prototype / "app"
+        self.assertIn("Fresh cakes, finished", (app / "src" / "App.tsx").read_text(encoding="utf-8"))
+        self.assertIn("WIREFRAME_CHECKOUT", (app / "src" / "pages" / "Checkout.tsx").read_text(encoding="utf-8"))   # copied, not lost
+        self.assertEqual(self.built, ["prototype"])
+        self.assertEqual([row["route"] for row in rows], ["/", "/login", "/checkout"])
+        saved = json.loads((self.prototype / "routes.json").read_text(encoding="utf-8"))
+        self.assertEqual([row["file"] for row in saved["routes"]], ["app/src/App.tsx"] * 3)
+        self.assertEqual((self.prototype / "plan.md").read_text(encoding="utf-8"), "THE SILENT PLAN")
+        checkpoint = json.loads((self.prototype / "generation.json").read_text(encoding="utf-8"))
+        self.assertTrue(checkpoint["draw_complete"])
+        self.assertFalse(checkpoint["complete"])
+
+    def test_the_agent_is_asked_in_one_short_prompt_for_a_high_fidelity_animated_prototype_with_no_rules_of_its_own(self):
+        self.draw(self.session(self.edit_home), direction="Generate a high-fidelity, animated prototype.\n\nMake a realistic prototype",
+                  customization={"design_md_workspace_path": ".agentforge/design/theme/DESIGN.md",
+                                 "design_md_path": "prompts/design/themes/terracotta/DESIGN.md",
+                                 "customizer_prompt": "CUSTOMIZER_EXTRA_PROMPT"})
+        request = self.requests[0]
+        self.assertTrue(request.startswith("Generate a high-fidelity, animated prototype."))
+        self.assertEqual(request.count("Generate a high-fidelity, animated prototype."), 1)
+        for expected in (".agentforge/prototype/app", ".agentforge/wireframe/app",
+                         ".agentforge/skills/web-artifacts-builder/SKILL.md", "scripts/bundle-artifact.mjs",
+                         ".agentforge/srs/handoff/app.md", ".agentforge/prototype/input/design-spec.json",
+                         ".agentforge/design/theme/DESIGN.md", "CUSTOMIZER_EXTRA_PROMPT", "Make a realistic prototype",
+                         "- `/checkout` — Checkout", "Ordering a cake", "open Checkout",
+                         "No database, seed data, accounts or sign-in logic"):
+            self.assertIn(expected, request)
+        for gone in ("HTML", "data-demo-login", "demo account", "flow.js", "app.css", "black-and-white", "Do not miss a single",
+                     "owner@example.com", "wireframes' images"):
+            self.assertNotIn(gone, request)
+        self.assertLess(len(request.splitlines()), 45, "the prototype prompt stays short")
+
+    def test_a_stopped_run_keeps_the_edits_it_made_and_resumes_with_the_saved_direction(self):
+        def edit_then_stop(session, app):
+            (app / "src" / "Partial.tsx").write_text("export const half = true", encoding="utf-8")
+            session.cancelled = True
+
+        from server_modules.session import RunCancelled
+
+        first = self.session(edit_then_stop)
+        with self.assertRaises(RunCancelled):
+            self.draw(first, direction="Generate a high-fidelity, animated prototype.\n\nwarm premium direction")
+        self.assertTrue((self.prototype / "app" / "src" / "Partial.tsx").is_file())
+        self.assertEqual(self.built, [])
+
+        rows = self.draw(self.session(self.edit_home), direction="")
+        self.assertTrue((self.prototype / "app" / "src" / "Partial.tsx").is_file(), "the copy is not made again on a resume")
+        self.assertIn("warm premium direction", self.requests[-1])
+        self.assertIn("Resuming an interrupted run", self.requests[-1])
+        self.assertEqual([row["route"] for row in rows], ["/", "/login", "/checkout"])
+        self.assertNotIn("Resuming an interrupted run", self.requests[0])
+
+    def test_a_copy_the_agent_never_touched_is_not_handed_over_as_the_prototype(self):
         from prototype_agent import prototype as prototyper
+
+        with self.assertRaises(prototyper.PrototypeIncomplete) as raised:
+            self.draw(self.session(lambda session, app: None))
+        self.assertIn("did not change the wireframe app", str(raised.exception))
+        self.assertEqual(self.built, [])
+        self.assertFalse((self.prototype / "routes.json").exists())
+        checkpoint = json.loads((self.prototype / "generation.json").read_text(encoding="utf-8"))
+        self.assertFalse(checkpoint["draw_complete"])
+
+    def test_a_different_direction_or_a_changed_wireframe_starts_from_a_fresh_copy(self):
+        def edit_and_leave_a_trace(session, app):
+            self.edit_home(session, app)
+            (app / "src" / "Trace.tsx").write_text("export const trace = 1", encoding="utf-8")
+
+        self.draw(self.session(edit_and_leave_a_trace), direction="Generate a high-fidelity, animated prototype.\n\none")
+        self.assertTrue((self.prototype / "app" / "src" / "Trace.tsx").is_file())
+        self.draw(self.session(self.edit_home), direction="Generate a high-fidelity, animated prototype.\n\ntwo")
+        self.assertFalse((self.prototype / "app" / "src" / "Trace.tsx").exists(), "a new direction copies the wireframe again")
+        self.assertNotIn("Resuming", self.requests[-1])
+
+    def test_a_finished_and_built_prototype_is_not_edited_again_when_only_the_review_stopped(self):
+        self.draw(self.session(self.edit_home))
+        asked = len(self.requests)
+        rows = self.draw(self.session(self.edit_home), direction="")        # Resume after the review was stopped
+        self.assertEqual(len(self.requests), asked)
+        self.assertEqual([row["route"] for row in rows], ["/", "/login", "/checkout"])
+
+    def test_with_no_wireframe_app_yet_it_is_built_first_and_the_prototype_is_never_drawn_without_one(self):
+        from prototype_agent import prototype as prototyper
+        from server_modules import web_app
+        from srs_agent import document as srs_document
+        from srs_agent import wireframe as wireframe_stage
+
+        steps = []
+        with patch.object(srs_document, "has_document", return_value=True), \
+             patch.object(prototyper.design_stage, "approved_spec", return_value={"tokens": {}}), \
+             patch.object(web_app, "built", return_value=False), \
+             patch.object(wireframe_stage, "generate", side_effect=lambda project, *a, **k: steps.append("wireframe")), \
+             patch.object(prototyper, "_draw_with_agent", side_effect=lambda *a, **k: (steps.append("prototype"), (_ for _ in ()).throw(RuntimeError("stop")))), \
+             patch.object(prototyper.store, "update"), \
+             patch.object(prototyper.bus, "phase"), \
+             patch.object(prototyper.bus, "agent_msg"), \
+             patch.object(prototyper, "session_for") as session:
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                prototyper.generate("test", "direction")
+        self.assertEqual(steps, ["wireframe", "prototype"])
+        session.return_value.begin.assert_called_once()
+
+    def test_an_incomplete_draw_keeps_building_disabled(self):
+        from prototype_agent import prototype as prototyper
+        from server_modules import web_app
         from srs_agent import document as srs_document
 
         class Session:
@@ -1527,8 +1486,8 @@ class PrototypeFromWireframesTests(unittest.TestCase):
             session = Session(Path(folder))
             updates = []
             with patch.object(srs_document, "has_document", return_value=True), \
-                 patch.object(srs_document, "wireframes", return_value={"pages": [{"route": "/", "has_html": True}]}), \
-                 patch.object(srs_document, "wireframe_html", return_value="<main>wireframe</main>"), \
+                 patch.object(srs_document, "screens", return_value=[{"route": "/"}]), \
+                 patch.object(web_app, "built", return_value=True), \
                  patch.object(prototyper.design_stage, "current", return_value={"approved": True}), \
                  patch.object(prototyper.design_stage, "approved_spec", return_value={"tokens": {}}), \
                  patch.object(prototyper, "session_for", return_value=session), \
@@ -1581,6 +1540,9 @@ class PrototypeFromWireframesTests(unittest.TestCase):
         selection = {"mode": "theme", "theme": {"slug": "terracotta"}}
         with tempfile.TemporaryDirectory() as folder:
             session = Session(Path(folder))
+            spec_file = Path(folder) / ".agentforge" / "design" / "design-spec.json"
+            spec_file.parent.mkdir(parents=True)
+            spec_file.write_text("{}", encoding="utf-8")
             with patch.object(design_stage, "session_for", return_value=session), \
                  patch.object(design_stage.store, "require", return_value={"idea": "Hotel"}), \
                  patch.object(design_stage.store, "advance"), \
@@ -1591,11 +1553,14 @@ class PrototypeFromWireframesTests(unittest.TestCase):
                 drafted = design_stage.draft("test", direction="Use calm motion", spec=selection)
                 design_stage.approve("test", drafted["version"])
                 material = design_stage.approved_customization("test")
+            staged = Path(folder) / material["design_md_workspace_path"]
+            self.assertTrue(staged.is_file())
+            self.assertEqual(spec_file.read_text(encoding="utf-8"), "{}", "staging the theme must not delete the design spec beside it")
 
         self.assertIn("prompts/design/themes/terracotta/DESIGN.md", prompts_seen[0])
         self.assertIn("Use calm motion", prompts_seen[0])
         self.assertIn("Terracotta", material["design_md"])
-        self.assertTrue(material["design_md_workspace_path"])
+        self.assertEqual(material["design_md_workspace_path"], ".agentforge/design/theme/DESIGN.md")
         self.assertEqual(material["customizer_prompt"], "Use calm motion")
         self.assertEqual(material["customizer_spec"], selection)
 

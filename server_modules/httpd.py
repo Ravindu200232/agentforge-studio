@@ -979,27 +979,6 @@ def srs_get(ctx: dict) -> Any:
 # the prototype
 # =========================================================================
 
-@route("GET", r"/prototype/(?P<project>[^/]+)/(?P<name>.+)")
-def prototype_file(ctx: dict) -> Any:
-    """The prototype as a small static site.
-
-    The studio points an <iframe> straight at these URLs and lets the pages link
-    to each other, so every file under `.agentforge/prototype/` — the pages, the
-    stylesheet, the script, the images — is served at its own path.
-    """
-    project = _project(ctx)
-    name = unquote(ctx["_match"].group("name")).split("?")[0]
-    body, kind = prototyper.asset(project, name)
-    return Raw(body, kind)
-
-
-@route("GET", r"/prototype/(?P<project>[^/]+)")
-def prototype_index(ctx: dict) -> Any:
-    project = _project(ctx)
-    body, kind = prototyper.asset(project, "index.html")
-    return Raw(body, kind)
-
-
 @route("POST", r"/design-theme-preview")
 def theme_preview(ctx: dict) -> Any:
     slug = str(ctx.get("slug") or "")

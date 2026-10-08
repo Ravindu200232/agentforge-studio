@@ -188,8 +188,10 @@ def _flags(how: str, profile: str, width: int, height: int) -> list[str]:
 
 
 def shoot(source: Path | str, out: Path, viewport: str = "desktop", browser: tuple[str, str] | None = None,
-          seconds: int = SECONDS, cancelled: Callable[[], bool] | None = None) -> Path:
-    """One picture of `source` (an HTML file on disk, or a local preview URL) at `viewport`, saved to `out`."""
+          seconds: int = SECONDS, cancelled: Callable[[], bool] | None = None, fragment: str = "") -> Path:
+    """One picture of `source` (an HTML file on disk, or a local preview URL) at `viewport`, saved to `out`.
+
+    `fragment` (`#/orders`) picks a page of an app that routes by hash; it is added to the address of a file on disk."""
     if viewport not in VIEWPORTS:
         raise ValueError("viewport must be desktop or mobile")
     if cancelled and cancelled():
@@ -200,7 +202,7 @@ def shoot(source: Path | str, out: Path, viewport: str = "desktop", browser: tup
     path, how = browser
     width, height = VIEWPORTS[viewport]
     is_url = isinstance(source, str) and source.startswith("http")
-    url = local_url(source) if is_url else Path(source).resolve().as_uri()
+    url = local_url(source) if is_url else Path(source).resolve().as_uri() + (fragment or "")
     name = url if is_url else Path(source).name
     out.parent.mkdir(parents=True, exist_ok=True)
     profile = tempfile.mkdtemp(prefix="agentforge-shot-")

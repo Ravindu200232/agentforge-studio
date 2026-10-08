@@ -20,6 +20,12 @@ const loaded = require('puppeteer-core')
 const puppeteer = loaded.default || loaded
 
 const out = line => process.stdout.write(JSON.stringify(line) + '\n')
+
+/** The hash a page of the app is opened at; a parameter in the route (`/orders/[id]`, `/orders/:id`) gets a sample value. */
+const hashFor = route => {
+  const filled = String(route || '/').replace(/\[[^\]]+\]|:[A-Za-z_]\w*/g, '1')
+  return '#' + (filled.startsWith('/') ? filled : '/' + filled)
+}
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 let browser = null
@@ -36,7 +42,7 @@ const COLLECT = () => {
   document.querySelectorAll('[data-af-i]').forEach(el => el.removeAttribute('data-af-i'))
   const seen = []
   const summaries = new Map()      // a closed <details> menu -> the number of the button that opens it
-  const nodes = document.querySelectorAll('a[href], button, input, select, textarea, summary, [role="button"], [data-login-as], [data-toast]')
+  const nodes = document.querySelectorAll('a[href], button, input, select, textarea, summary, [role="button"], [role="link"], [role="tab"], [role="menuitem"]')
   // textContent as well as innerText: what is inside a menu that is shut has no innerText, but it has a name.
   const text = el => (el.getAttribute('aria-label') || el.innerText || el.textContent || el.value || el.getAttribute('title') || el.getAttribute('placeholder') || '')
     .replace(/\s+/g, ' ').trim().slice(0, 70)
@@ -60,20 +66,24 @@ const COLLECT = () => {
     if (el.id) { const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]'); if (l) label = l.innerText.replace(/\s+/g, ' ').trim().slice(0, 70) }
     if (!label && el.closest('label')) label = el.closest('label').innerText.replace(/\s+/g, ' ').trim().slice(0, 70)
     const href = el.tagName === 'A' ? el.getAttribute('href') || '' : ''
-    let file = ''
+    // The app routes by hash: a link to '#/orders' is a link to the page '/orders'. A link to anything that is not this very
+    // document is another site.
+    let route = ''
     let external = false
-    if (href && !href.startsWith('#') && !/^(mailto|tel|javascript):/i.test(href)) {
+    if (href && href.startsWith('#')) {
+      route = href.slice(1) || '/'
+      if (!route.startsWith('/')) route = '/' + route
+    } else if (href) {
       try {
         const url = new URL(href, location.href)
-        external = url.protocol !== location.protocol || url.host !== location.host
-        file = external ? '' : decodeURIComponent(url.pathname.split('/').pop() || '')
-      } catch { /* not a link we can follow */ }
+        external = url.href.split('#')[0] !== location.href.split('#')[0]
+        if (!external && url.hash) route = url.hash.slice(1) || '/'
+      } catch { external = true }
     }
     const area = el.closest('dialog[open]') ? 'dialog' : el.closest('nav, header') ? 'nav' : el.closest('footer') ? 'footer' : 'main'
     seen.push({
-      i, menu, tag: el.tagName.toLowerCase(), type: el.type || '', text: text(el) || (href ? '(icon link to ' + href + ')' : ''), label, href, file, external,
+      i, menu, tag: el.tagName.toLowerCase(), type: el.type || '', text: text(el) || (href ? '(icon link to ' + href + ')' : ''), label, href, route, external,
       name: el.getAttribute('name') || '', placeholder: el.getAttribute('placeholder') || '', area,
-      loginAs: el.getAttribute('data-login-as') || '',
       disabled: Boolean(el.disabled), checked: Boolean(el.checked), value: ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) && el.type !== 'password' ? String(el.value || '').slice(0, 60) : '',
       options: el.tagName === 'SELECT' ? Array.from(el.options).slice(0, 12).map(o => (o.text || o.value).trim().slice(0, 40)) : undefined,
       signOut: el.hasAttribute('data-sign-out') || /\b(log ?out|sign ?out)\b/i.test(text(el)),
@@ -85,10 +95,9 @@ const COLLECT = () => {
 async function state() {
   const info = await page.evaluate(() => ({
     url: location.href, title: document.title,
-    file: decodeURIComponent(location.pathname.split('/').pop() || ''),
+    route: (location.hash || '').replace(/^#/, '') || '/',
     heading: (document.querySelector('h1') || {}).innerText || '',
-    user: (window.PROTOTYPE && window.PROTOTYPE.user && (window.PROTOTYPE.user() || {}).email) || '',
-  })).catch(() => ({ url: page.url(), title: '', file: '', heading: '', user: '' }))
+  })).catch(() => ({ url: page.url(), title: '', route: '/', heading: '' }))
   info.heading = String(info.heading).replace(/\s+/g, ' ').trim().slice(0, 120)
   return info
 }
@@ -202,9 +211,10 @@ const handlers = {
     return {}
   },
   async reset() { await open(); return {} },
-  async goto({ file }) {
-    await page.goto(pathToFileURL(path.resolve(file)).href, { waitUntil: 'load', timeout: 30_000 })
-    await sleep(200)
+  /** The app's bundle (`file`), opened on one of its pages (`route`: the app routes by hash). */
+  async goto({ file, route }) {
+    await page.goto(pathToFileURL(path.resolve(file)).href + hashFor(route), { waitUntil: 'load', timeout: 30_000 })
+    await sleep(350)                                   // the app draws its first page just after the load
     await push()
     await pace()
     return { state: await state() }

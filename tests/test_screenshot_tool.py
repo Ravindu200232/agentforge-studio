@@ -47,7 +47,7 @@ class ToolCase(unittest.TestCase):
 class ToolTests(ToolCase):
     def test_the_tool_is_offered_with_its_arguments_and_described_when_called(self):
         schema = next(s for s in TOOL_SCHEMAS if s["function"]["name"] == "screenshot")
-        self.assertEqual(set(schema["function"]["parameters"]["properties"]), {"target", "viewport", "role"})
+        self.assertEqual(set(schema["function"]["parameters"]["properties"]), {"target", "viewport"})
         self.assertEqual(schema["function"]["parameters"]["required"], [])
         self.assertEqual(describe_call("screenshot", {"target": "dashboard.html", "viewport": "mobile"}), "screenshot(dashboard.html, mobile)")
 
@@ -182,38 +182,36 @@ class InTheStudioTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         proto = self.root / ".agentforge" / "prototype"
         proto.mkdir(parents=True)
-        self.rows = [{"route": "/", "file": "index.html", "name": "Home", "signed_in": False},
-                     {"route": "/dashboard", "file": "dashboard.html", "name": "Dashboard", "signed_in": True}]
-        self.accounts = [{"role": "Admin", "role_key": "admin", "email": "ada@example.test", "can_open": [{"route": "/dashboard"}]},
-                         {"role": "Customer", "role_key": "customer", "email": "cy@example.test", "can_open": []}]
+        self.rows = [{"route": "/", "file": "app/src/App.tsx", "name": "Home"},
+                     {"route": "/dashboard", "file": "app/src/App.tsx", "name": "Dashboard"}]
         (proto / "routes.json").write_text(json.dumps({"routes": self.rows}), encoding="utf-8")
-        (proto / "demo-accounts.json").write_text(json.dumps({"accounts": self.accounts}), encoding="utf-8")
         self.messages: list[dict] = []
         patch = mock.patch.object(bus, "agent_msg", lambda project, text, agent="", title="", kind="", design=None, images=None:
                                   self.messages.append({"text": text, "title": title, "kind": kind, "images": images}))
         patch.start()
         self.addCleanup(patch.stop)
         self.tools = session_module.StudioTools(self.root, None, lambda _q: True, project="prj_shots", role_of=lambda: "designer")
-        self.shot_page = mock.Mock(side_effect=lambda root, page, accounts, out, viewport, email=None: fake_shoot(None, out, viewport))
+        self.shot_page = mock.Mock(side_effect=lambda root, page, out, viewport, cancelled=None: fake_shoot(None, out, viewport))
         patch = mock.patch("prototype_agent.screens.shoot_page", self.shot_page)
         patch.start()
         self.addCleanup(patch.stop)
 
-    def test_a_prototype_page_is_found_by_its_route_and_shown_as_a_role_that_can_open_it(self):
+    def test_a_prototype_page_is_found_by_its_route_and_photographed_in_the_built_app(self):
         answer = json.loads(self.tools.execute("screenshot", {"target": "/dashboard", "viewport": "mobile"}))
-        page, accounts, viewport, email = (self.shot_page.call_args.args[1], self.shot_page.call_args.args[2],
-                                           self.shot_page.call_args.args[4], self.shot_page.call_args.args[5])
-        self.assertEqual((page["file"], viewport, email), ("dashboard.html", "mobile", None))   # None: the page's own role
-        self.assertEqual(len(accounts), 2)
+        root, page, viewport = (self.shot_page.call_args.args[0], self.shot_page.call_args.args[1],
+                                self.shot_page.call_args.args[3])
+        self.assertEqual((page["route"], viewport), ("/dashboard", "mobile"))
+        self.assertEqual(root, self.root / ".agentforge" / "prototype")
         self.assertTrue((self.root / answer["saved"]).is_file())
 
-    def test_a_role_asked_for_by_name_or_email_is_the_one_the_page_is_shown_as(self):
-        for wanted in ("customer", "Customer", "cy@example.test"):
+    def test_a_page_is_found_by_its_name_or_without_the_slash_and_an_unknown_one_goes_the_generic_way(self):
+        for wanted in ("Dashboard", "dashboard", "#/dashboard"):
             with self.subTest(wanted=wanted):
-                self.tools.execute("screenshot", {"target": "dashboard.html", "role": wanted})
-                self.assertEqual(self.shot_page.call_args.args[5], "cy@example.test")
-        self.tools.execute("screenshot", {"target": "dashboard.html", "role": "nobody"})
-        self.assertEqual(self.shot_page.call_args.args[5], "")                   # an unknown role: signed out, not a guess
+                self.tools.execute("screenshot", {"target": wanted})
+                self.assertEqual(self.shot_page.call_args.args[1]["route"], "/dashboard")
+        self.shot_page.reset_mock()
+        self.tools.execute("screenshot", {"target": "/nowhere"})        # not a page of the prototype: the generic tool refuses it
+        self.shot_page.assert_not_called()
 
     def test_a_local_preview_url_does_not_go_through_the_prototype(self):
         with mock.patch.object(screenshot, "shoot", fake_shoot):
@@ -222,15 +220,15 @@ class InTheStudioTests(unittest.TestCase):
 
     def test_the_chat_gets_a_message_with_the_screenshot_under_it(self):
         self.tools.sees_pictures = lambda: True
-        self.tools.execute("screenshot", {"target": "dashboard.html"})
+        self.tools.execute("screenshot", {"target": "/dashboard"})
         message = self.messages[-1]
         self.assertEqual((message["title"], message["kind"]), ("Screenshot", "screenshot"))
         self.assertIn("the model is looking at it", message["text"])
         self.assertTrue(message["images"][0]["path"].startswith(".agentforge/qa/shots/screenshot-desktop-"))
-        self.assertEqual(message["images"][0]["label"], "dashboard.html · desktop")
+        self.assertEqual(message["images"][0]["label"], "/dashboard · desktop")
 
     def test_for_a_model_that_cannot_see_the_chat_says_it_was_only_saved(self):
-        self.tools.execute("screenshot", {"target": "dashboard.html"})
+        self.tools.execute("screenshot", {"target": "/dashboard"})
         self.assertIn("cannot look at pictures", self.messages[-1]["text"])
 
     def test_a_failed_screenshot_puts_nothing_in_the_chat(self):

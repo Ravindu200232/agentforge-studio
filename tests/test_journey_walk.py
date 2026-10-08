@@ -1,4 +1,7 @@
-"""The prototype's journeys, clicked through in a browser with a picture at every step, then looked at (and fixed)."""
+"""The prototype's journeys, clicked through in a browser with a picture at every step, then looked at (and fixed).
+
+The prototype is one React app that routes by hash, so a page is a route (`/phones`) and the browser is on a page when the
+app's hash says so."""
 from __future__ import annotations
 
 import copy
@@ -20,18 +23,14 @@ for folder in (".", "src", "srs-agent", "prototype-agent", "builder-agent", "qa-
 from ollama_terminal import screenshot  # noqa: E402
 from prototype_agent import journey_walk as jw  # noqa: E402
 from prototype_agent.journey_driver import Driver, DriverError  # noqa: E402
-from server_modules import bus, config, live, prompts  # noqa: E402
+from server_modules import bus, config, live, prompts, web_app  # noqa: E402
 from server_modules.session import RunCancelled  # noqa: E402
 
-ROWS = [{"route": "/", "file": "index.html", "name": "Home"},
-        {"route": "/phones", "file": "phones.html", "name": "Phone Catalogue"},
-        {"route": "/phones/:id", "file": "phones-id.html", "name": "Phone Detail"},
-        {"route": "/cart", "file": "cart.html", "name": "Cart"},
-        {"route": "/login", "file": "login.html", "name": "Log In"},
-        {"route": "/wishlist", "file": "wishlist.html", "name": "Wishlist"}]
-ACCOUNTS_DOC = {"sign_in": "/login", "accounts": [
-    {"role": "Customer", "role_key": "customer", "display_name": "Demo Customer", "email": "customer@example.com", "lands_on": "/wishlist"},
-    {"role": "Shop Owner", "role_key": "shop_owner", "display_name": "Demo Owner", "email": "owner@example.com", "lands_on": "/admin"}]}
+ROWS = [{"route": "/", "file": "app/src/App.tsx", "name": "Home"},
+        {"route": "/phones", "file": "app/src/App.tsx", "name": "Phone Catalogue"},
+        {"route": "/phones/:id", "file": "app/src/App.tsx", "name": "Phone Detail"},
+        {"route": "/cart", "file": "app/src/App.tsx", "name": "Cart"},
+        {"route": "/wishlist", "file": "app/src/App.tsx", "name": "Wishlist"}]
 
 
 class DriverStopTests(unittest.TestCase):
@@ -56,10 +55,10 @@ def step(sid, text, route):
 # --- a prototype that is a table, and a browser that is a pointer into it ---------------------------------------------
 
 class FakeBrowser:
-    """What `Driver` is to the real prototype, over a tiny made-up one: pages with the things on them, and what clicking each does."""
+    """What `Driver` is to the real prototype, over a tiny made-up one: pages (routes) with the things on them, and what clicking each does."""
 
-    def __init__(self, pages: dict[str, dict], start: str = "index.html"):
-        self.pages, self.file, self.user, self.filled, self.calls = pages, start, "", {}, []
+    def __init__(self, pages: dict[str, dict], start: str = "/"):
+        self.pages, self.route, self.filled, self.calls = pages, start, {}, []
         self.menus_open = set()
         self.closed = False
         self.error_text: list[str] = []
@@ -71,22 +70,22 @@ class FakeBrowser:
         self.closed = True
 
     def reset(self):
-        self.file, self.user, self.filled = "about-blank", "", {}          # a new profile opens on a blank tab
+        self.route, self.filled = "about:blank", {}          # a new profile opens on a blank tab
         self.menus_open = set()
         self.dialog = False
 
-    def goto(self, path):
-        self.file = Path(str(path)).name
-        self.calls.append(("goto", self.file))
+    def goto(self, bundle, route="/"):
+        self.route = route
+        self.calls.append(("goto", self.route))
         return self.state()
 
     def state(self):
-        page = self.pages.get(self.file, {})
-        return {"url": "file:///" + self.file, "title": page.get("title", self.file), "file": self.file,
-                "heading": page.get("heading", ""), "user": self.user}
+        page = self.pages.get(self.route, {})
+        return {"url": "file:///bundle.html#" + self.route, "title": page.get("title", self.route), "route": self.route,
+                "heading": page.get("heading", "")}
 
     def text(self):
-        return self.pages.get(self.file, {}).get("text", "")
+        return self.pages.get(self.route, {}).get("text", "")
 
     dialog = False
 
@@ -98,14 +97,14 @@ class FakeBrowser:
 
     def elements(self):
         found = []
-        page = self.pages.get(self.file, {})
+        page = self.pages.get(self.route, {})
         shown = list(page.get("elements", [])) + ([{**e, "area": "dialog"} for e in page.get("dialog", [])] if self.dialog else [])
         for i, base in enumerate(shown):
-            element = {"i": i, "menu": -1, "tag": "a", "type": "", "text": "", "label": "", "href": "", "file": "", "external": False,
-                       "name": "", "placeholder": "", "area": "main", "loginAs": "", "disabled": False, "checked": False,
+            element = {"i": i, "menu": -1, "tag": "a", "type": "", "text": "", "label": "", "href": "", "route": "", "external": False,
+                       "name": "", "placeholder": "", "area": "main", "disabled": False, "checked": False,
                        "value": "", "signOut": False, **base}
             if "opener" in base:                    # inside a menu: only usable once the menu button has been pressed
-                element["menu"] = -1 if self.file in self.menus_open else base["opener"]
+                element["menu"] = -1 if self.route in self.menus_open else base["opener"]
             found.append(element)
         return found
 
@@ -113,7 +112,7 @@ class FakeBrowser:
 
     def click(self, i):
         element = self.elements()[i]
-        self.calls.append(("click", element["text"] or element["file"]))
+        self.calls.append(("click", element["text"] or element["route"]))
         if self.dialog and element["area"] != "dialog":
             raise DriverError("something else covers it (dialog)")
         if element.get("opens_dialog"):
@@ -123,19 +122,17 @@ class FakeBrowser:
             self.dialog = False
             return {"state": self.state(), "navigated": False}
         if element["tag"] == "summary":
-            self.menus_open.add(self.file)
+            self.menus_open.add(self.route)
             return {"state": self.state(), "navigated": False}
         if element["menu"] >= 0:                    # a link in a menu that is shut: the click lands on nothing
             return {"state": self.state(), "navigated": False}
-        if element.get("signs_in"):
-            self.user = element["signs_in"]
         if element.get("reveals") is not None:      # what the page shows after this (a filter cleared, say)
-            self.pages[self.file] = {**self.pages[self.file], "elements": element["reveals"]}
-        goes = element.get("goes") or (element["file"] if element["tag"] == "a" else "")
-        before = self.file
+            self.pages[self.route] = {**self.pages[self.route], "elements": element["reveals"]}
+        goes = element.get("goes") or (element["route"] if element["tag"] == "a" else "")
+        before = self.route
         if goes:
-            self.file = goes
-        return {"state": self.state(), "navigated": self.file != before}
+            self.route = goes
+        return {"state": self.state(), "navigated": self.route != before}
 
     def fill(self, i, value):
         element = self.elements()[i]
@@ -145,7 +142,7 @@ class FakeBrowser:
 
     def screenshot(self, path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Path(path).write_bytes(b"\xff\xd8shot-" + self.file.encode())
+        Path(path).write_bytes(b"\xff\xd8shot-" + self.route.encode())
         return Path(path)
 
     def errors(self):
@@ -153,23 +150,20 @@ class FakeBrowser:
         return found
 
 
-def link(text, file, area="nav"):
-    return {"tag": "a", "text": text, "file": file, "area": area}
+def link(text, route, area="nav"):
+    return {"tag": "a", "text": text, "route": route, "area": area}
 
 
 SHOP = {
-    "index.html": {"title": "Home", "heading": "Find your phone", "elements": [link("Phone Catalogue", "phones.html"), link("Cart", "cart.html"),
-                                                                            link("Log In", "login.html")]},
-    "phones.html": {"title": "Phone Catalogue", "heading": "Phones", "text": "Phones\nPrices from Rs 30,000 to Rs 289,000", "elements": [
-        link("Home", "index.html"), {"tag": "input", "type": "search", "placeholder": "Search model", "area": "main"},
-        link("Apple iPhone 15", "phones-id.html", "main")]},
-    "phones-id.html": {"title": "Phone Detail", "heading": "Apple iPhone 15", "elements": [
-        link("Home", "index.html"), {"tag": "button", "text": "Add to cart", "goes": "cart.html", "area": "main"}]},
-    "cart.html": {"title": "Cart", "heading": "Your cart", "elements": [link("Home", "index.html")]},
-    "login.html": {"title": "Log In", "heading": "Log in", "elements": [
-        {"tag": "button", "text": "Customer customer@example.com", "loginAs": "customer", "goes": "wishlist.html",
-         "signs_in": "customer@example.com", "area": "main"}]},
-    "wishlist.html": {"title": "Wishlist", "heading": "Wishlist", "elements": [link("Phone Catalogue", "phones.html"), link("Cart", "cart.html")]},
+    "/": {"title": "Home", "heading": "Find your phone", "elements": [link("Phone Catalogue", "/phones"), link("Cart", "/cart"),
+                                                                    link("Wishlist", "/wishlist")]},
+    "/phones": {"title": "Phone Catalogue", "heading": "Phones", "text": "Phones\nPrices from Rs 30,000 to Rs 289,000", "elements": [
+        link("Home", "/"), {"tag": "input", "type": "search", "placeholder": "Search model", "area": "main"},
+        link("Apple iPhone 15", "/phones/12", "main")]},
+    "/phones/12": {"title": "Phone Detail", "heading": "Apple iPhone 15", "elements": [
+        link("Home", "/"), {"tag": "button", "text": "Add to cart", "goes": "/cart", "area": "main"}]},
+    "/cart": {"title": "Cart", "heading": "Your cart", "elements": [link("Home", "/")]},
+    "/wishlist": {"title": "Wishlist", "heading": "Wishlist", "elements": [link("Phone Catalogue", "/phones"), link("Cart", "/cart")]},
 }
 
 
@@ -186,17 +180,22 @@ class Harness(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.record = Path(self.temp.name) / ".agentforge"
+        self.workspace = Path(self.temp.name)
+        self.record = self.workspace / ".agentforge"
         self.root = self.record / "prototype"
-        (self.root / "assets").mkdir(parents=True)
-        for file, page in SHOP.items():
-            links = "".join(f"<a href='{e.get('file') or e.get('goes')}'>{e.get('text')}</a>" for e in page["elements"] if e.get("file") or e.get("goes"))
-            (self.root / file).write_text(f"{links}<h1>{page.get('heading', '')}</h1>", encoding="utf-8")
+        (self.root / "app" / "src").mkdir(parents=True)
+        (self.root / "app" / "index.html").write_text("<div id=root></div>", encoding="utf-8")
+        (self.root / "app" / "src" / "App.tsx").write_text("export default () => null", encoding="utf-8")
         (self.record / "srs").mkdir()
         self.messages: list[dict] = []
         self.sent: list[dict] = []
         self.progress: list[float] = []
         self.phases: list[tuple] = []
+        self.rebuilt = 0
+
+        def built(session, project, kind, agent=""):
+            self.rebuilt += 1
+
         for patch in (
             mock.patch.object(bus, "agent_msg", lambda project, text, agent="", title="", kind="", design=None, images=None:
                               self.messages.append({"text": text, "title": title, "kind": kind, "images": images or []})),
@@ -204,9 +203,12 @@ class Harness(unittest.TestCase):
                               self.phases.append((key, status))),
             mock.patch.object(bus, "progress", lambda project, label, pct, agent="": self.progress.append(pct)),
             mock.patch.object(bus, "log", lambda *a, **k: None),
+            mock.patch.object(bus, "prototype_changed", lambda *a, **k: None),
             mock.patch.object(bus, "viewers", lambda: 0),
             mock.patch.object(live, "handle", lambda project, body: self.sent.append(body)),
             mock.patch.object(live, "finish", lambda project: self.sent.append({"kind": "end"})),
+            mock.patch.object(web_app, "stage_skill", return_value=".agentforge/skills/web-artifacts-builder"),
+            mock.patch.object(web_app, "ensure_built", side_effect=built),
             mock.patch.object(screenshot, "working_browser", return_value=("b", "chrome")),
             mock.patch("server_modules.vision.supports", return_value=True),
         ):
@@ -217,7 +219,7 @@ class Harness(unittest.TestCase):
         (self.record / "srs" / "user-journeys.json").write_text(json.dumps({"schema": "x", "journeys": journeys}), encoding="utf-8")
 
     def session(self, fix=None, model="vision-model"):
-        done = SimpleNamespace(record=self.record, cancelled=False, model=model, requests=[])
+        done = SimpleNamespace(record=self.record, workspace=self.workspace, cancelled=False, model=model, requests=[])
         done.agent = lambda m="": SimpleNamespace(model=m or model)
 
         def run_direct(request, model=""):
@@ -229,10 +231,13 @@ class Harness(unittest.TestCase):
         done.run_direct = run_direct
         return done
 
-    def walk_with(self, pages=None):
-        return jw.Walk("p", "vision-model", self.root, ROWS, ACCOUNTS_DOC, jw.link_graph(self.root, ROWS),
-                       FakeBrowser(copy.deepcopy(pages or SHOP)),
+    def walk_with(self, pages=None, rows=None):
+        return jw.Walk("p", "vision-model", self.root, rows or ROWS, FakeBrowser(copy.deepcopy(pages or SHOP)),
                        streaming=False, cancelled=lambda: False)
+
+
+def change_the_app(root: Path, text: str = "changed") -> None:
+    (root / "app" / "src" / "App.tsx").write_text(f"export default () => <h1>{text}</h1>", encoding="utf-8")
 
 
 # --- what is read from the specification and the prototype ------------------------------------------------------------
@@ -251,25 +256,18 @@ class ReadingTests(Harness):
         self.assertEqual(jw.load_journeys(self.record), [])
 
     def test_a_route_is_its_prototype_page_and_an_unknown_one_is_none(self):
-        self.assertEqual(jw.file_for("/phones/:id", ROWS), "phones-id.html")
-        self.assertEqual(jw.file_for("/phones/", ROWS), "phones.html")
-        self.assertEqual(jw.file_for("/nowhere", ROWS), "")
+        self.assertEqual(jw.page_for("/phones/:id", ROWS), "/phones/:id")
+        self.assertEqual(jw.page_for("/phones/[id]", ROWS), "/phones/:id")      # the same page, its parameter spelled another way
+        self.assertEqual(jw.page_for("/phones/", ROWS), "/phones")
+        self.assertEqual(jw.page_for("/nowhere", ROWS), "")
 
-    def test_a_visitor_never_signs_in_and_a_role_is_its_demo_account(self):
-        accounts = ACCOUNTS_DOC["accounts"]
-        self.assertIsNone(jw.account_for("Visitor", accounts))
-        self.assertIsNone(jw.account_for("", accounts))
-        self.assertEqual(jw.account_for("Customer", accounts)["email"], "customer@example.com")
-        self.assertEqual(jw.account_for("Shop Owner", accounts)["email"], "owner@example.com")
-        self.assertEqual(jw.account_for("shop_owner", accounts)["role_key"], "shop_owner")
-        self.assertIsNone(jw.account_for("Somebody Else", accounts))
-
-    def test_the_way_between_two_pages_is_found_from_the_links_the_pages_have(self):
-        graph = {"a.html": {"b.html"}, "b.html": {"c.html"}, "c.html": {"d.html"}, "d.html": set()}
-        self.assertEqual(jw._way(graph, "a.html", "d.html"), "b.html")
-        self.assertEqual(jw._way(graph, "a.html", "b.html"), "b.html")
-        self.assertEqual(jw._way(graph, "d.html", "a.html"), "")
-        self.assertEqual(jw.link_graph(self.root, ROWS)["index.html"], {"phones.html", "cart.html", "login.html"})
+    def test_the_app_is_on_a_page_when_its_route_says_so_with_a_value_for_every_parameter(self):
+        self.assertTrue(jw.at_page("/phones/12", "/phones/:id"))
+        self.assertTrue(jw.at_page("/phones", "/phones"))
+        self.assertTrue(jw.at_page("/", "/"))
+        self.assertFalse(jw.at_page("/phones", "/phones/:id"))
+        self.assertFalse(jw.at_page("/cart", "/phones"))
+        self.assertFalse(jw.at_page("/phones", ""))
 
     def test_what_can_be_used_is_listed_without_signing_out_or_other_websites(self):
         elements = [{"i": 0, "tag": "a", "text": "Log out", "signOut": True}, {"i": 1, "tag": "a", "text": "Docs", "external": True},
@@ -300,7 +298,6 @@ class TimeLimitTests(Harness):
             jw._within(5, mock.Mock(side_effect=ValueError("no JSON")))
 
     def test_a_call_that_never_answers_is_given_up_on_after_its_time(self):
-        import threading
         release = threading.Event()
         self.addCleanup(release.set)
         with self.assertRaisesRegex(TimeoutError, "did not answer within"):
@@ -308,7 +305,7 @@ class TimeLimitTests(Harness):
 
     def test_the_call_runs_with_the_stop_of_the_run_it_belongs_to(self):
         from server_modules import llm
-        stop = __import__("threading").Event()
+        stop = threading.Event()
         llm.bind_stop(stop)
         self.addCleanup(llm.bind_stop, None)
         self.assertFalse(jw._within(5, llm._stopped))                # noqa: SLF001
@@ -316,7 +313,6 @@ class TimeLimitTests(Harness):
         self.assertTrue(jw._within(5, llm._stopped))                 # noqa: SLF001 - the run's Stop reaches the call
 
     def test_a_call_given_up_on_is_stopped_too_so_it_does_not_go_on_asking_the_model_service(self):
-        import threading
         from server_modules import llm
         seen = {}
         started, finished = threading.Event(), threading.Event()
@@ -332,7 +328,6 @@ class TimeLimitTests(Harness):
         self.assertTrue(seen["stopped"])
 
     def test_a_step_the_model_does_not_answer_in_time_is_shown_as_it_is_and_the_walk_goes_on(self):
-        import threading
         release = threading.Event()
         self.addCleanup(release.set)
         walk = self.walk_with()
@@ -348,7 +343,6 @@ class TimeLimitTests(Harness):
         self.assertTrue(second["reached"])
 
     def test_pictures_the_model_does_not_answer_about_in_time_leave_the_journey_walked_and_reported(self):
-        import threading
         release = threading.Event()
         self.addCleanup(release.set)
         self.journeys_file([{"id": "UJ-001", "workflow_name": "Finding", "who": "Visitor",
@@ -361,7 +355,7 @@ class TimeLimitTests(Harness):
 
         with mock.patch.object(jw, "JUDGE_SECONDS", 0.2), mock.patch("server_modules.llm.complete_json", side_effect=complete_json), \
                 mock.patch.object(jw, "Driver", lambda *a, **k: FakeBrowser(copy_of(SHOP))):
-            result = jw.run("p", self.session(), ROWS, ACCOUNTS_DOC, fix=False)
+            result = jw.run("p", self.session(), ROWS, fix=False)
         report = json.loads((self.root / "journeys" / "report.json").read_text(encoding="utf-8"))
         self.assertEqual(result["status"], "done")
         self.assertIn("did not answer within", report["results"][0]["judge_error"])
@@ -369,7 +363,7 @@ class TimeLimitTests(Harness):
 
     def test_the_stop_of_the_run_reaches_the_model_calls_made_on_the_lanes(self):
         from server_modules import llm
-        stop = __import__("threading").Event()
+        stop = threading.Event()
         llm.bind_stop(stop)
         self.addCleanup(llm.bind_stop, None)
         self.journeys_file([{"id": "UJ-001", "workflow_name": "Finding", "who": "Visitor",
@@ -382,7 +376,7 @@ class TimeLimitTests(Harness):
 
         with mock.patch("server_modules.llm.complete_json", side_effect=complete_json), \
                 mock.patch.object(jw, "Driver", lambda *a, **k: FakeBrowser(copy_of(SHOP))):
-            jw.run("p", self.session(), ROWS, ACCOUNTS_DOC, fix=False)
+            jw.run("p", self.session(), ROWS, fix=False)
         self.assertEqual({label for label, _ in seen}, {"journey step", "journey review"})
         self.assertTrue(all(event is not None and not event.is_set() for _, event in seen), seen)
         stop.set()                                                     # the run's Stop is what each call's own stop follows
@@ -412,43 +406,25 @@ class WalkTests(Harness):
         with self.planner():
             walked = walk.walk(journey, self.root / "journeys" / "UJ-001")
         self.assertEqual([s["reached"] for s in walked["steps"]], [True, True, True])
-        self.assertEqual(walked["steps"][2]["visited"], ["phones.html", "phones-id.html"])
+        self.assertEqual(walked["steps"][2]["visited"], ["/phones", "/phones/12"])
         self.assertEqual([c for c in walk.driver.calls if c[0] == "click"], [("click", "Phone Catalogue"), ("click", "Apple iPhone 15")])
         self.assertEqual(walked["steps"][1]["actions"], ['clicked "Phone Catalogue"'])
         for s in walked["steps"]:
             self.assertTrue((self.root / "journeys" / "UJ-001" / s["shots"][-1]).is_file())
 
-    def test_someone_who_never_signs_in_starts_at_the_home_page_and_not_on_a_blank_tab(self):
+    def test_a_journey_starts_at_the_home_page_and_not_on_a_blank_tab_whoever_walks_it(self):
         walk = self.walk_with()
-        journey = self.journey("Visitor", step("UJ-001-S01", "Visitor opens the Phone Catalogue", "/phones"))
+        journey = self.journey("Customer", step("UJ-001-S01", "Customer opens the Phone Catalogue", "/phones"))
         with self.planner():
             walked = walk.walk(journey, self.root / "journeys" / "UJ-001")
-        self.assertEqual(walk.driver.calls[0], ("goto", "index.html"))
+        self.assertEqual(walk.driver.calls[0], ("goto", "/"))
         self.assertTrue(walked["steps"][0]["reached"])
-        self.assertEqual(walked["steps"][0]["visited"], ["index.html", "phones.html"])
-
-    def test_a_person_who_signs_in_does_it_with_the_pages_own_demo_login_button(self):
-        walk = self.walk_with()
-        journey = self.journey("Customer", step("UJ-001-S01", "Customer opens the Wishlist", "/wishlist"))
-        with self.planner():
-            walked = walk.walk(journey, self.root / "journeys" / "UJ-001")
-        self.assertTrue(walked["setup"]["ok"])
-        self.assertEqual(walked["account"], "customer@example.com")
-        self.assertEqual(walk.driver.user, "customer@example.com")
-        self.assertTrue(walked["steps"][0]["reached"])
-        self.assertTrue((self.root / "journeys" / "UJ-001" / "S00.jpg").is_file())
-
-    def test_a_signin_page_without_the_button_for_that_role_is_said_not_hidden(self):
-        pages = {**SHOP, "login.html": {"title": "Log In", "elements": []}}
-        walk = self.walk_with(pages)
-        journey = self.journey("Customer", step("UJ-001-S01", "Customer opens the Wishlist", "/wishlist"))
-        with self.planner():
-            walked = walk.walk(journey, self.root / "journeys" / "UJ-001")
-        self.assertFalse(walked["setup"]["ok"])
-        self.assertIn("no way to continue as Customer", walked["setup"]["note"])
+        self.assertEqual(walked["steps"][0]["visited"], ["/", "/phones"])
+        self.assertIsNone(walked["setup"])
+        self.assertNotIn("account", walked)                       # there is no sign-in to make
 
     def test_a_page_with_no_link_to_the_next_screen_is_a_step_that_could_not_be_done_and_the_walk_goes_on(self):
-        pages = {**SHOP, "index.html": {"title": "Home", "elements": [link("Log In", "login.html")]}}
+        pages = {**SHOP, "/": {"title": "Home", "elements": [link("Wishlist", "/wishlist")]}}
         walk = self.walk_with(pages)
         journey = self.journey("Visitor", step("UJ-001-S01", "Visitor opens the Cart", "/cart"),
                                step("UJ-001-S02", "Visitor opens Home", "/"))
@@ -456,31 +432,17 @@ class WalkTests(Harness):
             walked = walk.walk(journey, self.root / "journeys" / "UJ-001")
         first, second = walked["steps"]
         self.assertFalse(first["reached"])
-        self.assertIn("no link on index.html leads towards cart.html", first["notes"][0])
+        self.assertIn("no link on / leads towards /cart", first["notes"][0])
         self.assertTrue((self.root / "journeys" / "UJ-001" / first["shots"][-1]).is_file())      # a picture even of that
         self.assertTrue(second["reached"])
 
-    def test_when_there_is_no_direct_link_the_way_through_another_page_is_clicked_a_hop_at_a_time(self):
-        pages = {**SHOP, "index.html": {"title": "Home", "elements": [link("Phone Catalogue", "phones.html")]},
-                 "phones.html": {"title": "Phone Catalogue", "elements": [link("Cart", "cart.html")]}}
-        (self.root / "phones.html").write_text("<a href='cart.html'>c</a>", encoding="utf-8")
-        (self.root / "index.html").write_text("<a href='phones.html'>p</a>", encoding="utf-8")
-        walk = self.walk_with(pages)
-        with self.planner():
-            walked = walk.walk(self.journey("Visitor", step("UJ-001-S01", "Visitor opens the Cart", "/cart")), self.root / "journeys" / "UJ-001")
-        self.assertTrue(walked["steps"][0]["reached"])
-        self.assertEqual(walked["steps"][0]["visited"], ["index.html", "phones.html", "cart.html"])
-
     def test_a_link_inside_a_menu_that_is_shut_is_reached_by_opening_the_menu_first_like_a_person_does(self):
-        # "Your account" holds Log In, Sign Up and My Orders: they are there, but a click on them lands on nothing until it is open.
+        # "Your account" holds My Orders: it is there, but a click on it lands on nothing until the menu is open.
         menu = [{"tag": "summary", "text": "Your account", "area": "nav"},
-                {"tag": "a", "text": "My Orders", "file": "orders.html", "area": "nav", "opener": 0}]
-        pages = {**SHOP, "index.html": {"title": "Home", "elements": menu}, "orders.html": {"title": "My Orders", "elements": []}}
-        (self.root / "orders.html").write_text("<h1>o</h1>", encoding="utf-8")
-        (self.root / "index.html").write_text("<a href='orders.html'>My Orders</a>", encoding="utf-8")
-        rows = ROWS + [{"route": "/account/orders", "file": "orders.html", "name": "My Orders"}]
-        walk = jw.Walk("p", "m", self.root, rows, ACCOUNTS_DOC, jw.link_graph(self.root, rows), FakeBrowser(copy_of(pages)),
-                       streaming=False, cancelled=lambda: False)
+                {"tag": "a", "text": "My Orders", "route": "/account/orders", "area": "nav", "opener": 0}]
+        pages = {**SHOP, "/": {"title": "Home", "elements": menu}, "/account/orders": {"title": "My Orders", "elements": []}}
+        rows = ROWS + [{"route": "/account/orders", "file": "app/src/App.tsx", "name": "My Orders"}]
+        walk = self.walk_with(pages, rows)
         with self.planner():
             walked = walk.walk(self.journey("Visitor", step("UJ-001-S01", "Visitor opens My Orders", "/account/orders")),
                                self.root / "journeys" / "UJ-001")
@@ -489,21 +451,26 @@ class WalkTests(Harness):
         self.assertEqual(done["actions"], ['opened "Your account"', 'clicked "My Orders"'])
 
     def test_a_link_that_shows_before_one_in_a_menu_is_the_one_used(self):
-        elements = [{"i": 0, "tag": "a", "text": "Cart", "file": "cart.html", "area": "nav", "menu": 3},
-                    {"i": 1, "tag": "a", "text": "Cart", "file": "cart.html", "area": "footer", "menu": -1}]
-        self.assertEqual(jw.Walk._best_link(elements, "cart.html", {"step": "opens the cart"})["i"], 1)
+        elements = [{"i": 0, "tag": "a", "text": "Cart", "route": "/cart", "area": "nav", "menu": 3},
+                    {"i": 1, "tag": "a", "text": "Cart", "route": "/cart", "area": "footer", "menu": -1}]
+        self.assertEqual(jw.Walk._best_link(elements, "/cart", {"step": "opens the cart"})["i"], 1)
+
+    def test_a_link_to_a_page_with_a_parameter_is_found_by_the_value_it_has(self):
+        elements = [{"i": 0, "tag": "a", "text": "Apple iPhone 15", "route": "/phones/12", "area": "main", "menu": -1}]
+        self.assertEqual(jw.Walk._best_link(elements, "/phones/:id", {"step": "opens a phone"})["i"], 0)
+        self.assertIsNone(jw.Walk._best_link(elements, "/cart", {"step": "opens the cart"}))
 
     def test_what_is_inside_a_shut_menu_is_not_offered_to_the_planner_until_the_menu_is_open(self):
-        inside = {"i": 2, "tag": "a", "text": "Sign Up", "file": "register.html", "menu": 1}
+        inside = {"i": 2, "tag": "a", "text": "Sign Up", "route": "/register", "menu": 1}
         elements = [{"i": 1, "tag": "summary", "text": "Your account", "menu": -1}, inside]
         self.assertEqual([e["i"] for e in jw.describe(elements)], [1])
         self.assertEqual([e["i"] for e in jw.describe(elements, include_menus=True)], [1, 2])
 
     def test_a_search_that_left_nothing_to_open_is_cleared_the_way_a_person_would_and_the_page_tried_again(self):
-        pages = {**SHOP, "phones.html": {"title": "Phone Catalogue", "elements": [
-            link("Home", "index.html"),
-            {"tag": "a", "text": "Clear search and filters", "file": "phones.html", "area": "main",
-             "reveals": [link("Home", "index.html"), link("Apple iPhone 15", "phones-id.html", "main")]}]}}
+        pages = {**SHOP, "/phones": {"title": "Phone Catalogue", "elements": [
+            link("Home", "/"),
+            {"tag": "a", "text": "Clear search and filters", "route": "/phones", "area": "main",
+             "reveals": [link("Home", "/"), link("Apple iPhone 15", "/phones/12", "main")]}]}}
         walk = self.walk_with(pages)
         journey = self.journey("Visitor", step("UJ-001-S01", "Visitor opens the Phone Catalogue", "/phones"),
                                step("UJ-001-S02", "Visitor reads a Phone Detail page", "/phones/:id"))
@@ -514,8 +481,8 @@ class WalkTests(Harness):
 
     def test_when_no_link_leads_there_the_model_that_can_read_the_screen_is_asked_to_get_there(self):
         # The way is a button the links do not show: only a reader of the screen finds it.
-        pages = {**SHOP, "index.html": {"title": "Home", "elements": [
-            {"tag": "button", "text": "Shop the range", "goes": "phones.html", "area": "main"}]}}
+        pages = {**SHOP, "/": {"title": "Home", "elements": [
+            {"tag": "button", "text": "Shop the range", "goes": "/phones", "area": "main"}]}}
         asked = []
 
         def complete_json(system, user, validator=None, label="", **_):
@@ -533,17 +500,17 @@ class WalkTests(Harness):
         self.assertEqual(len(asked), 1)                          # once for the step, however many ways it was tried
 
     def test_a_model_that_cannot_find_the_way_either_leaves_the_step_not_reached_with_the_reason(self):
-        pages = {**SHOP, "index.html": {"title": "Home", "elements": [link("Log In", "login.html")]}}
+        pages = {**SHOP, "/": {"title": "Home", "elements": [link("Wishlist", "/wishlist")]}}
         walk = self.walk_with(pages)
         with self.planner([]):
             walked = walk.walk(self.journey("Visitor", step("UJ-001-S01", "Visitor opens the Cart", "/cart")), self.root / "journeys" / "UJ-001")
         self.assertFalse(walked["steps"][0]["reached"])
-        self.assertIn("no link on index.html leads towards cart.html", walked["steps"][0]["notes"][0])
+        self.assertIn("no link on / leads towards /cart", walked["steps"][0]["notes"][0])
 
     def test_when_a_press_opens_a_menu_the_model_is_asked_again_with_the_menu_open(self):
         menu = [{"tag": "summary", "text": "Your account", "area": "nav"},
-                {"tag": "a", "text": "Account Details", "file": "account.html", "area": "nav", "opener": 0}]
-        pages = {**SHOP, "phones.html": {"title": "Phone Catalogue", "elements": menu}, "account.html": {"title": "Account", "elements": []}}
+                {"tag": "a", "text": "Account Details", "route": "/account", "area": "nav", "opener": 0}]
+        pages = {**SHOP, "/phones": {"title": "Phone Catalogue", "elements": menu}, "/account": {"title": "Account", "elements": []}}
         seen = []
 
         def complete_json(system, user, validator=None, label="", **_):
@@ -556,23 +523,22 @@ class WalkTests(Harness):
             walked = walk.walk(journey, self.root / "journeys" / "UJ-001")
         self.assertEqual(len(seen), 2)
         self.assertNotIn('link "Account Details"', seen[0])           # shut: not offered the first time
-        self.assertIn('link "Account Details" to account.html', seen[1])
+        self.assertIn('link "Account Details" to /account', seen[1])
         self.assertEqual(walked["steps"][0]["actions"][-2:], ['clicked "Your account"', 'clicked "Account Details"'])
-        self.assertEqual(walk.driver.file, "account.html")
+        self.assertEqual(walk.driver.route, "/account")
 
     ORDER_PAGES = {
-        "index.html": {"title": "Home", "elements": [link("Orders", "orders.html"), link("Cart", "cart.html")]},
-        "orders.html": {"title": "Order", "elements": [
-            {"tag": "button", "text": "Cancel order IM-1052", "opens_dialog": True, "area": "main"}, link("Home", "index.html")],
-                        "dialog": [{"tag": "button", "text": "Cancel order", "closes_dialog": True},
-                                   {"tag": "button", "text": "Keep the order", "closes_dialog": True}]},
-        "cart.html": {"title": "Cart", "elements": [link("Home", "index.html")]},
+        "/": {"title": "Home", "elements": [link("Orders", "/orders"), link("Cart", "/cart")]},
+        "/orders": {"title": "Order", "elements": [
+            {"tag": "button", "text": "Cancel order IM-1052", "opens_dialog": True, "area": "main"}, link("Home", "/")],
+                    "dialog": [{"tag": "button", "text": "Cancel order", "closes_dialog": True},
+                               {"tag": "button", "text": "Keep the order", "closes_dialog": True}]},
+        "/cart": {"title": "Cart", "elements": [link("Home", "/")]},
     }
 
     def test_a_dialog_a_press_opened_is_confirmed_on_the_models_next_turn(self):
         # "taps Cancel order and confirms": the confirm button is in the dialog, which is only there once the first press was made.
-        (self.root / "orders.html").write_text("<a href='index.html'>Home</a>", encoding="utf-8")
-        rows = ROWS + [{"route": "/orders", "file": "orders.html", "name": "Order"}]
+        rows = ROWS + [{"route": "/orders", "file": "app/src/App.tsx", "name": "Order"}]
         turns = []
 
         def complete_json(system, user, validator=None, label="", **_):
@@ -580,8 +546,7 @@ class WalkTests(Harness):
             click = 0 if len(turns) == 1 else 2             # the opener, then the dialog's own "Cancel order"
             return validator({"actions": [{"do": "click", "element": click}] if len(turns) <= 2 else []})
 
-        walk = jw.Walk("p", "m", self.root, rows, ACCOUNTS_DOC, jw.link_graph(self.root, rows), FakeBrowser(copy_of(self.ORDER_PAGES)),
-                       streaming=False, cancelled=lambda: False)
+        walk = self.walk_with(copy_of(self.ORDER_PAGES), rows)
         journey = self.journey("Visitor", step("UJ-001-S01", "Visitor taps Cancel order and confirms", "/orders"))
         with mock.patch("server_modules.llm.complete_json", side_effect=complete_json):
             walked = walk.walk(journey, self.root / "journeys" / "UJ-001")
@@ -592,13 +557,11 @@ class WalkTests(Harness):
         self.assertNotIn("(dialog)", turns[0])
 
     def test_a_dialog_left_open_is_closed_with_escape_before_the_next_step_so_it_does_not_cover_that_one(self):
-        (self.root / "orders.html").write_text("<a href='index.html'>Home</a><a href='cart.html'>c</a>", encoding="utf-8")
         pages = copy_of(self.ORDER_PAGES)
-        pages["orders.html"]["elements"].append(link("Cart", "cart.html"))
-        rows = ROWS + [{"route": "/orders", "file": "orders.html", "name": "Order"}]
+        pages["/orders"]["elements"].append(link("Cart", "/cart"))
+        rows = ROWS + [{"route": "/orders", "file": "app/src/App.tsx", "name": "Order"}]
         answers = iter([[{"do": "click", "element": 0}], [], []])
-        walk = jw.Walk("p", "m", self.root, rows, ACCOUNTS_DOC, jw.link_graph(self.root, rows), FakeBrowser(pages),
-                       streaming=False, cancelled=lambda: False)
+        walk = self.walk_with(pages, rows)
         journey = self.journey("Visitor", step("UJ-001-S01", "Visitor taps Cancel order", "/orders"),
                                step("UJ-001-S02", "Visitor opens the Cart", "/cart"))
         with mock.patch("server_modules.llm.complete_json",
@@ -607,13 +570,13 @@ class WalkTests(Harness):
         self.assertTrue(walked["steps"][1]["reached"], walked["steps"][1]["notes"])
         self.assertIn(("key", "Escape"), walk.driver.calls)
 
-    def test_a_link_that_the_graph_says_is_there_but_does_nothing_is_a_failure(self):
-        pages = {**SHOP, "index.html": {"title": "Home", "elements": [{"tag": "a", "text": "Cart", "file": "cart.html", "goes": "index.html"}]}}
+    def test_a_link_that_is_there_but_does_nothing_is_a_failure(self):
+        pages = {**SHOP, "/": {"title": "Home", "elements": [{"tag": "a", "text": "Cart", "route": "/cart", "goes": "/"}]}}
         walk = self.walk_with(pages)
         with self.planner():
             walked = walk.walk(self.journey("Visitor", step("UJ-001-S01", "Visitor opens the Cart", "/cart")), self.root / "journeys" / "UJ-001")
         self.assertFalse(walked["steps"][0]["reached"])
-        self.assertIn("did not open cart.html", walked["steps"][0]["notes"][0])
+        self.assertIn("did not open /cart", walked["steps"][0]["notes"][0])
 
     def test_what_a_step_says_to_do_is_done_with_what_the_model_picked_and_the_page_it_ends_on_is_kept(self):
         walk = self.walk_with()
@@ -649,10 +612,12 @@ class WalkTests(Harness):
             walk.walk(journey, self.root / "journeys" / "UJ-001")
         self.assertIn("Visitor types a model into search", seen[0])
         self.assertIn('search field "Search model"', seen[0])
-        self.assertIn('link "Home" to index.html', seen[0])
-        self.assertIn("Nobody is signed in.", seen[0])
+        self.assertIn('link "Home" to /', seen[0])
+        self.assertIn("route `/phones`", seen[0])
         self.assertIn("What the screen says, from the top of it:", seen[0])
         self.assertIn("Prices from Rs 30,000", seen[0])          # words that are really on the page, to search and filter with
+        for gone in ("signed in", "Signed in", "Nobody is signed in", "password"):
+            self.assertNotIn(gone, seen[0])
 
     def test_a_model_that_cannot_plan_a_step_costs_that_step_its_actions_and_nothing_else(self):
         walk = self.walk_with()
@@ -708,10 +673,10 @@ class JudgingTests(Harness):
         steps = []
         for n, (ok, note, err) in enumerate(zip(reached, notes, errors), 1):
             (folder / f"S0{n}.jpg").write_bytes(b"jpg%d" % n)
-            steps.append({"id": f"UJ-001-S0{n}", "step": f"step {n}", "route": "/", "expected": "index.html", "reached": ok,
+            steps.append({"id": f"UJ-001-S0{n}", "step": f"step {n}", "route": "/", "expected": "/", "reached": ok,
                           "actions": [] if not ok else ["clicked a"], "notes": list(note), "visited": [], "shots": [f"S0{n}.jpg"],
                           "page": "Home", "errors": list(err)})
-        return {"id": "UJ-001", "name": "Finding", "who": "Visitor", "account": "", "setup": None, "steps": steps}
+        return {"id": "UJ-001", "name": "Finding", "who": "Visitor", "setup": None, "steps": steps}
 
     JOURNEY = {"id": "UJ-001", "name": "Finding", "who": "Visitor", "steps": []}
 
@@ -745,7 +710,7 @@ class JudgingTests(Harness):
                          [{"severity": "high", "viewport": "desktop", "where": "the menu", "problem": "cut off", "fix": "wrap it"}])
 
     def test_everything_worth_fixing_in_a_journey_is_collected_from_the_walk_and_from_the_pictures(self):
-        walked = self.walked(reached=(False, True), notes=(("no link on index.html leads towards cart.html",), ()),
+        walked = self.walked(reached=(False, True), notes=(("no link on / leads towards /cart",), ()),
                              errors=((), ("TypeError: x",)))
         verdict = jw._clean_judgment(judged(["UJ-001-S01", "UJ-001-S02"], ok=False, completes=False,
                                             defects={"UJ-001-S02": [{"severity": "low", "problem": "tiny"},
@@ -753,7 +718,7 @@ class JudgingTests(Harness):
                                      ["UJ-001-S01", "UJ-001-S02"])
         found = jw.problems(self.JOURNEY, walked, verdict)
         text = " | ".join(f"{p['step']}:{p['severity']}:{p['problem']}" for p in found)
-        self.assertIn("UJ-001-S01:high:no link on index.html leads towards cart", text)
+        self.assertIn("UJ-001-S01:high:no link on / leads towards /cart", text)
         self.assertIn("UJ-001-S02:medium:the page reported an error in the browser: TypeError: x", text)
         # A prototype has no server: whether a screen shows the step's exact result is said, never sent to be fixed.
         self.assertIn("UJ-001-S02:low:the screenshot does not show the step done", text)
@@ -761,9 +726,11 @@ class JudgingTests(Harness):
         self.assertIn("UJ-001-S02:low:tiny", text)
         self.assertEqual(len(jw._worth_fixing(found)), len(found) - 2)               # the low ones are reported, never fixed
 
-    def test_a_failed_sign_in_is_a_problem_of_its_own(self):
-        walked = {**self.walked(), "setup": {"ok": False, "note": "signing in did not take", "shot": ""}}
-        self.assertEqual(jw.problems(self.JOURNEY, walked, None)[0]["step"], "sign-in")
+    def test_a_home_page_that_would_not_open_is_a_problem_of_its_own(self):
+        walked = {**self.walked(), "setup": {"ok": False, "note": "the browser could not open /", "shot": ""}}
+        first = jw.problems(self.JOURNEY, walked, None)[0]
+        self.assertEqual(first["step"], "start")
+        self.assertNotIn("sign", first["where"].lower())
 
     def test_the_chat_shows_each_step_with_its_picture_and_what_was_found(self):
         walked = self.walked()
@@ -813,7 +780,7 @@ class RunTests(Harness):
         return mock.patch("server_modules.llm.complete_json", side_effect=complete_json)
 
     def run_test(self, session=None, **kwargs):
-        return jw.run("p", session or self.session(), ROWS, ACCOUNTS_DOC, **kwargs)
+        return jw.run("p", session or self.session(), ROWS, **kwargs)
 
     def test_a_computer_with_no_browser_skips_it_with_a_line_saying_why(self):
         with mock.patch.object(screenshot, "working_browser", return_value=None):
@@ -851,22 +818,21 @@ class RunTests(Harness):
         self.assertEqual(self.progress[-1], 100)
 
     def test_a_journey_that_cannot_be_clicked_through_is_found_without_any_model_looking(self):
-        self.pages["index.html"] = {"title": "Home", "elements": [link("Log In", "login.html")]}
+        self.pages["/"] = {"title": "Home", "elements": [link("Cart", "/cart"), link("Wishlist", "/wishlist")]}
         with self.models(), mock.patch("server_modules.vision.supports", return_value=False):
             result = self.run_test(fix=False)
         self.assertEqual(result["pictures_looked_at"], False)
         self.assertIn("cannot look at pictures", self.messages[0]["text"])
         self.assertEqual([a for a in self.asked if a[0] == "journey review"], [])
-        self.assertTrue(any(p["problem"].startswith("no link on index.html") for p in result["remaining"]))
+        self.assertTrue(any(p["problem"].startswith("no link on / leads towards /phones") for p in result["remaining"]))
         self.assertEqual(result["completing"], 1)        # the journey that starts from the wishlist still goes through
 
-    def test_the_problems_that_matter_are_given_to_the_agent_and_the_journeys_that_had_them_are_walked_again(self):
-        self.pages["index.html"] = {"title": "Home", "elements": [link("Log In", "login.html")]}
-        fixed = []
+    def test_the_problems_that_matter_are_given_to_the_agent_the_app_is_built_again_and_the_journeys_that_had_them_are_walked_again(self):
+        self.pages["/"] = {"title": "Home", "elements": [link("Cart", "/cart"), link("Wishlist", "/wishlist")]}
 
         def fix(root):
-            fixed.append(1)
-            self.pages["index.html"] = SHOP["index.html"]
+            change_the_app(root)
+            self.pages["/"] = SHOP["/"]
 
         session = self.session(fix=fix)
         walked_before = len(self.browsers)
@@ -875,13 +841,24 @@ class RunTests(Harness):
         self.assertEqual(len(session.requests), 1)
         self.assertIn("`UJ-001`", session.requests[0])
         self.assertNotIn("`UJ-002`", session.requests[0])
+        self.assertIn(".agentforge/prototype/app", session.requests[0])
+        self.assertEqual(self.rebuilt, 1)
         self.assertEqual(result["fixed_journeys"], ["UJ-001"])
         self.assertEqual(result["remaining"], [])
         self.assertIn("1 journey changed to fix them", self.messages[-1]["text"])
         self.assertGreater(len(self.browsers), walked_before + 1)             # a browser again for the second walk
 
+    def test_a_fix_that_changed_nothing_is_not_built_or_walked_again(self):
+        self.pages["/"] = {"title": "Home", "elements": [link("Cart", "/cart"), link("Wishlist", "/wishlist")]}
+        session = self.session(fix=lambda root: None)
+        with self.models():
+            result = self.run_test(session)
+        self.assertEqual(self.rebuilt, 0)
+        self.assertEqual(result["fixed_journeys"], [])
+        self.assertTrue(result["remaining"])
+
     def test_a_review_only_changes_nothing_and_says_so(self):
-        self.pages["index.html"] = {"title": "Home", "elements": [link("Log In", "login.html")]}
+        self.pages["/"] = {"title": "Home", "elements": [link("Cart", "/cart"), link("Wishlist", "/wishlist")]}
         session = self.session()
         with self.models():
             result = self.run_test(session, fix=False)
@@ -890,7 +867,7 @@ class RunTests(Harness):
         self.assertEqual(result["fixed_journeys"], [])
 
     def test_a_fix_that_stops_partway_does_not_end_the_test(self):
-        self.pages["index.html"] = {"title": "Home", "elements": [link("Log In", "login.html")]}
+        self.pages["/"] = {"title": "Home", "elements": [link("Cart", "/cart"), link("Wishlist", "/wishlist")]}
 
         def fix(root):
             raise OSError("the model service dropped")
@@ -935,7 +912,30 @@ class RunTests(Harness):
         self.assertEqual(self.phases[-1], (jw.PHASE, "failed"))
 
 
-# --- the real browser, over a small real site -----------------------------------------------------------------------
+# --- the real browser, over a small real hash-routed app ---------------------------------------------------------------
+
+APP = """<html><head><title>App</title></head><body><div id="app"></div><script>
+var pages = {
+  '/': '<h1>First</h1><a href="#/two">Go to two</a><input id="q" placeholder="Search"><select><option>A</option><option>B</option></select><a href="https://example.org/">Outside</a>',
+  '/two': '<h1>Second</h1><a href="#/">Back</a>',
+  '/menu': '<h1>Menu</h1><details class="acct"><summary>Your account</summary><div><a href="#/two">My Orders</a></div></details><p>Phones from Rs 30,000</p>',
+  '/tall': '<div style="height:3200px"></div><a href="#/two">Far below</a><div style="height:1400px"></div>',
+  '/swap': '<button onclick="document.getElementById(\\'a\\').hidden=true;document.getElementById(\\'c\\').hidden=false">swap</button><a id="a" href="#/">A</a><a id="c" href="#/two" hidden>C</a>',
+  '/covered': '<a href="#/two" style="position:absolute;left:40px;top:40px;width:120px;height:30px">Under</a><div class="shield" style="position:fixed;left:0;top:0;width:100%;height:200px;background:#fff"></div>',
+  '/modal': '<h1>Order</h1><dialog id="d"><button>Cancel order</button></dialog>'
+};
+function draw() {
+  var route = location.hash.slice(1) || '/';
+  document.getElementById('app').innerHTML = pages[route] || ('<h1>' + route + '</h1>');
+  document.title = 'App ' + route;
+  if (route === '/two') setTimeout(function () { throw new Error('boom') }, 50);
+  if (route === '/modal') document.getElementById('d').showModal();
+}
+window.addEventListener('hashchange', draw);
+html = document.documentElement; if (location.hash === '#/tall') html.style.scrollBehavior = 'smooth';
+draw();
+</script></body></html>"""
+
 
 @unittest.skipUnless(screenshot.working_browser() and shutil.which("node"), "a browser and Node are needed to drive a real page")
 class RealBrowserTests(unittest.TestCase):
@@ -943,22 +943,17 @@ class RealBrowserTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.site = Path(self.temp.name)
-        (self.site / "index.html").write_text(
-            "<html><head><title>One</title></head><body><h1>First</h1><a href='two.html'>Go to two</a>"
-            "<input id='q' placeholder='Search'><select><option>A</option><option>B</option></select>"
-            "<a href='https://example.org/'>Outside</a></body></html>", encoding="utf-8")
-        (self.site / "two.html").write_text(
-            "<html><head><title>Two</title></head><body><h1>Second</h1><a href='index.html'>Back</a>"
-            "<script>setTimeout(function(){ throw new Error('boom') }, 50)</script></body></html>", encoding="utf-8")
+        self.bundle = self.site / "bundle.html"
+        self.bundle.write_text(APP, encoding="utf-8")
         self.frames: list[dict] = []
 
     def test_a_page_is_opened_its_things_listed_clicked_filled_photographed_and_its_errors_kept(self):
         with Driver(relay=self.frames.append, live=True) as driver:
-            state = driver.goto(self.site / "index.html")
-            self.assertEqual((state["file"], state["title"], state["heading"]), ("index.html", "One", "First"))
+            state = driver.goto(self.bundle, "/")
+            self.assertEqual((state["route"], state["title"], state["heading"]), ("/", "App /", "First"))
             things = driver.elements()
-            self.assertEqual([(e["tag"], e["file"], e["external"]) for e in things if e["tag"] == "a"],
-                             [("a", "two.html", False), ("a", "", True)])
+            self.assertEqual([(e["tag"], e["route"], e["external"]) for e in things if e["tag"] == "a"],
+                             [("a", "/two", False), ("a", "", True)])
             box = next(e for e in things if e["tag"] == "input")
             driver.fill(box["i"], "Samsung")
             self.assertEqual(next(e for e in driver.elements() if e["tag"] == "input")["value"], "Samsung")
@@ -967,82 +962,71 @@ class RealBrowserTests(unittest.TestCase):
             choice = next(e for e in driver.elements() if e["tag"] == "select")
             self.assertEqual(choice["options"], ["A", "B"])
             driver.fill(choice["i"], "B")
-            answer = driver.click(next(e for e in driver.elements() if e["file"] == "two.html")["i"])
-            self.assertEqual((answer["state"]["file"], answer["navigated"]), ("two.html", True))
+            answer = driver.click(next(e for e in driver.elements() if e["route"] == "/two")["i"])
+            self.assertEqual((answer["state"]["route"], answer["navigated"]), ("/two", True))
             picture = driver.screenshot(self.site / "shots" / "two.jpg")
             self.assertGreater(picture.stat().st_size, 500)
             self.assertTrue(any("boom" in e for e in driver.errors()))
             driver.reset()
-            self.assertEqual(driver.goto(self.site / "index.html")["user"], "")
+            self.assertEqual(driver.goto(self.bundle, "/")["route"], "/")
         self.assertTrue(any(f.get("kind") == "frame" and f["frame"].startswith("data:image/jpeg") for f in self.frames))
         pointers = [f for f in self.frames if f.get("kind") == "cursor"]
         self.assertTrue(pointers)
         self.assertTrue(all("box" not in f["cursor"] for f in pointers))     # no rectangle is drawn round what is clicked
 
-    def test_what_is_inside_a_menu_that_is_shut_is_named_and_points_at_the_button_that_opens_it(self):
-        (self.site / "menu.html").write_text(
-            "<html><body><h1>Menu</h1><details class='acct'><summary>Your account</summary><div>"
-            "<a href='two.html'>My Orders</a></div></details><p>Phones from Rs 30,000</p></body></html>", encoding="utf-8")
+    def test_a_route_with_a_parameter_is_opened_with_a_sample_value(self):
         with Driver() as driver:
-            driver.goto(self.site / "menu.html")
+            self.assertEqual(driver.goto(self.bundle, "/orders/[id]")["route"], "/orders/1")
+            self.assertEqual(driver.goto(self.bundle, "/orders/:id/edit")["route"], "/orders/1/edit")
+
+    def test_what_is_inside_a_menu_that_is_shut_is_named_and_points_at_the_button_that_opens_it(self):
+        with Driver() as driver:
+            driver.goto(self.bundle, "/menu")
             things = driver.elements()
             button = next(e for e in things if e["tag"] == "summary")
-            inside = next(e for e in things if e["file"] == "two.html")
+            inside = next(e for e in things if e["route"] == "/two")
             self.assertEqual((inside["text"], inside["menu"]), ("My Orders", button["i"]))      # named, though it is shut
             self.assertEqual(button["menu"], -1)
             driver.click(button["i"])
-            self.assertEqual(next(e for e in driver.elements() if e["file"] == "two.html")["menu"], -1)
+            self.assertEqual(next(e for e in driver.elements() if e["route"] == "/two")["menu"], -1)
             self.assertIn("Phones from Rs 30,000", driver.text())
 
     def test_a_page_that_scrolls_smoothly_is_clicked_where_the_link_ends_up_not_where_it_was(self):
-        (self.site / "tall.html").write_text(
-            "<html style='scroll-behavior:smooth'><body><div style='height:3200px'></div><a href='two.html'>Far below</a>"
-            "<div style='height:1400px'></div></body></html>", encoding="utf-8")
         with Driver() as driver:
-            driver.goto(self.site / "tall.html")
-            link = next(e for e in driver.elements() if e["file"] == "two.html")
+            driver.goto(self.bundle, "/tall")
+            link = next(e for e in driver.elements() if e["route"] == "/two")
             answer = driver.click(link["i"])
-            self.assertEqual((answer["state"]["file"], answer["navigated"]), ("two.html", True))
+            self.assertEqual((answer["state"]["route"], answer["navigated"]), ("/two", True))
 
     def test_numbers_of_an_earlier_look_never_find_an_element_that_is_hidden_now(self):
-        (self.site / "swap.html").write_text(
-            "<html><body><button onclick=\"document.getElementById('a').hidden=true;document.getElementById('c').hidden=false\">swap</button>"
-            "<a id='a' href='index.html'>A</a><a id='c' href='two.html' hidden>C</a></body></html>", encoding="utf-8")
         with Driver() as driver:
-            driver.goto(self.site / "swap.html")
+            driver.goto(self.bundle, "/swap")
             first = driver.elements()
-            self.assertEqual([e["file"] for e in first if e["tag"] == "a"], ["index.html"])
+            self.assertEqual([e["route"] for e in first if e["tag"] == "a"], ["/"])
             driver.click(first[0]["i"])
             later = driver.elements()
             shown = next(e for e in later if e["tag"] == "a")
-            self.assertEqual(shown["file"], "two.html")
+            self.assertEqual(shown["route"], "/two")
             self.assertEqual(shown["i"], first[1]["i"])             # it was given the number the hidden one had
-            self.assertEqual(driver.click(shown["i"])["state"]["file"], "two.html")
+            self.assertEqual(driver.click(shown["i"])["state"]["route"], "/two")
 
     def test_a_link_with_something_laid_over_all_of_it_says_what_covers_it(self):
-        (self.site / "covered.html").write_text(
-            "<html><body><a href='two.html' style='position:absolute;left:40px;top:40px;width:120px;height:30px'>Under</a>"
-            "<div class='shield' style='position:fixed;left:0;top:0;width:100%;height:200px;background:#fff'></div></body></html>",
-            encoding="utf-8")
         with Driver() as driver:
-            driver.goto(self.site / "covered.html")
-            link = next(e for e in driver.elements() if e["file"] == "two.html")
+            driver.goto(self.bundle, "/covered")
+            link = next(e for e in driver.elements() if e["route"] == "/two")
             with self.assertRaisesRegex(DriverError, r"something else covers it \(div\.shield\)"):
                 driver.click(link["i"])
 
     def test_escape_closes_a_dialog_that_is_open_over_the_page(self):
-        (self.site / "modal.html").write_text(
-            "<html><body><h1>Order</h1><dialog id='d'><button>Cancel order</button></dialog>"
-            "<script>document.getElementById('d').showModal()</script></body></html>", encoding="utf-8")
         with Driver() as driver:
-            driver.goto(self.site / "modal.html")
+            driver.goto(self.bundle, "/modal")
             self.assertEqual([e["area"] for e in driver.elements() if e["tag"] == "button"], ["dialog"])
             driver.key("Escape")
             self.assertEqual([e for e in driver.elements() if e["tag"] == "button"], [])
 
     def test_a_click_on_something_that_is_gone_says_so(self):
         with Driver() as driver:
-            driver.goto(self.site / "index.html")
+            driver.goto(self.bundle, "/")
             with self.assertRaisesRegex(DriverError, "no longer on the page"):
                 driver.click(99)
 
@@ -1052,7 +1036,7 @@ class RealBrowserTests(unittest.TestCase):
 class WiringTests(unittest.TestCase):
     def test_the_prompts_resolve_and_tell_the_model_what_it_is_looking_at(self):
         plan = prompts.load("prototype/journey-plan", journey="Finding", who="Visitor", number=1, total=5, step="opens Home",
-                            page="Home", file="index.html", heading="Find your phone", signed_in=" Nobody is signed in.",
+                            page="Home", route="/", heading="Find your phone",
                             text="Find your phone", elements='[0] link "Cart"', most=8)
         self.assertNotIn("{{", plan)
         self.assertIn('[0] link "Cart"', plan)
@@ -1062,21 +1046,22 @@ class WiringTests(unittest.TestCase):
         self.assertNotIn("{{", review)
         self.assertIn("UJ-001-S01", review)
         self.assertIn('"completes"', review)
-        fix = prompts.load("prototype/journey-fix", defects="### `UJ-001`")
+        fix = prompts.load("prototype/journey-fix", defects="### `UJ-001`", app=".agentforge/prototype/app",
+                           skill=".agentforge/skills/web-artifacts-builder")
         self.assertNotIn("{{", fix)
-        self.assertIn("assets/flow.js", fix)
-        self.assertIn("user-journeys.json", fix)
-        # It is a prototype: the review is generous about what only a server could show, and the fix adds no data behaviour.
-        self.assertIn("clickable prototype", review)
-        self.assertIn("A change made in one screen is not expected to appear on another screen", review)
-        self.assertIn("every phone, order or review may open the same detail page", review)
-        self.assertIn("A dialog that is still open at the end of a step", review)
-        self.assertIn("Do not add storage, a data model", fix)
+        self.assertIn(".agentforge/prototype/app", fix)
+        self.assertIn("replace_text", fix)
+        # It is a prototype: the review is generous about what only a server could show, and nothing here is about accounts or HTML.
+        self.assertIn("with sample data and no server behind it", review)
+        self.assertIn("does not have to show up in another screen", review)
         self.assertIn("press the dialog's own button", plan)
+        for text in (plan, review, fix):
+            for gone in ("flow.js", "assets/app", "demo account", "signed-in", "HTML page", "static pages"):
+                self.assertNotIn(gone, text)
 
     def test_the_prototype_is_clicked_through_after_its_pages_were_looked_at_and_before_it_is_handed_over(self):
         source = (ROOT / "prototype-agent/prototype_agent/prototype.py").read_text(encoding="utf-8")
-        self.assertLess(source.index("visual_review.run(project, session, drawn, drawn_accounts)"), source.index("journey_walk.run(project, session"))
+        self.assertLess(source.index("visual_review.run(project, session, drawn)"), source.index("journey_walk.run(project, session"))
         self.assertLess(source.index("journey_walk.run(project, session"), source.index('"Prototype ready"'))
 
     def test_a_test_can_be_asked_for_on_a_project_that_already_has_a_prototype(self):
@@ -1098,12 +1083,12 @@ class WiringTests(unittest.TestCase):
 
         session = SimpleNamespace(cancelled=False)
         with mock.patch.object(prototype, "exists", return_value=True), mock.patch.object(prototype, "session_for", return_value=session), \
-                mock.patch.object(prototype, "_read_record", return_value={"accounts": []}), \
                 mock.patch.object(prototype, "routes", return_value=ROWS), \
                 mock.patch.object(prototype.journey_walk, "run", return_value={"status": "done", "fixed_journeys": ["UJ-001"]}) as walked, \
                 mock.patch.object(prototype.bus, "prototype_changed") as changed:
             result = prototype.journeys("p", fix=True, model="m")
         self.assertEqual(result["status"], "done")
+        self.assertEqual(walked.call_args.args, ("p", session, ROWS))
         self.assertEqual(walked.call_args.kwargs, {"fix": True, "model": "m", "force": True})
         changed.assert_called_once_with("p")
         self.assertIn("journeys", runs.HANDLERS["review_screens"].__doc__)

@@ -70,7 +70,9 @@ def approved_customization(project: str) -> dict[str, Any]:
     if markdown:
         # The theme doc lives in this app's own prompts/, outside the project
         # workspace a read tool is rooted at — stage a copy inside it.
-        workspace_path, = reference_staging.stage(session.workspace, "design", {"theme.md": markdown})
+        # Inside the record, in a folder of its own: staging replaces the folder it writes to.
+        workspace_path, = reference_staging.stage(session.workspace, f"{config.RECORD_DIR}/design/theme",
+                                                  {"DESIGN.md": markdown})
     return {"design_md_path": path, "design_md": markdown,
             "design_md_workspace_path": workspace_path,
             "customizer_prompt": chosen.get("prompt") or "",

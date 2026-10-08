@@ -24,7 +24,7 @@ def _lines(values: Any) -> str:
     return ", ".join(str(v).strip() for v in (values or []) if str(v).strip())
 
 
-def _routes_text(pages: list[dict]) -> str:
+def routes_text(pages: list[dict]) -> str:
     rows = []
     for page in pages:
         route = str(page.get("route") or "/")
@@ -36,7 +36,7 @@ def _routes_text(pages: list[dict]) -> str:
     return "\n".join(rows)
 
 
-def _journeys_text(doc: dict) -> str:
+def journeys_text(doc: dict) -> str:
     flows = journeys.user_journeys_for(doc)
     return "\n".join(
         f"- {flow['workflow_name']}: " + " → ".join(f"{step['step'][:90]} [{step['route']}]" for step in flow["steps"])
@@ -83,7 +83,7 @@ def generate(project: str, request: str = "", fresh: bool = True) -> dict[str, A
               agent=bus.DESIGNER)
     result = session.run_task(
         prompts.load("wireframe/generate", request=request or document.WIREFRAME_APPROVAL_PROMPT, skill=skill, app=relative,
-                     routes=_routes_text(pages), journeys=_journeys_text(doc),
+                     routes=routes_text(pages), journeys=journeys_text(doc),
                      resume=(f"The app already exists in `{relative}` from a run that stopped: carry on with it instead of "
                              "creating it again, and add what is missing." if carrying_on else "")),
         audit=False, parallel_write_limit=4)

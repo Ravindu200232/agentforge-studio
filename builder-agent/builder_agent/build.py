@@ -72,19 +72,21 @@ def _prototype_context_block(workspace: Path) -> str:
     """Point the builder at the prototype it must read, map and reproduce.
 
     `builder/generate.md` already tells the model to open `routes.json` and
-    read every prototype HTML file and shared asset in full; this only says
-    whether there is a prototype to read at all, rather than pasting its
-    routes or file lists in (the model lists the folder itself).
+    read the prototype app's route table, every page component and its shared
+    code in full; this only says whether there is a prototype to read at all,
+    rather than pasting its routes or file lists in (the model lists the
+    folder itself).
     """
     if not (workspace / ".agentforge" / "prototype" / "routes.json").is_file():
         return ""
     return (
         "\n\n## Mandatory prototype parity inventory\n\n"
-        "There is an approved prototype at `.agentforge/prototype/`. Before planning, "
-        "list it (`list_files`) and read every HTML file and shared asset it contains "
-        "in full. In the plan, map each route to its exact prototype HTML, destination "
+        "There is an approved prototype at `.agentforge/prototype/`: a React app in `app/`. "
+        "Before planning, read its route table (`app/src/App.tsx`), the component of every "
+        "route with the components it imports, and its styling (`app/src/index.css`) in "
+        "full. In the plan, map each route to its exact prototype page component, destination "
         "application files and reused image sources. Before implementing each route, "
-        "reopen that HTML file. The real app must preserve 100% of its approved "
+        "reopen that component. The real app must preserve 100% of its approved "
         "frontend design, exact images, controls, destinations and navigation flow "
         "while connecting real data. Never guess from memory or replace prototype "
         "imagery."

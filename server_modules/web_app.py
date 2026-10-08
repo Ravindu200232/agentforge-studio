@@ -127,6 +127,29 @@ def stale(project: str, kind: str) -> bool:
         return True
 
 
+_PARAM = re.compile(r"\[[^\]]+\]|:[A-Za-z_]\w*")
+
+
+def hash_for(route: str) -> str:
+    """The hash an app is opened at for a page route; a parameter (`/orders/[id]`, `/orders/:id`) becomes a sample value.
+    The studio's `hashFor` (lib/preview-guard.js) does the same."""
+    filled = _PARAM.sub("1", str(route or "/"))
+    return "#" + (filled if filled.startswith("/") else "/" + filled)
+
+
+def route_matches(pattern: str, actual: str) -> bool:
+    """Does the page route `pattern` (which may hold parameters) describe the route `actual` the app is on?"""
+    want = [part for part in str(pattern or "/").split("?")[0].split("/") if part]
+    have = [part for part in str(actual or "/").split("?")[0].split("/") if part]
+    return len(want) == len(have) and all(a == b or _PARAM.fullmatch(a) for a, b in zip(want, have))
+
+
+def route_slug(route: str) -> str:
+    """A file-name-safe name for a page route (`/` is `home`)."""
+    cleaned = re.sub(r"[^a-z0-9]+", "-", str(route or "/").lower()).strip("-")
+    return cleaned or "home"
+
+
 # --- the shared dependency store ----------------------------------------------------------------
 
 def node_exe() -> str:

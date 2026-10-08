@@ -1,16 +1,17 @@
 """The prototype's journeys, clicked through in a real browser, with a picture at every step.
 
 The specification lists the journeys (`.agentforge/srs/user-journeys.json`): who does what, step by step, on which screen. Here
-each one is walked the way a person would walk it, in a browser that is already on the computer (`journey_driver.py`): sign in as
-the demo account whose journey it is, then for every step find the way to the screen the step happens on by clicking the links the
-pages really have, do what the step says there (a model reads what can be pressed or filled and says what to press and fill), and
-take a picture. Nothing about the pages is checked by reading their code: a link that is not there, or a button that does nothing,
-shows up as a step that could not be done.
+each one is walked the way a person would walk it, in a browser that is already on the computer (`journey_driver.py`): it starts
+on the prototype's home page, then for every step finds the way to the screen the step happens on by clicking the links the app
+really has, does what the step says there (a model reads what can be pressed or filled and says what to press and fill), and
+takes a picture. The prototype is one React app, so a screen is a route of it (`bundle.html#/orders`). Nothing about the app is
+checked by reading its code: a link that is not there, or a button that does nothing, shows up as a step that could not be done.
 
 A model that can look at pictures then looks at the pictures of each journey and says, step by step, whether the step is shown done
-and what is visibly wrong on the screen, and whether the journey can be completed at all. What is found is fixed in the prototype's
-files, the journeys that had problems are walked once more, and what is still wrong is reported as it is. The walk is shown live in
-the Studio, the way a build's end-to-end tests are, and everything is in the chat with the pictures.
+and what is visibly wrong on the screen, and whether the journey can be completed at all. What is found is fixed in the prototype
+app's source (which is then built again), the journeys that had problems are walked once more, and what is still wrong is reported
+as it is. The walk is shown live in the Studio, the way a build's end-to-end tests are, and everything is in the chat with the
+pictures.
 
 A model that cannot look at pictures still gets the walk (each step reached or not, the pages' own errors); it just does not get the
 pictures looked at, and the chat says so. A computer with no browser skips all of it, with one line saying why. Neither is an error,
@@ -28,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from ollama_terminal import screenshot
-from server_modules import bus, config, journeys as journey_model, live, llm, prompts, screen_review
+from server_modules import bus, config, journeys as journey_model, live, llm, prompts, screen_review, web_app
 from server_modules.session import RunCancelled
 
 from . import screens
@@ -92,54 +93,21 @@ def load_journeys(record: Path) -> list[dict[str, Any]]:
     return found[:MAX_JOURNEYS]
 
 
-def file_for(route: str, rows: list[dict[str, Any]]) -> str:
-    """The prototype page of a route (`/phones/:id` is `phones-id.html`), or "" when the prototype has none."""
+def page_for(route: str, rows: list[dict[str, Any]]) -> str:
+    """The route of the prototype page a journey step's route is (`/phones/:id` and `/phones/[id]` are one page), or ""."""
     wanted = journey_model._route_key(route)  # noqa: SLF001
     for row in rows:
         if journey_model._route_key(row.get("route")) == wanted:  # noqa: SLF001
-            return str(row.get("file") or "")
+            return str(row.get("route") or "")
+    for row in rows:                                          # the same page with its parameter spelled another way
+        if web_app.route_matches(str(row.get("route") or ""), wanted):
+            return str(row.get("route") or "")
     return ""
 
 
-def account_for(who: str, accounts: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The demo account a journey is walked as, or None for someone who never signs in (a visitor)."""
-    names = {journey_model._norm(part) for part in re.split(r"[,/;&]|\bor\b|\band\b", who or "", flags=re.I)} - {""}  # noqa: SLF001
-    if not names or names <= journey_model._PUBLIC_ROLES:  # noqa: SLF001
-        return None
-    for account in accounts:
-        known = {journey_model._norm(account.get(key)) for key in ("role", "role_key", "display_name")} - {""}  # noqa: SLF001
-        if known & names or {name + "s" for name in known} & names:
-            return account
-    return None
-
-
-def link_graph(root: Path, rows: list[dict[str, Any]]) -> dict[str, set[str]]:
-    """Which prototype pages each page links to, read from the pages, only to choose a way when there is no direct link: the
-    way is then clicked, a hop at a time, so a link that is not really there still shows up as a failure."""
-    files = {str(r.get("file")) for r in rows}
-    graph: dict[str, set[str]] = {}
-    for file in files:
-        try:
-            html = (root / file).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        graph[file] = {m for m in re.findall(r"""href=["']([^"'#?]+)""", html) if m in files and m != file}
-    return graph
-
-
-def _way(graph: dict[str, set[str]], start: str, goal: str) -> str:
-    """The first page on a shortest way from `start` to `goal` through `graph`, or ""."""
-    seen, line = {start}, [(start, "")]
-    while line:
-        page, first = line.pop(0)
-        for nxt in sorted(graph.get(page, ())):
-            if nxt in seen:
-                continue
-            seen.add(nxt)
-            if nxt == goal:
-                return first or nxt
-            line.append((nxt, first or nxt))
-    return ""
+def at_page(current: str, target: str) -> bool:
+    """Is the app on the page `target` names? A page with a parameter in its route is on a concrete value of it."""
+    return bool(target) and web_app.route_matches(target, current)
 
 
 def _words(text: str) -> set[str]:
@@ -159,7 +127,7 @@ def describe(elements: list[dict[str, Any]], allow_sign_out: bool = False, inclu
 def _line(e: dict[str, Any]) -> str:
     name = e.get("label") or e.get("text") or e.get("placeholder") or e.get("name") or ""
     if e.get("tag") == "a":
-        return f'[{e["i"]}] link "{name}"' + (f' to {e["file"]}' if e.get("file") else "") + f' ({e.get("area")})'
+        return f'[{e["i"]}] link "{name}"' + (f' to {e["route"]}' if e.get("route") else "") + f' ({e.get("area")})'
     if e.get("tag") == "select":
         return f'[{e["i"]}] list "{name}" with the choices: {" | ".join(e.get("options") or [])}'
     if e.get("tag") in {"input", "textarea"}:
@@ -201,12 +169,11 @@ def check_plan(data: Any, elements: list[dict[str, Any]]) -> list[dict[str, Any]
 class Walk:
     """One journey, clicked through in one browser."""
 
-    def __init__(self, project: str, model: str, root: Path, rows: list[dict[str, Any]], accounts_doc: dict[str, Any],
-                 graph: dict[str, set[str]], driver: Driver, streaming: bool, cancelled):
+    def __init__(self, project: str, model: str, root: Path, rows: list[dict[str, Any]], driver: Driver, streaming: bool,
+                 cancelled):
         self.project, self.model, self.root, self.rows = project, model, root, rows
-        self.accounts = accounts_doc.get("accounts") or []
-        self.sign_in = file_for(str(accounts_doc.get("sign_in") or ""), rows)
-        self.graph, self.driver, self.streaming, self.cancelled = graph, driver, streaming, cancelled
+        self.bundle = screens.bundle_of(root)
+        self.driver, self.streaming, self.cancelled = driver, streaming, cancelled
         self.at: tuple[dict[str, Any], int] = ({"name": "", "who": "", "steps": []}, 0)      # the journey and step being walked
         self.model_tried = False
 
@@ -222,13 +189,12 @@ class Walk:
         try:
             self.driver.reset()
         except DriverError as exc:      # the browser is gone: every step of this journey says so
-            return {"id": journey["id"], "name": journey["name"], "who": journey["who"], "account": "", "setup": None,
-                    "steps": [{"id": s["id"], "step": s["step"], "route": s["route"], "expected": file_for(s["route"], self.rows),
+            return {"id": journey["id"], "name": journey["name"], "who": journey["who"], "setup": None,
+                    "steps": [{"id": s["id"], "step": s["step"], "route": s["route"], "expected": page_for(s["route"], self.rows),
                                "reached": False, "actions": [], "notes": [str(exc)], "visited": [], "shots": [], "page": "",
                                "errors": []} for s in steps]}
         self.event("journey_start", title=title, role=journey["who"], total=len(steps), index=0)
-        account = account_for(journey["who"], self.accounts)
-        setup = self._sign_in(account, journey, out) if account else self._start(journey, out)
+        setup = self._start(journey, out)
         walked = []
         for number, step in enumerate(steps, 1):
             if self.cancelled():
@@ -239,41 +205,20 @@ class Walk:
         done = all(s["reached"] for s in walked) and (setup is None or setup["ok"])
         self.event("journey_done", title=title, ok=done, index=len(steps), total=len(steps),
                    message="" if done else "a step could not be done")
-        return {"id": journey["id"], "name": journey["name"], "who": journey["who"], "account": (account or {}).get("email", ""),
-                "setup": setup, "steps": walked}
+        return {"id": journey["id"], "name": journey["name"], "who": journey["who"], "setup": setup, "steps": walked}
 
     def _start(self, journey: dict[str, Any], out: Path) -> dict[str, Any] | None:
-        """Someone who never signs in starts where a visitor does: at the prototype's home page, not on a blank tab."""
-        home = file_for("/", self.rows) or (str(self.rows[0].get("file")) if self.rows else "")
+        """A journey starts where a visitor does: at the prototype's home page, not on a blank tab."""
+        home = page_for("/", self.rows) or (str(self.rows[0].get("route")) if self.rows else "")
         try:
             if home:
-                self.driver.goto(self.root / home)
+                self.driver.goto(self.bundle, home)
             return None
         except DriverError as exc:
             return {"ok": False, "note": f"the browser could not open {home}: {exc}", "shot": ""}
 
-    def _sign_in(self, account: dict[str, Any], journey: dict[str, Any], out: Path) -> dict[str, Any]:
-        """Sign in the way a demo person does: the page's own "continue as" button for this role."""
-        result = {"ok": False, "note": "", "shot": ""}
-        try:
-            if not self.sign_in:
-                raise DriverError("the prototype has no sign-in page")
-            self.driver.goto(self.root / self.sign_in)
-            wanted = str(account.get("role_key") or account.get("role") or "")
-            button = next((e for e in self.driver.elements() if str(e.get("loginAs", "")).lower() == wanted.lower()), None)
-            if not button:
-                raise DriverError(f"the sign-in page has no way to continue as {account.get('role')}")
-            state = self.driver.click(button["i"])["state"]
-            result["ok"] = bool(state.get("user")) or state.get("file") != self.sign_in
-            result["note"] = f"signed in as {account.get('role')}" if result["ok"] else "signing in did not take"
-            shot = self.driver.screenshot(out / "S00.jpg")
-            result["shot"] = shot.name
-        except DriverError as exc:
-            result["note"] = str(exc)
-        return result
-
     def _step(self, journey: dict[str, Any], number: int, step: dict[str, Any], out: Path) -> dict[str, Any]:
-        target = file_for(step["route"], self.rows)
+        target = page_for(step["route"], self.rows)
         self.at = (journey, number)
         self.model_tried = False
         notes: list[str] = []
@@ -284,12 +229,12 @@ class Walk:
         try:
             self._close_dialog()
             state = self.driver.state()
-            visited.append(state.get("file", ""))
+            visited.append(state.get("route", ""))
             if not target:
                 notes.append(f"the prototype has no page for the route {step['route']}")
-            elif state.get("file") != target:
+            elif not at_page(state.get("route", ""), target):
                 self._reach(target, step, state, actions, visited, notes)
-            reached = bool(target) and target in visited
+            reached = bool(target) and any(at_page(v, target) for v in visited)
             arrival = self.driver.screenshot(out / f"{sid}-a.jpg").name
             changed = False
             if reached and _DOING.search(step["step"]):
@@ -304,7 +249,7 @@ class Walk:
             now = self.driver.state()
             errors = self.driver.errors()
         except DriverError as exc:
-            reached, errors, now = False, [], {"file": "", "title": ""}
+            reached, errors, now = False, [], {"route": "", "title": ""}
             notes.append(str(exc))
         if target and not reached and not notes:
             notes.append(f"the browser never got to {target}")
@@ -314,17 +259,14 @@ class Walk:
 
     def _reach(self, target: str, step: dict[str, Any], state: dict[str, Any], actions: list[str], visited: list[str],
                notes: list[str]) -> None:
-        """Click the way to `target`: its link on this page, else the page that leads on towards it, a few hops at most."""
+        """Click the way to `target`: its link on this page, else the model reads the screen and finds the way, a few hops at most."""
         cleared = False
         for _hop in range(HOPS):
-            current = state.get("file", "")
-            if current == target:
+            current = state.get("route", "")
+            if at_page(current, target):
                 return
             elements = describe(self.driver.elements(), include_menus=True)
             link = self._best_link(elements, target, step)
-            if link is None:
-                nxt = _way(self.graph, current, target)
-                link = self._best_link(elements, nxt, step) if nxt else None
             if link is None and not cleared:
                 # A search or a filter that left nothing on the page: a person clears it and looks again.
                 cleared = True
@@ -342,31 +284,32 @@ class Walk:
                 self.event("step", title=step["step"], label=opener.get("text") or "menu", verb="CLICK", route=step["route"])
                 self.driver.click(link["menu"])
                 actions.append(f'opened "{opener.get("text") or "the menu"}"')
-                wanted = link["file"]
+                wanted = link["route"]
                 link = self._best_link(describe(self.driver.elements(), include_menus=True), wanted, step)
                 if link is None or link.get("menu", -1) >= 0:
                     notes.append(f'the menu "{opener.get("text") or "menu"}" did not show a link to {wanted}')
                     return
-            self.event("step", title=step["step"], label=link["text"] or link["file"], verb="CLICK", route=step["route"])
+            self.event("step", title=step["step"], label=link["text"] or link["route"], verb="CLICK", route=step["route"])
             answer = self.driver.click(link["i"])
             state = answer["state"]
-            actions.append(f'clicked "{link["text"] or link["file"]}"')
-            visited.append(state.get("file", ""))
-            if not answer.get("navigated") and state.get("file") == current:
+            actions.append(f'clicked "{link["text"] or link["route"]}"')
+            visited.append(state.get("route", ""))
+            if not answer.get("navigated") and state.get("route", "") == current:
                 if self._model_gets_there(target, step, actions, visited, notes):
                     return
-                notes.append(f'clicking "{link["text"] or link["file"]}" did not open {link["file"]}')
+                notes.append(f'clicking "{link["text"] or link["route"]}" did not open {link["route"]}')
                 return
-        if state.get("file") != target:
+        if not at_page(state.get("route", ""), target):
             notes.append(f"{target} was not reached in {HOPS} clicks")
 
     @staticmethod
-    def _best_link(elements: list[dict[str, Any]], file: str, step: dict[str, Any]) -> dict[str, Any] | None:
-        """The link to `file` a person would use: one that is showing before one in a shut menu, the page's own content before
+    def _best_link(elements: list[dict[str, Any]], target: str, step: dict[str, Any]) -> dict[str, Any] | None:
+        """The link to `target` a person would use: one that is showing before one in a shut menu, the page's own content before
         the menus around it, and the one whose words are the step's."""
         order = {"main": 0, "nav": 1, "footer": 2, "dialog": 3}
         wanted = _words(step["step"])
-        candidates = [e for e in elements if e.get("tag") == "a" and e.get("file") == file and not e.get("disabled")]
+        candidates = [e for e in elements if e.get("tag") == "a" and e.get("route") and at_page(e["route"], target)
+                      and not e.get("disabled")]
         if not candidates:
             return None
         return min(candidates, key=lambda e: (e.get("menu", -1) >= 0, order.get(e.get("area"), 4),
@@ -395,9 +338,8 @@ class Walk:
                 return changed
             request = prompts.load(
                 "prototype/journey-plan", journey=journey["name"], who=journey["who"] or "a visitor", number=number,
-                total=len(journey["steps"]), step=step["step"], page=state.get("title") or state.get("file"),
-                file=state.get("file"), heading=state.get("heading"),
-                signed_in=f" Signed in as {state['user']}." if state.get("user") else " Nobody is signed in.",
+                total=len(journey["steps"]), step=step["step"], page=state.get("title") or state.get("route"),
+                route=state.get("route"), heading=state.get("heading"),
                 text=self.driver.text() or "(nothing)", elements="\n".join(_line(e) for e in elements), most=MAX_ACTIONS)
             try:
                 plan = _within(PLAN_SECONDS, llm.complete_json, SYSTEM_PLAN, request, lambda data: check_plan(data, elements),
@@ -423,7 +365,7 @@ class Walk:
                         answer = self.driver.click(element["i"])
                         actions.append(f'clicked "{name}"')
                         changed = True
-                        visited.append(answer["state"].get("file", ""))
+                        visited.append(answer["state"].get("route", ""))
                         opened_menu = opened_menu or element["tag"] == "summary"
                         if answer.get("navigated"):
                             left_page = True
@@ -453,13 +395,13 @@ class Walk:
             return False
         self.model_tried = True
         journey, number = self.at
-        row = next((r for r in self.rows if str(r.get("file")) == target), {})
+        row = next((r for r in self.rows if str(r.get("route")) == target), {})
         goal = {"id": step["id"], "route": step["route"],
                 "step": f'Get to the "{row.get("name") or target}" screen ({row.get("route") or target}) from this one, '
                         "the way a person would find it"}
         before = len(actions)
         self._do(journey, number, goal, actions, visited, notes)
-        return target in visited and len(actions) > before
+        return any(at_page(v, target) for v in visited) and len(actions) > before
 
 
 # --- looking at the pictures -----------------------------------------------------------------------------------------
@@ -512,7 +454,7 @@ def problems(journey: dict[str, Any], walked: dict[str, Any], judged: dict[str, 
     found: list[dict[str, str]] = []
     setup = walked.get("setup")
     if setup and not setup["ok"]:
-        found.append({"step": "sign-in", "severity": "high", "where": "the sign-in page", "problem": setup["note"], "fix": ""})
+        found.append({"step": "start", "severity": "high", "where": "the prototype's home page", "problem": setup["note"], "fix": ""})
     seen = (judged or {}).get("steps") or {}
     for step in walked["steps"]:
         if not step["reached"]:
@@ -595,7 +537,7 @@ def can_walk(cancelled=None) -> tuple[bool, str]:
     return True, ""
 
 
-def run(project: str, session: Any, rows: list[dict[str, Any]], accounts_doc: dict[str, Any], fix: bool = True, model: str = "",
+def run(project: str, session: Any, rows: list[dict[str, Any]], fix: bool = True, model: str = "",
         force: bool = False) -> dict[str, Any]:
     """Click through the prototype's journeys, look at the pictures, fix what is found (`fix`: false only looks and reports).
     `model` is the one this run chose, else the project's; `force` runs it even when the setting turns it off, because it was
@@ -608,7 +550,7 @@ def run(project: str, session: Any, rows: list[dict[str, Any]], accounts_doc: di
             bus.agent_msg(project, f"The journeys were not clicked through: {why}.", title="Journey test skipped",
                           kind="narration", agent=bus.DESIGNER)
             return {"status": "skipped", "reason": why}
-        return _run(project, session, str(session.agent(model).model), rows, accounts_doc, fix)
+        return _run(project, session, str(session.agent(model).model), rows, fix)
     except RunCancelled:
         live.finish(project)
         raise
@@ -620,14 +562,14 @@ def run(project: str, session: Any, rows: list[dict[str, Any]], accounts_doc: di
 
 
 def _walk_all(project: str, session: Any, model: str, sees: bool, root: Path, rows: list[dict[str, Any]],
-              accounts_doc: dict[str, Any], todo: list[dict[str, Any]], label: str) -> list[dict[str, Any]]:
+              todo: list[dict[str, Any]], label: str) -> list[dict[str, Any]]:
     """Walk `todo`, `lanes` browsers at a time (one when someone is watching, so every journey is seen), and have each walked
     journey looked at while the next is walked. Returns, per journey: the journey, what was walked, what was judged, the problems."""
     watching = bus.viewers() > 0
     lanes = 1 if watching else min(LANES, max(1, len(todo)))
-    graph = link_graph(root, rows)
-    sample = next((str(p) for p in sorted((root / "assets" / "uploads").glob("*")) if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}), "") \
-        if (root / "assets" / "uploads").is_dir() else ""
+    uploads = root / "app" / "src" / "assets" / "uploads"
+    sample = next((str(p) for p in sorted(uploads.glob("*")) if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}), "") \
+        if uploads.is_dir() else ""
     jobs: queue.Queue = queue.Queue()
     for journey in todo:
         jobs.put(journey)
@@ -661,7 +603,7 @@ def _walk_all(project: str, session: Any, model: str, sees: bool, root: Path, ro
                         cancelled=lambda: bool(session.cancelled))
         try:
             driver.start()
-            walk = Walk(project, model, root, rows, accounts_doc, graph, driver, streaming=watching and number == 0,
+            walk = Walk(project, model, root, rows, driver, streaming=watching and number == 0,
                         cancelled=lambda: bool(session.cancelled))
             while True:
                 try:
@@ -699,7 +641,7 @@ def _walk_all(project: str, session: Any, model: str, sees: bool, root: Path, ro
     return results
 
 
-def _run(project: str, session: Any, model: str, rows: list[dict[str, Any]], accounts_doc: dict[str, Any], fix: bool) -> dict[str, Any]:
+def _run(project: str, session: Any, model: str, rows: list[dict[str, Any]], fix: bool) -> dict[str, Any]:
     root = session.record / "prototype"
     journeys = load_journeys(session.record)
     if not journeys:
@@ -714,7 +656,7 @@ def _run(project: str, session: Any, model: str, rows: list[dict[str, Any]], acc
                               f"taking a screenshot at every step. {model} cannot look at pictures, so only whether each step could be "
                               f"done is checked ({why})."),
                   title="Journey test", kind="narration", agent=bus.DESIGNER)
-    first = _walk_all(project, session, model, sees, root, rows, accounts_doc, journeys, "Clicking through the journeys")
+    first = _walk_all(project, session, model, sees, root, rows, journeys, "Clicking through the journeys")
 
     final = {r["journey"]["id"]: r for r in first}
     fixed: list[str] = []
@@ -724,16 +666,24 @@ def _run(project: str, session: Any, model: str, rows: list[dict[str, Any]], acc
         if session.cancelled:
             raise RunCancelled(project)
         bus.agent_msg(project, f"{count} problem{'s' if count != 1 else ''} worth fixing found in "
-                               f"{sum(1 for r in first if _worth_fixing(r['problems']))} journey(s). Fixing them in the prototype's files.",
+                               f"{sum(1 for r in first if _worth_fixing(r['problems']))} journey(s). Fixing them in the prototype app.",
                       title="Journey test", kind="narration", agent=bus.DESIGNER)
-        stopped = screen_review.run_fix(project, session, prompts.load("prototype/journey-fix", defects=request), model,
-                                        bus.DESIGNER, "Journey test")
-        again = [r["journey"] for r in first if _worth_fixing(r["problems"])]
+        app = root / "app"
+        before = web_app.fingerprint(app)
+        stopped = screen_review.run_fix(
+            project, session, prompts.load("prototype/journey-fix", defects=request, skill=web_app.stage_skill(project),
+                                           app=app.relative_to(session.workspace).as_posix()),
+            model, bus.DESIGNER, "Journey test")
+        changed = web_app.fingerprint(app) != before
+        if changed:
+            web_app.ensure_built(session, project, "prototype", agent=bus.DESIGNER)
+            bus.prototype_changed(project)
+        again = [r["journey"] for r in first if _worth_fixing(r["problems"])] if changed else []
         fixed = [j["id"] for j in again]
         if again:
             bus.agent_msg(project, f"Clicking through the {len(again)} journey{'s' if len(again) != 1 else ''} that had problems again.",
                           title="Journey test", kind="narration", agent=bus.DESIGNER)
-            for r in _walk_all(project, session, model, sees, root, rows, accounts_doc, again, "Clicking through them again"):
+            for r in _walk_all(project, session, model, sees, root, rows, again, "Clicking through them again"):
                 final[r["journey"]["id"]] = r
     bus.progress(project, "Clicking through the journeys", 100, agent=bus.DESIGNER)
 

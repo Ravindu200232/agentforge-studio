@@ -177,8 +177,9 @@ class Driver:
 
     # --- what a person does ---------------------------------------------------------------------------------
 
-    def goto(self, file: Path | str) -> dict[str, Any]:
-        return self.call("goto", file=str(file))["state"]
+    def goto(self, file: Path | str, route: str = "/") -> dict[str, Any]:
+        """Open the app's bundle (`file`) on one of its pages: the app routes by hash, so the page is its route."""
+        return self.call("goto", file=str(file), route=route)["state"]
 
     def state(self) -> dict[str, Any]:
         return self.call("state")["state"]
