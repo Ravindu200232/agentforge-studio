@@ -195,7 +195,7 @@ def run_chat(chat: Callable[..., Any], kwargs: dict[str, Any],
     what is left on screen once the loop returns is always the true final
     content, never a stale tool-round narration.
     """
-    def call(round_kwargs: dict[str, Any]) -> Any:
+    def once(round_kwargs: dict[str, Any]) -> Any:
         # Cloud's terminal stream is where it reliably provides token counts.
         # A caller may also ask to stream visible text. In both cases preserve
         # the same assembled Message contract for the read-only tool loop.
@@ -207,6 +207,25 @@ def run_chat(chat: Callable[..., Any], kwargs: dict[str, Any],
         if on_stream_start is not None:
             on_stream_start()
         return _stream_chat(chat, round_kwargs, on_stream_token or (lambda _token: None), on_usage)
+
+    def call(round_kwargs: dict[str, Any]) -> Any:
+        """One round, asked for again whole when its reply is cut off part-way.
+
+        The retrying client asks again when a request fails before its first word; once words have been handed on it cannot
+        repeat them. Here the words are only being collected into one message, so a connection that closes in the middle of
+        the reply ("peer closed connection without sending complete message body") loses nothing but that attempt: the round
+        is asked for again, as the client would have done, and a caller that shows the words starts them over
+        (`on_stream_start`)."""
+        attempt = 0
+        owner = getattr(chat, "__self__", None)
+        while True:
+            try:
+                return once(round_kwargs)
+            except Exception as exc:  # noqa: BLE001 - raised again unless it is a bad minute of the service
+                again = getattr(owner, "_next_attempt", None)
+                if not callable(again):
+                    raise
+                attempt = again(exc, attempt)         # raises when it is not worth asking again, or the attempts are gone
 
     model = kwargs.get("model")
     if tools is None or model in _UNSUPPORTED_MODELS:

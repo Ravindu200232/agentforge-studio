@@ -162,6 +162,29 @@ def agent_build(message: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "project": project}
 
 
+def _spec_pending(project: str) -> bool:
+    """The plan is approved and the specification is not written (a run of it failed, or was stopped).
+
+    The specification is the pipeline's to write: what a chat agent improvises in its place (a `requirements.md`, a
+    `spec.json`) is not the document the studio's views read, so the specification stays empty."""
+    from srs_agent import document as srs_document
+    from srs_agent import plan as plan_stage
+
+    return bool(plan_stage.approved_plan(project)) and not srs_document.has_document(project)
+
+
+def _write_specification(project: str, said: str = "") -> dict[str, Any]:
+    """Write the specification again, from the approved plan and the interview."""
+    from srs_agent import document as srs_document
+
+    if said:
+        bus.user_msg(project, said)
+    bus.agent_msg(project, "The specification is not written yet, so it is written now from the approved plan and the "
+                           "interview. When it is done, the SRS tab fills.", title="Specification", kind="narration")
+    _in_background(f"srs:{project}", project, bus.DEVELOPER, srs_document.generate, project, _project=project)
+    return {"ok": True, "project": project}
+
+
 def agent_update(message: dict[str, Any]) -> dict[str, Any]:
     """Something typed into the chat stream.
 
@@ -207,6 +230,8 @@ def agent_update_direct(message: dict[str, Any]) -> dict[str, Any]:
         return answered
 
     role = str(message.get("agent") or bus.DEVELOPER)
+    if _spec_pending(project):
+        return _write_specification(project, request)
     if role == bus.DESIGNER and prototyper.exists(project):
         _in_background(f"prototype-edit:{project}", project, bus.DESIGNER, prototyper.revise, project, request,
                        _project=project)
@@ -266,13 +291,15 @@ def agent_resume(message: dict[str, Any]) -> dict[str, Any]:
     record = store.require(project)
     stage = record.get("stage", "interview")
 
+    if stage in ("interview", "plan", "srs") and _spec_pending(project):
+        return _write_specification(project)
     if stage in ("build", "test") and builder.built(project):
         _in_background(f"test:{project}", project, bus.DEVELOPER, qa.run, project, "", _project=project)
     elif stage in ("prototype", "design") and not prototyper.exists(project):
         # An interrupted prototype is still a design job. Sending it straight
         # to the builder leaves the customer with neither a prototype nor a
-        # usable recovery button. Resume the focused HTML generation first;
-        # its checkpoint reuses completed kit/pages instead of starting over.
+        # usable recovery button. Resume the prototype first; its checkpoint
+        # keeps the edits an earlier run made instead of starting over.
         _in_background(f"prototype:{project}", project, bus.DESIGNER, prototyper.generate_from_wireframes,
                        project, "", _project=project)
     elif stage in ("prototype", "design"):
@@ -378,10 +405,10 @@ def _start_preview(project: str, model: str = "", part: str = "") -> None:
 
 
 def review_screens(message: dict[str, Any]) -> dict[str, Any]:
-    """Look at a project's screens again with a model that can look at pictures: the prototype's pages (`what`:
-    "prototype"), the prototype's journeys clicked through in a browser, shown live ("journeys"), the end-to-end tests'
-    screenshots ("tests"), or the pages and the tests together (the default). `fix`: false only looks and reports (nothing
-    is changed); `model` is the model for this run."""
+    """Look at a project's screens again with a model that can look at pictures: the prototype's screens (`what`: "prototype"),
+    the prototype's journeys clicked through in a browser, shown live ("journeys"), the end-to-end tests' screenshots ("tests"),
+    or the screens and the tests together (the default). `fix`: false only looks and reports (nothing is changed); `model` is the
+    model for this run."""
     _remember_model(message)
     project = str(message.get("project") or "").strip()
     if not project:
@@ -391,8 +418,8 @@ def review_screens(message: dict[str, Any]) -> dict[str, Any]:
     if what not in {"prototype", "journeys", "tests", "both"}:
         raise ValueError('what must be "prototype", "journeys", "tests" or "both"')
     fix = message.get("fix", True) not in (False, "false", 0, "0")
-    _in_background(f"review:{project}", project, bus.DESIGNER if what in {"prototype", "journeys"} else bus.DEVELOPER, _review_screens,
-                   project, what, fix, _model_from(message), _project=project)
+    _in_background(f"review:{project}", project, bus.DESIGNER if what in {"prototype", "journeys"} else bus.DEVELOPER,
+                   _review_screens, project, what, fix, _model_from(message), _project=project)
     return {"ok": True, "project": project, "what": what, "fix": fix}
 
 

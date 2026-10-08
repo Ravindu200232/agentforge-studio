@@ -7,7 +7,6 @@ import { useStore } from '@/lib/store'
 import { loadSrsView, srsViewFromVersion } from '@/lib/srs-view'
 import { Badge, Button, Empty, SubTab, SubTabs, Tag } from '../ui'
 import { VIEWS, badgeFor } from './views'
-import { WireframeEditor } from './Wireframes'
 import { SrsRevisions } from './SrsRevisions'
 import { cn } from '@/lib/utils'
 
@@ -21,7 +20,6 @@ export default function SrsReview({ projectId, onApproved, onKept, onBack, onNew
   const [sub, setSub] = useState('overview')
   const [specOpen, setSpecOpen] = useState(false)
   const [asking, setAsking] = useState(false)
-  const [editingWireframe, setEditingWireframe] = useState(null)
   const [downloadingPdf, setDownloadingPdf] = useState(false)
 
   const [busy, setBusy] = useState('')
@@ -233,17 +231,7 @@ export default function SrsReview({ projectId, onApproved, onKept, onBack, onNew
         {handoffOpen && <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-none bg-panel2/80 p-4 text-xs text-ink border border-line">{handoffs[handoffOpen]}</pre>}
       </div>
       <div className="flex min-h-0 flex-1 gap-4 p-5">
-        {sub === 'wireframe' && editingWireframe ? (
-          <WireframeEditor
-            owner={projectId}
-            page={editingWireframe}
-            onClose={() => setEditingWireframe(null)}
-            onSaved={() => {
-              setEditingWireframe(null)
-              load()
-            }}
-          />
-        ) : (
+        {(
           <>
             {/* The same panel the workspace shows. Nothing here is specific to
                 reviewing: it is the specification's history either way. */}
@@ -262,7 +250,7 @@ export default function SrsReview({ projectId, onApproved, onKept, onBack, onNew
                 {VIEWS.map(v => {
                   const badge = badgeFor(v.id, shown)
                   return (
-                    <SubTab key={v.id} on={sub === v.id} onClick={() => { setSub(v.id); setEditingWireframe(null); }}>
+                    <SubTab key={v.id} on={sub === v.id} onClick={() => setSub(v.id)}>
                       {v.label}
                       {badge && <Badge tone={badge.bad ? 'bad' : 'mute'}>{badge.n}</Badge>}
                     </SubTab>
@@ -284,7 +272,7 @@ export default function SrsReview({ projectId, onApproved, onKept, onBack, onNew
 
               <div className="min-h-0 flex-1 overflow-y-auto p-5">
                 {shown?.have && Object.values(shown.have).some(Boolean)
-                  ? <View srs={shown} onSelectView={setSub} onEditPage={setEditingWireframe} />
+                  ? <View srs={shown} onSelectView={setSub} />
                   : <Empty>Nothing was written for this version.</Empty>}
               </div>
             </div>
@@ -294,7 +282,7 @@ export default function SrsReview({ projectId, onApproved, onKept, onBack, onNew
         <aside className={cn('flex shrink-0 flex-col overflow-hidden rounded-none',
           'bg-black/62 shadow-[0_16px_42px_rgba(15,23,42,.06)] ring-1 ring-line/70',
           'backdrop-blur-xl transition-[width,opacity] duration-300 dark:bg-black/[.035]',
-          specOpen && !(sub === 'wireframe' && editingWireframe) ? 'w-[280px] opacity-100' : 'pointer-events-none w-0 opacity-0 ring-0')}>
+          specOpen ? 'w-[280px] opacity-100' : 'pointer-events-none w-0 opacity-0 ring-0')}>
 
           <div className="min-h-0 w-[280px] flex-1 overflow-y-auto p-3">
             <p className="label-xs mb-3 text-ink">

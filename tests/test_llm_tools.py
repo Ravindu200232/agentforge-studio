@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import httpx
 import ollama
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -265,6 +266,71 @@ class FocusedUsageTests(unittest.TestCase):
         self.assertEqual(message.content, "plain answer")
         self.assertEqual(tokens, ["plain answer"])
         self.assertIn("m", llm_tools._UNSUPPORTED_MODELS)
+
+
+class CutOffReplyTests(unittest.TestCase):
+    """A reply the connection cuts off in the middle (httpx: "peer closed connection without sending complete message body")."""
+
+    def client(self, replies):
+        from server_modules import session
+
+        calls = []
+
+        class Inner:
+            def chat(self, **kwargs):
+                calls.append(kwargs)
+                reply = replies[min(len(calls) - 1, len(replies) - 1)]
+                return reply() if callable(reply) else reply
+
+        return session.RetryingClient(Inner(), wait_for_cancel=lambda seconds: False), calls
+
+    @staticmethod
+    def cut_off():
+        def stream():
+            yield FakeChunk("half of an ans")
+            raise httpx.RemoteProtocolError("peer closed connection without sending complete message body (incomplete chunked read)")
+        return stream()
+
+    @staticmethod
+    def whole(text="the whole answer"):
+        return iter([FakeChunk(text)])
+
+    def test_a_reply_cut_off_in_the_middle_is_asked_for_again_whole(self):
+        client, calls = self.client([self.cut_off, self.whole])
+        started = []
+        message = llm_tools.run_chat(client.chat, {"model": "m", "messages": [], "stream": True}, None,
+                                     on_stream_start=lambda: started.append(1))
+        self.assertEqual(message.content, "the whole answer")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(started), 2, "a caller that shows the words starts them over")
+
+    def test_it_is_asked_for_again_through_a_whole_run_of_bad_minutes_and_not_forever(self):
+        from server_modules import session
+
+        client, calls = self.client([self.cut_off])
+        with mock.patch.object(session, "RETRY_ATTEMPTS", 3):
+            with self.assertRaises(httpx.RemoteProtocolError):
+                llm_tools.run_chat(client.chat, {"model": "m", "messages": [], "stream": True}, None)
+        self.assertEqual(len(calls), 3)
+
+    def test_an_error_that_is_not_a_bad_minute_is_raised_at_once(self):
+        def broken():
+            def stream():
+                yield FakeChunk("x")
+                raise ValueError("not the service's fault")
+            return stream()
+
+        client, calls = self.client([broken, self.whole])
+        with self.assertRaisesRegex(ValueError, "not the service"):
+            llm_tools.run_chat(client.chat, {"model": "m", "messages": [], "stream": True}, None)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_client_that_cannot_ask_again_raises_what_it_got(self):
+        def chat(**_kwargs):
+            raise httpx.RemoteProtocolError("peer closed connection")
+
+        with self.assertRaises(httpx.RemoteProtocolError):
+            llm_tools.run_chat(chat, {"model": "m", "messages": []}, None)
 
 
 class WebToolsTests(unittest.TestCase):
