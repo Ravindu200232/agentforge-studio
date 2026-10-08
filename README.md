@@ -3,10 +3,8 @@
 A studio for taking a product from a sentence to a deployed application:
 interview → plan → specification → design → prototype → build → test → deploy.
 
-The interface is the AgentForge Studio, copied unchanged from `RP-SE-009`. The
-engine underneath it is this repository's own Ollama terminal agent. Nothing in
-between is hard-coded: every stage is a prompt pack on disk, and the only things
-that say "no" to a model are the validation rules ported from `RP-SE-009`.
+The interface is AgentForge Studio. Its engine is this repository's Ollama
+terminal agent. Stage instructions live in prompt packs on disk.
 
 ## Running it
 
@@ -28,8 +26,9 @@ You also still have the plain terminal agent:
 oterm --model qwen3-coder "Find and fix the bug"
 ```
 
-Requirements: Python 3.10+, Node 20+, and Ollama. Pick a model in the studio's
-settings before starting a project — the backend does not choose one for you.
+Requirements: Python 3.10+, Node 20+, npm, and Ollama. Pick a model in the
+studio's settings before starting a project. The first React wireframe run also
+installs one shared, locked web artifact dependency store.
 
 ## One context, five agents
 
@@ -43,8 +42,11 @@ workspaces/<project>/           the application being built
     context.json                THE conversation, all five agents share it
     events.jsonl                what the studio's chat stream replays
     interview.json  plan.json  design.json
-    srs/        srs.json, SRS.md, diagrams/*.mmd, wireframes/*.html, handoff.json
-    prototype/  index.html, *.html, assets/, routes.json
+    srs/        srs.json, SRS.md, diagrams/*.mmd, handoff/{app,builder}.md
+    wireframe/app/    React source and bundle.html (low fidelity)
+    prototype/app/    copy of the wireframe, edited and bundled (high fidelity)
+    prototype/        routes.json, screenshots and review evidence
+    skills/web-artifacts-builder/    Anthropic's staged skill and scripts
     build/      report.json
     qa/         report.json
     deploy/     run.json, events.jsonl
@@ -97,13 +99,15 @@ stage behaves is editing a file:
 | Pack | What it drives |
 |---|---|
 | `shared/engine.md` | the contract every stage runs under |
-| `shared/authentication.md` | sessions, roles and sign-in, read by the wireframes, prototype and builder |
+| `shared/authentication.md` | sessions, roles and sign-in for the full application build |
 | `interview/` | the question format, the interview standard, what to cover |
 | `plan/` | the approval plan a customer signs off, and its revisions |
 | `srs/` | the specification, its review and its repairs |
 | `srs/skills/` | the requirements standards, ported from `RP-SE-009` |
 | `design/` | the design contract; `design/themes/` holds 70 themes |
-| `prototype/` | the clickable prototype |
+| `design/skills/web-artifacts-builder/` | Anthropic's web artifact skill and the Windows Node scripts |
+| `wireframe/` | the low fidelity React app |
+| `prototype/` | edits to the same React app for the animated, clickable prototype |
 | `builder/` | the application build |
 | `testing/` | verification and its evidence |
 | `deployment/` | the deployment pipeline; `deployment/skills/` per target |
@@ -132,16 +136,14 @@ third of the product. This one counts the plan against the specification: a
 screen that was promised and dropped, a record with no table, a feature with no
 requirement, a requirement with no trace. What the plan already states is
 aligned into the document; anything still missing stops the stage and is
-recorded on the document. Each wireframe is also held to a depth floor for the
-sections its screen has, and a page drawn short goes back to the agent.
+recorded on the document.
 
 **The standards review** (`validation/review.py`) — a reviewer audits the draft
 against the requirements skills. Python decides whether it passed, not the model:
 a reviewer asked to judge its own judgement tends to accept.
 
-On this repository's bakery test project the coverage gate took the first draft
-from 1 diagram to 7, from 3 functional requirements to 6, and from seven
-four-line wireframes to seven drawn screens.
+The React wireframe and prototype are bundled before preview. A failed bundle
+is returned to the agent once for a source repair.
 
 ## Layout
 
@@ -157,9 +159,9 @@ qa-agent/                 verification and its evidence
 deploy-agent/             deployment and its pipeline record
 src/ollama_terminal/      the engine: conversation, tools, source guard
 prompts/                  every instruction, as markdown
-studio/                   the AgentForge Studio, unchanged
+studio/                   the AgentForge Studio and React app previews
 tests/                    every test: Python at the top, studio checks in tests/studio/
-tools/                    the SRS corpus fetcher
+tools/                    the SRS corpus fetcher and shared web artifact runtime
 srs-test-sources/         reference SRS documents and diagram sources
 workspaces/               one directory per project
 ```
@@ -177,18 +179,14 @@ node --test tests/*.mjs tests/studio/*.mjs
 
 `test_agent.py` covers the engine — tool round trips, path escapes, plan mode,
 the source guard, and context summarisation including a model that answers in
-`thinking` or returns nothing at all. `test_studio.py` covers the backend — the
-prompt packs, all four validation gates, the event shapes the studio's reducer
-reads, event persistence across a restart, and the route table. The `.mjs` files
-check the studio's own modules — the wireframe editor, preview addresses, the chat
-display, progress, attachments and uploads — without a browser.
+`thinking` or returns nothing at all. `test_studio.py` covers the backend and
+stage routes. `test_web_app.py` checks the staged skill, shared dependencies,
+React app copy and bundler. The `.mjs` files check the Studio preview guard,
+addresses and other UI modules.
 
 ## What has been run end to end
 
-Against a real model (`gpt-oss:120b-cloud`) on a bakery ordering project:
-interview, plan, plan revision and approval, specification generation with its
-diagrams and wireframes, the coverage and review repair loops, design selection,
-and the prototype — rendered in the studio and served to its preview pane. The
-build, test and deploy stages are wired the same way and their endpoints answer,
-but they have not been driven to completion against a model here; a full Next.js
-build and deployment needs your own credentials and a good deal of time.
+The web artifact toolkit has been used to build and render a sample React app.
+The wireframe and prototype generation flow has automated tests; it has not yet
+been driven end to end against a real model in this version. A full application
+build and deployment also need project credentials and infrastructure.

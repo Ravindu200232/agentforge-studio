@@ -105,7 +105,8 @@ class WhoIsSignedInTests(unittest.TestCase):
             cli_signin.SIGNINS.start("aws")
 
     def test_a_signed_out_tool_is_signed_out(self):
-        with cli(), self.run_output({}):
+        # A developer's real CLI login files must not turn the fake signed-out case into signed-in.
+        with cli(), self.run_output({}), mock.patch.object(cli_signin, "_netlify_token", return_value=""):
             rows = cli_signin.SIGNINS.available(fresh=True)
         self.assertTrue(all(row["installed"] and not row["signed_in"] for row in rows.values()))
 

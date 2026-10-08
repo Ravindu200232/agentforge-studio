@@ -679,7 +679,7 @@ export default function PreviewPane({ hidden, onBuild }) {
                 <div className="max-w-md">
                   <h3 className="text-base font-bold text-ink">This app has not been built yet</h3>
                   <p className="mt-1 text-sm text-muted leading-relaxed">
-                    Only the specification or HTML prototype exists so far. Build the full application to preview and interact with it live here.
+                    Only the specification or interactive prototype exists so far. Build the full application to preview and interact with it live here.
                   </p>
                 </div>
                 <div className="flex items-center gap-3 mt-2">

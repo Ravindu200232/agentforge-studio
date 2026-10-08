@@ -148,6 +148,17 @@ class AppTests(unittest.TestCase):
         (app / "src" / "pages" / "Home.tsx").write_text("export default () => <h1>Home, longer</h1>", encoding="utf-8")
         self.assertNotEqual(first, web_app.fingerprint(app))
 
+    def test_same_size_edit_with_unchanged_timestamp_invalidates_review(self):
+        app = self.make_wireframe()
+        source = app / "src" / "App.tsx"
+        before = source.stat()
+        first = web_app.fingerprint(app)
+        original = source.read_text(encoding="utf-8")
+        source.write_text(original.replace("Orders", "Orders".lower()), encoding="utf-8")
+        os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+        self.assertEqual(source.stat().st_size, before.st_size)
+        self.assertNotEqual(first, web_app.fingerprint(app))
+
     def test_the_preview_serves_the_bundle_and_built_files_and_nothing_else(self):
         self.make_wireframe()
         served = web_app.served_file(self.project, "wireframe", "bundle.html")

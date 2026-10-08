@@ -100,15 +100,18 @@ def _source_files(app: Path):
 
 
 def fingerprint(app: Path) -> str:
-    """Changes whenever any source file does (size and modified time); used to know a review is out of date."""
+    """Hash source content so same-size edits within one clock tick still invalidate reviews."""
     import hashlib
     digest = hashlib.sha1()
     for file in sorted(_source_files(app)):
         try:
-            info = file.stat()
+            content = file.read_bytes()
         except OSError:
             continue
-        digest.update(f"{file.relative_to(app).as_posix()}|{info.st_size}|{int(info.st_mtime)}\n".encode())
+        digest.update(file.relative_to(app).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
     return digest.hexdigest()
 
 

@@ -1,6 +1,6 @@
 """A minimal, genuinely read-only tool loop for `llm.py`'s focused calls.
 
-`complete()`/`complete_json()`/`complete_html()` are one call, one answer, no
+`complete()`/`complete_json()` are one call, one answer, no
 history and no tools — deliberately, so a stage writing many artifacts never
 spends its whole output budget on the first one. But the context those calls
 need was, until now, read off disk by Python and pasted into the prompt

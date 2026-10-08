@@ -93,7 +93,7 @@ export default function AppPreview({
   const timer = useRef(null)
   const width = VIEWPORT_WIDTHS[viewport] || null
 
-  useEffect(() => { if (wanted) setRoute(wanted) }, [wanted])
+  useEffect(() => { setRoute(wanted || pages[0]?.route || '/') }, [project, kind, wanted, pages[0]?.route])
   useEffect(() => () => clearTimeout(timer.current), [])
 
   function blocked(what) {
