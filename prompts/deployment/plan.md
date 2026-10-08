@@ -19,7 +19,7 @@ than the one the customer asked for.
 
 1. **The project, only what the deployment needs.** The build record (`.agentforge/build/report.json`, for the
    gaps it declares), the test record (`.agentforge/qa/report.json`, read, never re-run), the specification's
-   `app.md` and `sitemap.md`, and the application's deployment surface: `package.json`, the framework config,
+   `app.md` (its name, roles and site map), and the application's deployment surface: `package.json`, the framework config,
    `.env.example`, the code that reads the environment, the health route, and whatever a previous deployment
    left in `.agentforge/deploy/`. The listing below says what exists. Do not read the tests, the other handoff
    documents or every page's source, and do not read a file twice.

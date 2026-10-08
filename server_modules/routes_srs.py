@@ -13,6 +13,7 @@ from typing import Any, Callable
 from prototype_agent import design as design_stage
 from prototype_agent import prototype as prototyper
 from srs_agent import document, interview, plan
+from srs_agent import wireframe as wireframer
 
 from . import config, store
 
@@ -198,29 +199,16 @@ def wireframes(project: str, _body: dict) -> Any:
     return document.wireframes(project)
 
 
-@route("POST", rf"/projects/{P}/wireframes/html")
-def draw_wireframe(project: str, body: dict) -> Any:
-    """The Wireframe tab's own draw button.
-
-    One focused call per screen, reading the handoff documents the specification
-    stage wrote. Previously this asked the agent to "redraw following the skill",
-    which is how seven pages came back as four-line stubs.
-    """
-    return document.redraw(project, str(body.get("route") or "").strip(),
-                            quiet=bool(body.get("quiet")))
+@route("POST", rf"/projects/{P}/wireframes/build")
+def build_wireframes(project: str, body: dict) -> Any:
+    """Draw the wireframes again, or carry on a run that was stopped (`resume`)."""
+    return wireframer.run(project, str(body.get("prompt") or "").strip(), fresh=not body.get("resume"))
 
 
-@route("POST", rf"/projects/{P}/wireframes/html/edit")
+@route("POST", rf"/projects/{P}/wireframes/edit")
 def edit_wireframe(project: str, body: dict) -> Any:
-    return document.save_wireframe_html(project, str(body.get("route") or ""),
-                                        str(body.get("html") or ""))
-
-
-@route("POST", rf"/projects/{P}/wireframes/html/ai-edit")
-def ai_edit_wireframe(project: str, body: dict) -> Any:
-    """Make one direct, page-scoped AI change without entering plan mode."""
-    return document.ai_edit_wireframe(project, str(body.get("route") or ""),
-                                      str(body.get("prompt") or ""))
+    """One change to the wireframes, asked for in words (about one page when `route` is given)."""
+    return wireframer.edit(project, str(body.get("prompt") or ""), str(body.get("route") or ""))
 
 
 @route("POST", rf"/projects/{P}/wireframes/approve")

@@ -107,12 +107,12 @@ class RequestTests(unittest.TestCase):
         self.assertIn("one or two plain sentences", text)                  # so the chat has words in it, not only files
         self.assertIn("Stay inside this phase", text)
 
-    def test_the_pages_phase_lists_every_one_of_its_pages_with_its_prototype_file_and_asks_for_the_progress_record(self):
+    def test_the_pages_phase_lists_every_one_of_its_pages_with_its_prototype_page_and_asks_for_the_progress_record(self):
         rows = [page("/rooms", "Rooms", "rooms.html", ("Guest", "Staff")), page("/book", "Book", "book.html")] + routes(7)
         items = phases.plan(rows)
         text = self.ask(items[1], rows=rows)
-        self.assertIn("`/rooms` — Rooms — prototype file `rooms.html` — roles: Guest, Staff", text)
-        self.assertIn("`/book` — Book — prototype file `book.html`", text)
+        self.assertIn("`/rooms` — Rooms — prototype page `.agentforge/prototype/rooms.html` — roles: Guest, Staff", text)
+        self.assertIn("`/book` — Book — prototype page `.agentforge/prototype/book.html`", text)
         self.assertNotIn("`/page-5`", text)                                 # the next phase's
         self.assertIn(".agentforge/build/progress.json", text)
         self.assertIn('{"routes": {"/the/route"', text)

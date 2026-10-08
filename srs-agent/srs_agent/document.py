@@ -1,28 +1,27 @@
 """The specification itself.
 
 Written as focused calls rather than as one agentic conversation, because the two
-produce very different documents. A single run asked to write the document, the
-diagrams and fourteen pages spends its output budget on the first few and
-truncates the rest — which is how a wireframe ends up four hundred characters
-long. So: one call for the document, one per diagram, one per page, and the
-independent ones run at the same time.
+produce very different documents. A single run asked to write the document and
+all of its diagrams spends its output budget on the first few and truncates the
+rest. So: one call for the document, one per diagram, and the independent ones run
+at the same time. (The wireframes that follow are not drawn here: the project's agent
+builds them as a React app, see `wireframe.py`.)
 
 Continuity does not come from a shared conversation here. It comes from the
 artifacts: the approved plan bounds the document, the document bounds the
-diagrams and the pages, and each call is given exactly the part it needs.
+diagrams, and each call is given exactly the part it needs.
 """
 from __future__ import annotations
 
 import copy
 import json
-import hashlib
 import re
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from server_modules import auth_guide, bus, config, journeys, llm, mermaid, prompts, reference_staging, store
+from server_modules import bus, config, journeys, llm, mermaid, prompts, reference_staging, store, web_app
 from server_modules.session import ProjectSession, RunCancelled, session_for
 from server_modules.validation import completeness, json_edits
 from server_modules.validation import corpus as corpus_rules
@@ -32,14 +31,11 @@ from server_modules.validation import srs_schema
 from . import diagram_fallback
 from . import handoff as handoff_files
 from . import plan as plan_stage
-from . import wireframe_brief
 
 SRS_DIR = "srs"
 DOCUMENT = (SRS_DIR, "srs.json")
 HANDOFF = (SRS_DIR, "handoff.json")
 USER_JOURNEYS = (SRS_DIR, "user-journeys.json")
-WIREFRAME_INDEX = (SRS_DIR, "wireframes", "index.json")
-WIREFRAME_SYSTEM = "wireframe-system"          # the web ideas and the shared layout the wireframes start from
 
 # Every diagram the standards profile covers. Each is one call; the ones whose
 # evidence is missing come back as NOT_APPLICABLE and are recorded as such.
@@ -140,21 +136,6 @@ def _srs_quality_reference() -> str:
 
 NOT_APPLICABLE = "NOT_APPLICABLE"
 
-WIREFRAME_APPROVAL_PROMPT = (
-    "Use the approved /plan as the scope. Read the site map and the application spec at "
-    ".agentforge/srs/handoff/ (sitemap.md, app.md). Before drawing anything, search the web "
-    "(Ollama web search) for how good products of this kind lay out their screens, and take "
-    "ideas from what you find. Then draw one creative, strictly black-and-white low-fidelity "
-    "HTML wireframe for every planned screen, with no page limit. A screen is one page with one "
-    "job: tables, forms and detail views each get a page of their own and are linked from the "
-    "pages that lead to them, never piled into another page; use a popup only for a short "
-    "contextual action. Draw the shared layout once and keep it identical on every page: the "
-    "same navigation, header, sidebar and footer in the same position, and the same buttons, "
-    "forms, cards, tables and status marks. Use realistic sample data and make the way from "
-    "page to page obvious. Show the pages as a grid, one by one as they finish, and enable editing."
-)
-
-
 # --- reading ----------------------------------------------------------------
 
 def document(project: str) -> dict[str, Any]:
@@ -166,15 +147,6 @@ def document(project: str) -> dict[str, Any]:
 
 def has_document(project: str) -> bool:
     return bool(document(project).get("srs_document"))
-
-
-def _slug(route: str) -> str:
-    cleaned = str(route or "/").strip("/")
-    if not cleaned:
-        return "home"
-    stem = "".join(c if c.isalnum() else "_" for c in cleaned).strip("_") or "page"
-    # /a-b and /a_b must never overwrite one another's HTML.
-    return f"{stem}-{hashlib.sha1(str(route).encode('utf-8')).hexdigest()[:8]}"
 
 
 def _pages_of(doc: dict) -> list[dict]:
@@ -643,226 +615,17 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
     return entry
 
 
-_AUTH_PAGE = re.compile(r"log-?in|sign-?in|sign-?up|register|registration|forgot|reset-?password|password-?reset",
-                        re.IGNORECASE)
-
-
-def _page_instruction(project: str, doc: dict, page: dict, docs: dict[str, str], request: str = "",
-                      ideas: str = "", layout: str = "", wireframe_plan: str = "") -> str:
-    """The prompt one wireframe is drawn from.
-
-    The site map and application spec are no longer pasted in: the model reads
-    them itself with its read tool from `.agentforge/srs/handoff/`, so this
-    holds no rules about what a page contains: the specification says it, in
-    its own words, for whatever product it describes.
-    """
-    route = str(page.get("route") or "/")
-    if not docs:
-        raise ValueError("the SRS handoff files are missing; wireframes need the approved contract")
-    instruction = prompts.load("srs/wireframe-page",
-                               route=route,
-                               page_name=str(page.get("page_name") or route),
-                               sections=", ".join(wireframe_brief.page_lines(page.get("sections"))) or "(not listed)",
-                               functions=", ".join(wireframe_brief.page_lines(page.get("functions"))) or "(not listed)",
-                               app_summary=json.dumps(doc.get("app_summary") or {}, ensure_ascii=False),
-                               page_contract=json.dumps(wireframe_brief.page_facts(page), ensure_ascii=False, indent=2),
-                               ideas=ideas or "(none gathered — draw from the specification and your own judgement)",
-                               layout=layout or "(none drawn — keep the shell and the components consistent from the site map)",
-                               wireframe_plan=wireframe_plan or "(no wireframe plan — draw this page from its record and the site map)",
-                               plan=wireframe_brief.clean(plan_stage.markdown(project)))
-    if auth_guide.needed(doc) and _AUTH_PAGE.search(route + " " + str(page.get("page_name") or "")):
-        guide = auth_guide.stage(session_for(project).workspace)
-        instruction += (f"\n\n## Signing in\n\nThis page is part of signing in. Read `{guide}` yourself and draw "
-                        "everything its sections 3 and 5 give this page, its error states included.")
-    if request:
-        instruction += "\n\n## Approved wireframe request\n\n" + request
-    return instruction
-
-
-def _draw_page(session: ProjectSession, project: str, doc: dict, page: dict,
-               docs: dict[str, str] | None = None, request: str = "",
-               system: dict[str, str] | None = None, quiet: bool = False,
-               stream: bool = False) -> dict:
-    """One wireframe: a complete HTML document for one route.
-
-    `stream` is only ever true for a single-page draw (one route, never the
-    whole-set `llm.in_lanes` fan-out) — the studio's live file buffer is one
-    slot, and three pages streaming into it at once would interleave into
-    garbage. A bulk draw stays exactly as before: silent until the page is
-    whole, then one `file_written`.
-    """
-    route = str(page.get("route") or "/")
-    if not quiet:
-        bus.agent_msg(project, f"Drawing {page.get('page_name') or route} ({route}) from the approved specification and handoff.",
-                      title="Wireframe page", kind="narration")
-    docs = docs if docs is not None else handoff_docs(session)
-    system = system or {}                     # made once for the whole run by `_generate_wireframes`
-    sections = page.get("sections") or []
-    functions = page.get("functions") or []
-    weight = max(1, len(sections) + len(functions) // 2)
-
-    slug = _slug(route)
-    path = session.record_path(SRS_DIR, "wireframes", f"{slug}.html")
-    relative = path.relative_to(session.workspace).as_posix()
-    writer = bus.StreamWriter(project, agent=bus.DEVELOPER) if stream else None
-    on_start = (lambda: writer.start(relative)) if stream else None
-    on_token = writer.token if stream else None
-
-    instruction = _page_instruction(project, doc, page, docs, request,
-                                    ideas=system.get("ideas", ""), layout=system.get("layout", ""),
-                                    wireframe_plan=_plan_for_page(system.get("plan", ""), route))
-    minimum = max(completeness.WIREFRAME_FLOOR,
-                  weight * completeness.WIREFRAME_CHARS_PER_SECTION)
-    html = llm.complete_html(system=prompts.load("srs/system"), user=instruction,
-                             minimum=minimum, label=f"wireframe:{route}",
-                             project=project, workspace=session.workspace, role=bus.DEVELOPER,
-                             on_stream_start=on_start, on_stream_token=on_token)
-    gaps = completeness.wireframe_depth([(route, html)], doc)
-    if gaps:
-        html = llm.complete_html(
-            system=prompts.load("srs/system"), minimum=minimum,
-            user=instruction + "\n\nYour last draft failed these wireframe checks:\n"
-                 + completeness.as_instructions(gaps)
-                 + "\n\nReturn a complete corrected HTML page, with its inline CSS.",
-            label=f"wireframe_repair:{route}",
-            project=project, workspace=session.workspace, role=bus.DEVELOPER,
-            on_stream_start=on_start, on_stream_token=on_token)
-        gaps = completeness.wireframe_depth([(route, html)], doc)
-        if gaps:
-            raise ValueError("; ".join(gaps)[:400])
-
-    path.write_text(html, encoding="utf-8")
-    if stream:
-        writer.end(relative, html)
-    if not quiet:
-        bus.file_written(project, relative, html, note="drawn")
-        bus.log(project, "SUCCESS",
-                f"Wireframe · {page.get('page_name') or route} ({len(html):,} characters)")
-    return {"route": route, "name": str(page.get("page_name") or route), "slug": slug,
-            "file": relative}
-
-
-def _wireframe_system(session: ProjectSession, project: str, doc: dict, docs: dict[str, str], fresh: bool,
-                      quiet: bool = False, plan: str = "") -> dict[str, Any]:
-    """The web ideas and the shared layout every page is drawn from.
-
-    Kept with the project, so redrawing one page reuses them; made anew when every page is drawn again.
-    """
-    have = {} if fresh else {
-        "ideas": session.read_record(SRS_DIR, WIREFRAME_SYSTEM, "ideas.md", fallback="") or "",
-        "layout": session.read_record(SRS_DIR, WIREFRAME_SYSTEM, "layout.html", fallback="") or "",
-    }
-    made = wireframe_brief.prepare(doc, docs, have,
-                                   (lambda _text: None) if quiet else lambda text: bus.log(project, "INFO", text),
-                                   plan=_plan_sections(plan)[0], project=project)
-    for name, file in (("ideas", "ideas.md"), ("layout", "layout.html")):
-        if name in made["new"]:
-            path = session.record_path(SRS_DIR, WIREFRAME_SYSTEM, file)
-            path.write_text(made[name], encoding="utf-8")
-            if not quiet:
-                bus.file_written(project, path.relative_to(session.workspace).as_posix(), made[name], note="written")
-    return made
-
-
-_PLAN_PAGE = re.compile(r"^###\s+`?(/[^`\s]*)`?", re.MULTILINE)
-
-
-def _plan_sections(plan: str) -> tuple[str, dict[str, str]]:
-    """The wireframe plan's shared part, and each page's own part by route."""
-    text = str(plan or "")
-    found = list(_PLAN_PAGE.finditer(text))
-    first = found[0].start() if found else len(text)
-    pages_at = re.search(r"^##\s+Pages\b", text, re.MULTILINE)
-    shared = text[:pages_at.start() if pages_at and pages_at.start() < first else first].strip()
-    sections: dict[str, str] = {}
-    for index, match in enumerate(found):
-        end = found[index + 1].start() if index + 1 < len(found) else len(text)
-        chunk = text[match.start():end]
-        after = re.search(r"^##\s", chunk[3:], re.MULTILINE)
-        sections[match.group(1).rstrip("/") or "/"] = (chunk[:after.start() + 3] if after else chunk).strip()
-    return shared, sections
-
-
-def _plan_for_page(plan: str, route: str) -> str:
-    """What one page is drawn from: the plan's shared part and the page's own part, or the whole plan if it has none."""
-    if not str(plan or "").strip():
-        return ""
-    shared, sections = _plan_sections(plan)
-    own = sections.get(str(route).rstrip("/") or "/")
-    return f"{shared}\n\n{own}".strip() if own else str(plan)[:12000]
-
-
-def _wireframe_plan(session: ProjectSession, project: str, doc: dict, approved: dict, fresh: bool,
-                    quiet: bool = False) -> str:
-    """The plan every wireframe is drawn from, made silently by the project's agent before any page — like the builder's.
-
-    It reads app.md and the site map, then sets out the shells and navigation and, for every route, what the page holds
-    and where each action leads. Kept with the project, so one page redrawn later follows the same plan. A plan that
-    cannot be made never stops the drawing: each page is then drawn from its own record, as before.
-    """
-    saved = "" if fresh else str(session.read_record(SRS_DIR, WIREFRAME_SYSTEM, "plan.md", fallback="") or "")
-    planner = getattr(session, "plan_focused_task", None)
-    if saved.strip() or not callable(planner):
-        return saved
-    guide = auth_guide.staged_for(session.workspace, doc)
-    routes = "\n".join(
-        f"- `{page['route']}` — {page.get('page_name') or page['route']} — "
-        + (("signed in: " + (", ".join(map(str, page.get("allowed_roles") or [])) or "any signed-in role"))
-           if page.get("login_required") else "no sign-in")
-        + (f" — sections: {', '.join(wireframe_brief.page_lines(page.get('sections')))}" if page.get("sections") else "")
-        + (f" — functions: {', '.join(wireframe_brief.page_lines(page.get('functions')))}" if page.get("functions") else "")
-        for page in _wireframe_pages(doc, approved))
-    flows = "\n".join(
-        f"- {flow['workflow_name']} ({flow.get('who') or 'anyone'}): "
-        + " → ".join(f"{step['step'][:90]} [{step['route']}]" for step in flow["steps"])
-        for flow in journeys.user_journeys_for(doc)) or "(the specification lists no journeys)"
-    if not quiet:
-        bus.phase(project, "wireframes", "Planning the wireframes",
-                  detail="Reading app.md and the site map, then planning every page and how the pages connect.")
-    try:
-        plan = planner(prompts.load("srs/wireframe-plan", routes=routes, journeys=flows,
-                                    auth=(f"- `{guide}` — how signing in, roles, each role's dashboard and the "
-                                          "signed-in and signed-out navigation work\n") if guide else ""),
-                       subject="the wireframes")
-    except RunCancelled:
-        raise
-    except Exception as exc:  # noqa: BLE001 - the pages can still be drawn from their own records
-        if not quiet:
-            bus.log(project, "WARN", f"Could not plan the wireframes ({str(exc)[:160]}); "
-                                     "drawing each page from its own record.")
-        return ""
-    path = session.write_record(SRS_DIR, WIREFRAME_SYSTEM, "plan.md", data=plan)
-    if not quiet:
-        bus.file_written(project, path.relative_to(session.workspace).as_posix(), plan, note="written")
-    return plan
-
-
-def handoff_docs(session: ProjectSession) -> dict[str, str]:
-    """The handoff markdown, read off disk.
-
-    Every stage after the specification works from these rather than from the
-    specification being pasted into its prompt again — which is what keeps the
-    wireframes, the prototype and the build reading the same contract.
-    """
-    folder = session.record / SRS_DIR / "handoff"
-    out: dict[str, str] = {}
-    for name in handoff_files.HANDOFF_FILES:
-        path = folder / name
-        if path.is_file():
-            out[name] = path.read_text(encoding="utf-8", errors="replace")
-    return out
-
-
 def _write_handoff(session: ProjectSession, project: str, doc: dict, record: dict) -> dict:
     """What every later stage consumes, derived from the document it must honour."""
-    from prototype_agent import design as design_stage
+    from . import interview
 
     stack = str(record.get("stack") or "")
-    design = design_stage.approved_spec(project) or None
 
-    # app.md and sitemap.md are projections, not model output. A document the
-    # model writes can truncate, and these are the contract the build reads.
-    for name, body in handoff_files.render_all(doc, stack, design).items():
+    # app.md and builder.md are projections, not model output. A document the
+    # model writes can truncate, and these are the contract the stages read.
+    # app.md carries what the customer said in their own words: the idea and the interview.
+    for name, body in handoff_files.render_all(doc, stack, str(record.get("idea") or ""),
+                                               interview.full_transcript(project)).items():
         path = session.record_path(SRS_DIR, "handoff", name)
         path.write_text(body, encoding="utf-8")
         bus.file_written(project, path.relative_to(session.workspace).as_posix(),
@@ -1073,9 +836,9 @@ def generate(project: str) -> dict[str, Any]:
             f"{summary['functional']} functional and {summary['non_functional']} "
             f"non-functional requirements, {summary['tables']} tables, "
             f"{summary['roles']} roles, {summary['diagrams']} diagrams. "
-            f"The handoff documents are at .agentforge/srs/handoff/ — app.md, "
-            f"sitemap.md, prototype.md and builder.md. Read those rather than "
-            f"asking for the specification again.")
+            f"The handoff documents are at .agentforge/srs/handoff/ — app.md (what the "
+            f"customer asked for, and the site map) and builder.md (the full specification). "
+            f"Read those rather than asking for the specification again.")
         session.finish(f"Specification written in {elapsed}s.")
         bus.sync_state(project, "clean", "Specification written",
                        source="srs", srs_status="completed")
@@ -1090,25 +853,6 @@ def generate(project: str) -> dict[str, Any]:
         bus.sync_state(project, "failed", str(exc)[:300], error=str(exc)[:300],
                        source="srs", srs_status="failed")
         raise
-
-
-def _forget_stale_wireframes(session: ProjectSession, screens: list[dict]) -> None:
-    """Delete drawings whose route the specification no longer has.
-
-    A regenerated specification renames and drops routes, and the pages drawn for
-    the old ones stay on disk looking like part of the current set.
-    """
-    folder = session.record / SRS_DIR / "wireframes"
-    if not folder.is_dir():
-        return
-    keep = {str(row.get("file") or "").rsplit("/", 1)[-1] for row in screens}
-    keep.add("index.json")
-    for path in folder.iterdir():
-        if path.is_file() and path.name not in keep:
-            try:
-                path.unlink()
-            except OSError:
-                pass
 
 
 def _slug_words(value: str) -> list[str]:
@@ -1842,252 +1586,49 @@ def agent_handoff(project: str) -> dict[str, Any]:
     return {"files": files, "prompt": data.get("prompt", "")}
 
 
-def wireframes(project: str) -> dict[str, Any]:
-    """The drawings and the journeys, in the shape the studio's screens read.
+def screens(project: str) -> list[dict]:
+    """Every screen the specification names, and any the approved plan has that a draft left out: the pages the wireframes and the
+    prototype are made of."""
+    doc = document(project).get("srs_document", {})
+    return _wireframe_pages(doc, plan_stage.approved_plan(project))
 
-    `pages` with `page_name` and `has_html` feeds the wireframe grid; `journeys`
-    feeds the User Journey view, which shows nothing at all without it.
+
+def wireframes(project: str) -> dict[str, Any]:
+    """The wireframe pages and the journeys, in the shape the studio's screens read.
+
+    `pages` has one row for every screen: `has_html` says its page is written in the wireframe app and the app is bundled, so the
+    studio can show it. `journeys` feeds the User Journey view.
     """
     session = session_for(project)
-    index = session.read_record(*WIREFRAME_INDEX, fallback=None)
-    rows = (index or {}).get("screens") or []
     doc = document(project).get("srs_document", {})
-    by_route = {str(p.get("route")): p for p in _wireframe_pages(
-        doc, plan_stage.approved_plan(project))}
-    indexed = {str(row.get("route")): row for row in rows}
-    drawing = bool((index or {}).get("drawing") and session.stage in ("srs", "wireframes"))
+    app = web_app.app_dir(session.workspace, "wireframe")
+    rows = screens(project)
+    files = web_app.page_files([str(p["route"]) for p in rows])
+    bundled = web_app.built(app)
+    state = session.read_record("wireframe", "state.json", fallback=None) or {}
+    drawing = session.stage in ("srs", "wireframes")
 
     pages = []
-    for route, page in by_route.items():
-        row = indexed.get(route, {})
-        file = session.workspace / str(row.get("file")) if row.get("file") else None
-        has_html = bool(file and file.is_file() and file.stat().st_size)
+    for page in rows:
+        route = str(page["route"])
+        written = any((app / "src" / "pages" / f"{files[route]}{ext}").is_file() for ext in (".tsx", ".jsx"))
         pages.append({
             "route": route,
-            "page_name": row.get("name") or page.get("page_name") or route,
+            "page_name": page.get("page_name") or route,
             "page_type": page.get("page_type") or "",
             "login_required": bool(page.get("login_required")),
             "roles": page.get("allowed_roles") or [],
             "functions": page.get("functions") or [],
-            "slug": row.get("slug") or _slug(route),
-            "has_html": has_html,
-            "have": has_html,
-            "drawing": bool(drawing and row.get("drawing")),
-            "error": row.get("error") or "",
+            "slug": files[route],
+            "has_html": bool(written and bundled),
+            "have": bool(written and bundled),
+            "drawing": bool(drawing and not written),
+            "error": str(state.get("error") or ""),
         })
-    return {"pages": pages, "wireframes": pages, "screens": pages, "drawing": drawing,
+    return {"pages": pages, "wireframes": pages, "screens": pages, "drawing": drawing, "built": bundled,
+            "version": int((app / web_app.BUNDLE).stat().st_mtime) if bundled else 0,
             "journeys": journeys.user_journeys_for(doc),
-            "version": doc.get("version", ""), "generated_from": "srs"}
-
-
-def wireframe_html(project: str, route: str) -> str:
-    session = session_for(project)
-    index = session.read_record(*WIREFRAME_INDEX, fallback=None) or {}
-    wanted = str(route or "/")
-    for row in (index.get("screens") or []):
-        if str(row.get("route")) == wanted:
-            path = session.workspace / str(row.get("file") or "")
-            if path.is_file():
-                return path.read_text(encoding="utf-8")
-    raise FileNotFoundError(f"no wireframe for {wanted}")
-
-
-def save_wireframe_html(project: str, route: str, html: str) -> dict[str, Any]:
-    session = session_for(project)
-    index = session.read_record(*WIREFRAME_INDEX, fallback=None) or {}
-    for row in (index.get("screens") or []):
-        if str(row.get("route")) == str(route):
-            path = session.workspace / str(row.get("file") or "")
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(html, encoding="utf-8")
-            bus.file_written(project, str(row.get("file")), html,
-                             note="edited", agent=bus.DESIGNER)
-            return {"ok": True, "route": route}
-    raise FileNotFoundError(f"no wireframe for {route}")
-
-
-def ai_edit_wireframe(project: str, route: str, prompt: str) -> dict[str, Any]:
-    """Apply one fast AI revision to exactly one saved wireframe page.
-
-    This is intentionally not a project task: there is no plan, SRS mutation,
-    prototype regeneration, or permission to write any file except the chosen
-    wireframe HTML.  The model receives the current page as its edit buffer;
-    Python validates the replacement and performs the single controlled write.
-    """
-    request = " ".join(str(prompt or "").split())
-    if not request:
-        raise ValueError("describe the wireframe change first")
-    if len(request) > 4000:
-        raise ValueError("keep the wireframe request under 4,000 characters")
-
-    session = session_for(project)
-    index = session.read_record(*WIREFRAME_INDEX, fallback=None) or {}
-    wanted = str(route or "/")
-    row = next((item for item in (index.get("screens") or [])
-                if str(item.get("route") or "") == wanted), None)
-    if not row:
-        raise FileNotFoundError(f"no wireframe for {wanted}")
-    path = session.workspace / str(row.get("file") or "")
-    if not path.is_file():
-        raise FileNotFoundError(f"no wireframe for {wanted}")
-
-    current = path.read_text(encoding="utf-8")
-    doc = document(project).get("srs_document", {})
-    # Use the same completeness floor as a full wireframe draw.  A direct edit
-    # may redesign the page, but must still return a usable whole screen.
-    expected = max(
-        completeness.WIREFRAME_FLOOR,
-        completeness._page_weight(doc, wanted) * completeness.WIREFRAME_CHARS_PER_SECTION,
-    )
-    minimum = max(expected, min(len(current), 12_000))
-    instruction = f"""You are revising one existing low-fidelity HTML wireframe.
-
-Work only on the current page for route {wanted!r}. Do not change a plan, SRS,
-prototype, other page, or any file. Keep it a monochrome low-fidelity sketch:
-simple borders, placeholders, labels, and behaviour notes; no polished visual
-design, imagery, colour system, scripts, or external assets. Preserve useful
-existing content and form behaviour unless the request changes it.
-
-The user request is:
-{request}
-
-Return a complete replacement HTML document only, including inline CSS.
-
-Current page HTML:
-```html
-{current}
-```"""
-    bus.agent_msg(project, f"Updating wireframe {wanted} from a direct page request.",
-                  title="Wireframe AI update", kind="narration")
-    html = llm.complete_html(
-        system=prompts.load("srs/system"),
-        user=instruction,
-        minimum=minimum,
-        label=f"wireframe_ai_edit:{wanted}",
-        attempts=2,
-        project=project,
-    )
-    gaps = completeness.wireframe_depth([(wanted, html)], doc)
-    if gaps:
-        raise ValueError("The AI update did not produce a complete wireframe: " + "; ".join(gaps[:3]))
-
-    path.write_text(html, encoding="utf-8")
-    relative = path.relative_to(session.workspace).as_posix()
-    bus.file_written(project, relative, html, note="AI updated", agent=bus.DEVELOPER)
-    bus.log(project, "SUCCESS", f"Wireframe AI update · {wanted} ({len(html):,} characters)", agent=bus.DEVELOPER)
-    return {"ok": True, "route": wanted, "file": relative}
-
-
-def _generate_wireframes(session: ProjectSession, project: str, doc: dict,
-                         approved: dict, route: str = "", request: str = "", quiet: bool = False) -> int:
-    """Draw every approved route, saving progress after each independent page."""
-    pages = _wireframe_pages(doc, approved)
-    previous = session.read_record(*WIREFRAME_INDEX, fallback=None) or {}
-    old = {str(row.get("route")): row for row in previous.get("screens") or []}
-    selected = [p for p in pages if not route or str(p.get("route")) == route]
-    if not selected:
-        raise FileNotFoundError(f"no page to draw for {route or 'this project'}")
-    docs = handoff_docs(session)
-    if not docs:
-        raise ValueError("the SRS handoff files are missing")
-
-    selected_routes = {str(p["route"]) for p in selected}
-    rows = []
-    for page in pages:
-        page_route = str(page["route"])
-        row = dict(old.get(page_route) or {})
-        row.update({"route": page_route, "name": page.get("page_name") or page_route,
-                    "slug": row.get("slug") or _slug(page_route),
-                    "file": row.get("file") or
-                    f".agentforge/srs/wireframes/{_slug(page_route)}.html"})
-        if page_route in selected_routes:
-            row.update({"drawing": True, "error": ""})
-        rows.append(row)
-    state = {"screens": rows, "drawing": True}
-    lock = threading.Lock()
-    session.write_record(*WIREFRAME_INDEX, data=state)
-    if not quiet:
-        bus.phase(project, "wireframes", "Drawing the wireframes",
-                  detail=f"{len(selected)} page(s) from the approved plan and SRS handoff.")
-        bus.agent_msg(project, f"Drawing {len(selected)} wireframe page(s) from the approved SRS and handoff.",
-                      title="Wireframe generation", kind="narration")
-
-    def update(page: dict, result: dict | None = None, error: Exception | None = None) -> None:
-        with lock:
-            row = next(r for r in rows if r["route"] == str(page["route"]))
-            if result:
-                row.update(result)
-            row["drawing"] = False
-            row["error"] = str(error)[:300] if error else ""
-            session.write_record(*WIREFRAME_INDEX, data=state)
-
-    system: dict[str, str] = {}
-    # Only a single-route draw can safely stream — see _draw_page's own note.
-    stream_this = len(selected) == 1
-
-    def draw(page: dict) -> dict | None:
-        try:
-            result = _draw_page(session, project, doc, page, docs, request, system,
-                                quiet=quiet, stream=stream_this)
-            update(page, result=result)
-            return result
-        except RunCancelled:
-            raise
-        except Exception as exc:  # one failed route must not hide the others
-            update(page, error=exc)
-            if not quiet:
-                bus.log(project, "WARN", f"Wireframe {page.get('route')} failed: {exc}")
-            return None
-
-    try:
-        # Before any page: a silent plan of every page, then ideas from the web and the one layout every page starts
-        # from (all kept when a single page is redrawn).
-        plan = _wireframe_plan(session, project, doc, approved, fresh=not route, quiet=quiet)
-        if not quiet:
-            bus.phase(project, "wireframes", "Preparing the design system",
-                      detail="Looking up how products like this lay out their screens, then drawing the shared layout.")
-        system.update(_wireframe_system(session, project, doc, docs, fresh=not route, quiet=quiet, plan=plan))
-        system["plan"] = plan
-        results = llm.in_lanes(selected, draw)
-    finally:
-        state["drawing"] = False
-        session.write_record(*WIREFRAME_INDEX, data=state)
-        if not route:
-            _forget_stale_wireframes(session, rows)
-    count = sum(bool(result) for result in results)
-    if not quiet:
-        bus.phase(project, "wireframes", "Drawing the wireframes", status="complete",
-                  detail=f"{count} of {len(selected)} pages drawn.")
-        bus.agent_msg(project, f"{count} of {len(selected)} wireframes are ready in the "
-                               f"Wireframe tab. Open a page to edit it."
-                               + (" Retry any page that failed." if count < len(selected) else ""),
-                      title="Wireframes ready" if count == len(selected) else "Wireframes need attention")
-    return count
-
-
-def redraw(project: str, route: str = "", quiet: bool = False) -> dict[str, Any]:
-    """Draw one page again, or every page, each on its own call."""
-    session = session_for(project)
-    doc = document(project).get("srs_document", {})
-    if not quiet:
-        session.begin("wireframes", role=bus.DEVELOPER)
-    try:
-        request = prompts.load("srs/wireframe-redraw", route=route) if quiet and route else ""
-        count = _generate_wireframes(session, project, doc,
-                                     plan_stage.approved_plan(project), route=route,
-                                     request=request, quiet=quiet)
-        if not quiet:
-            session.finish(f"{count} wireframe(s) drawn.")
-        return wireframes(project)
-    except RunCancelled:
-        if not quiet:
-            session.stage = "idle"
-            session.save_context()
-        raise
-    except Exception as exc:  # noqa: BLE001
-        if not quiet:
-            session.fail(str(exc))
-        raise
+            "srs_version": doc.get("version", ""), "generated_from": "srs"}
 
 
 def detail(project: str) -> dict[str, Any]:
@@ -2152,35 +1693,16 @@ def results(project: str) -> dict[str, Any]:
 
 
 def approve(project: str, prompt: str = "") -> dict[str, Any]:
+    """The specification is approved: the wireframes are drawn from its app.md (see `wireframe.py`)."""
+    from . import wireframe
+
     if not has_document(project):
         raise ValueError("there is no specification to approve yet")
     session = session_for(project)
     if session.stage in ("srs", "wireframes"):
         raise ValueError("wait for the current specification or wireframe run to finish")
-    request = str(prompt or WIREFRAME_APPROVAL_PROMPT).strip()
     store.update(project, status="approved")
     store.advance(project, "design")
-    bus.log(project, "SUCCESS", "SRS approved — drawing HTML wireframes from the plan and handoff files.")
-    session.begin("wireframes", role=bus.DEVELOPER)
-    bus.sync_state(project, "running", "Drawing approved wireframes", source="wireframe")
-    try:
-        doc = document(project)["srs_document"]
-        drawn = _generate_wireframes(session, project, doc,
-                                     plan_stage.approved_plan(project),
-                                     request=request)
-        total = wireframes(project)["pages"]
-        ready = sum(bool(row["has_html"]) for row in total)
-        session.finish(f"{ready} of {len(total)} wireframe(s) ready.")
-        bus.sync_state(project, "clean", "Wireframes ready", source="wireframe")
-        return {"ok": True, "project": project, "drawn": drawn,
-                "ready": ready, "total": len(total)}
-    except RunCancelled:
-        session.stage = "idle"
-        session.save_context()
-        bus.sync_state(project, "paused", "Wireframe generation stopped.", source="wireframe")
-        raise
-    except Exception as exc:  # noqa: BLE001
-        session.fail(str(exc))
-        bus.sync_state(project, "failed", str(exc)[:300], source="wireframe",
-                       error=str(exc)[:300])
-        raise
+    bus.log(project, "SUCCESS", "SRS approved — drawing the wireframes from app.md.")
+    result = wireframe.run(project, str(prompt or "").strip())
+    return {**result, "drawn": result.get("ready", 0)}

@@ -30,7 +30,7 @@ from qa_agent import report_pdf
 from qa_agent import verify as qa
 from srs_agent import document as srs_document
 
-from . import bus, changes, cli_monitor, cli_signin, config, connection, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, workspace_picker
+from . import bus, changes, cli_monitor, cli_signin, config, connection, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, web_app, workspace_picker
 from . import database_rows as database_rows_module
 from .session import session_for
 
@@ -703,8 +703,7 @@ def files(ctx: dict) -> Any:
         if root.is_dir():
             return {p.relative_to(session.workspace).as_posix():
                     p.read_text(encoding="utf-8", errors="replace")
-                    for p in sorted(root.rglob("*")) if p.is_file()
-                    and p.stat().st_size < 400_000}
+                    for p in web_app.source_files(root) if p.stat().st_size < 400_000}
     return builder.files(project)
 
 
@@ -941,14 +940,6 @@ def srs_pdf(ctx: dict) -> Any:
                "application/pdf", "SRS.pdf")
 
 
-@route("GET", r"/srs/projects/(?P<project>[^/]+)/wireframes/html")
-def wireframe_page(ctx: dict) -> Any:
-    project = _project(ctx)
-    route_name = str(ctx.get("_query", {}).get("route") or "/")
-    return Raw(srs_document.wireframe_html(project, route_name).encode("utf-8"),
-               "text/html; charset=utf-8")
-
-
 # The rest of `/srs/...` is the SRS router, read directly on GET. `jobs` is
 # excluded because the job endpoints below own that prefix; without it, the
 # catch-all answers every poll with "no SRS route for /jobs/...".
@@ -961,25 +952,25 @@ def srs_get(ctx: dict) -> Any:
 # the prototype
 # =========================================================================
 
-@route("GET", r"/prototype/(?P<project>[^/]+)/(?P<name>.+)")
-def prototype_file(ctx: dict) -> Any:
-    """The prototype as a small static site.
+@route("GET", r"/web/(?P<project>[^/]+)/(?P<kind>wireframe|prototype)/status")
+def web_app_status(ctx: dict) -> Any:
+    """Whether the wireframes or the prototype is bundled yet, and when (what the studio's frame reloads on)."""
+    app = web_app.app_dir(session_for(_project(ctx)).workspace, ctx["_match"].group("kind"))
+    built = web_app.built(app)
+    return {"built": built, "stale": built and web_app.stale(app),
+            "version": int((app / web_app.BUNDLE).stat().st_mtime) if built else 0}
 
-    The studio points an <iframe> straight at these URLs and lets the pages link
-    to each other, so every file under `.agentforge/prototype/` — the pages, the
-    stylesheet, the script, the images — is served at its own path.
-    """
+
+@route("GET", r"/web/(?P<project>[^/]+)/(?P<kind>wireframe|prototype)")
+def web_app_page(ctx: dict) -> Any:
+    """The wireframes or the prototype: one page, the bundled React app. The studio frames it and picks the screen with the
+    address hash (`#/orders`); `?as=<role or email>` opens a prototype signed in."""
     project = _project(ctx)
-    name = unquote(ctx["_match"].group("name")).split("?")[0]
-    body, kind = prototyper.asset(project, name)
-    return Raw(body, kind)
-
-
-@route("GET", r"/prototype/(?P<project>[^/]+)")
-def prototype_index(ctx: dict) -> Any:
-    project = _project(ctx)
-    body, kind = prototyper.asset(project, "index.html")
-    return Raw(body, kind)
+    app = web_app.app_dir(session_for(project).workspace, ctx["_match"].group("kind"))
+    try:
+        return Raw(web_app.preview_page(web_app.page(app)), "text/html; charset=utf-8")
+    except FileNotFoundError as exc:
+        raise HttpError(404, f"the {ctx['_match'].group('kind')} is not drawn yet") from exc
 
 
 @route("POST", r"/design-theme-preview")

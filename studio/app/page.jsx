@@ -58,28 +58,11 @@ const STAGE_TAB = {
   deploy: 'deploy', deployment: 'deploy', done: 'versions',
 }
 
-const WIREFRAME_APPROVAL_PROMPT =
-  'Use the approved /plan as the scope. Read the site map and the application spec at ' +
-  '.agentforge/srs/handoff/ (sitemap.md, app.md). Before drawing anything, search the web ' +
-  '(the web_search tool) for how good products of this kind lay out their screens, and take ideas ' +
-  'from what you find. Then draw one creative, strictly black-and-white low-fidelity HTML wireframe ' +
-  'for every planned screen, with no page limit. A screen is one page with one job: tables, forms and ' +
-  'detail views each get a page of their own and are linked from the pages that lead to them, never ' +
-  'piled into another page; use a popup only for a short contextual action. Draw the shared layout ' +
-  'once and keep it identical on every page: the same navigation, header, sidebar and footer in the ' +
-  'same position, and the same buttons, forms, cards, tables and status marks. Use realistic sample ' +
-  'data and make the way from page to page obvious. Show the pages as a grid, one by one as they ' +
-  'finish, and enable editing.'
+// What starting each stage asks for: the first line of `prompts/wireframe/generate.md` and `prompts/prototype/generate.md`.
+// The agent reads the web-artifacts-builder skill and the files the earlier stages left; nothing more needs saying here.
+const WIREFRAME_APPROVAL_PROMPT = 'Generate low-fidelity wireframes.'
 
-const PROTOTYPE_APPROVAL_PROMPT =
-  'Generate a full prototype by reading the approved wireframes and SRS handoff files. ' +
-  'Make a coherent, world-class, realistic prototype using HTML, CSS and purposeful animation, with ' +
-  'consistent shared components and a clear end-to-end user flow. If sign-in exists, place clearly ' +
-  'labelled fictitious demo credentials for every approved role on the sign-in page, add convenient ' +
-  'role demo access, and make each role enter the correct home, navigation and permitted workflow. ' +
-  'Use relevant real sample images discovered through Google Images wherever the wireframes call for ' +
-  'photography or image content, with descriptive alt text and graceful fallbacks. Check for CSS, link, ' +
-  'interaction and runtime errors before finishing.'
+const PROTOTYPE_APPROVAL_PROMPT = 'Generate a high-fidelity, animated prototype.'
 
 async function retry(fn, times, waitMs) {
   let last
@@ -854,7 +837,7 @@ export default function Studio() {
                   <div className="mx-auto max-w-[1400px]">
                     <div className="mb-5">
                       <h1 className="text-lg font-semibold text-ink">Wireframes</h1>
-                      <p className="text-xs text-muted">All planned screens in a grid. Open a page to edit its layout.</p>
+                      <p className="text-xs text-muted">The wireframes, as a React app: click through the pages, or ask for a change.</p>
                     </div>
                     <Wireframes srs={{ project }} generating={syncState?.status === 'running' && ['srs', 'wireframe'].includes(syncState?.source)}
                                 approving={syncState?.status === 'running' && syncState?.source === 'prototype'}

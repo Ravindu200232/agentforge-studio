@@ -43,8 +43,10 @@ workspaces/<project>/           the application being built
     context.json                THE conversation, all five agents share it
     events.jsonl                what the studio's chat stream replays
     interview.json  plan.json  design.json
-    srs/        srs.json, SRS.md, diagrams/*.mmd, wireframes/*.html, handoff.json
-    prototype/  index.html, *.html, assets/, routes.json
+    srs/        srs.json, SRS.md, diagrams/*.mmd, handoff/{app,builder}.md, handoff.json
+    wireframe/  app/   a React app: src/pages/<page>.tsx for every screen, and bundle.html
+    prototype/  app/   the wireframe app, edited into the prototype; routes.json, demo-accounts.json
+    skills/     web-artifacts-builder   Anthropic's skill, staged for the agent to read
     build/      report.json
     qa/         report.json
     deploy/     run.json, events.jsonl
@@ -65,6 +67,27 @@ Each stage runs **silent plan mode**: the agent plans the work and immediately
 carries it out, because the studio approved the stage by starting it. What it
 leaves behind is files. A message typed into the chat stream afterwards edits
 those same files through `write_file` and `replace_text`.
+
+## Wireframes and prototype: one React app, edited
+
+Neither is hand-drawn HTML. Both are a small **React** app (TypeScript, Vite, Tailwind CSS, shadcn/ui, Lucide icons, Recharts) that
+the project's agent writes with its own file tools, following Anthropic's official
+[`web-artifacts-builder`](https://github.com/anthropics/skills/tree/main/skills/web-artifacts-builder) skill, which is kept unchanged in
+`prompts/skills/web-artifacts-builder/` and staged where the agent can read it.
+
+The handoff the agent works from is two files in `.agentforge/srs/handoff/`: a small **`app.md`**, which is what the customer asked
+for in their own words, who uses it and the site map, with nothing technical in it; and the developer's **`builder.md`**, the full
+specification, which the build, the tests and the deployment read.
+
+- **Wireframes**: the agent reads the skill and `app.md` and writes `src/pages/<page>.tsx` for every screen of the site map, in
+  low fidelity. The Studio only creates the app (the skill's first step: `server_modules/web_app.py`, from `server_modules/web_kit/`) and,
+  when the agent is done, bundles it with Vite into one self-contained `bundle.html` (the skill's last step), which the Wireframe tab frames.
+- **Prototype**: the approved wireframe app is copied, and the agent reads the skill, the wireframes, `app.md` and the approved design,
+  and edits the copy into a high-fidelity, animated prototype. The wireframes stay as they were. When the product has sign-in, the
+  prototype signs in with one fictitious account for each role (`src/demo.ts`), the same accounts the build is seeded with
+  (`demo-accounts.json`).
+- The packages (about 180 MB) are installed once into `<state>/web-kit` and linked into every app as `node_modules`; Node.js is the only
+  thing a computer needs. An app that does not bundle is given to the agent, with what the bundler said, to fix.
 
 ## Scaffold-first build and evidence
 
@@ -102,8 +125,10 @@ stage behaves is editing a file:
 | `plan/` | the approval plan a customer signs off, and its revisions |
 | `srs/` | the specification, its review and its repairs |
 | `srs/skills/` | the requirements standards, ported from `RP-SE-009` |
+| `skills/web-artifacts-builder/` | Anthropic's skill for building React apps (React, Vite, Tailwind, shadcn/ui), unchanged |
+| `wireframe/` | two short prompts: draw the wireframes, change them |
 | `design/` | the design contract; `design/themes/` holds 70 themes |
-| `prototype/` | the clickable prototype |
+| `prototype/` | two short prompts: make the prototype from the wireframes, change it |
 | `builder/` | the application build |
 | `testing/` | verification and its evidence |
 | `deployment/` | the deployment pipeline; `deployment/skills/` per target |
@@ -132,16 +157,14 @@ third of the product. This one counts the plan against the specification: a
 screen that was promised and dropped, a record with no table, a feature with no
 requirement, a requirement with no trace. What the plan already states is
 aligned into the document; anything still missing stops the stage and is
-recorded on the document. Each wireframe is also held to a depth floor for the
-sections its screen has, and a page drawn short goes back to the agent.
+recorded on the document.
 
 **The standards review** (`validation/review.py`) — a reviewer audits the draft
 against the requirements skills. Python decides whether it passed, not the model:
 a reviewer asked to judge its own judgement tends to accept.
 
 On this repository's bakery test project the coverage gate took the first draft
-from 1 diagram to 7, from 3 functional requirements to 6, and from seven
-four-line wireframes to seven drawn screens.
+from 1 diagram to 7 and from 3 functional requirements to 6.
 
 ## Layout
 
@@ -150,8 +173,8 @@ server.py                 starts the API (7824) and the live feed (7825)
 studio.ps1 / studio.bat   starts the backend and the studio together
 server_modules/           the shared runtime: bus, session, prompts, store,
                           validation, HTTP and WebSocket
-srs-agent/                interview, plan, specification, diagrams, wireframes
-prototype-agent/          design contract and clickable prototype
+srs-agent/                interview, plan, specification, diagrams, the handoff, the wireframes
+prototype-agent/          design contract and the React prototype
 builder-agent/            the application build
 qa-agent/                 verification and its evidence
 deploy-agent/             deployment and its pipeline record
@@ -180,7 +203,7 @@ the source guard, and context summarisation including a model that answers in
 `thinking` or returns nothing at all. `test_studio.py` covers the backend — the
 prompt packs, all four validation gates, the event shapes the studio's reducer
 reads, event persistence across a restart, and the route table. The `.mjs` files
-check the studio's own modules — the wireframe editor, preview addresses, the chat
+check the studio's own modules — preview addresses, the chat
 display, progress, attachments and uploads — without a browser.
 
 ## What has been run end to end

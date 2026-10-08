@@ -390,7 +390,7 @@ class StreamWriter:
     """One file's live stream, front to back — `start()`, `token()` per
     delta, `end()` once the true final content is known.
 
-    A focused call like `llm.complete_html()` can run several rounds behind
+    A focused call like `llm.complete()` can run several rounds behind
     one write: a tool round before the real content, a repair attempt if the
     first draft fails validation. Each of those calls `on_stream_start()`
     again before it writes — `start()` clears whatever this writer still had
@@ -443,6 +443,10 @@ class StreamWriter:
 
 def prototype_changed(project: str) -> None:
     emit({"type": "prototype", "project": project, "agent": DESIGNER})
+
+
+def wireframe_changed(project: str) -> None:
+    emit({"type": "wireframe", "project": project, "agent": DESIGNER})
 
 
 def change(project: str, change: dict, agent: str = DEVELOPER) -> None:

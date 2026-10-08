@@ -1,13 +1,3 @@
-# Update the prototype
-
 {{request}}
 
-Find only the prototype files affected by this request, read them and update them directly.
-
-Keep the approved wireframe structure, design system, routes, images and user flow unless the request changes one of them. If a new route is requested, add it to `routes.json`.
-
-Keep every page full of realistic sample data, and keep the role-based demo login as it is: `assets/flow.js` owns sign-in, sign-up (`data-sign-up`), `data-demo-login`, `data-user`, `data-roles` and `data-sign-out` — do not rewrite it, and keep every Sign out a `<button type="button" data-sign-out>`. Add no access guard: every page keeps opening directly when it is clicked.
-
-If your model can look at pictures you have a `screenshot` tool: after changing a page, use it on that page (desktop and mobile) to see that it looks right, and fix what you can see is wrong.
-
-Do not plan a new prototype, change unrelated pages, create tests, run tests, or perform a separate verification pass. Apply the update and finish.
+This is a change to the prototype: the React app in `{{app}}`, built with the web-artifacts-builder skill (`{{skill}}/SKILL.md`). Make it with the file tools, changing only what the request needs, and keep it a high-fidelity, animated prototype. Do not install packages or run the skill's scripts: the Studio bundles the app when you are done.

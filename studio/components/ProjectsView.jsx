@@ -16,7 +16,7 @@ function ProjectVisualThumbnail({ project, name }) {
 
   // Use explicit html_url from server or prototype endpoint
   const htmlUrl = project.html_url || (project.has_html !== false && !project.spec_only
-    ? `/__agentforge/api/prototype/${encodeURIComponent(name)}/index.html`
+    ? `/__agentforge/api/web/${encodeURIComponent(name)}/prototype`
     : null)
 
   useEffect(() => {

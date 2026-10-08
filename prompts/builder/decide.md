@@ -2,7 +2,7 @@
 
 The customer pressed Build. Before it is planned, decide whether anything needs the customer first. Nothing is built or changed now: you can read and search, not write or run anything.
 
-Read what you need to judge it, as far as the decision needs and no further (the plan reads the rest): `.agentforge/srs/handoff/app.md` and the rest of `.agentforge/srs/handoff/`, the approved prototype in `.agentforge/prototype/`, and the stack's build guides in `.agentforge/build/guides/`. The stack is **{{stack}}**.
+Read what you need to judge it, as far as the decision needs and no further (the plan reads the rest): `.agentforge/srs/handoff/app.md` (what the customer asked for, and the site map) and `.agentforge/srs/handoff/builder.md` (the full specification), the approved prototype in `.agentforge/prototype/`, and the stack's build guides in `.agentforge/build/guides/`. The stack is **{{stack}}**.
 
 {{direction}}
 

@@ -462,7 +462,7 @@ export default function PreviewPane({ hidden, onBuild }) {
     }
   }
 
-  /** Navigates preview to home when runtime is active; prototypes are served under /prototype/. */
+  /** Navigates preview to home when runtime is active. */
   useEffect(() => {
     const f = frameRef.current
     if (!f) return

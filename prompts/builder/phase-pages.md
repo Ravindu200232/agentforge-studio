@@ -4,7 +4,7 @@ Build these pages of the approved application now, each one completely and worki
 
 {{routes}}
 
-For each page, reopen its mapped prototype HTML and the shared prototype assets immediately before you build it, and reproduce the page at full parity (the parity map in the plan names the destination files). Reuse the shared components and styling from the foundation; add to them rather than copying.
+For each page, reopen its mapped prototype page (a `.tsx` file under `.agentforge/prototype/`) and the components it imports immediately before you build it, and reproduce the page at full parity (the parity map in the plan names the destination files). Reuse the shared components and styling from the foundation; add to them rather than copying.
 
 When a page is finished, record it in `.agentforge/build/progress.json`, merging into what is already there and never replacing it:
 

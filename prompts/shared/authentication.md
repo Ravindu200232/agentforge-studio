@@ -1,9 +1,9 @@
 # Authentication, roles and navigation
 
 The standard for how people sign up, sign in, stay signed in, see their own area and sign out — for the
-wireframes, the prototype and the real application alike. app.md decides **what exists**: the roles, which pages
+wireframes, the prototype and the real application alike. The specification (`.agentforge/srs/handoff/builder.md`) decides **what exists**: the roles, which pages
 need sign-in and for whom, whether people may create their own account and which role it gets, who creates the
-other accounts. This file decides **how it works**. Use only the roles, pages and fields app.md has; never add a
+other accounts. This file decides **how it works**. Use only the roles, pages and fields the specification has; never add a
 role, a page or a sign-in method of your own.
 
 ## 1. Two states, two navigation bars
@@ -56,13 +56,13 @@ navigation.
 - While it signs in, the button shows progress and cannot be pressed twice.
 - Someone already signed in who opens it goes straight to their dashboard.
 
-**Sign up** — only when app.md lets people create their own account.
-- Only the fields app.md lists for registration, at least name, email and password
+**Sign up** — only when the specification lets people create their own account.
+- Only the fields the specification lists for registration, at least name, email and password
   (`autocomplete="new-password"`). The rule is shown before they type (at least 8 characters, long passphrases
   welcome) and checked as they type; each error sits under its own field. Terms consent only when the product
   has terms.
-- The new account gets the role app.md gives sign-ups. A person never picks a privileged role (an administrator,
-  staff) for themselves; those accounts are created by whoever app.md says provisions them.
+- The new account gets the role the specification gives sign-ups. A person never picks a privileged role (an administrator,
+  staff) for themselves; those accounts are created by whoever the specification says provisions them.
 - "Already have an account? Sign in". After sign-up: straight into the new account's dashboard, or a "check your
   email" screen when the product verifies email first. Someone already signed in who opens it goes to their
   dashboard.
@@ -83,32 +83,14 @@ password follows the sign-up rule; afterwards the person signs in.
   to where they were.
 - Every step is a click away. No dead ends, no page without a way forward or back.
 
-## 5. In the wireframes
+## 5. In the wireframes and the prototype
 
-Plan and draw the public navigation and one signed-in navigation per role (section 1) as the shells of the
-shared layout. Every public page uses the public shell; every signed-in page uses its role's shell. Draw the
-sign-in, sign-up and reset pages with everything in section 3, their error states included, and each role's
-dashboard as section 2 describes, with that role's own content.
+The wireframes and the prototype are React apps made from the site map. They show what signing in looks like and carry no sign-in
+logic of their own: the prototype signs in with one fictitious account for each role, through `src/lib/session.tsx`, and shows the signed-in
+or signed-out navigation by who is signed in. None of it is protection. Nothing of it is copied into the real application except how it
+looks; how it works is section 6.
 
-## 6. In the prototype
-
-The prototype has no guards — every page opens directly — but it shows both states, from the demo session that
-`assets/flow.js` keeps:
-
-- `data-auth="in"` on anything only a signed-in person sees (the signed-in navigation, the account menu, "Go to my
-  dashboard"); `data-auth="out"` on anything only a signed-out person sees (Sign in, Sign up, "Create account").
-  flow.js shows and hides them by the session.
-- A public page carries both headers — the public one with `data-auth="out"` and the signed-in one with
-  `data-auth="in"` — so it shows the right one. A signed-in page carries only its role's navigation.
-- `data-roles="role_key"` on items only some roles see, `data-user="name"` (or `email`, `role`) where the person's
-  details show.
-- Every Sign out is a `<button type="button" data-sign-out>`, with no `data-roles`: flow.js ends the session and opens
-  the sign-in page.
-- The sign-up form is `<form data-sign-up>`: once it is valid, flow.js signs the new account in as the role sign-ups
-  get and opens that role's dashboard. No redirect, success panel or submit handler of the page's own.
-- Each role's dashboard is drawn as that role's real home, with its own sample data.
-
-## 7. In the real application
+## 6. In the real application
 
 **Sessions and access**
 - The session lives in a cookie the server sets: `HttpOnly`, `Secure` in production, `SameSite=Lax`, `Path=/`,

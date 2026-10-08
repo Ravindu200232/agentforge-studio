@@ -1,15 +1,16 @@
 """The handoff documents every later stage reads.
 
-RP-SE-009 hands its downstream agents a small set of markdown files rather than
-a block of context: `app.md` is the specification in prose, `sitemap.md` is the
-screens as tables, and `prototype.md` and `builder.md` are the instructions those
-two stages work from. Each one says "read app.md and sitemap.md" at the top, so
-the wireframes, the prototype and the build all read the same documents instead
-of being fed the specification again at every stage.
+There are two, and they are not alike.
 
-`app.md` and `sitemap.md` are projections — pure functions of the specification,
-written without a model call. That matters: a document a model writes can
-truncate, and these are the contract.
+`app.md` is small and has no technical detail: what the customer asked for, in their own words, who uses the product and
+the site map (every screen, who may open it, what is on it, and how people move through them). The wireframes and the
+prototype are made from it, so they are drawn from what the customer said and not from a specification.
+
+`builder.md` is the developer's: the specification in full (roles, access, data, API, requirements, workflows, rules),
+what done means and the traceability. The build, the tests and the deployment read it.
+
+Both are projections of what is already written, pure functions without a model call. That matters: a document a model
+writes can truncate, and these are the contract.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ import hashlib
 import json
 from typing import Any
 
-HANDOFF_FILES = ("app.md", "sitemap.md", "prototype.md", "builder.md")
+HANDOFF_FILES = ("app.md", "builder.md")
 
 
 def _rows(doc: dict, key: str) -> list[dict]:
@@ -31,12 +32,12 @@ def _cell(value: Any) -> str:
     return str(value or "").replace("|", "\\|").replace("\n", " ").strip()
 
 
-def app_md(doc: dict) -> str:
-    """The specification as prose. The document every other stage opens first."""
+def spec_md(doc: dict) -> str:
+    """The specification as prose: everything technical, for the developer."""
     summary = doc.get("app_summary") or {}
     auth = doc.get("authentication_requirement") or {}
     database = doc.get("database_design") or {}
-    out: list[str] = ["# Application Specification", "", "", "## Identity", ""]
+    out: list[str] = ["## Identity", ""]
 
     out += [f"- **App name**: {summary.get('app_name') or doc.get('project_name', '')}",
             f"- **Description**: {summary.get('short_description', '')}",
@@ -127,16 +128,7 @@ def app_md(doc: dict) -> str:
                        f"{row.get('requirement')}")
         out.append("")
 
-    if _rows(doc, "business_workflows"):
-        out += ["## Workflows", ""]
-        for flow in _rows(doc, "business_workflows"):
-            out.append(f"### {flow.get('workflow_name')} "
-                       f"({flow.get('who') or 'anyone'})")
-            steps = flow.get("steps") or []
-            routes = flow.get("step_routes") or []
-            routes = routes if len(routes) == len(steps) else []
-            out += [""] + [f"{i}. {step}" + (f" — on `{routes[i - 1]}`" if routes and routes[i - 1] else "")
-                           for i, step in enumerate(steps, 1)] + [""]
+    out += _workflows(doc, "## Workflows")
 
     for title, key, render in (
         ("Validation rules", "validation_rules",
@@ -173,93 +165,89 @@ def app_md(doc: dict) -> str:
     return "\n".join(out)
 
 
-def sitemap_md(doc: dict) -> str:
-    """Every screen, as the two tables the later stages read routes from."""
-    out = ["# Site Map", ""]
+def _workflows(doc: dict, heading: str) -> list[str]:
+    """How people move through the product: each workflow's steps, with the page each step happens on."""
+    flows = _rows(doc, "business_workflows")
+    if not flows:
+        return []
+    out = [heading, ""]
+    for flow in flows:
+        out.append(f"### {flow.get('workflow_name')} ({flow.get('who') or 'anyone'})")
+        steps = flow.get("steps") or []
+        routes = flow.get("step_routes") or []
+        routes = routes if len(routes) == len(steps) else []
+        out += [""] + [f"{i}. {step}" + (f" — on `{routes[i - 1]}`" if routes and routes[i - 1] else "")
+                       for i, step in enumerate(steps, 1)] + [""]
+    return out
 
+
+def _site_map(doc: dict) -> list[str]:
+    """Every screen, as the two tables the later stages read routes from."""
+    out: list[str] = []
     public = _rows(doc, "public_pages")
     if public:
-        out += ["## Public Pages", "", "| Page | Route | Sections | Functions |",
-                "|------|-------|----------|-----------|"]
+        out += ["### Public pages", "", "| Page | Route | Sections | What people can do |",
+                "|------|-------|----------|--------------------|"]
         for page in public:
             out.append(f"| {_cell(page.get('page_name'))} | `{_cell(page.get('route'))}` "
                        f"| {_cell(page.get('sections'))} | {_cell(page.get('functions'))} |")
         out.append("")
-
     protected = _rows(doc, "protected_pages")
     if protected:
-        out += ["## Protected Pages (Login Required)", "",
-                "| Page | Route | Allowed Roles | Sections | Functions |",
-                "|------|-------|---------------|----------|-----------|"]
+        out += ["### Pages people sign in to", "",
+                "| Page | Route | Who can open it | Sections | What people can do |",
+                "|------|-------|-----------------|----------|--------------------|"]
         for page in protected:
             out.append(f"| {_cell(page.get('page_name'))} | `{_cell(page.get('route'))}` "
                        f"| {_cell(page.get('allowed_roles'))} "
                        f"| {_cell(page.get('sections'))} | {_cell(page.get('functions'))} |")
         out.append("")
-
-    if _rows(doc, "business_workflows"):
-        out += ["## Journeys", ""]
-        for flow in _rows(doc, "business_workflows"):
-            out.append(f"- **{flow.get('workflow_name')}** ({flow.get('who') or 'anyone'}): "
-                       + " → ".join(flow.get("steps") or []))
-        out.append("")
-    return "\n".join(out)
+    return out
 
 
-def prototype_md(doc: dict, design: dict | None = None) -> str:
-    """What the prototype and wireframe stages work from."""
-    design = design or {}
-    out = ["# Design and HTML Prototype", "", "",
-           "Read `app.md` and `sitemap.md` for the whole application. Build every "
-           "specified screen as a complete, responsive HTML page, using CSS for its "
-           "design and JavaScript for working interactions. Start with `index.html` "
-           "and link the screens so the specified journeys can be explored. Use "
-           "meaningful content from the specification and include the relevant "
-           "loading, empty, error and success states. Keep shared visual choices in "
-           "one stylesheet and behaviour in local scripts. The prototype demonstrates "
-           "interactions with sample data. If authentication is specified, put a "
-           "clearly labelled panel of obviously fictitious demo credentials for every "
-           "approved role on the sign-in page, and route each demo role through its "
-           "correct navigation and permitted workflow; never include real secrets. "
-           "Use relevant real sample photography discovered through Google Images "
-           "where the wireframes require images, with direct HTTPS source URLs, alt "
-           "text and graceful fallbacks. Read the "
-           "existing files when continuing, and change only what the request needs.",
-           ""]
+def app_md(doc: dict, idea: str = "", said: str = "") -> str:
+    """What the product is, in the customer's words, and its site map. Small, and nothing technical in it.
 
-    if design:
-        out += ["## Design contract", "",
-                f"- **Theme**: {design.get('theme', '—')}",
-                f"- **Why**: {design.get('why', '')}",
-                f"- **Mode**: {design.get('mode', 'both')}", ""]
-        tokens = design.get("tokens") or {}
-        for scheme in ("light", "dark"):
-            palette = tokens.get(scheme) or {}
-            if palette:
-                out.append(f"- **{scheme.title()} tokens**: "
-                           + ", ".join(f"`{k}` {v}" for k, v in palette.items()))
-        for section in ("type", "shape", "motion", "components"):
-            if design.get(section):
-                out.append(f"- **{section.title()}**: "
-                           + json.dumps(design[section], ensure_ascii=False))
-        if design.get("direction"):
-            out += ["", design["direction"]]
-        out.append("")
+    `idea` is what the customer first asked for and `said` the interview as they answered it; both are theirs, so they are
+    quoted as they are.
+    """
+    summary = doc.get("app_summary") or {}
+    name = summary.get("app_name") or doc.get("project_name") or "The application"
+    out: list[str] = [f"# {name}", ""]
+    if summary.get("short_description"):
+        out += [str(summary["short_description"]).strip(), ""]
 
-    ui = doc.get("ui_ux_requirements") or {}
-    if ui:
-        out += ["## UI requirements", ""] + [f"- **{k}**: {v}" for k, v in ui.items()] + [""]
+    if str(idea or "").strip():
+        out += ["## What the customer asked for", "", str(idea).strip(), ""]
+    if str(said or "").strip() and str(said).strip() != "(nothing yet)":
+        out += ["## What the customer said when asked", "", str(said).strip(), ""]
+
+    users = ", ".join(str(u) for u in (summary.get("target_users") or []) if str(u).strip())
+    roles = _rows(doc, "roles")
+    if users or roles:
+        out += ["## Who uses it", ""]
+        if users:
+            out += [users, ""]
+        out += [f"- **{role.get('role_name')}** — {role.get('description', '')}".rstrip(" —") for role in roles]
+        if roles:
+            out.append("")
+
+    site_map = _site_map(doc)
+    if site_map:
+        out += ["## Site map", ""] + site_map
+
+    out += _workflows(doc, "## How people move through it")
     return "\n".join(out)
 
 
 def builder_md(doc: dict, stack: str) -> str:
-    """What the build and QA stages work from."""
+    """What the build, the tests and the deployment work from."""
     summary = doc.get("app_summary") or {}
     out = ["# Developer and QA Handoff", "", "",
            f"**Selected stack**: {stack}.", "",
-           "Read `app.md` and `sitemap.md`, then the generated files in "
-           "`.agentforge/prototype/`. Build the application in the selected stack "
-           "from that specification and the approved prototype. Preserve its screens, "
+           "Read `app.md` for what the product is and its site map, then the specification below, then the approved "
+           "prototype: a React app in `.agentforge/prototype/app/`, its pages under `src/`. Build the application in "
+           "the selected stack from that specification and the approved prototype. Preserve its screens, "
            "navigation, layout, content and interactions while connecting the real "
            "data. The planning and specification reviews have already happened; "
            "proceed with implementation without producing another product plan. Use "
@@ -270,6 +258,8 @@ def builder_md(doc: dict, stack: str) -> str:
            f"## What is being built", "",
            f"{summary.get('short_description', '')}", "",
            f"**Business goal.** {summary.get('business_goal', '')}", ""]
+
+    out += ["# The specification", ""] + spec_md(doc).splitlines() + [""]
 
     if _rows(doc, "acceptance_criteria"):
         out += ["## Done means", ""]
@@ -294,11 +284,9 @@ def manifest(doc: dict, stack: str) -> dict[str, Any]:
             "files": list(HANDOFF_FILES)}
 
 
-def render_all(doc: dict, stack: str, design: dict | None = None) -> dict[str, str]:
+def render_all(doc: dict, stack: str, idea: str = "", said: str = "") -> dict[str, str]:
     """Every handoff document, keyed by its filename."""
     return {
-        "app.md": app_md(doc),
-        "sitemap.md": sitemap_md(doc),
-        "prototype.md": prototype_md(doc, design),
+        "app.md": app_md(doc, idea, said),
         "builder.md": builder_md(doc, stack),
     }

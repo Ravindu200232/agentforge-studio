@@ -144,10 +144,9 @@ export const api = {
   previewLink: (project) => post('/preview-link', { project }),
   previewActivity: (project, runtimeId) => post(`/runtime/${encodeURIComponent(project)}/activity`, { runtimeId }),
 
-  // Look at a project's screens again with a model that can look at pictures. `what`: 'prototype' (every page), 'journeys'
-  // (the prototype's journeys, clicked through in a browser shown live, a picture at every step), 'tests' (the end-to-end
-  // tests' screenshots) or 'both'. `fix: false` only looks and reports; the model is the one the studio last used.
-  reviewScreens: (project, what = 'both', fix = true) => post('/review-screens', { project, what, fix }),
+  // Look at the end-to-end tests' screenshots again with a model that can look at pictures. `fix: false` only looks and
+  // reports; the model is the one the studio last used.
+  reviewScreens: (project, what = 'tests', fix = true) => post('/review-screens', { project, what, fix }),
   // "Try again", pressed while a run waits for a model service that is not answering: it asks again at once.
   connectionRetry: (project) => post('/connection/retry', { project }),
   deleteProject: (project) => post('/delete-project', { project }),
@@ -201,21 +200,20 @@ export const api = {
   wireframes: (owner) => (/^prj_/.test(String(owner || ''))
     ? api.srs(`/projects/${encodeURIComponent(owner)}/wireframes`)
     : req(`/project-wireframes/${encodeURIComponent(owner)}`)),
-  // Queue asynchronous prototype drawing jobs for specific routes or entire specifications.
-  drawWireframeHtml: (srsId, route = '', quiet = true) =>
-    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/html`, { route, quiet }),
-  // What the tools editor rearranged, as the page itself.
-  saveWireframeHtml: (srsId, route, html) =>
-    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/html/edit`, { route, html }),
-  // A direct, page-scoped request: it skips planning and replaces only this
-  // wireframe's saved HTML with the AI's revised low-fidelity page.
-  aiEditWireframeHtml: (srsId, route, prompt) =>
-    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/html/ai-edit`, { route, prompt }),
-  // Read straight from the agent rather than through a job: it is one page of
-  // HTML and it is what the <iframe> loads.
-  wireframeHtmlUrl: (srsId, route) =>
-    `${API}/srs/projects/${encodeURIComponent(srsId)}/wireframes/html`
-      + `?route=${encodeURIComponent(route)}`,
+  // Draw the wireframes again (a job), or carry on a run that was stopped.
+  buildWireframes: (srsId, prompt = '', resume = false) =>
+    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/build`, { prompt, resume }),
+  // One change to the wireframes, asked for in words; `route` when it is about one page.
+  editWireframe: (srsId, prompt, route = '') =>
+    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/edit`, { prompt, route }),
+  // The wireframes or the prototype is one bundled page the <iframe> loads; the screen is the address hash, and `version`
+  // (when the bundle was made) makes the frame load the new bundle after a change.
+  webUrl: (project, kind, route = '', version = 0, as = '') =>
+    `${API}/web/${encodeURIComponent(project)}/${kind}`
+      + (version || as ? `?${[version ? `v=${version}` : '', as ? `as=${encodeURIComponent(as)}` : ''].filter(Boolean).join('&')}` : '')
+      + (route ? `#${route}` : ''),
+  // Whether it is bundled, and when.
+  webStatus: (project, kind) => req(`/web/${encodeURIComponent(project)}/${kind}/status`),
 
   siteImages: (project) => req(`/site-images/${encodeURIComponent(project)}`),
   siteImageSave: (project, file, purpose = '') => Promise.resolve(tooBig(file)).then(big => {
