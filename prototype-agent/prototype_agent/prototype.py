@@ -128,7 +128,7 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str) -> list
         spec_path = f"{record}/input/design-spec.json"
         write("input/design-spec.json", json.dumps(spec, ensure_ascii=False, indent=2))
     customization = dict(design_stage.approved_customization(project) or {})
-    inputs = [f"- `{app_md_path}` — app.md, the approved application",
+    inputs = [f"- `{app_md_path}` — app.md: what the customer asked for, in their own words, and the site map",
               f"- `{spec_path}` — the approved design tokens"]
     if customization.get("design_md_workspace_path"):
         inputs.append(f"- `{customization['design_md_workspace_path']}` — the selected theme's guidance "

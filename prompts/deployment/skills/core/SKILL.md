@@ -34,7 +34,7 @@ back is recorded and the record is true. Those are kept below; these are the rul
    `build/`), otherwise run the production build once. Install dependencies only when that build needs them
    and `node_modules` is missing.
 3. **Read only what the deployment needs:** `package.json`, `.env.example`, the framework config, where the
-   code reads environment variables, the health route and `sitemap.md`. Not the whole specification, not the
+   code reads environment variables, the health route and the site map in `app.md`. Not the whole specification, not the
    tests, not every page's source. Never read a file twice.
 4. **Decide, do not interview.** Ask at most three questions in total (section 12); every other choice is a
    default, stated in the plan.
@@ -66,7 +66,7 @@ Deploying is planned from what the project really is. Read, in this order, and n
 
 1. The Studio's own record: `.agentforge/build/report.json` (what was built, the gaps it declared; a declared
    gap is a deployment risk), `.agentforge/qa/report.json` (what was tested; never re-run it),
-   `.agentforge/srs/handoff/app.md` and `sitemap.md` (the application's name, roles and routes), and whatever
+   `.agentforge/srs/handoff/app.md` (the application's name, roles and site map), and whatever
    a previous run left in `.agentforge/deploy/`.
 2. The application's deployment surface: `package.json` (name, author, scripts, engines, framework, package
    manager and lockfile), the framework config, `.env.example`, any `Dockerfile`, `vercel.json`,
@@ -207,7 +207,7 @@ each is recorded in `run.json` `checks` and `evidence` with the URL, the status 
 1. the home page: the expected status over TLS with a valid certificate, and content that is the
    application (not a platform default or error page);
 2. the health route (the application's own, or the minimal one the plan adds);
-3. one public route per area of `sitemap.md` that is not the home page (two at most);
+3. one public route per area of the site map in `app.md` that is not the home page (two at most);
 4. one protected route requested anonymously: it refuses the way the specification says (redirect to
    sign-in, 401 or 403), never a server error;
 5. one read from the database through the running application (an API route or a server-rendered page that

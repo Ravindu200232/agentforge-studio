@@ -5,7 +5,7 @@ Build it as a React app with the web-artifacts-builder skill. Read `{{skill}}/SK
     node {{skill}}/scripts/init-artifact.mjs {{app}}
     node {{skill}}/scripts/bundle-artifact.mjs {{app}}
 
-What the product is: `.agentforge/srs/handoff/app.md`. Its screens and how they connect: `.agentforge/srs/handoff/sitemap.md`.
+What the product is, in the customer's own words, and its site map: `.agentforge/srs/handoff/app.md`. Read it, and draw the wireframes from it.
 
 One page for each of these screens, all in the one app:
 

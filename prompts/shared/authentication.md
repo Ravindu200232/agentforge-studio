@@ -1,9 +1,9 @@
 # Authentication, roles and navigation
 
 The standard for how people sign up, sign in, stay signed in, see their own area and sign out in the real
-application. The wireframe and the prototype draw only what a page looks like; they carry no sign-in logic. app.md decides **what exists**: the roles, which pages
+application. The wireframe and the prototype draw only what a page looks like; they carry no sign-in logic. The specification (`.agentforge/srs/handoff/builder.md`) decides **what exists**: the roles, which pages
 need sign-in and for whom, whether people may create their own account and which role it gets, who creates the
-other accounts. This file decides **how it works**. Use only the roles, pages and fields app.md has; never add a
+other accounts. This file decides **how it works**. Use only the roles, pages and fields the specification has; never add a
 role, a page or a sign-in method of your own.
 
 ## 1. Two states, two navigation bars
@@ -56,13 +56,13 @@ navigation.
 - While it signs in, the button shows progress and cannot be pressed twice.
 - Someone already signed in who opens it goes straight to their dashboard.
 
-**Sign up** — only when app.md lets people create their own account.
-- Only the fields app.md lists for registration, at least name, email and password
+**Sign up** — only when the specification lets people create their own account.
+- Only the fields the specification lists for registration, at least name, email and password
   (`autocomplete="new-password"`). The rule is shown before they type (at least 8 characters, long passphrases
   welcome) and checked as they type; each error sits under its own field. Terms consent only when the product
   has terms.
-- The new account gets the role app.md gives sign-ups. A person never picks a privileged role (an administrator,
-  staff) for themselves; those accounts are created by whoever app.md says provisions them.
+- The new account gets the role the specification gives sign-ups. A person never picks a privileged role (an administrator,
+  staff) for themselves; those accounts are created by whoever the specification says provisions them.
 - "Already have an account? Sign in". After sign-up: straight into the new account's dashboard, or a "check your
   email" screen when the product verifies email first. Someone already signed in who opens it goes to their
   dashboard.

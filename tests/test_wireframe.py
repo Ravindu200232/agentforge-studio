@@ -127,7 +127,7 @@ class WireframeTests(unittest.TestCase):
         self.assertIn(".agentforge/skills/web-artifacts-builder/SKILL.md", request)
         self.assertIn("node .agentforge/skills/web-artifacts-builder/scripts/init-artifact.mjs .agentforge/wireframe/app", request)
         self.assertIn(".agentforge/srs/handoff/app.md", request)
-        self.assertIn(".agentforge/srs/handoff/sitemap.md", request)
+        self.assertNotIn("sitemap.md", request)
         self.assertIn("- `/` — Home — sections: hero, cake list; functions: browse cakes", request)
         self.assertIn("- `/orders` — Orders", request)
         self.assertIn("Ordering a cake", request)

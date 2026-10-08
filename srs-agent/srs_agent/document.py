@@ -630,14 +630,15 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
 
 def _write_handoff(session: ProjectSession, project: str, doc: dict, record: dict) -> dict:
     """What every later stage consumes, derived from the document it must honour."""
-    from prototype_agent import design as design_stage
+    from . import interview
 
     stack = str(record.get("stack") or "")
-    design = design_stage.approved_spec(project) or None
 
-    # app.md and sitemap.md are projections, not model output. A document the
-    # model writes can truncate, and these are the contract the build reads.
-    for name, body in handoff_files.render_all(doc, stack, design).items():
+    # app.md and builder.md are projections, not model output. A document the
+    # model writes can truncate, and these are the contract the stages read.
+    # app.md carries what the customer said in their own words: the idea and the interview.
+    for name, body in handoff_files.render_all(doc, stack, str(record.get("idea") or ""),
+                                               interview.full_transcript(project)).items():
         path = session.record_path(SRS_DIR, "handoff", name)
         path.write_text(body, encoding="utf-8")
         bus.file_written(project, path.relative_to(session.workspace).as_posix(),
@@ -848,9 +849,9 @@ def generate(project: str) -> dict[str, Any]:
             f"{summary['functional']} functional and {summary['non_functional']} "
             f"non-functional requirements, {summary['tables']} tables, "
             f"{summary['roles']} roles, {summary['diagrams']} diagrams. "
-            f"The handoff documents are at .agentforge/srs/handoff/ — app.md, "
-            f"sitemap.md, prototype.md and builder.md. Read those rather than "
-            f"asking for the specification again.")
+            f"The handoff documents are at .agentforge/srs/handoff/ — app.md (what the "
+            f"customer asked for, and the site map) and builder.md (the full specification). "
+            f"Read those rather than asking for the specification again.")
         session.finish(f"Specification written in {elapsed}s.")
         bus.sync_state(project, "clean", "Specification written",
                        source="srs", srs_status="completed")
