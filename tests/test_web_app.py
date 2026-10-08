@@ -232,6 +232,14 @@ class BundlingTests(Scratch):
     def test_the_preview_cannot_call_out(self):
         self.assertIn("connect-src 'none'", web_app.PREVIEW_POLICY)
         self.assertIn("default-src 'none'", web_app.PREVIEW_POLICY)
+        self.assertIn("https://fonts.googleapis.com", web_app.PREVIEW_POLICY)
+
+    def test_the_policy_is_the_first_thing_in_the_page(self):
+        page = web_app.preview_page(b"<!doctype html><html><head><title>x</title></head><body></body></html>")
+        head = page.index(b"<head>") + len(b"<head>")
+        self.assertTrue(page[head:].startswith(b'<meta http-equiv="Content-Security-Policy"'))
+        self.assertIn(b"connect-src 'none'", page)
+        self.assertTrue(web_app.preview_page(b"<p>no head</p>").startswith(b"<meta"))
 
 
 class KitTests(Scratch):

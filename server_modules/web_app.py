@@ -37,8 +37,8 @@ BUILT = ".built"
 # What is never copied from one app to another: the packages, and what a build leaves.
 _NOT_COPIED = ("node_modules", "dist", BUNDLE, BUILT)
 # Only the policy of the page the studio frames: the app can run scripts and style itself and show any picture, but it can
-# neither call out nor load anything else, so nothing it was written to do can reach the studio's own address.
-PREVIEW_POLICY = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+# neither call out nor load anything else (but Google's fonts), so nothing it was written to do can reach the studio's own address.
+PREVIEW_POLICY = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; "
                   "img-src * data: blob:; font-src * data:; media-src * data: blob:; connect-src 'none'; frame-src 'none'; "
                   "base-uri 'none'; form-action 'none'")
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)

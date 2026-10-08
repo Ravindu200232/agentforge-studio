@@ -203,20 +203,23 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, generating = fals
         </ul>
 
         <div className="flex min-h-0 min-w-0 flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate font-mono text-[11px] text-muted2">{current ? `${current.page_name} · ${current.route}` : route}</span>
+            {src && (
+              <span className="flex shrink-0 gap-1">
+                <button type="button" title="Reload" onClick={() => frame.current?.contentWindow?.location.reload()}
+                  className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06]"><RotateCw className="size-3.5" /></button>
+                <a href={src} target="_blank" rel="noreferrer" title="Open in its own window"
+                  className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06]"><ExternalLink className="size-3.5" /></a>
+              </span>
+            )}
+          </div>
           <div className="relative min-h-[420px] flex-1 overflow-hidden rounded-none border border-line bg-white">
             {src ? (
               <iframe ref={frame} key={data?.version} title="wireframes" src={src} className="absolute inset-0 h-full w-full border-0" />
             ) : (
               <div className="absolute inset-0 grid place-items-center bg-panel p-6 text-center text-[12px] text-muted">
                 {waiting ? 'Drawing…' : data?.pages?.[0]?.error || 'The wireframes are not drawn yet.'}
-              </div>
-            )}
-            {src && (
-              <div className="absolute right-2 top-2 flex gap-1">
-                <button type="button" title="Reload" onClick={() => frame.current?.contentWindow?.location.reload()}
-                  className="grid size-7 place-items-center rounded-md bg-black/60 text-white hover:bg-black/80"><RotateCw className="size-3.5" /></button>
-                <a href={src} target="_blank" rel="noreferrer" title="Open in its own window"
-                  className="grid size-7 place-items-center rounded-md bg-black/60 text-white hover:bg-black/80"><ExternalLink className="size-3.5" /></a>
               </div>
             )}
           </div>
