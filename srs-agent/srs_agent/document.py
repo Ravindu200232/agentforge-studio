@@ -1,28 +1,27 @@
 """The specification itself.
 
 Written as focused calls rather than as one agentic conversation, because the two
-produce very different documents. A single run asked to write the document, the
-diagrams and fourteen pages spends its output budget on the first few and
-truncates the rest — which is how a wireframe ends up four hundred characters
-long. So: one call for the document, one per diagram, one per page, and the
-independent ones run at the same time.
+produce very different documents. A single run asked to write the document and
+all of its diagrams spends its output budget on the first few and truncates the
+rest. So: one call for the document, one per diagram, and the independent ones run
+at the same time. (The wireframes that follow are not drawn here: the project's agent
+builds them as a React app, see `wireframe.py`.)
 
 Continuity does not come from a shared conversation here. It comes from the
 artifacts: the approved plan bounds the document, the document bounds the
-diagrams and the pages, and each call is given exactly the part it needs.
+diagrams, and each call is given exactly the part it needs.
 """
 from __future__ import annotations
 
 import copy
 import json
-import hashlib
 import re
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from server_modules import bus, config, journeys, llm, mermaid, prompts, reference_staging, store
+from server_modules import bus, config, journeys, llm, mermaid, prompts, reference_staging, store, web_app
 from server_modules.session import ProjectSession, RunCancelled, session_for
 from server_modules.validation import completeness, json_edits
 from server_modules.validation import corpus as corpus_rules
@@ -37,6 +36,7 @@ SRS_DIR = "srs"
 DOCUMENT = (SRS_DIR, "srs.json")
 HANDOFF = (SRS_DIR, "handoff.json")
 USER_JOURNEYS = (SRS_DIR, "user-journeys.json")
+
 # Every diagram the standards profile covers. Each is one call; the ones whose
 # evidence is missing come back as NOT_APPLICABLE and are recorded as such.
 DIAGRAM_KINDS = ("system_context", "use_case", "erd", "sequence", "activity",
@@ -136,10 +136,6 @@ def _srs_quality_reference() -> str:
 
 NOT_APPLICABLE = "NOT_APPLICABLE"
 
-# What approving the specification asks the wireframe stage for. The same words are the first line of
-# `prompts/wireframe/generate.md`, and `studio/app/page.jsx` sends the identical sentence.
-WIREFRAME_APPROVAL_PROMPT = "Generate a low-fidelity prototype."
-
 # --- reading ----------------------------------------------------------------
 
 def document(project: str) -> dict[str, Any]:
@@ -151,15 +147,6 @@ def document(project: str) -> dict[str, Any]:
 
 def has_document(project: str) -> bool:
     return bool(document(project).get("srs_document"))
-
-
-def _slug(route: str) -> str:
-    cleaned = str(route or "/").strip("/")
-    if not cleaned:
-        return "home"
-    stem = "".join(c if c.isalnum() else "_" for c in cleaned).strip("_") or "page"
-    # /a-b and /a_b must never overwrite one another's HTML.
-    return f"{stem}-{hashlib.sha1(str(route).encode('utf-8')).hexdigest()[:8]}"
 
 
 def _pages_of(doc: dict) -> list[dict]:
@@ -842,7 +829,7 @@ def generate(project: str) -> dict[str, Any]:
                       f"The specification is written in {elapsed}s: "
                       f"{summary['functional']} functional and {summary['non_functional']} "
                       f"non-functional requirements, {summary['tables']} tables, "
-                      f"{summary['diagrams']} diagrams. Approve it to build the wireframes.",
+                      f"{summary['diagrams']} diagrams. Approve it to draw the wireframes.",
                       title="Specification ready")
         session.note(
             f"The specification is written and is now the contract. "
@@ -1600,28 +1587,31 @@ def agent_handoff(project: str) -> dict[str, Any]:
 
 
 def screens(project: str) -> list[dict]:
-    """Every screen the product has: the specification's pages and any plan screen it left out."""
+    """Every screen the specification names, and any the approved plan has that a draft left out: the pages the wireframes and the
+    prototype are made of."""
     doc = document(project).get("srs_document", {})
     return _wireframe_pages(doc, plan_stage.approved_plan(project))
 
 
 def wireframes(project: str) -> dict[str, Any]:
-    """The wireframe app and the journeys, in the shape the studio's screens read.
+    """The wireframe pages and the journeys, in the shape the studio's screens read.
 
-    `pages` is the screen list; the wireframe is one app, so a page `has_html` (kept as the name the
-    screens read) once that app is built. `journeys` feeds the User Journey view, which shows nothing
-    at all without it.
+    `pages` has one row for every screen: `has_html` says its page is written in the wireframe app and the app is bundled, so the
+    studio can show it. `journeys` feeds the User Journey view.
     """
-    from server_modules import web_app
-
     session = session_for(project)
     doc = document(project).get("srs_document", {})
-    built = web_app.built(project, "wireframe")
-    drawing = session.stage == "wireframes"
-    error = str((session.read_record("wireframe", "state.json", fallback=None) or {}).get("error") or "")
+    app = web_app.app_dir(session.workspace, "wireframe")
+    rows = screens(project)
+    files = web_app.page_files([str(p["route"]) for p in rows])
+    bundled = web_app.built(app)
+    state = session.read_record("wireframe", "state.json", fallback=None) or {}
+    drawing = session.stage in ("srs", "wireframes")
 
     pages = []
-    for route, page in {str(p.get("route")): p for p in screens(project)}.items():
+    for page in rows:
+        route = str(page["route"])
+        written = any((app / "src" / "pages" / f"{files[route]}{ext}").is_file() for ext in (".tsx", ".jsx"))
         pages.append({
             "route": route,
             "page_name": page.get("page_name") or route,
@@ -1629,16 +1619,16 @@ def wireframes(project: str) -> dict[str, Any]:
             "login_required": bool(page.get("login_required")),
             "roles": page.get("allowed_roles") or [],
             "functions": page.get("functions") or [],
-            "slug": _slug(route),
-            "has_html": built,
-            "have": built,
-            "drawing": drawing,
-            "error": "" if built else error,
+            "slug": files[route],
+            "has_html": bool(written and bundled),
+            "have": bool(written and bundled),
+            "drawing": bool(drawing and not written),
+            "error": str(state.get("error") or ""),
         })
-    return {"pages": pages, "wireframes": pages, "screens": pages, "drawing": drawing,
-            "app": {"built": built, "stale": web_app.stale(project, "wireframe")},
+    return {"pages": pages, "wireframes": pages, "screens": pages, "drawing": drawing, "built": bundled,
+            "version": int((app / web_app.BUNDLE).stat().st_mtime) if bundled else 0,
             "journeys": journeys.user_journeys_for(doc),
-            "version": doc.get("version", ""), "generated_from": "srs"}
+            "srs_version": doc.get("version", ""), "generated_from": "srs"}
 
 
 def detail(project: str) -> dict[str, Any]:
@@ -1703,15 +1693,16 @@ def results(project: str) -> dict[str, Any]:
 
 
 def approve(project: str, prompt: str = "") -> dict[str, Any]:
+    """The specification is approved: the wireframes are drawn from its app.md (see `wireframe.py`)."""
+    from . import wireframe
+
     if not has_document(project):
         raise ValueError("there is no specification to approve yet")
     session = session_for(project)
     if session.stage in ("srs", "wireframes"):
         raise ValueError("wait for the current specification or wireframe run to finish")
-    request = str(prompt or WIREFRAME_APPROVAL_PROMPT).strip()
     store.update(project, status="approved")
     store.advance(project, "design")
-    bus.log(project, "SUCCESS", "SRS approved — building the wireframe app from the plan and handoff files.")
-    # The approval is only the first half; the app is built by the same run a later "Regenerate" starts.
-    from . import wireframe
-    return wireframe.run(project, request)
+    bus.log(project, "SUCCESS", "SRS approved — drawing the wireframes from app.md.")
+    result = wireframe.run(project, str(prompt or "").strip())
+    return {**result, "drawn": result.get("ready", 0)}

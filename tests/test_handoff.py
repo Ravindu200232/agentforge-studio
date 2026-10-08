@@ -64,7 +64,7 @@ class AppMdTests(unittest.TestCase):
     def test_nothing_technical_is_in_it(self):
         text = handoff.app_md(DOC, IDEA, SAID)
         for technical in ("cake_orders", "/api/orders", "FR-001", "NFR-001", "uuid", "## Data", "## API",
-                          "Functional requirements", "Acceptance criteria", "customer`)"):
+                          "Functional requirements", "Acceptance criteria", "`customer`"):
             self.assertNotIn(technical, text)
 
     def test_it_is_a_small_document(self):
@@ -83,7 +83,7 @@ class BuilderMdTests(unittest.TestCase):
         text = handoff.builder_md(DOC, "nextjs-mongo")
         self.assertIn("**Selected stack**: nextjs-mongo.", text)
         for technical in ("# The specification", "## Data", "`cake_orders`", "## API", "/api/orders", "FR-001", "NFR-001",
-                          "## Access" if DOC.get("role_access_matrix") else "## Roles"):
+                          "## Roles", "## Done means"):
             self.assertIn(technical, text)
 
     def test_it_sends_the_developer_to_app_md_and_the_react_prototype(self):

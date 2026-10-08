@@ -7,7 +7,6 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/lib/store'
-import { api } from '@/lib/api'
 
 function ProjectVisualThumbnail({ project, name }) {
   const containerRef = useRef(null)
@@ -15,10 +14,10 @@ function ProjectVisualThumbnail({ project, name }) {
   const [loaded, setLoaded] = useState(false)
   const [failed, setFailed] = useState(false)
 
-  const stage = project.stage || ''
-  const kind = ['prototype', 'build', 'test', 'deploy'].includes(stage)
-    ? 'prototype' : stage === 'design' ? 'wireframe' : null
-  const htmlUrl = project.html_url || (kind && api.appUrl(name, kind, '/'))
+  // Use explicit html_url from server or prototype endpoint
+  const htmlUrl = project.html_url || (project.has_html !== false && !project.spec_only
+    ? `/__agentforge/api/web/${encodeURIComponent(name)}/prototype`
+    : null)
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -77,7 +76,6 @@ function ProjectVisualThumbnail({ project, name }) {
       )}
       <iframe
         src={htmlUrl}
-        sandbox="allow-scripts allow-same-origin"
         title={`${name} preview`}
         scrolling="no"
         tabIndex={-1}

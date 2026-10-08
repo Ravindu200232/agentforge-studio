@@ -2,8 +2,8 @@
 
 The schema says the document is the right shape and the standards review says the
 requirements are well written. Neither of them notices that a seven-screen
-product was specified with three requirements, or that a database with two tables
-has no entity-relationship diagram.
+product was specified with three requirements, that a database with two tables
+has no entity-relationship diagram, or that no requirement traces to a page.
 
 Those are the failures that survive both other gates, because each artifact is
 individually valid. What catches them is counting: the plan says what exists, so
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import re
 from typing import Any
-
 
 def _dig(doc: dict, path: str) -> list:
     node: Any = doc

@@ -187,11 +187,31 @@ def _flags(how: str, profile: str, width: int, height: int) -> list[str]:
             "--disable-background-networking", f"--user-data-dir={profile}"]
 
 
+def dump_dom(source: Path, suffix: str = "", budget_ms: int = 120_000, seconds: int = 240,
+             browser: tuple[str, str] | None = None, cancelled: Callable[[], bool] | None = None) -> str:
+    """The page `source` (an HTML file on disk) after it has run for up to `budget_ms` of the browser's own clock, as HTML.
+
+    For a page that works something out and writes it into itself: the browser's clock runs ahead while the page waits, so a
+    minute of the page's timers takes a few seconds."""
+    browser = browser or working_browser(cancelled=cancelled)
+    if not browser:
+        raise ValueError("no browser to open the page with (Edge, Chrome or Chromium)")
+    path, how = browser
+    flags = [flag for flag in _flags(how, "", 1280, 800) if not flag.startswith(("--virtual-time-budget", "--user-data-dir"))]
+    profile = tempfile.mkdtemp(prefix="agentforge-dom-")
+    try:
+        done = _run([path, *flags, f"--virtual-time-budget={budget_ms}", f"--user-data-dir={profile}", "--dump-dom",
+                     Path(source).resolve().as_uri() + suffix], seconds, cancelled=cancelled)
+        return done.stdout or ""
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
+
+
 def shoot(source: Path | str, out: Path, viewport: str = "desktop", browser: tuple[str, str] | None = None,
-          seconds: int = SECONDS, cancelled: Callable[[], bool] | None = None, fragment: str = "") -> Path:
+          seconds: int = SECONDS, cancelled: Callable[[], bool] | None = None, suffix: str = "") -> Path:
     """One picture of `source` (an HTML file on disk, or a local preview URL) at `viewport`, saved to `out`.
 
-    `fragment` (`#/orders`) picks a page of an app that routes by hash; it is added to the address of a file on disk."""
+    `suffix` (`?as=x#/route`) is put on the address of a file, for a page that shows what its address says."""
     if viewport not in VIEWPORTS:
         raise ValueError("viewport must be desktop or mobile")
     if cancelled and cancelled():
@@ -202,7 +222,7 @@ def shoot(source: Path | str, out: Path, viewport: str = "desktop", browser: tup
     path, how = browser
     width, height = VIEWPORTS[viewport]
     is_url = isinstance(source, str) and source.startswith("http")
-    url = local_url(source) if is_url else Path(source).resolve().as_uri() + (fragment or "")
+    url = local_url(source) if is_url else Path(source).resolve().as_uri() + suffix
     name = url if is_url else Path(source).name
     out.parent.mkdir(parents=True, exist_ok=True)
     profile = tempfile.mkdtemp(prefix="agentforge-shot-")

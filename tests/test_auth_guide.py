@@ -1,4 +1,4 @@
-"""One authentication guide, read by the build like the design's DESIGN.md. The wireframe and the prototype carry no sign-in logic."""
+"""One authentication guide, read by the build like the design's DESIGN.md; the prototype signs in with fictitious accounts."""
 from __future__ import annotations
 
 import sys
@@ -12,6 +12,8 @@ for folder in (".", "prototype-agent", "srs-agent"):
     if path not in sys.path:
         sys.path.insert(0, path)
 
+from prototype_agent import demo  # noqa: E402
+from server_modules import web_app  # noqa: E402
 from server_modules import auth_guide, prompts  # noqa: E402
 
 SIGNED_IN = {"protected_pages": [{"route": "/dashboard", "login_required": True, "allowed_roles": ["member"]}]}
@@ -40,11 +42,37 @@ class GuideTests(unittest.TestCase):
                        "its own dashboard"):
             self.assertIn(needle, text)
 
-    def test_the_wireframe_and_the_prototype_have_no_part_in_it(self):
-        text = prompts.load("shared/authentication")
-        for gone in ("In the wireframes", "In the prototype", "data-auth", "flow.js", "data-sign-out", "demo session"):
-            self.assertNotIn(gone, text)
-        self.assertIn("## 5. In the real application", text)
+
+class PrototypeSignInTests(unittest.TestCase):
+    def test_a_page_is_signed_in_by_its_flag_or_by_who_opens_it(self):
+        self.assertTrue(demo.signed_in_page({"login_required": True}))
+        self.assertFalse(demo.signed_in_page({"login_required": False, "allowed_roles": ["admin"]}))
+        self.assertTrue(demo.signed_in_page({"allowed_roles": ["Admin"]}))
+        self.assertFalse(demo.signed_in_page({"allowed_roles": ["Visitor", "Admin"]}))
+        self.assertFalse(demo.signed_in_page({}))
+
+    def test_sign_up_signs_the_new_account_in_as_the_role_sign_ups_get(self):
+        routes = [{"route": "/login", "name": "Sign in"}, {"route": "/register", "name": "Create account"},
+                  {"route": "/home", "name": "My home"}]
+        accounts = [{"role": role, "role_key": role.lower(), "display_name": f"Demo {role}", "email": f"{role.lower()}@example.com",
+                     "password": "pw", "lands_on": "/home", "can_open": []} for role in ("Admin", "Member")]
+        doc = {"authentication_requirement": {"self_registration": True, "registration_mode": "open",
+                                              "sign_up_route": "/register", "registration_role": "Member"}}
+        sign_up = demo.sign_up_of(doc, routes, accounts)
+        self.assertEqual((sign_up["route"], sign_up["role_key"]), ("/register", "member"))
+        self.assertIsNone(demo.sign_up_of({"authentication_requirement": {"registration_mode": "admin_created"}}, routes, accounts))
+
+    def test_the_session_every_prototype_has_signs_in_signs_up_and_signs_out(self):
+        session = (web_app.KIT_SOURCE / "app" / "src" / "lib" / "session.tsx").read_text(encoding="utf-8")
+        for needle in ("signIn:", "signInAs:", "signUp:", "signOut:", "canOpen:", "?as=", "navigate(account.landsOn)",
+                       "navigate(signInRoute"):
+            self.assertIn(needle, session)
+        self.assertNotIn("localStorage", session, "the prototype keeps nobody signed in between visits")
+
+    def test_the_router_keeps_the_app_on_its_own_page(self):
+        router = (web_app.KIT_SOURCE / "app" / "src" / "lib" / "router.tsx").read_text(encoding="utf-8")
+        for needle in ("hashchange", "event.preventDefault()", 'href.startsWith("/")', "onSubmit", "matchRoute"):
+            self.assertIn(needle, router)
 
 
 if __name__ == "__main__":

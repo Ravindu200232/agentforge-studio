@@ -1,296 +1,255 @@
-"""The React (JSX) app the wireframe and the prototype are made of.
+"""The React apps the wireframe and the prototype are made of.
 
-Both stages build a web-artifacts-builder app (React + TypeScript + Tailwind + shadcn/ui) with the
-model's own file tools, and this module is only the mechanical part around that: where the app lives,
-the skill staged where the model can read and run it, the one shared dependency store every app links
-its `node_modules` to, the bundle build, the copy that turns the wireframe into the prototype, and the
-files the preview serves. Nothing here decides what an app looks like.
+Both are the same kind of thing: a small Vite + React + Tailwind + shadcn/ui app the project's agent writes with its own file tools,
+following Anthropic's `web-artifacts-builder` skill (`prompts/skills/web-artifacts-builder/`). The skill's steps are done here, in code,
+because they are the same for every app: the project is created (step 1) and the finished app is bundled into one HTML file (step 3).
+What the pages look like is the agent's.
 
-    <workspace>/.agentforge/wireframe/app/   the wireframe (low fidelity)
-    <workspace>/.agentforge/prototype/app/   a copy of it, edited into the high fidelity prototype
-    <workspace>/.agentforge/skills/web-artifacts-builder/   the skill, staged for the model
+    <workspace>/.agentforge/wireframe/app/      the wireframe: source, and `bundle.html`, the page the studio shows
+    <workspace>/.agentforge/prototype/app/      the prototype: a new app, written after reading the wireframes
+    <state>/web-kit/                            the packages, installed once and linked into every app as `node_modules`
+
+An app is bundled with Vite and `vite-plugin-singlefile` (the skill bundles with Parcel; Vite is what the app is built with, so it
+bundles itself), which leaves every script, style and small image inlined in `bundle.html`.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import tarfile
+import threading
 from pathlib import Path
+from typing import Any, Callable
 
-from . import config
+from . import bus, config, prompts
 
 SKILL = "web-artifacts-builder"
-SKILL_SOURCE = config.PROMPTS / "design" / "skills" / SKILL
-BUNDLE = "bundle.html"
+SKILL_SOURCE = config.PROMPTS / "skills" / SKILL
+KIT_SOURCE = Path(__file__).resolve().parent / "web_kit"
+COMPONENTS_ARCHIVE = SKILL_SOURCE / "scripts" / "shadcn-components.tar.gz"
 KINDS = ("wireframe", "prototype")
-# What is rebuilt or linked, never copied from one app to the next.
-_NOT_COPIED = ("node_modules", "dist", ".parcel-cache", BUNDLE)
+BUNDLE = "bundle.html"
+BUILT = ".built"
+# Only the policy of the page the studio frames: the app can run scripts and style itself and show any picture, but it can
+# neither call out nor load anything else (but Google's fonts), so nothing it was written to do can reach the studio's own address.
+PREVIEW_POLICY = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; "
+                  "img-src * data: blob:; font-src * data:; media-src * data: blob:; connect-src 'none'; frame-src 'none'; "
+                  "base-uri 'none'; form-action 'none'")
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _REPARSE_POINT = 0x400
-
-MIME = {
-    ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8",
-    ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml",
-    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
-    ".ico": "image/x-icon", ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf", ".map": "application/json",
-}
-
-# What the preview may do. It can run its own scripts and draw, but it cannot call out, submit a form
-# anywhere, nest another page or change the base address: a button in a wireframe goes nowhere outside it.
-PREVIEW_POLICY = (
-    "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' data: blob:; "
-    "connect-src 'none'; form-action 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'"
-)
-_HEAD = re.compile(rb"<head[^>]*>", re.IGNORECASE)
-
-
-def preview_page(html: bytes) -> bytes:
-    """`bundle.html` as the preview serves it: the policy goes into its head here, at serving time, so it
-    is the preview's rule and never something the agent wrote (or could leave out). A `<meta>` rather than
-    a header because the desktop app's bridge carries only a content type."""
-    meta = f'<meta http-equiv="Content-Security-Policy" content="{PREVIEW_POLICY}">'.encode("utf-8")
-    found = _HEAD.search(html)
-    return html[:found.end()] + meta + html[found.end():] if found else meta + html
-
-
-# --- where things are ---------------------------------------------------------------------------
-
-def runtime_dir() -> Path:
-    """The one shared dependency store. Outside the user's synced folders on an installed app."""
-    named = os.environ.get("AGENTFORGE_WEB_RUNTIME")
-    if named:
-        return Path(named).expanduser().resolve()
-    if config.DATA:
-        local = os.environ.get("LOCALAPPDATA")
-        return (Path(local) if local else config.DATA.parent / "Local") / "AgentForge" / "web-artifacts-runtime"
-    return config.ROOT / "tools" / "web-artifacts-runtime"
-
-
-def app_dir(project: str, kind: str) -> Path:
-    if kind not in KINDS:
-        raise ValueError(f"unknown app kind: {kind}")
-    return config.record_dir(project) / kind / "app"
-
-
-def bundle_path(project: str, kind: str) -> Path:
-    return app_dir(project, kind) / BUNDLE
-
-
-def built(project: str, kind: str) -> bool:
-    file = bundle_path(project, kind)
-    try:
-        return file.is_file() and file.stat().st_size > 0
-    except OSError:
-        return False
-
-
-def _source_files(app: Path):
-    """The files that make the bundle: the app's own source, not what was built or linked from it."""
-    for name in ("index.html", "package.json", "tailwind.config.js", "postcss.config.js", "tsconfig.json"):
-        if (app / name).is_file():
-            yield app / name
-    src = app / "src"
-    if src.is_dir():
-        for folder, _dirs, names in os.walk(src):
-            for name in names:
-                yield Path(folder) / name
-
-
-def fingerprint(app: Path) -> str:
-    """Hash source content so same-size edits within one clock tick still invalidate reviews."""
-    import hashlib
-    digest = hashlib.sha1()
-    for file in sorted(_source_files(app)):
-        try:
-            content = file.read_bytes()
-        except OSError:
-            continue
-        digest.update(file.relative_to(app).as_posix().encode())
-        digest.update(b"\0")
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return digest.hexdigest()
-
-
-def stale(project: str, kind: str) -> bool:
-    """True when the app has source but no bundle, or a bundle older than its newest source file."""
-    app = app_dir(project, kind)
-    if not (app / "index.html").is_file():
-        return False
-    bundle = app / BUNDLE
-    if not bundle.is_file():
-        return True
-    try:
-        newest = max((f.stat().st_mtime for f in _source_files(app)), default=0.0)
-        return newest > bundle.stat().st_mtime
-    except OSError:
-        return True
-
-
-_PARAM = re.compile(r"\[[^\]]+\]|:[A-Za-z_]\w*")
-
-
-def hash_for(route: str) -> str:
-    """The hash an app is opened at for a page route; a parameter (`/orders/[id]`, `/orders/:id`) becomes a sample value.
-    The studio's `hashFor` (lib/preview-guard.js) does the same."""
-    filled = _PARAM.sub("1", str(route or "/"))
-    return "#" + (filled if filled.startswith("/") else "/" + filled)
-
-
-def route_matches(pattern: str, actual: str) -> bool:
-    """Does the page route `pattern` (which may hold parameters) describe the route `actual` the app is on?"""
-    want = [part for part in str(pattern or "/").split("?")[0].split("/") if part]
-    have = [part for part in str(actual or "/").split("?")[0].split("/") if part]
-    return len(want) == len(have) and all(a == b or _PARAM.fullmatch(a) for a, b in zip(want, have))
-
-
-def route_slug(route: str) -> str:
-    """A file-name-safe name for a page route (`/` is `home`)."""
-    cleaned = re.sub(r"[^a-z0-9]+", "-", str(route or "/").lower()).strip("-")
-    return cleaned or "home"
-
-
-# --- the shared dependency store ----------------------------------------------------------------
-
-def node_exe() -> str:
-    candidates = [os.environ.get("AGENTFORGE_NODE_BINARY"), shutil.which("node"), shutil.which("node.exe")]
-    for candidate in candidates:
-        if candidate and Path(candidate).is_file():
-            return str(candidate)
-    return "node.exe" if os.name == "nt" else "node"
-
-
-def _store_package() -> dict:
-    return json.loads((SKILL_SOURCE / "scripts" / "runtime" / "package.json").read_text(encoding="utf-8"))
-
-
-_STORE_FILES = ("package.json", "package-lock.json", ".npmrc")
-_MARKER = ".agentforge-runtime"
-
-
-def _store_signature() -> str:
-    """The same signature lib.mjs writes into the store after an install (sha1 of the three files)."""
-    import hashlib
-    digest = hashlib.sha1()
-    for name in _STORE_FILES:
-        digest.update((SKILL_SOURCE / "scripts" / "runtime" / name).read_bytes())
-    return digest.hexdigest()
-
-
-def runtime_ready() -> bool:
-    """The store was installed from this toolkit's files and every package is on disk."""
-    store = runtime_dir() / "node_modules"
-    try:
-        if (store / _MARKER).read_text(encoding="utf-8").strip() != _store_signature():
-            return False
-    except OSError:
-        return False
-    package = _store_package()
-    names = {**package.get("dependencies", {}), **package.get("devDependencies", {})}
-    return all((store / name / "package.json").is_file() for name in names)
-
-
-def _run(args: list[str], cwd: Path, timeout: int, env_extra: dict | None = None) -> tuple[bool, str]:
-    env = {**os.environ, "AGENTFORGE_WEB_RUNTIME": str(runtime_dir()), **(env_extra or {})}
-    try:
-        done = subprocess.run([node_exe(), *args], cwd=str(cwd), env=env, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=timeout, creationflags=_NO_WINDOW)
-    except subprocess.TimeoutExpired as error:
-        out = (error.stdout or b"") if isinstance(error.stdout, bytes) else (error.stdout or "")
-        return False, f"timed out after {timeout}s\n{out}"[-4000:]
-    except OSError as error:
-        return False, f"could not run node: {error}"
-    text = ((done.stdout or "") + (done.stderr or "")).strip()
-    return done.returncode == 0, text[-6000:]
-
-
-def prepare_runtime() -> tuple[bool, str]:
-    """Install the shared store the first time (npm, once). Returns at once when it is already there."""
-    if runtime_ready():
-        return True, "ready"
-    script = SKILL_SOURCE / "scripts" / "init-artifact.mjs"
-    return _run([str(script), "--prepare"], SKILL_SOURCE, timeout=1500)
-
-
-# --- the skill, staged for the model ------------------------------------------------------------
-
-def stage_skill(project: str) -> str:
-    """Copy the skill into the workspace (the model's tools stop at its edge) and point its scripts at the store.
-
-    A real file copy, not `reference_staging.stage` (text only): the scripts keep their line endings and
-    the shadcn tarball stays binary. Returns the workspace-relative folder."""
-    target = config.record_dir(project) / "skills" / SKILL
-    shutil.rmtree(target, ignore_errors=True)
-    shutil.copytree(SKILL_SOURCE, target, ignore=shutil.ignore_patterns("__pycache__"))
-    (target / "scripts" / "runtime.json").write_text(json.dumps({"runtime": str(runtime_dir())}), encoding="utf-8")
-    return target.relative_to(config.workspace_for(project)).as_posix()
-
-
-# --- build, copy, link --------------------------------------------------------------------------
-
-def bundle(project: str, kind: str) -> tuple[bool, str]:
-    """Build the app into one bundle.html. Returns (built, the tail of the build output)."""
-    app = app_dir(project, kind)
-    if not (app / "index.html").is_file():
-        return False, f"there is no app at {app.relative_to(config.workspace_for(project)).as_posix()}"
-    ready, why = prepare_runtime()
-    if not ready:
-        return False, why
-    link_node_modules(app)
-    script = SKILL_SOURCE / "scripts" / "bundle-artifact.mjs"
-    ok, text = _run([str(script)], app, timeout=900)
-    return (ok and built(project, kind)), text
+_kit_lock = threading.Lock()
+_build_locks: dict[str, threading.Lock] = {}
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 class BuildFailed(RuntimeError):
-    """The app would not build, even after the agent was asked to fix it once."""
+    """The app does not bundle, and what the bundler said."""
 
 
-def ensure_built(session, project: str, kind: str, agent: str = "") -> None:
-    """Leave a current bundle behind: build it when it is missing or older than the source, and when the
-    build fails give the agent the build output once to fix its own source. Never edits the app itself."""
-    from . import bus, prompts
+# --- the packages ------------------------------------------------------------------------------------------------------------
 
-    app = app_dir(project, kind)
-    if not (app / "index.html").is_file():
-        raise BuildFailed("the agent did not create the app (there is no index.html)")
-    if built(project, kind) and not stale(project, kind):
-        return
-    ok, log = bundle(project, kind)
-    if not ok:
-        bus.log(project, "WARN", "The app did not build yet; asking the agent to fix it.\n" + log[-500:],
-                **({"agent": agent} if agent else {}))
-        session.run_direct(prompts.load("shared/build-fix", app=app.relative_to(config.workspace_for(project)).as_posix(),
-                                        log=log[-3500:]))
-        ok, log = bundle(project, kind)
-    if not ok:
-        raise BuildFailed(log[-1200:] or "the app did not build")
+def kit_dir() -> Path:
+    return config.STATE / "web-kit"
 
+
+def _signature() -> str:
+    digest = hashlib.sha256()
+    for name in ("package.json", "package-lock.json"):
+        path = KIT_SOURCE / name
+        if path.is_file():
+            digest.update(name.encode() + path.read_bytes())
+    return digest.hexdigest()
+
+
+def kit_ready() -> bool:
+    marker = kit_dir() / ".installed"
+    return (marker.is_file() and marker.read_text(encoding="utf-8").strip() == _signature()
+            and (kit_dir() / "node_modules" / "vite" / "bin" / "vite.js").is_file())
+
+
+def node_exe() -> str | None:
+    return shutil.which("node") or shutil.which("node.exe")
+
+
+def _npm() -> str | None:
+    return shutil.which("npm") or shutil.which("npm.cmd")
+
+
+def _run(args: list[str], cwd: Path, timeout: int, env: dict[str, str] | None = None) -> tuple[bool, str]:
+    try:
+        done = subprocess.run(args, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=timeout, creationflags=_NO_WINDOW, env={**os.environ, **(env or {})})
+    except subprocess.TimeoutExpired:
+        return False, f"{Path(args[0]).name} did not finish in {timeout} seconds"
+    except OSError as exc:
+        return False, str(exc)
+    return done.returncode == 0, _ANSI.sub("", (done.stdout or "") + (done.stderr or "")).strip()
+
+
+def prepare_kit() -> tuple[bool, str]:
+    """Install the packages every app is built with, once. Safe to call every time: it does nothing when they are there."""
+    with _kit_lock:
+        if kit_ready():
+            return True, ""
+        npm = _npm()
+        if not npm or not node_exe():
+            return False, "Node.js (node and npm) was not found, and the wireframe and the prototype are built with it"
+        folder = kit_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in ("package.json", "package-lock.json"):
+            source = KIT_SOURCE / name
+            if source.is_file():
+                shutil.copyfile(source, folder / name)
+            else:
+                (folder / name).unlink(missing_ok=True)
+        command = [npm, "ci" if (folder / "package-lock.json").is_file() else "install",
+                   "--no-audit", "--no-fund", "--loglevel=error"]
+        ok, text = _run(command, folder, timeout=1500)
+        if not ok and "ci" in command:
+            # A lock that does not fit this computer's npm is not a reason to stop: install what the file names.
+            command[1] = "install"
+            ok, text = _run(command, folder, timeout=1500)
+        if not ok or not (folder / "node_modules" / "vite" / "bin" / "vite.js").is_file():
+            return False, text[-1500:] or "the packages could not be installed"
+        (folder / ".installed").write_text(_signature(), encoding="utf-8")
+        return True, ""
+
+
+# --- the skill and the app ---------------------------------------------------------------------------------------------------
+
+def stage_skill(workspace: Path) -> str:
+    """Put the skill where the project's agent can read it, and say where (relative to the workspace)."""
+    relative = f"{config.RECORD_DIR}/skills/{SKILL}"
+    target = workspace / relative
+    target.mkdir(parents=True, exist_ok=True)
+    for name in ("SKILL.md", "LICENSE.txt"):
+        shutil.copyfile(SKILL_SOURCE / name, target / name)
+    return relative
+
+
+def app_dir(workspace: Path, kind: str) -> Path:
+    if kind not in KINDS:
+        raise ValueError(f"unknown kind of app: {kind}")
+    return workspace / config.RECORD_DIR / kind / "app"
+
+
+def page_files(routes: list[str]) -> dict[str, str]:
+    """The page file (under `src/pages`, without its extension) of every route: `/` is `home`, `/orders/[id]` is `orders-id`."""
+    out: dict[str, str] = {}
+    used: set[str] = set()
+    for route in routes:
+        parts = [re.sub(r"^\[(.+)\]$|^:", lambda m: m.group(1) or "", part) for part in str(route).strip("/").split("/") if part]
+        stem = re.sub(r"[^a-z0-9]+", "-", "-".join(parts).lower()).strip("-") or "home"
+        name, n = stem, 2
+        while name in used:
+            name, n = f"{stem}-{n}", n + 1
+        used.add(name)
+        out[str(route)] = name
+    return out
+
+
+def _ts(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def write_routes(app: Path, pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`src/routes.ts`: every screen of the specification and the page file it is drawn in. Returns the rows."""
+    files = page_files([str(p["route"]) for p in pages])
+    rows = [{"route": str(p["route"]), "name": str(p.get("page_name") or p.get("name") or p["route"]), "file": files[str(p["route"])],
+             "roles": [str(r) for r in (p.get("allowed_roles") or p.get("roles") or [])],
+             "signedIn": bool(p.get("login_required", p.get("signed_in", False)))} for p in pages]
+    path = app / "src" / "routes.ts"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("// Written by the Studio from the specification. Do not edit: add or change pages in src/pages.\n"
+                    "export type RouteDef = { route: string; name: string; file: string; roles: string[]; signedIn: boolean };\n"
+                    f"export const routes: RouteDef[] = {_ts(rows)};\n", encoding="utf-8")
+    return rows
+
+
+def write_demo(app: Path, accounts: list[dict[str, Any]] | None = None, sign_in: str = "", sign_up: dict | None = None) -> None:
+    """`src/demo.ts`: the fictitious sign-in accounts, one per role (none for a wireframe or a product without sign-in)."""
+    rows = [{"role": a["role"], "roleKey": a["role_key"], "name": a["display_name"], "email": a["email"], "password": a["password"],
+             "landsOn": a["lands_on"], "canOpen": [p["route"] for p in a.get("can_open") or []]} for a in accounts or []]
+    up = {"route": sign_up["route"], "roleKey": sign_up["role_key"]} if sign_up and accounts else None
+    path = app / "src" / "demo.ts"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("// Written by the Studio from the specification. Do not edit.\n"
+                    "export type Account = { role: string; roleKey: string; name: string; email: string; password: string; "
+                    "landsOn: string; canOpen: string[] };\n"
+                    f"export const accounts: Account[] = {_ts(rows)};\n"
+                    f"export const signInRoute: string = {json.dumps(sign_in or '')};\n"
+                    f"export const signUp: {{ route: string; roleKey: string }} | null = {json.dumps(up)};\n", encoding="utf-8")
+
+
+def _extract_components(app: Path) -> None:
+    """The skill's shadcn/ui components (`components/ui`, `lib/utils.ts`, `hooks`), into the app's `src`."""
+    root = (app / "src").resolve()
+    with tarfile.open(COMPONENTS_ARCHIVE) as archive:
+        for member in archive.getmembers():
+            target = (root / member.name).resolve()
+            if not target.is_relative_to(root) or not (member.isfile() or member.isdir()):
+                continue
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source = archive.extractfile(member)
+                if source:
+                    target.write_bytes(source.read())
+
+
+def create_app(app: Path, title: str, pages: list[dict[str, Any]], *, accounts: list[dict] | None = None,
+               sign_in: str = "", sign_up: dict | None = None) -> list[dict[str, Any]]:
+    """Step 1 of the skill, in code: a project with React, TypeScript, Vite, Tailwind and the shadcn/ui components in it.
+
+    Files that are already there are left alone (an app a stopped run left behind keeps what the agent wrote); the route table and
+    the demo accounts are always written again from the specification."""
+    app.mkdir(parents=True, exist_ok=True)
+    for source in sorted(p for p in (KIT_SOURCE / "app").rglob("*") if p.is_file()):
+        target = app / source.relative_to(KIT_SOURCE / "app")
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        text = source.read_text(encoding="utf-8")
+        target.write_text(text.replace("{{title}}", re.sub(r"[<>&\"]", "", title) or "App"), encoding="utf-8")
+    if not (app / "src" / "components" / "ui").is_dir():
+        _extract_components(app)
+    package = app / "package.json"
+    if not package.exists():
+        slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "app"
+        package.write_text(json.dumps({"name": slug, "private": True, "version": "0.0.0", "type": "module"}, indent=2) + "\n",
+                           encoding="utf-8")
+    rows = write_routes(app, pages)
+    write_demo(app, accounts, sign_in, sign_up)
+    link_node_modules(app)
+    return rows
+
+
+# --- links and copies --------------------------------------------------------------------------------------------------------
 
 def _is_link(path: Path) -> bool:
-    if path.is_symlink():
-        return True
-    if os.name == "nt" and os.path.lexists(path):
-        return bool(getattr(os.lstat(path), "st_file_attributes", 0) & _REPARSE_POINT)
-    return False
+    try:
+        return path.is_symlink() or bool(getattr(path.lstat(), "st_file_attributes", 0) & _REPARSE_POINT)
+    except OSError:
+        return False
 
 
 def drop_link(path: Path) -> None:
-    """Remove a node_modules link without touching what it points at (the shared store)."""
+    """Remove a link to the packages without touching what it points at."""
     if not _is_link(path):
         return
     try:
-        os.rmdir(path) if os.name == "nt" else os.unlink(path)
-    except OSError:
-        pass
+        path.unlink()
+    except (OSError, PermissionError):
+        os.rmdir(path)      # a Windows junction is a directory to the system
 
 
 def link_node_modules(app: Path) -> None:
-    """Point the app's node_modules at the shared store (a junction on Windows, a symlink elsewhere)."""
-    link, target = app / "node_modules", runtime_dir() / "node_modules"
+    link, target = app / "node_modules", kit_dir() / "node_modules"
     if _is_link(link):
         try:
             if link.resolve() == target.resolve():
@@ -298,74 +257,178 @@ def link_node_modules(app: Path) -> None:
         except OSError:
             pass
         drop_link(link)
-    elif link.exists():
-        shutil.rmtree(link, ignore_errors=True)
+    if link.exists():
+        return                              # a real folder: the app has packages of its own
+    target.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
-        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True,
-                       creationflags=_NO_WINDOW, check=False)
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, creationflags=_NO_WINDOW)
     else:
         os.symlink(target, link, target_is_directory=True)
 
 
 def remove_app(app: Path) -> None:
-    """Delete an app folder; its node_modules link goes first so the shared store is never followed into."""
     drop_link(app / "node_modules")
     shutil.rmtree(app, ignore_errors=True)
 
 
-def copy_app(source: Path, destination: Path) -> None:
-    """The wireframe becomes the prototype's starting point: a copy of the source, never the build output.
+# --- bundling ----------------------------------------------------------------------------------------------------------------
 
-    The destination is replaced; the wireframe is only ever read."""
-    if not (source / "index.html").is_file():
-        raise FileNotFoundError(f"there is no app to copy at {source}")
-    remove_app(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, destination, ignore=shutil.ignore_patterns(*_NOT_COPIED))
-    link_node_modules(destination)
+def _source_files(app: Path):
+    for name in ("index.html", "package.json", "tailwind.config.cjs", "vite.config.ts"):
+        if (app / name).is_file():
+            yield app / name
+    yield from sorted(p for p in (app / "src").rglob("*") if p.is_file()) if (app / "src").is_dir() else ()
 
 
-# --- what the preview serves and edits -----------------------------------------------------------
-
-def served_file(project: str, kind: str, name: str) -> Path | None:
-    """`bundle.html`, or a built file under `dist/` it points at; nothing else in the app is reachable."""
-    app = app_dir(project, kind)
-    clean = (name or BUNDLE).replace("\\", "/").lstrip("/")
-    for base in (app, app / "dist"):
-        if base is app and clean != BUNDLE:
-            continue
-        try:
-            file = (base / clean).resolve()
-            file.relative_to(base.resolve())
-        except (OSError, ValueError):
-            continue
-        if file.is_file():
-            return file
-    return None
+def fingerprint(app: Path) -> str:
+    """What the app's source says, to tell a bundle that is current from one the agent has edited since."""
+    digest = hashlib.sha256()
+    for path in _source_files(app):
+        digest.update(path.relative_to(app).as_posix().encode() + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()
 
 
-def replace_text(project: str, kind: str, old: str, new: str) -> dict:
-    """Swap one literal string in the app's source, when it appears exactly once.
+def built(app: Path) -> bool:
+    return (app / BUNDLE).is_file() and (app / BUNDLE).stat().st_size > 0
 
-    The quick path for retyping a label in the preview; anything else (text built in code, or found in
-    several places) is answered with `where` so the caller can fall back to asking the model for the edit."""
-    if not old or old == new:
-        return {"ok": False, "reason": "nothing to change"}
-    app = app_dir(project, kind)
-    hits: list[Path] = []
-    for file in _source_files(app):
-        if file.suffix.lower() not in (".tsx", ".ts", ".jsx", ".js", ".html", ".css"):
-            continue
-        try:
-            if old in file.read_text(encoding="utf-8"):
-                hits.append(file)
-        except (OSError, UnicodeDecodeError):
-            continue
-    where = [f.relative_to(app).as_posix() for f in hits]
-    if len(hits) != 1:
-        return {"ok": False, "reason": "not found in the source" if not hits else "found in several places", "where": where}
-    text = hits[0].read_text(encoding="utf-8")
-    if text.count(old) != 1:
-        return {"ok": False, "reason": "found in several places", "where": where}
-    hits[0].write_text(text.replace(old, new, 1), encoding="utf-8")
-    return {"ok": True, "file": where[0]}
+
+def stale(app: Path) -> bool:
+    marker = app / BUILT
+    return not built(app) or not marker.is_file() or marker.read_text(encoding="utf-8").strip() != fingerprint(app)
+
+
+# What the Studio owns in every app and writes again each time it is bundled: the agent imports them and never edits them, so an app made
+# before they changed gets the change too.
+KIT_OWNED = ("src/lib/router.tsx", "src/lib/session.tsx")
+
+
+def sync_kit_files(app: Path) -> None:
+    for name in KIT_OWNED:
+        source, target = KIT_SOURCE / "app" / name, app / name
+        if source.is_file() and (not target.is_file() or target.read_bytes() != source.read_bytes()):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+
+
+def bundle(app: Path) -> tuple[bool, str]:
+    """Step 3 of the skill: all of the app in one HTML file, `bundle.html`. Returns (ok, what the bundler said)."""
+    ok, text = prepare_kit()
+    if not ok:
+        return False, text
+    link_node_modules(app)
+    sync_kit_files(app)
+    with _build_locks.setdefault(str(app), threading.Lock()):
+        ok, text = _run([node_exe() or "node", str(kit_dir() / "node_modules" / "vite" / "bin" / "vite.js"), "build"],
+                        app, timeout=600, env={"NODE_ENV": "production", "FORCE_COLOR": "0"})
+        page = app / "dist" / "index.html"
+        if not ok or not page.is_file():
+            return False, text[-3000:] or "the bundler produced no page"
+        shutil.copyfile(page, app / BUNDLE)
+        (app / BUILT).write_text(fingerprint(app), encoding="utf-8")
+        shutil.rmtree(app / "dist", ignore_errors=True)
+        return True, text[-1000:]
+
+
+_SELFTEST = re.compile(r'<pre id="af-selftest"[^>]*>(.*?)</pre>', re.DOTALL)
+
+
+def check_pages(app: Path) -> list[tuple[str, str]] | None:
+    """Open every screen of the bundled app in a browser that is already on the computer; the screens that crash, as (route, what
+    went wrong). `[]` when none does; None when it could not be checked (no browser, or the page said nothing).
+
+    A page can bundle and still crash the moment it is opened (a name it uses that is not there), which no bundler can see."""
+    import html as htmllib
+    import tempfile
+
+    try:
+        from ollama_terminal import screenshot
+
+        browser = screenshot.working_browser()
+        if not browser or not built(app):
+            return None
+        with tempfile.TemporaryDirectory(prefix="agentforge-check-") as folder:
+            page = Path(folder) / "app.html"
+            shutil.copyfile(app / BUNDLE, page)
+            dom = screenshot.dump_dom(page, "?selftest=1#/", browser=browser)
+    except Exception:  # noqa: BLE001 - a check that cannot run is not a reason to stop
+        return None
+    found = _SELFTEST.search(dom or "")
+    if not found:
+        return None
+    try:
+        return [(str(row["route"]), str(row["error"])[:300]) for row in json.loads(htmllib.unescape(found.group(1)))]
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _crashing(rows: list[tuple[str, str]]) -> str:
+    return ("These pages bundle, but crash as soon as they are opened. Fix each one in its page file (`src/pages/<file>.tsx`), "
+            "and in what it imports:\n\n" + "\n".join(f"- `{route}`: {error}" for route, error in rows[:20]))
+
+
+def ensure_built(app: Path, repair: Callable[[str], None] | None = None, rounds: int = 2) -> None:
+    """Bundle the app and open its screens. When it does not bundle, or a screen crashes, give what was said to `repair` (the agent
+    fixes the files) and try again. An app that does not bundle after the agent's tries is an error; a screen that still crashes is
+    not: it shows what is wrong in its own place, and the rest of the app works."""
+    tries = 0
+    while True:
+        ok, text = bundle(app)
+        if ok:
+            crashing = check_pages(app)
+            if not crashing:
+                return
+            text = _crashing(crashing)
+        if repair is None or tries >= rounds:
+            if not ok:
+                raise BuildFailed(text)
+            return
+        tries += 1
+        repair(text)
+
+
+def build_for(session, project: str, kind: str, agent: str = "") -> None:
+    """Bundle the project's `kind` app; when the bundler complains, the project's agent fixes the files and it is bundled again.
+
+    Raises `BuildFailed` when it still does not bundle after the agent has tried."""
+    app = app_dir(session.workspace, kind)
+    relative = app.relative_to(session.workspace).as_posix()
+
+    def repair(error: str) -> None:
+        bus.log(project, "WARN", f"The {kind} does not bundle yet; the agent is fixing it.", agent=agent or bus.DESIGNER)
+        session.run_direct(prompts.load("shared/build-fix", app=relative, error=error))
+        if session.cancelled:
+            from .session import RunCancelled
+            raise RunCancelled(project)
+
+    bus.log(project, "INFO", f"Bundling the {kind} into one page.", agent=agent or bus.DESIGNER)
+    ensure_built(app, repair)
+    bus.log(project, "SUCCESS", f"The {kind} is bundled ({(app / BUNDLE).stat().st_size // 1024:,} KB).", agent=agent or bus.DESIGNER)
+
+
+# --- what the studio asks for ------------------------------------------------------------------------------------------------
+
+def page(app: Path) -> bytes:
+    """The bundled app, for the studio's preview frame."""
+    path = app / BUNDLE
+    if not path.is_file():
+        raise FileNotFoundError("the app is not bundled yet")
+    return path.read_bytes()
+
+
+_HEAD = re.compile(rb"<head[^>]*>", re.IGNORECASE)
+
+
+def preview_page(html: bytes) -> bytes:
+    """The bundled page with its policy first in the head, so nothing the app is written to do can call out."""
+    meta = b'<meta http-equiv="Content-Security-Policy" content="' + PREVIEW_POLICY.encode("ascii") + b'">'
+    found = _HEAD.search(html)
+    return html[:found.end()] + meta + html[found.end():] if found else meta + html
+
+
+def source_files(root: Path):
+    """Every file under `root` that is the project's own: never the packages, a build or the bundle."""
+    for folder, folders, names in os.walk(root):
+        folders[:] = sorted(d for d in folders if d not in ("node_modules", "dist", ".parcel-cache"))
+        for name in sorted(names):
+            if name not in (BUNDLE, BUILT):
+                yield Path(folder) / name

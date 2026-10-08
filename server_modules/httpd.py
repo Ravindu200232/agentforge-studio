@@ -703,8 +703,7 @@ def files(ctx: dict) -> Any:
         if root.is_dir():
             return {p.relative_to(session.workspace).as_posix():
                     p.read_text(encoding="utf-8", errors="replace")
-                    for p in sorted(root.rglob("*")) if p.is_file()
-                    and p.stat().st_size < 400_000}
+                    for p in web_app.source_files(root) if p.stat().st_size < 400_000}
     return builder.files(project)
 
 
@@ -941,32 +940,6 @@ def srs_pdf(ctx: dict) -> Any:
                "application/pdf", "SRS.pdf")
 
 
-@route("GET", r"/app-status/(?P<project>[^/]+)")
-def app_status(ctx: dict) -> Any:
-    """Is each app built, and is its source newer than its build: what the previews ask before they frame one."""
-    project = _project(ctx)
-    return {kind: {"built": web_app.built(project, kind), "stale": web_app.stale(project, kind)}
-            for kind in web_app.KINDS}
-
-
-@route("GET", r"/app/(?P<project>[^/]+)/(?P<kind>wireframe|prototype)(?:/(?P<name>.*))?")
-def app_file(ctx: dict) -> Any:
-    """The wireframe or the prototype, as the preview frames it: `bundle.html`, and the built files it points at.
-
-    Pages are chosen inside the app by its hash route (`bundle.html#/orders`), so the address never changes."""
-    project = _project(ctx)
-    match = ctx["_match"]
-    name = unquote(match.group("name") or "").split("?")[0]
-    file = web_app.served_file(project, match.group("kind"), name)
-    if file is None:
-        raise HttpError(404, f"the {match.group('kind')} is not built yet" if not name
-                        else "that file is not part of the app")
-    body = file.read_bytes()
-    if file.name == web_app.BUNDLE:
-        body = web_app.preview_page(body)
-    return Raw(body, web_app.MIME.get(file.suffix.lower(), "application/octet-stream"))
-
-
 # The rest of `/srs/...` is the SRS router, read directly on GET. `jobs` is
 # excluded because the job endpoints below own that prefix; without it, the
 # catch-all answers every poll with "no SRS route for /jobs/...".
@@ -978,6 +951,27 @@ def srs_get(ctx: dict) -> Any:
 # =========================================================================
 # the prototype
 # =========================================================================
+
+@route("GET", r"/web/(?P<project>[^/]+)/(?P<kind>wireframe|prototype)/status")
+def web_app_status(ctx: dict) -> Any:
+    """Whether the wireframes or the prototype is bundled yet, and when (what the studio's frame reloads on)."""
+    app = web_app.app_dir(session_for(_project(ctx)).workspace, ctx["_match"].group("kind"))
+    built = web_app.built(app)
+    return {"built": built, "stale": built and web_app.stale(app),
+            "version": int((app / web_app.BUNDLE).stat().st_mtime) if built else 0}
+
+
+@route("GET", r"/web/(?P<project>[^/]+)/(?P<kind>wireframe|prototype)")
+def web_app_page(ctx: dict) -> Any:
+    """The wireframes or the prototype: one page, the bundled React app. The studio frames it and picks the screen with the
+    address hash (`#/orders`); `?as=<role or email>` opens a prototype signed in."""
+    project = _project(ctx)
+    app = web_app.app_dir(session_for(project).workspace, ctx["_match"].group("kind"))
+    try:
+        return Raw(web_app.preview_page(web_app.page(app)), "text/html; charset=utf-8")
+    except FileNotFoundError as exc:
+        raise HttpError(404, f"the {ctx['_match'].group('kind')} is not drawn yet") from exc
+
 
 @route("POST", r"/design-theme-preview")
 def theme_preview(ctx: dict) -> Any:

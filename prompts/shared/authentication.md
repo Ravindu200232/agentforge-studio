@@ -1,7 +1,7 @@
 # Authentication, roles and navigation
 
-The standard for how people sign up, sign in, stay signed in, see their own area and sign out in the real
-application. The wireframe and the prototype draw only what a page looks like; they carry no sign-in logic. The specification (`.agentforge/srs/handoff/builder.md`) decides **what exists**: the roles, which pages
+The standard for how people sign up, sign in, stay signed in, see their own area and sign out — for the
+wireframes, the prototype and the real application alike. The specification (`.agentforge/srs/handoff/builder.md`) decides **what exists**: the roles, which pages
 need sign-in and for whom, whether people may create their own account and which role it gets, who creates the
 other accounts. This file decides **how it works**. Use only the roles, pages and fields the specification has; never add a
 role, a page or a sign-in method of your own.
@@ -83,7 +83,14 @@ password follows the sign-up rule; afterwards the person signs in.
   to where they were.
 - Every step is a click away. No dead ends, no page without a way forward or back.
 
-## 5. In the real application
+## 5. In the wireframes and the prototype
+
+The wireframes and the prototype are React apps made from the site map. They show what signing in looks like and carry no sign-in
+logic of their own: the prototype signs in with one fictitious account for each role, through `src/lib/session.tsx`, and shows the signed-in
+or signed-out navigation by who is signed in. None of it is protection. Nothing of it is copied into the real application except how it
+looks; how it works is section 6.
+
+## 6. In the real application
 
 **Sessions and access**
 - The session lives in a cookie the server sets: `HttpOnly`, `Secure` in production, `SameSite=Lax`, `Path=/`,

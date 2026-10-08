@@ -1,9 +1,7 @@
-"""What the two screenshot reviews have in common: the prototype's screens, and the end-to-end tests' screenshots.
+"""What the screenshot review of the end-to-end tests (`qa_agent/e2e_review.py`) is made of.
 
 A vision model is shown pictures of a screen and answers with what is visibly wrong with it; the problems that matter are
-written out for the agent to fix; what is found is told in the chat under the pictures. The prototype review
-(`prototype_agent/visual_review.py`) and the end-to-end one (`qa_agent/e2e_review.py`) differ in where the pictures come from
-and in what the fix may touch; the rest is here.
+written out for the agent to fix; what is found is told in the chat under the pictures.
 """
 from __future__ import annotations
 

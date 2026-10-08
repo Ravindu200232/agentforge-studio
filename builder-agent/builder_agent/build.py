@@ -72,21 +72,20 @@ def _prototype_context_block(workspace: Path) -> str:
     """Point the builder at the prototype it must read, map and reproduce.
 
     `builder/generate.md` already tells the model to open `routes.json` and
-    read the prototype app's route table, every page component and its shared
-    code in full; this only says whether there is a prototype to read at all,
-    rather than pasting its routes or file lists in (the model lists the
-    folder itself).
+    read every prototype page and the components it imports in full; this only
+    says whether there is a prototype to read at all, rather than pasting its
+    routes or file lists in (the model lists the folder itself).
     """
     if not (workspace / ".agentforge" / "prototype" / "routes.json").is_file():
         return ""
     return (
         "\n\n## Mandatory prototype parity inventory\n\n"
-        "There is an approved prototype at `.agentforge/prototype/`: a React app in `app/`. "
-        "Before planning, read its route table (`app/src/App.tsx`), the component of every "
-        "route with the components it imports, and its styling (`app/src/index.css`) in "
-        "full. In the plan, map each route to its exact prototype page component, destination "
+        "There is an approved prototype at `.agentforge/prototype/`, a React app in "
+        "`app/` (its pages are `app/src/pages/*.tsx`). Before planning, list it "
+        "(`list_files`) and read every page and shared component it contains "
+        "in full. In the plan, map each route to its exact prototype page, destination "
         "application files and reused image sources. Before implementing each route, "
-        "reopen that component. The real app must preserve 100% of its approved "
+        "reopen that page file. The real app must preserve 100% of its approved "
         "frontend design, exact images, controls, destinations and navigation flow "
         "while connecting real data. Never guess from memory or replace prototype "
         "imagery."

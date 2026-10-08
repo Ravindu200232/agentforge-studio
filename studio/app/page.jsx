@@ -58,8 +58,9 @@ const STAGE_TAB = {
   deploy: 'deploy', deployment: 'deploy', done: 'versions',
 }
 
-// The same words document.WIREFRAME_APPROVAL_PROMPT holds (the backend's default), and the first line of each stage's prompt.
-const WIREFRAME_APPROVAL_PROMPT = 'Generate a low-fidelity prototype.'
+// What starting each stage asks for: the first line of `prompts/wireframe/generate.md` and `prompts/prototype/generate.md`.
+// The agent reads the web-artifacts-builder skill and the files the earlier stages left; nothing more needs saying here.
+const WIREFRAME_APPROVAL_PROMPT = 'Generate low-fidelity wireframes.'
 
 const PROTOTYPE_APPROVAL_PROMPT = 'Generate a high-fidelity, animated prototype.'
 
@@ -140,6 +141,8 @@ export default function Studio() {
   const [accountsChanged, setAccountsChanged] = useState(0)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [mobileView, setMobileView] = useState('view') // 'chat' | 'view'
+  // A wireframe page opened on its own takes the whole view: the chat beside it is hidden until the pages are listed again.
+  const [wireFocus, setWireFocus] = useState(false)
   const opening = useRef(0)
   const wireframeApproval = useRef(null)
   const prototypeApproval = useRef(null)
@@ -778,7 +781,8 @@ export default function Studio() {
           <div className="flex min-h-0 flex-1 bg-bg/40 overflow-hidden">
             <div className={cn(
               "shrink-0 h-full",
-              mobileView === 'chat' ? 'flex w-full lg:w-auto' : 'hidden lg:flex'
+              view === 'wireframe' && wireFocus ? 'hidden'
+                : mobileView === 'chat' ? 'flex w-full lg:w-auto' : 'hidden lg:flex'
             )}>
               <AgentChat key={`${project}-${agentRole}`}
                          projectTitle={projects.find(row => row?.name === project)?.title || ''} />
@@ -832,13 +836,14 @@ export default function Studio() {
                 <SrsResult key={`srs-${project}`} onApprove={approveSrsAndDraw} />
               )}
               {view === 'wireframe' && (
-                <div className="min-h-0 flex-1 overflow-y-auto bg-[radial-gradient(circle_at_top_right,rgba(191, 185, 255,.07),transparent_30%)] p-5">
-                  <div className="mx-auto max-w-[1400px]">
-                    <div className="mb-5">
+                <div className={cn("min-h-0 flex-1 bg-[radial-gradient(circle_at_top_right,rgba(191, 185, 255,.07),transparent_30%)]",
+                                  wireFocus ? 'flex flex-col overflow-hidden p-3' : 'overflow-y-auto p-5')}>
+                  <div className={wireFocus ? 'flex min-h-0 flex-1 flex-col' : 'mx-auto max-w-[1400px]'}>
+                    {!wireFocus && <div className="mb-5">
                       <h1 className="text-lg font-semibold text-ink">Wireframes</h1>
-                      <p className="text-xs text-muted">All planned screens in a grid. Open a page to edit its layout.</p>
-                    </div>
-                    <Wireframes srs={{ project }} generating={syncState?.status === 'running' && ['srs', 'wireframe'].includes(syncState?.source)}
+                      <p className="text-xs text-muted">The wireframes, as a React app: click through the pages, or ask for a change.</p>
+                    </div>}
+                    <Wireframes srs={{ project }} onFocus={setWireFocus} generating={syncState?.status === 'running' && ['srs', 'wireframe'].includes(syncState?.source)}
                                 approving={syncState?.status === 'running' && syncState?.source === 'prototype'}
                                 onApprove={approveWireframesAndBuildPrototype}
                                 onRetryPrototype={() => startPrototypeFromDesign()} />

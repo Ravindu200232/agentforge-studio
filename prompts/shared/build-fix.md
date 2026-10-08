@@ -1,5 +1,7 @@
-The app in `{{app}}` did not build. Fix the source with the edit tools (`replace_text` for a change inside a file) and do not rewrite the app. Do not install packages: everything it needs is already provided.
+The React app in `{{app}}` does not bundle. This is what the bundler said:
 
-What the build said:
+```
+{{error}}
+```
 
-{{log}}
+Fix the files under `{{app}}/src` so that it bundles, changing only what the error needs. Do not run the skill's scripts or install packages: the Studio bundles the app again when you are done.

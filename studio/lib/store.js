@@ -73,8 +73,6 @@ export const useStore = create((set, get) => ({
   // Artifact-specific refresh signals. They update only the matching panel and
   // never reset project navigation or reload the whole Studio app.
   prototypeArtifactStamp: {},
-  // Bumped when the wireframe app has been built or changed, so its preview frames load the new build.
-  wireframeStamp: {},
   setProjectMetadata: (rows, requestedAt = Date.now()) => set(state => ({ buildAvailability: { ...state.buildAvailability,
     ...Object.fromEntries(rows.filter(row => {
       const designer = state.project === row.name && state.agentRole === 'designer'
@@ -98,7 +96,7 @@ export const useStore = create((set, get) => ({
     get().resetSrs()
     try { LS?.removeItem('agentforge-project-views') } catch { }
     set({ accountEpoch: get().accountEpoch + 1, streams: {}, projectSessions: {}, projectViews: {}, buildAvailability: {}, projectSync: {}, planModeByProject: {},
-      srsStamp: {}, prototypeArtifactStamp: {}, wireframeStamp: {}, runtimes: {}, queue: [] })
+      srsStamp: {}, prototypeArtifactStamp: {}, runtimes: {}, queue: [] })
   },
   switchAgent: (agentRole) => set(state => {
     if (agentRole === 'developer' && state.project && !state.buildAvailability[state.project]) return {}
@@ -120,18 +118,11 @@ export const useStore = create((set, get) => ({
     const availability = role === 'designer' && event.type === 'done'
       ? { buildAvailability: { ...state.buildAvailability, [project]: event.type === 'done' } } : {}
     const changedPath = String(event.name || '')
-    // The apps' own source files change one by one while the agent writes; the preview only follows a finished build,
-    // which the backend announces with a `wireframe` or `prototype` event.
     const artifactRefresh = event.type === 'file' ? {
-      ...((changedPath.startsWith('.agentforge/srs/') || changedPath.startsWith('.agentforge/wireframe/'))
+      ...(changedPath.startsWith('.agentforge/srs/')
         ? { srsStamp: { ...state.srsStamp, [project]: Date.now() } } : {}),
-      ...((changedPath.startsWith('.agentforge/prototype/') && !changedPath.startsWith('.agentforge/prototype/app/'))
+      ...(changedPath.startsWith('.agentforge/prototype/')
         ? { prototypeArtifactStamp: { ...state.prototypeArtifactStamp, [project]: Date.now() } } : {}),
-    } : event.type === 'wireframe' ? {
-      wireframeStamp: { ...state.wireframeStamp, [project]: Date.now() },
-      srsStamp: { ...state.srsStamp, [project]: Date.now() },
-    } : event.type === 'prototype' ? {
-      prototypeArtifactStamp: { ...state.prototypeArtifactStamp, [project]: Date.now() },
     } : {}
     return { ...availability, ...artifactRefresh,
       projectSessions: { ...state.projectSessions, [project]: { ...own, [role]: session } },

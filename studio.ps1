@@ -40,24 +40,11 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
-$studioModules = Join-Path $root 'studio\node_modules'
-$modulesItem = Get-Item -LiteralPath $studioModules -Force -ErrorAction SilentlyContinue
-if ($modulesItem -and ($modulesItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-    # Turbopack is rooted at studio/, so a junction to another checkout cannot be resolved.
-    # Delete only the junction; Directory.Delete(..., false) leaves its target intact.
-    Write-Host 'Replacing linked studio dependencies with a local install...'
-    [IO.Directory]::Delete($studioModules, $false)
-    $modulesItem = $null
-}
-if (-not $modulesItem) {
+if (-not (Test-Path -LiteralPath "$root\studio\node_modules")) {
     Write-Host 'Installing the studio dependencies (first run only)...'
     Push-Location "$root\studio"
-    try {
-        npm ci --no-audit --no-fund
-        if ($LASTEXITCODE -ne 0) { throw 'Studio dependencies could not be installed.' }
-    } finally {
-        Pop-Location
-    }
+    npm install --no-audit --no-fund
+    Pop-Location
 }
 
 $env:AGENTFORGE_API_PORT = $ApiPort

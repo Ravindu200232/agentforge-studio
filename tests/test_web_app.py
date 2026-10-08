@@ -1,10 +1,8 @@
-"""The JSX app the wireframe and the prototype are made of: the vendored skill, the shared dependency
-store, the copy that turns the wireframe into the prototype, and what the preview serves."""
+"""The React apps the wireframe and the prototype are made of: the skill, the app that is created, and the bundling."""
 from __future__ import annotations
 
+import io
 import json
-import os
-import shutil
 import sys
 import tarfile
 import tempfile
@@ -13,257 +11,342 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-from server_modules import config, prompts, store, web_app  # noqa: E402
+from server_modules import web_app  # noqa: E402
 
-SKILL = ROOT / "prompts" / "design" / "skills" / "web-artifacts-builder"
+REAL_CHECK = web_app.check_pages          # the tests of the bundling leave the browser alone
 
-
-class VendoredSkillTests(unittest.TestCase):
-    def test_the_official_skill_is_there_unchanged_and_the_loader_finds_it(self):
-        text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
-        self.assertTrue(text.startswith("---\nname: web-artifacts-builder\n"))
-        self.assertIn("Stack**: React 18 + TypeScript + Vite + Parcel", text)
-        self.assertIn("Apache License", (SKILL / "LICENSE.txt").read_text(encoding="utf-8"))
-        self.assertIn("web-artifacts-builder", prompts.skill("design", "web-artifacts-builder"))
-        self.assertIn("web-artifacts-builder", {row["slug"] for row in prompts.catalogue("design", kind="skills")})
-
-    def test_the_official_scripts_keep_unix_line_endings_and_the_tarball_is_whole(self):
-        for name in ("init-artifact.sh", "bundle-artifact.sh"):
-            self.assertNotIn(b"\r", (SKILL / "scripts" / name).read_bytes(), name)
-        with tarfile.open(SKILL / "scripts" / "shadcn-components.tar.gz") as archive:
-            names = [m.name for m in archive.getmembers() if m.isfile()]
-        self.assertIn("components/ui/button.tsx", [n.lstrip("./") for n in names])
-        self.assertGreaterEqual(len([n for n in names if "/ui/" in n]), 40)
-
-    def test_the_toolkit_is_locked_and_dated(self):
-        runtime = SKILL / "scripts" / "runtime"
-        package = json.loads((runtime / "package.json").read_text(encoding="utf-8"))
-        for needed in ("react", "react-router-dom", "framer-motion", "recharts", "lucide-react", "parcel", "html-inline"):
-            self.assertIn(needed, {**package["dependencies"], **package["devDependencies"]})
-        self.assertTrue((runtime / "package-lock.json").is_file())
-        self.assertRegex((runtime / ".npmrc").read_text(encoding="utf-8"), r"(?m)^before=\d{4}-\d{2}-\d{2}$")
+PAGES = [
+    {"route": "/", "page_name": "Home"},
+    {"route": "/orders/[id]", "page_name": "Order", "login_required": True, "allowed_roles": ["baker"]},
+    {"route": "/account", "page_name": "Account", "login_required": True, "allowed_roles": ["customer", "baker"]},
+]
+ACCOUNTS = [{"role": "Baker", "role_key": "baker", "display_name": "Demo Baker", "email": "baker@example.com",
+             "password": "Demo!2026", "lands_on": "/orders/[id]", "can_open": [{"route": "/orders/[id]"}, {"route": "/account"}]}]
 
 
-class AppTests(unittest.TestCase):
+class Scratch(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        root = Path(self.temp.name)
-        self.store_dir = root / "store"
-        (self.store_dir / "node_modules" / "react").mkdir(parents=True)
-        (self.store_dir / "node_modules" / "react" / "index.js").write_text("// react", encoding="utf-8")
-        patches = [
-            mock.patch.object(config, "WORKSPACES", root / "workspaces"),
-            mock.patch.object(config, "PROJECTS_FILE", root / ".agentforge-server" / "projects.json"),
-            mock.patch.dict(os.environ, {"AGENTFORGE_WEB_RUNTIME": str(self.store_dir)}),
-        ]
-        for patch in patches:
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.kit = self.root / "kit"
+        for patch in (mock.patch.object(web_app, "kit_dir", lambda: self.kit),
+                      mock.patch.object(web_app, "check_pages", return_value=None)):
             patch.start()
             self.addCleanup(patch.stop)
-        self.project = store.create(idea="A shop")["id"]
 
-    def make_wireframe(self) -> Path:
-        app = web_app.app_dir(self.project, "wireframe")
-        (app / "src" / "pages").mkdir(parents=True)
-        (app / "index.html").write_text("<div id=root></div>", encoding="utf-8")
-        (app / "package.json").write_text("{}", encoding="utf-8")
-        (app / "src" / "App.tsx").write_text("export default () => <h1>Orders</h1>", encoding="utf-8")
-        (app / "src" / "pages" / "Home.tsx").write_text("export default () => <h1>Home</h1>", encoding="utf-8")
-        (app / "dist").mkdir()
-        (app / "dist" / "index.js").write_text("// built", encoding="utf-8")
-        (app / "bundle.html").write_text("<html>built</html>", encoding="utf-8")
-        (app / ".parcel-cache").mkdir()
-        (app / ".parcel-cache" / "data").write_text("x", encoding="utf-8")
-        web_app.link_node_modules(app)
+    def app(self, name: str = "app") -> Path:
+        return self.root / name
+
+
+class SkillTests(unittest.TestCase):
+    def test_the_skill_is_anthropics_own_unchanged(self):
+        text = (web_app.SKILL_SOURCE / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("name: web-artifacts-builder", text)
+        self.assertIn("**Stack**: React 18 + TypeScript + Vite + Parcel (bundling) + Tailwind CSS + shadcn/ui", text)
+        self.assertIn("Apache License", (web_app.SKILL_SOURCE / "LICENSE.txt").read_text(encoding="utf-8"))
+        for name in ("init-artifact.sh", "bundle-artifact.sh", "shadcn-components.tar.gz"):
+            self.assertTrue((web_app.SKILL_SOURCE / "scripts" / name).is_file(), name)
+
+    def test_the_agent_is_given_the_skill_inside_its_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relative = web_app.stage_skill(Path(tmp))
+            self.assertEqual(relative, ".agentforge/skills/web-artifacts-builder")
+            self.assertEqual((Path(tmp) / relative / "SKILL.md").read_bytes(), (web_app.SKILL_SOURCE / "SKILL.md").read_bytes())
+            self.assertTrue((Path(tmp) / relative / "LICENSE.txt").is_file())
+            self.assertFalse((Path(tmp) / relative / "scripts").exists())
+
+
+class PageFileTests(unittest.TestCase):
+    def test_a_route_becomes_a_readable_file_name(self):
+        files = web_app.page_files(["/", "/orders", "/orders/[id]", "/staff/room-types/:roomTypeId/edit"])
+        self.assertEqual(files, {"/": "home", "/orders": "orders", "/orders/[id]": "orders-id",
+                                 "/staff/room-types/:roomTypeId/edit": "staff-room-types-roomtypeid-edit"})
+
+    def test_two_routes_never_share_a_file(self):
+        files = web_app.page_files(["/a-b", "/a/b", "/a_b"])
+        self.assertEqual(len(set(files.values())), 3)
+
+
+class CreatingTheAppTests(Scratch):
+    def test_it_is_a_react_app_with_the_shadcn_components_and_the_route_table(self):
+        app = self.app()
+        rows = web_app.create_app(app, "Sweet Crumbs", PAGES)
+        self.assertEqual([r["file"] for r in rows], ["home", "orders-id", "account"])
+        for name in ("index.html", "vite.config.ts", "tailwind.config.cjs", "postcss.config.cjs", "tsconfig.json", "components.json",
+                     "src/main.tsx", "src/App.tsx", "src/index.css", "src/lib/router.tsx", "src/lib/session.tsx",
+                     "src/lib/utils.ts", "src/components/ui/button.tsx", "src/components/ui/card.tsx", "src/hooks/use-toast.ts"):
+            self.assertTrue((app / name).is_file(), name)
+        self.assertIn("<title>Sweet Crumbs</title>", (app / "index.html").read_text(encoding="utf-8"))
+        self.assertEqual(json.loads((app / "package.json").read_text(encoding="utf-8"))["name"], "sweet-crumbs")
+        routes = (app / "src" / "routes.ts").read_text(encoding="utf-8")
+        self.assertIn('"route": "/orders/[id]"', routes)
+        self.assertIn('"signedIn": true', routes)
+
+    def test_it_has_no_accounts_unless_the_product_has_sign_in(self):
+        app = self.app()
+        web_app.create_app(app, "App", PAGES)
+        demo = (app / "src" / "demo.ts").read_text(encoding="utf-8")
+        self.assertIn("export const accounts: Account[] = []", demo)
+        self.assertIn('export const signInRoute: string = ""', demo)
+
+    def test_the_demo_accounts_are_written_for_the_session_to_use(self):
+        app = self.app()
+        web_app.create_app(app, "App", PAGES, accounts=ACCOUNTS, sign_in="/", sign_up={"route": "/account", "role_key": "baker"})
+        demo = (app / "src" / "demo.ts").read_text(encoding="utf-8")
+        self.assertIn('"email": "baker@example.com"', demo)
+        self.assertIn('"landsOn": "/orders/[id]"', demo)
+        self.assertIn('"canOpen": [\n      "/orders/[id]",\n      "/account"\n    ]', demo)
+        self.assertIn('export const signInRoute: string = "/"', demo)
+        self.assertIn('"roleKey": "baker"', demo.split("export const signUp")[1])
+
+    def test_what_the_agent_wrote_is_kept_when_the_app_is_made_again_but_the_route_table_is_refreshed(self):
+        app = self.app()
+        web_app.create_app(app, "App", PAGES[:1])
+        (app / "src" / "pages").mkdir()
+        (app / "src" / "pages" / "home.tsx").write_text("export default () => null", encoding="utf-8")
+        (app / "src" / "App.tsx").write_text("// edited", encoding="utf-8")
+        web_app.create_app(app, "App", PAGES)
+        self.assertEqual((app / "src" / "App.tsx").read_text(encoding="utf-8"), "// edited")
+        self.assertTrue((app / "src" / "pages" / "home.tsx").is_file())
+        self.assertIn("/account", (app / "src" / "routes.ts").read_text(encoding="utf-8"))
+
+    def test_the_packages_are_linked_in_not_copied(self):
+        app = self.app()
+        web_app.create_app(app, "App", PAGES)
+        (self.kit / "node_modules" / "vite").mkdir(parents=True, exist_ok=True)
+        (self.kit / "node_modules" / "vite" / "marker").write_text("x", encoding="utf-8")
+        self.assertTrue((app / "node_modules" / "vite" / "marker").is_file())
+        web_app.remove_app(app)
+        self.assertFalse(app.exists())
+        self.assertTrue((self.kit / "node_modules" / "vite" / "marker").is_file(), "removing an app must leave the packages")
+
+    def test_an_archive_cannot_write_outside_the_app(self):
+        archive = self.root / "components.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            for name, body in (("components/ui/ok.tsx", b"ok"), ("../escaped.txt", b"no")):
+                info = tarfile.TarInfo(name)
+                info.size = len(body)
+                tar.addfile(info, io.BytesIO(body))
+        app = self.app()
+        (app / "src").mkdir(parents=True)
+        with mock.patch.object(web_app, "COMPONENTS_ARCHIVE", archive):
+            web_app._extract_components(app)
+        self.assertTrue((app / "src" / "components" / "ui" / "ok.tsx").is_file())
+        self.assertFalse((app / "escaped.txt").exists())
+        self.assertFalse((self.root / "escaped.txt").exists())
+
+
+class BundlingTests(Scratch):
+    def made(self) -> Path:
+        app = self.app()
+        web_app.create_app(app, "App", PAGES)
         return app
 
-    def test_the_two_apps_live_side_by_side_under_the_record(self):
-        record = config.record_dir(self.project)
-        self.assertEqual(web_app.app_dir(self.project, "wireframe"), record / "wireframe" / "app")
-        self.assertEqual(web_app.app_dir(self.project, "prototype"), record / "prototype" / "app")
-        with self.assertRaises(ValueError):
-            web_app.app_dir(self.project, "build")
+    def fake_vite(self, app: Path, ok: bool = True, text: str = ""):
+        def run(args, cwd, timeout, env=None):
+            if ok:
+                (Path(cwd) / "dist").mkdir(exist_ok=True)
+                (Path(cwd) / "dist" / "index.html").write_text("<html>app</html>", encoding="utf-8")
+            return ok, text
+        return mock.patch.object(web_app, "_run", run)
 
-    def test_the_prototype_is_a_copy_the_wireframe_is_never_touched(self):
-        wireframe = self.make_wireframe()
-        before = {p.relative_to(wireframe).as_posix(): p.read_bytes() for p in wireframe.rglob("*")
-                  if p.is_file() and "node_modules" not in p.parts}
-        prototype = web_app.app_dir(self.project, "prototype")
+    def test_it_leaves_one_page_and_remembers_what_it_was_made_from(self):
+        app = self.made()
+        with mock.patch.object(web_app, "prepare_kit", return_value=(True, "")), self.fake_vite(app):
+            ok, _ = web_app.bundle(app)
+        self.assertTrue(ok)
+        self.assertEqual(web_app.page(app), b"<html>app</html>")
+        self.assertFalse((app / "dist").exists())
+        self.assertFalse(web_app.stale(app))
+        (app / "src" / "pages").mkdir()
+        (app / "src" / "pages" / "home.tsx").write_text("export default () => null", encoding="utf-8")
+        self.assertTrue(web_app.stale(app), "an edit after the bundle makes it stale")
 
-        web_app.copy_app(wireframe, prototype)
-        (prototype / "src" / "App.tsx").write_text("export default () => <h1>Orders, designed</h1>", encoding="utf-8")
-        (prototype / "src" / "New.tsx").write_text("export const n = 1", encoding="utf-8")
+    def test_a_missing_toolkit_is_said_plainly(self):
+        app = self.made()
+        with mock.patch.object(web_app, "prepare_kit", return_value=(False, "Node.js was not found")):
+            self.assertEqual(web_app.bundle(app), (False, "Node.js was not found"))
 
-        after = {p.relative_to(wireframe).as_posix(): p.read_bytes() for p in wireframe.rglob("*")
-                 if p.is_file() and "node_modules" not in p.parts}
-        self.assertEqual(before, after)
-        self.assertEqual((prototype / "src" / "pages" / "Home.tsx").read_text(encoding="utf-8"),
-                         "export default () => <h1>Home</h1>")
-        for built in ("dist", "bundle.html", ".parcel-cache"):
-            self.assertFalse((prototype / built).exists(), f"{built} must be rebuilt, not copied")
-        self.assertTrue((prototype / "node_modules" / "react" / "index.js").is_file())
+    def test_a_bundle_that_fails_is_given_to_the_agent_to_fix_and_tried_again(self):
+        app = self.made()
+        outcomes = iter([(False, "Could not resolve ./missing"), (True, "")])
 
-    def test_copying_again_replaces_the_prototype_and_never_empties_the_shared_store(self):
-        wireframe = self.make_wireframe()
-        prototype = web_app.app_dir(self.project, "prototype")
-        web_app.copy_app(wireframe, prototype)
-        (prototype / "src" / "Stale.tsx").write_text("stale", encoding="utf-8")
+        def run(args, cwd, timeout, env=None):
+            ok, text = next(outcomes)
+            if ok:
+                (Path(cwd) / "dist").mkdir(exist_ok=True)
+                (Path(cwd) / "dist" / "index.html").write_text("<html>fixed</html>", encoding="utf-8")
+            return ok, text
 
-        web_app.copy_app(wireframe, prototype)
+        told = []
+        with mock.patch.object(web_app, "prepare_kit", return_value=(True, "")), mock.patch.object(web_app, "_run", run):
+            web_app.ensure_built(app, told.append)
+        self.assertEqual(told, ["Could not resolve ./missing"])
+        self.assertEqual(web_app.page(app), b"<html>fixed</html>")
 
-        self.assertFalse((prototype / "src" / "Stale.tsx").exists())
-        self.assertTrue((self.store_dir / "node_modules" / "react" / "index.js").is_file())
-        web_app.remove_app(prototype)
-        self.assertFalse(prototype.exists())
-        self.assertTrue((self.store_dir / "node_modules" / "react" / "index.js").is_file(),
-                        "deleting an app must not follow node_modules into the shared store")
+    def test_it_gives_up_after_two_repairs_and_says_what_the_bundler_said(self):
+        app = self.made()
+        told = []
+        with mock.patch.object(web_app, "prepare_kit", return_value=(True, "")), self.fake_vite(app, ok=False, text="boom"):
+            with self.assertRaisesRegex(web_app.BuildFailed, "boom"):
+                web_app.ensure_built(app, told.append)
+        self.assertEqual(len(told), 2)
 
-    def test_copying_needs_an_app_to_copy(self):
-        with self.assertRaises(FileNotFoundError):
-            web_app.copy_app(web_app.app_dir(self.project, "wireframe"), web_app.app_dir(self.project, "prototype"))
+    def test_the_agent_fix_is_a_run_of_its_own_with_the_bundler_text(self):
+        session = mock.Mock(workspace=self.root, cancelled=False)
+        app = web_app.app_dir(self.root, "wireframe")
+        web_app.create_app(app, "App", PAGES)
+        outcomes = iter([(False, "Unexpected token"), (True, "")])
 
-    def test_built_and_stale_follow_the_bundle_and_the_source(self):
-        self.assertFalse(web_app.built(self.project, "wireframe"))
-        self.assertFalse(web_app.stale(self.project, "wireframe"))   # nothing drawn yet: nothing to rebuild
-        app = self.make_wireframe()
-        self.assertTrue(web_app.built(self.project, "wireframe"))
-        old = (app / "bundle.html").stat().st_mtime - 100
-        os.utime(app / "src" / "App.tsx", (old - 100, old - 100))
-        os.utime(app / "src" / "pages" / "Home.tsx", (old - 100, old - 100))
-        os.utime(app / "index.html", (old - 100, old - 100))
-        os.utime(app / "package.json", (old - 100, old - 100))
-        self.assertFalse(web_app.stale(self.project, "wireframe"))
-        (app / "src" / "App.tsx").write_text("export default () => <h1>changed</h1>", encoding="utf-8")
-        self.assertTrue(web_app.stale(self.project, "wireframe"))
-        (app / "bundle.html").unlink()
-        self.assertFalse(web_app.built(self.project, "wireframe"))
+        def run(args, cwd, timeout, env=None):
+            ok, text = next(outcomes)
+            if ok:
+                (Path(cwd) / "dist").mkdir(exist_ok=True)
+                (Path(cwd) / "dist" / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+            return ok, text
 
-    def test_the_fingerprint_changes_with_the_source_only(self):
-        app = self.make_wireframe()
-        first = web_app.fingerprint(app)
-        (app / "bundle.html").write_text("<html>rebuilt</html>", encoding="utf-8")
-        self.assertEqual(first, web_app.fingerprint(app))
-        (app / "src" / "pages" / "Home.tsx").write_text("export default () => <h1>Home, longer</h1>", encoding="utf-8")
-        self.assertNotEqual(first, web_app.fingerprint(app))
+        with mock.patch.object(web_app, "prepare_kit", return_value=(True, "")), mock.patch.object(web_app, "_run", run), \
+                mock.patch.object(web_app.bus, "log"):
+            web_app.build_for(session, "prj", "wireframe")
+        fix = session.run_direct.call_args.args[0]
+        self.assertIn("Unexpected token", fix)
+        self.assertIn(".agentforge/wireframe/app", fix)
 
-    def test_same_size_edit_with_unchanged_timestamp_invalidates_review(self):
-        app = self.make_wireframe()
-        source = app / "src" / "App.tsx"
-        before = source.stat()
-        first = web_app.fingerprint(app)
-        original = source.read_text(encoding="utf-8")
-        source.write_text(original.replace("Orders", "Orders".lower()), encoding="utf-8")
-        os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
-        self.assertEqual(source.stat().st_size, before.st_size)
-        self.assertNotEqual(first, web_app.fingerprint(app))
+    def test_the_preview_cannot_call_out(self):
+        self.assertIn("connect-src 'none'", web_app.PREVIEW_POLICY)
+        self.assertIn("default-src 'none'", web_app.PREVIEW_POLICY)
+        self.assertIn("https://fonts.googleapis.com", web_app.PREVIEW_POLICY)
 
-    def test_the_preview_serves_the_bundle_and_built_files_and_nothing_else(self):
-        self.make_wireframe()
-        served = web_app.served_file(self.project, "wireframe", "bundle.html")
-        self.assertEqual(served.name, "bundle.html")
-        self.assertEqual(web_app.served_file(self.project, "wireframe", "").name, "bundle.html")
-        self.assertEqual(web_app.served_file(self.project, "wireframe", "index.js").name, "index.js")
-        for refused in ("src/App.tsx", "package.json", "../../srs/srs.json", "..\\..\\x", "node_modules/react/index.js"):
-            self.assertIsNone(web_app.served_file(self.project, "wireframe", refused), refused)
-
-    def test_the_preview_policy_stops_a_page_calling_out_or_submitting_anywhere(self):
-        for directive in ("connect-src 'none'", "form-action 'none'", "frame-src 'none'", "base-uri 'none'"):
-            self.assertIn(directive, web_app.PREVIEW_POLICY)
-
-    def test_the_policy_is_put_in_the_served_page_not_in_the_file(self):
-        page = b"<!doctype html><html><HEAD data-x=1><title>x</title></HEAD><body>hi</body></html>"
-        served = web_app.preview_page(page)
-        self.assertIn(b'http-equiv="Content-Security-Policy"', served)
-        self.assertLess(served.index(b"Content-Security-Policy"), served.index(b"<title>"),
-                        "the policy must come before anything the page loads")
-        self.assertNotIn(b"Content-Security-Policy", page)
+    def test_the_policy_is_the_first_thing_in_the_page(self):
+        page = web_app.preview_page(b"<!doctype html><html><head><title>x</title></head><body></body></html>")
+        head = page.index(b"<head>") + len(b"<head>")
+        self.assertTrue(page[head:].startswith(b'<meta http-equiv="Content-Security-Policy"'))
+        self.assertIn(b"connect-src 'none'", page)
         self.assertTrue(web_app.preview_page(b"<p>no head</p>").startswith(b"<meta"))
 
-    def test_a_label_is_retyped_in_the_source_only_when_it_is_found_exactly_once(self):
-        app = self.make_wireframe()
-        done = web_app.replace_text(self.project, "wireframe", "Orders", "Your orders")
-        self.assertEqual(done, {"ok": True, "file": "src/App.tsx"})
-        self.assertIn("Your orders", (app / "src" / "App.tsx").read_text(encoding="utf-8"))
 
-        (app / "src" / "pages" / "Home.tsx").write_text("<h1>Your orders</h1>", encoding="utf-8")
-        several = web_app.replace_text(self.project, "wireframe", "Your orders", "Orders")
-        self.assertFalse(several["ok"])
-        self.assertEqual(sorted(several["where"]), ["src/App.tsx", "src/pages/Home.tsx"])
-        self.assertFalse(web_app.replace_text(self.project, "wireframe", "no such text", "x")["ok"])
-        self.assertFalse(web_app.replace_text(self.project, "wireframe", "", "x")["ok"])
+class CheckingThePagesTests(Scratch):
+    DOM = ('<html><body><div id="root"></div><pre id="af-selftest" hidden>'
+           '[{"route":"/admin/analytics","error":"ReferenceError: yen is not defined"},{"route":"/blank","error":"the page is blank"}]'
+           '</pre></body></html>')
 
-    def test_staging_the_skill_copies_the_tree_as_bytes_and_points_it_at_the_store(self):
-        relative = web_app.stage_skill(self.project)
-        staged = config.workspace_for(self.project) / relative
-        self.assertEqual(relative, ".agentforge/skills/web-artifacts-builder")
-        for name in ("SKILL.md", "scripts/init-artifact.mjs", "scripts/bundle-artifact.mjs",
-                     "scripts/shadcn-components.tar.gz", "scripts/init-artifact.sh"):
-            self.assertEqual((staged / name).read_bytes(), (SKILL / name).read_bytes(), name)
-        pinned = json.loads((staged / "scripts" / "runtime.json").read_text(encoding="utf-8"))
-        self.assertEqual(Path(pinned["runtime"]), self.store_dir.resolve())
+    def made(self) -> Path:
+        app = self.app()
+        web_app.create_app(app, "App", PAGES)
+        (app / web_app.BUNDLE).write_text("<html></html>", encoding="utf-8")
+        return app
 
-    def test_the_store_is_ready_only_when_it_was_installed_from_this_toolkit(self):
-        self.assertFalse(web_app.runtime_ready())
-        package = json.loads((SKILL / "scripts" / "runtime" / "package.json").read_text(encoding="utf-8"))
-        for name in {**package["dependencies"], **package["devDependencies"]}:
-            folder = self.store_dir / "node_modules" / name
-            folder.mkdir(parents=True, exist_ok=True)
-            (folder / "package.json").write_text("{}", encoding="utf-8")
-        self.assertFalse(web_app.runtime_ready(), "packages alone are not enough: no signature yet")
-        (self.store_dir / "node_modules" / ".agentforge-runtime").write_text("stale", encoding="utf-8")
-        self.assertFalse(web_app.runtime_ready())
-        (self.store_dir / "node_modules" / ".agentforge-runtime").write_text(web_app._store_signature(), encoding="utf-8")  # noqa: SLF001
-        self.assertTrue(web_app.runtime_ready())
-        shutil.rmtree(self.store_dir / "node_modules" / "parcel")
-        self.assertFalse(web_app.runtime_ready())
+    def check(self, dom, browser=("edge", "chrome")):
+        from ollama_terminal import screenshot
+
+        with mock.patch.object(screenshot, "working_browser", return_value=browser),                 mock.patch.object(screenshot, "dump_dom", return_value=dom) as dump:
+            return REAL_CHECK(self.made()), dump
+
+    def test_the_screens_that_crash_are_named_with_what_went_wrong(self):
+        found, dump = self.check(self.DOM)
+        self.assertEqual(found, [("/admin/analytics", "ReferenceError: yen is not defined"), ("/blank", "the page is blank")])
+        self.assertEqual(dump.call_args.args[1], "?selftest=1#/")
+
+    def test_an_app_whose_screens_all_open_has_nothing_to_fix(self):
+        self.assertEqual(self.check('<pre id="af-selftest" hidden>[]</pre>')[0], [])
+
+    def test_a_check_that_cannot_run_says_nothing_and_stops_nothing(self):
+        self.assertIsNone(self.check(self.DOM, browser=None)[0], "no browser")
+        self.assertIsNone(self.check("<html><body>the page never answered</body></html>")[0])
+        self.assertIsNone(self.check('<pre id="af-selftest" hidden>not json</pre>')[0])
+        from ollama_terminal import screenshot
+        with mock.patch.object(screenshot, "working_browser", side_effect=OSError("no")):
+            self.assertIsNone(REAL_CHECK(self.made()))
+
+    def test_a_screen_that_crashes_is_given_to_the_agent_and_checked_again(self):
+        app = self.made()
+        told = []
+        answers = iter([[("/admin/analytics", "ReferenceError: yen is not defined")], []])
+        with mock.patch.object(web_app, "bundle", return_value=(True, "")),                 mock.patch.object(web_app, "check_pages", side_effect=lambda a: next(answers)):
+            web_app.ensure_built(app, told.append)
+        self.assertEqual(len(told), 1)
+        self.assertIn("`/admin/analytics`: ReferenceError: yen is not defined", told[0])
+        self.assertIn("bundle, but crash", told[0])
+
+    def test_a_screen_that_still_crashes_after_the_tries_is_not_an_error(self):
+        app = self.made()
+        told = []
+        with mock.patch.object(web_app, "bundle", return_value=(True, "")),                 mock.patch.object(web_app, "check_pages", return_value=[("/x", "TypeError: nope")]):
+            web_app.ensure_built(app, told.append)          # bundled; the page shows its own error
+        self.assertEqual(len(told), 2)
+
+    def test_an_app_that_cannot_be_checked_is_taken_as_it_is(self):
+        told = []
+        with mock.patch.object(web_app, "bundle", return_value=(True, "")), mock.patch.object(web_app, "check_pages", return_value=None):
+            web_app.ensure_built(self.made(), told.append)
+        self.assertEqual(told, [])
 
 
-@unittest.skipUnless(shutil.which("node") and (ROOT / "tools" / "web-artifacts-runtime" / "node_modules" / ".agentforge-runtime").is_file(),
-                     "needs Node and the installed toolkit (tools/web-artifacts-runtime)")
-class RealToolchainTests(unittest.TestCase):
-    """The Node ports against the real toolkit: create an app, give it two hash-routed pages, bundle it."""
+class KitOwnedFilesTests(Scratch):
+    def test_the_router_and_the_session_are_written_again_when_the_studio_has_changed_them(self):
+        app = self.app()
+        web_app.create_app(app, "App", PAGES)
+        router = app / "src" / "lib" / "router.tsx"
+        router.write_text("// an older router", encoding="utf-8")
+        (app / "src" / "App.tsx").write_text("// the agent's own App", encoding="utf-8")
+        web_app.sync_kit_files(app)
+        self.assertEqual(router.read_bytes(), (web_app.KIT_SOURCE / "app" / "src" / "lib" / "router.tsx").read_bytes())
+        self.assertEqual((app / "src" / "App.tsx").read_text(encoding="utf-8"), "// the agent's own App")
 
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        root = Path(self.temp.name)
-        patches = [
-            mock.patch.object(config, "WORKSPACES", root / "workspaces"),
-            mock.patch.object(config, "PROJECTS_FILE", root / ".agentforge-server" / "projects.json"),
-            mock.patch.dict(os.environ, {"AGENTFORGE_WEB_RUNTIME": str(ROOT / "tools" / "web-artifacts-runtime")}),
-        ]
-        for patch in patches:
-            patch.start()
-            self.addCleanup(patch.stop)
-        self.project = store.create(idea="A shop")["id"]
+    def test_a_page_that_crashes_is_caught_and_the_selftest_is_in_the_router(self):
+        router = (web_app.KIT_SOURCE / "app" / "src" / "lib" / "router.tsx").read_text(encoding="utf-8")
+        for needle in ("getDerivedStateFromError", "data-af-error", "window.__afErrors", 'id="af-selftest"', "selftest"):
+            self.assertIn(needle, router)
 
-    def test_init_then_bundle_makes_one_self_contained_page_and_the_prototype_copy_builds_too(self):
-        staged = web_app.stage_skill(self.project)
-        workspace = config.workspace_for(self.project)
-        app = web_app.app_dir(self.project, "wireframe")
-        ok, log = web_app._run([str(workspace / staged / "scripts" / "init-artifact.mjs"), str(app)], workspace, 120)  # noqa: SLF001
-        self.assertTrue(ok, log)
-        self.assertTrue((app / "src" / "components" / "ui" / "button.tsx").is_file())
-        (app / "src" / "App.tsx").write_text(
-            "import { HashRouter, Routes, Route, Link } from 'react-router-dom'\n"
-            "import { Button } from '@/components/ui/button'\n"
-            "export default function App() { return <HashRouter><Routes>"
-            "<Route path='/' element={<Link to='/two'><Button>One</Button></Link>} />"
-            "<Route path='/two' element={<h1>Page two</h1>} /></Routes></HashRouter> }\n", encoding="utf-8")
 
-        ok, log = web_app.bundle(self.project, "wireframe")
-        self.assertTrue(ok, log)
-        html = (app / "bundle.html").read_text(encoding="utf-8")
-        self.assertNotIn('src="./', html)          # everything inlined
-        self.assertIn("Page two", html)
+class KitTests(Scratch):
+    def test_the_kit_is_only_installed_once(self):
+        with mock.patch.object(web_app, "_npm", return_value="npm"), mock.patch.object(web_app, "node_exe", return_value="node"):
+            def install(args, cwd, timeout, env=None):
+                (Path(cwd) / "node_modules" / "vite" / "bin").mkdir(parents=True, exist_ok=True)
+                (Path(cwd) / "node_modules" / "vite" / "bin" / "vite.js").write_text("", encoding="utf-8")
+                return True, ""
+            with mock.patch.object(web_app, "_run", side_effect=install) as run:
+                self.assertEqual(web_app.prepare_kit(), (True, ""))
+                self.assertEqual(web_app.prepare_kit(), (True, ""))
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0][1], "ci", "the lock pins the packages")
+        self.assertTrue(web_app.kit_ready())
 
-        prototype = web_app.app_dir(self.project, "prototype")
-        web_app.copy_app(app, prototype)
-        ok, log = web_app.bundle(self.project, "prototype")
-        self.assertTrue(ok, log)
-        self.assertTrue(web_app.built(self.project, "prototype"))
+    def test_a_lock_that_does_not_fit_falls_back_to_a_plain_install(self):
+        calls = []
+        with mock.patch.object(web_app, "_npm", return_value="npm"), mock.patch.object(web_app, "node_exe", return_value="node"):
+            def install(args, cwd, timeout, env=None):
+                calls.append(args[1])
+                if args[1] == "ci":
+                    return False, "lock mismatch"
+                (Path(cwd) / "node_modules" / "vite" / "bin").mkdir(parents=True, exist_ok=True)
+                (Path(cwd) / "node_modules" / "vite" / "bin" / "vite.js").write_text("", encoding="utf-8")
+                return True, ""
+            with mock.patch.object(web_app, "_run", side_effect=install):
+                self.assertEqual(web_app.prepare_kit(), (True, ""))
+        self.assertEqual(calls, ["ci", "install"])
+
+    def test_no_node_is_said_plainly(self):
+        with mock.patch.object(web_app, "node_exe", return_value=None):
+            ok, text = web_app.prepare_kit()
+        self.assertFalse(ok)
+        self.assertIn("Node.js", text)
+
+    def test_the_kit_names_every_package_the_skill_installs(self):
+        kit = json.loads((web_app.KIT_SOURCE / "package.json").read_text(encoding="utf-8"))
+        names = set(kit["dependencies"]) | set(kit["devDependencies"])
+        skill = (web_app.SKILL_SOURCE / "scripts" / "init-artifact.sh").read_text(encoding="utf-8")
+        for package in ("@radix-ui/react-dialog", "@radix-ui/react-tabs", "lucide-react", "class-variance-authority", "tailwind-merge",
+                        "sonner", "cmdk", "vaul", "embla-carousel-react", "react-day-picker", "react-hook-form", "zod", "date-fns"):
+            self.assertIn(package, skill)
+            self.assertIn(package, names)
+        for package in ("react", "react-dom", "vite", "recharts", "tailwindcss", "vite-plugin-singlefile"):
+            self.assertIn(package, names)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,0 @@
-The prototype's journeys were clicked through in a browser, step by step, and a screenshot was taken and looked at at every step. These are the places where a journey could not be done, or a screen looked wrong:
-
-{{defects}}
-
-Fix them in the prototype app, `{{app}}` (built with the web-artifacts-builder skill, `{{skill}}/SKILL.md`), with the edit tools: `replace_text` for a change inside a file, `write_file` for a new one. A step that could not be done needs a way to do it: a link or button to the page the step happens on, put where a real person would look for it (the page's own content, the shared header, menus and footer), that really goes there. A button that is meant to do something must show that it did: a message, a dialog, a changed state or the next page. Keep the design and the pages; change only what each problem needs, and fix a problem that shows on several pages once, where it comes from. Do not install packages and do not bundle; the app is rebuilt for you. Finish with one sentence saying what you changed.

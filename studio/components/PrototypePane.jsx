@@ -1,38 +1,38 @@
 'use client'
 
-/**
- * The prototype viewer: the high-fidelity React app, one page at a time with every page listed on the side, plus element
- * selection, pencil annotations and the text tool (click words, retype them). The app is framed by the same guarded
- * preview the wireframe uses, so a button in it goes to another page of the app and nowhere else.
- */
+/** The prototype: a bundled React app framed on its own address, with a page list, element selection and pencil annotations. */
 
 import { useAgentPreview } from '@/lib/agent-preview'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Monitor, Tablet, Smartphone, MousePointerClick, Pencil, RotateCw,
-  ExternalLink, Layers, Eraser, Undo2, ChevronLeft, ChevronRight,
-  Rocket, Loader2, Type, Route,
+  ExternalLink, Layers, Eraser, Undo2, ChevronLeft, ChevronRight, Rocket, Loader2,
 } from 'lucide-react'
 import { useStore } from '@/lib/store'
 import { api } from '@/lib/api'
 import { watchFrame } from '@/lib/console-log'
 import { attachPicker, pickedFrom, pickLabel } from '@/lib/picker'
-import { goTo } from '@/lib/preview-guard'
 import { Tip } from './ui'
-import AgentBrowser from './AgentBrowser'
-import AppPreview from './AppPreview'
-import AppTextEdit from './AppTextEdit'
-import LiveE2EOverlay from './LiveE2EOverlay'
 import { cn } from '@/lib/utils'
 
 const VIEWPORTS = [
-  { id: 'desktop', label: 'Desktop', Icon: Monitor },
-  { id: 'tablet', label: 'Tablet', Icon: Tablet },
-  { id: 'mobile', label: 'Mobile', Icon: Smartphone },
+  { id: 'desktop', label: 'Desktop', w: null, Icon: Monitor },
+  { id: 'tablet', label: 'Tablet', w: 834, Icon: Tablet },
+  { id: 'mobile', label: 'Mobile', w: 390, Icon: Smartphone },
 ]
 
 const MIN_INK = 3
 let seq = 0
+
+/** The screen the app in the frame is on: its address hash (`#/orders` is `/orders`). */
+function currentRoute(frame) {
+  try {
+    const hash = frame?.contentWindow?.location?.hash || ''
+    return hash.replace(/^#/, '').split('?')[0] || '/'
+  } catch {
+    return '/'
+  }
+}
 
 export default function PrototypePane({ project, hidden, onBuild, generating = false, generationStatus = '', canResumePrototype = false }) {
   const frameRef = useRef(null)
@@ -40,16 +40,14 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
   const detachRef = useRef(null)
   const strokesRef = useRef([])
   const drawingRef = useRef(false)
+  const lastRouteRef = useRef('/')
 
   const [vp, setVp] = useState('desktop')
   const [pickOn, setPickOn] = useState(false)
   const [pencilOn, setPencilOn] = useState(false)
-  const [textOn, setTextOn] = useState(false)
   const [route, setRoute] = useState('/')
   const [pages, setPages] = useState([])
-  const [protoReady, setProtoReady] = useState(false)
-  const [reloadKey, setReloadKey] = useState(0)
-  const [loaded, setLoaded] = useState(0)
+  const [status, setStatus] = useState({ built: false, version: 0 })
 
   const trail = useRef(['/'])
   const at = useRef(0)
@@ -58,59 +56,52 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
 
   const { addLog, busy, workflowStatus, prototypeStamp, progress, drawing, setDrawing,
     selection, addSelection, patchSelection, clearSelection, undo, setUndo } = useAgentPreview(project, 'designer')
-  const prototypeArtifactStamp = useStore(s => s.prototypeArtifactStamp[project] || 0)
   const buildAllowed = useStore(s => Boolean(s.buildAvailability[project]))
   const statusText = useStore(s => s.statusText)
-  // The prototype's journeys being clicked through in a real browser: shown live over the prototype, like a build's tests.
-  const liveFrame = useStore(s => s.browserFrame)
-  const liveStep = useStore(s => s.e2eLive)
-  const walking = Boolean(liveFrame?.frame || liveStep)
   const isBusy = busy || generating
-  // Partial checkpoints may already expose several real pages. They are still
-  // resumable until the backend marks the complete prototype buildable.
+  // A prototype stopped part of the way is still resumable until the backend marks the complete one buildable.
   const resumePrototype = canResumePrototype && !isBusy
   const actionEnabled = buildAllowed || resumePrototype
 
-  const prototypeUrl = api.appUrl(project || '', 'prototype', route)
+  const protoReady = status.built
+  const width = VIEWPORTS.find(x => x.id === vp)?.w
+  // The frame loads the bundle once for each version of it; moving between screens only changes the hash.
+  const src = useMemo(() => (project && protoReady ? api.webUrl(project, 'prototype', lastRouteRef.current, status.version) : ''),
+    [project, protoReady, status.version])
+  const openUrl = project ? api.webUrl(project, 'prototype', route, status.version) : ''
 
-  // Whether the app is built is asked of the backend; the 1 MB bundle itself is only fetched by the frame.
-  const checkPrototypeReady = useCallback(async () => {
-    if (!project) return false
+  const checkReady = useCallback(async () => {
+    if (!project) return
     try {
-      const status = await api.appStatus(project)
-      const ok = Boolean(status?.prototype?.built)
-      setProtoReady(ok)
-      return ok
+      const answer = await api.webStatus(project, 'prototype')
+      setStatus(old => (old.built === Boolean(answer?.built) && old.version === (answer?.version || 0)
+        ? old : { built: Boolean(answer?.built), version: answer?.version || 0 }))
     } catch {
-      setProtoReady(false)
-      return false
+      setStatus(old => (old.built ? { built: false, version: 0 } : old))
     }
   }, [project])
 
-  // Check on open and on completed builds; never poll an absent idle drawing.
   useEffect(() => {
-    const timer = setTimeout(() => { checkPrototypeReady() }, 200)
+    if (!project) return
+    api.wireframes(project).then(answer => setPages(answer?.pages || [])).catch(() => {})
+  }, [project, status.version])
+
+  // Check on open and whenever the agent reports a change; poll while it is working.
+  useEffect(() => {
+    const timer = setTimeout(checkReady, 200)
     return () => clearTimeout(timer)
-  }, [project, isBusy, prototypeStamp, prototypeArtifactStamp, checkPrototypeReady])
+  }, [project, isBusy, prototypeStamp, checkReady])
 
   useEffect(() => {
     if (!generating) return
-    const timer = setInterval(checkPrototypeReady, 2000)
+    const timer = setInterval(checkReady, 2500)
     return () => clearInterval(timer)
-  }, [generating, checkPrototypeReady])
+  }, [generating, checkReady])
 
-  // The pages listed on the side are the screens the specification names.
-  useEffect(() => {
-    if (!project) return
-    let live = true
-    api.wireframes(project)
-      .then(found => { if (live) setPages(found?.pages || []) })
-      .catch(() => { if (live) setPages([]) })
-    return () => { live = false }
-  }, [project, prototypeArtifactStamp])
-
-  // The page the app is on, followed by the list and the back/forward trail.
-  const onRoute = useCallback((here) => {
+  const syncRoute = useCallback(() => {
+    const here = currentRoute(frameRef.current)
+    if (lastRouteRef.current === here) return
+    lastRouteRef.current = here
     setRoute(here)
     if (jumping.current) {
       jumping.current = false
@@ -121,28 +112,38 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     setNav({ back: at.current > 0, forward: at.current < trail.current.length - 1 })
   }, [])
 
+  useEffect(() => {
+    const id = setInterval(syncRoute, 400)
+    return () => clearInterval(id)
+  }, [syncRoute])
+
+  function go(next) {
+    const f = frameRef.current
+    if (!f || !next) return
+    try { f.contentWindow.location.hash = '#' + next } catch { f.src = api.webUrl(project, 'prototype', next, status.version) }
+    syncRoute()
+  }
+
   function step(by) {
+    const f = frameRef.current
     const next = at.current + by
-    if (next < 0 || next >= trail.current.length) return
+    if (!f || next < 0 || next >= trail.current.length) return
     at.current = next
     jumping.current = true
-    goTo(frameRef.current, trail.current[next])
+    go(trail.current[next])
     setNav({ back: next > 0, forward: next < trail.current.length - 1 })
   }
 
   function reload() {
-    checkPrototypeReady()
-    setReloadKey(k => k + 1)
+    checkReady()
+    try { frameRef.current?.contentWindow?.location.reload() } catch { /* not loaded */ }
   }
 
   const prevBusyRef = useRef(busy)
   useEffect(() => {
-    if (prevBusyRef.current && !busy) {
-      checkPrototypeReady()
-      reload()
-    }
+    if (prevBusyRef.current && !busy) checkReady()
     prevBusyRef.current = busy
-  }, [busy])
+  }, [busy, checkReady])
 
   const viewportOf = useCallback(() => {
     const f = frameRef.current
@@ -167,7 +168,8 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     if (!frameRef.current) return
     detachRef.current = attachPicker(frameRef.current, (el) => {
       const info = pickedFrom(frameRef.current, el, vp)
-      const shotRoute = api.appUrl(project, 'prototype', info.route.split('#').pop())
+      const here = currentRoute(frameRef.current)
+      const shotRoute = api.webUrl(project, 'prototype', here)
       attachShot(
         {
           key: `sel-${++seq}`,
@@ -192,22 +194,32 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     if (pickOn) attach()
     else { detachRef.current?.(); detachRef.current = null }
     return () => { detachRef.current?.(); detachRef.current = null }
-  }, [pickOn, attach, loaded])
+  }, [pickOn, attach])
+
+  useEffect(() => {
+    const f = frameRef.current
+    if (!f) return
+    const onLoad = () => {
+      watchFrame(f, project, 'designer')
+      syncRoute()
+      if (pickOn) attach()
+    }
+    f.addEventListener('load', onLoad)
+    return () => f.removeEventListener('load', onLoad)
+  }, [pickOn, attach, syncRoute, project, src])
 
   const syncCanvas = useCallback(() => {
     const f = frameRef.current, c = canvasRef.current
-    if (!f || !c || !c.offsetParent) return
-    const frame = f.getBoundingClientRect()
-    const parent = c.offsetParent.getBoundingClientRect()
-    c.style.left = (frame.left - parent.left) + 'px'
-    c.style.top = (frame.top - parent.top) + 'px'
-    c.style.width = frame.width + 'px'
-    c.style.height = frame.height + 'px'
+    if (!f || !c) return
+    c.style.left = f.offsetLeft + 'px'
+    c.style.top = f.offsetTop + 'px'
+    c.style.width = f.clientWidth + 'px'
+    c.style.height = f.clientHeight + 'px'
     const dpr = window.devicePixelRatio || 1
-    const want = Math.round(frame.width * dpr)
+    const want = Math.round(f.clientWidth * dpr)
     if (c.width !== want) {
       c.width = want
-      c.height = Math.round(frame.height * dpr)
+      c.height = Math.round(f.clientHeight * dpr)
       const ctx = c.getContext('2d')
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       ctx.strokeStyle = '#ff2d55'
@@ -265,7 +277,8 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
       drawingRef.current = false
       const strokes = strokesRef.current
       if (strokes.reduce((a, s) => a + s.length, 0) < MIN_INK) return clearStrokes()
-      const shotRoute = api.appUrl(project, 'prototype', route)
+      const here = currentRoute(frameRef.current)
+      const shotRoute = api.webUrl(project, 'prototype', here)
       attachShot(
         {
           key: `sel-${++seq}`,
@@ -273,7 +286,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
           strokes,
           route: shotRoute,
           state: 'shooting',
-          label: `Drawing on ${route}`,
+          label: `Drawing on ${here}`,
         },
         { route: shotRoute, viewport: viewportOf(), strokes }
       )
@@ -291,29 +304,17 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
       window.removeEventListener('pointerup', up)
       window.removeEventListener('resize', onResize)
     }
-  }, [pencilOn, point, syncCanvas, clearStrokes, attachShot, viewportOf, project, route])
-
-  function toggleTextEdit() {
-    if (!project) return addLog('WARN', 'Open a project first')
-    if (!textOn) { setPickOn(false); setPencilOn(false) }
-    setTextOn(v => !v)
-  }
+  }, [pencilOn, point, syncCanvas, clearStrokes, attachShot, viewportOf, project])
 
   function togglePick() {
     if (!project) return addLog('WARN', 'Open a project first')
-    if (!pickOn) {
-      setPencilOn(false)
-      setTextOn(false)
-    }
+    if (!pickOn) setPencilOn(false)
     setPickOn(v => !v)
   }
 
   function togglePencil() {
     if (!project) return addLog('WARN', 'Open a project first')
-    if (!pencilOn) {
-      setPickOn(false)
-      setTextOn(false)
-    }
+    if (!pencilOn) setPickOn(false)
     setPencilOn(v => { if (v) clearStrokes(); return !v })
   }
 
@@ -326,16 +327,6 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
       reload()
     } catch (e) {
       addLog('WARN', 'Undo failed: ' + e.message)
-    }
-  }
-
-  // Click through the journeys in a real browser, watch it, and fix what cannot be done by clicking or looks wrong.
-  async function testJourneys() {
-    try {
-      await api.reviewScreens(project, 'journeys', true)
-      addLog('INFO', 'Clicking through the prototype’s journeys in a real browser…')
-    } catch (error) {
-      addLog('WARN', `The journeys could not be tested: ${error.message}`)
     }
   }
 
@@ -360,12 +351,14 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     }
   }
 
-  // A new project starts at its first page, with a fresh trail.
+  // A different project starts on its home page.
   useEffect(() => {
+    lastRouteRef.current = '/'
     trail.current = ['/']
     at.current = 0
     setRoute('/')
     setNav({ back: false, forward: false })
+    setStatus({ built: false, version: 0 })
   }, [project])
 
   return (
@@ -387,12 +380,20 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
           </Cell>
         </div>
 
-        {/* Prototype tag & current page */}
+        {/* The prototype, and the screen it is on: pick another from the list. */}
         <div className="flex min-w-0 flex-1 items-center gap-2 rounded-[14px] bg-black/[.035] px-4 py-2 text-[12px] text-muted ring-1 ring-black/[.045] dark:bg-black/[.045] dark:ring-white/[.06]">
           <Layers className="size-3.5 shrink-0 text-purple-500" />
-          <span className="truncate font-mono text-[11.5px] text-ink font-medium">
-            {project} / {route}
-          </span>
+          <span className="truncate font-mono text-[11.5px] text-ink font-medium">{project} /</span>
+          {pages.length > 0 && protoReady ? (
+            <select value={pages.some(p => p.route === route) ? route : ''} onChange={event => go(event.target.value)}
+                    aria-label="Screen"
+                    className="min-w-0 flex-1 truncate bg-transparent font-mono text-[11.5px] font-medium text-ink outline-none">
+              {!pages.some(p => p.route === route) && <option value="">{route}</option>}
+              {pages.map(page => <option key={page.route} value={page.route}>{page.route} — {page.page_name}</option>)}
+            </select>
+          ) : (
+            <span className="truncate font-mono text-[11.5px] text-ink font-medium">{route}</span>
+          )}
         </div>
 
         {/* Action: Build app from prototype */}
@@ -407,21 +408,8 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
           </button>
         )}
 
-        {project && protoReady && (
-          <button
-            type="button"
-            onClick={testJourneys}
-            disabled={isBusy || walking}
-            title="Click through the prototype's journeys in a real browser, a screenshot at every step, and fix what cannot be done"
-            className="inline-flex items-center gap-1.5 rounded-full border border-line/80 bg-panel px-3.5 py-1.5 text-[11.5px] font-semibold text-ink shadow-sm transition-all hover:bg-ink/[.06] active:scale-95 disabled:pointer-events-none disabled:opacity-50"
-          >
-            {walking ? <Loader2 className="size-3 animate-spin" /> : <Route className="size-3" />}
-            {walking ? 'Testing…' : 'Test journeys'}
-          </button>
-        )}
-
         <a
-          href={prototypeUrl}
+          href={openUrl}
           target="_blank"
           rel="noreferrer"
           title="Open prototype in full browser window"
@@ -463,99 +451,79 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
             <Undo2 className="size-3.5" />
           </Cell>
         </div>
-
-        {/* The text tool: click any words on the page, retype them */}
-        <div className="flex items-center gap-1 rounded-full border border-line/80 bg-panel/80 p-1 shadow-sm">
-          <Cell
-            tip="Edit text: click any words on the page and retype them"
-            side="left"
-            on={textOn}
-            onClick={toggleTextEdit}
-            disabled={!protoReady || isBusy}
-            className="rounded-full"
-          >
-            <Type className="size-3.5" />
-          </Cell>
-        </div>
       </div>
 
-      {/* The preview: every page on the side, the app in the frame. */}
-      <div className="relative flex min-h-0 flex-1 overflow-hidden bg-canvas">
-        {protoReady && (
-          <AppPreview
-            key={`${project}:${reloadKey}`}
-            project={project} kind="prototype" pages={pages} stamp={prototypeArtifactStamp} viewport={vp}
-            frameRef={frameRef} onRoute={onRoute}
-            onLoaded={(frame) => { watchFrame(frame, project, 'designer'); setLoaded(n => n + 1) }}
+      {/* Frame Container */}
+      <div className="relative min-h-0 flex-1 overflow-hidden bg-canvas">
+        <canvas ref={canvasRef}
+                className={cn('absolute z-[8]', pencilOn ? 'block' : 'hidden')}
+                style={{ pointerEvents: pencilOn ? 'auto' : 'none',
+                         cursor: pencilOn ? 'crosshair' : 'default' }} />
+
+        {(pickOn || pencilOn) && (
+          <p className="pointer-events-none absolute inset-x-0 bottom-7 z-[9] mx-auto w-fit rounded-full bg-ink/85 px-3.5 py-1.5 text-[11px] font-medium text-ink shadow-lg">
+            {pencilOn ? 'Draw around what you mean — it attaches to the chat'
+                      : 'Click anything on the prototype — it attaches to the chat'}
+          </p>
+        )}
+
+        <div className="relative flex min-h-0 h-full w-full items-start justify-center overflow-hidden bg-[#F2F0EF]">
+          <div
+            className={cn("relative h-full w-full max-w-full overflow-hidden bg-[#F2F0EF]", width && "border-x border-black/10 shadow-2xl")}
+            style={{ width: width ? width + 'px' : '100%' }}
           >
-            <canvas ref={canvasRef}
-                    className={cn('absolute z-[8]', pencilOn ? 'block' : 'hidden')}
-                    style={{ pointerEvents: pencilOn ? 'auto' : 'none',
-                             cursor: pencilOn ? 'crosshair' : 'default' }} />
-
-            {(pickOn || pencilOn || textOn) && (
-              <p className="pointer-events-none absolute inset-x-0 bottom-7 z-[9] mx-auto w-fit rounded-full bg-ink/85 px-3.5 py-1.5 text-[11px] font-medium text-white shadow-lg">
-                {pencilOn ? 'Draw around what you mean — it attaches to the chat'
-                  : textOn ? 'Click any words on the page and retype them · Enter saves'
-                    : 'Click anything on the prototype — it attaches to the chat'}
-              </p>
+            {src && (
+              <iframe
+                ref={frameRef}
+                key={src}
+                title="prototype-preview"
+                src={src}
+                className="absolute inset-0 block h-full w-full border-0 bg-white"
+              />
             )}
 
-            <AppTextEdit
-              frameRef={frameRef} active={textOn} loaded={loaded} project={project} kind="prototype"
-              onSaved={(done) => addLog?.('SUCCESS', `Changed the text in ${done?.file || 'the prototype'}`)}
-              onAskAi={({ old, value }) => {
-                setTextOn(false)
-                addLog('INFO', `Ask in the chat to change “${old}” to “${value}” — it is built in code`)
-              }}
-            />
+            {!protoReady && (
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#F2F0EF] p-6 text-center select-none">
+                {/* Glowing top line */}
+                <div className="absolute inset-x-0 top-0 h-[2px] overflow-hidden bg-black/5">
+                  <div className="h-full w-full bg-accent animate-pulse" />
+                </div>
 
-            {/* The journeys being clicked through, live: the browser's picture and pointer, and the step it is on. */}
-            <AgentBrowser />
-            {liveStep && <LiveE2EOverlay event={liveStep} />}
-          </AppPreview>
-        )}
+                <Loader2 className="mb-5 size-10 animate-spin text-accent" />
 
-        {!protoReady && (
-          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#F2F0EF] p-6 text-center select-none">
-            {/* Glowing top line */}
-            <div className="absolute inset-x-0 top-0 h-[2px] overflow-hidden bg-black/5">
-              <div className="h-full w-full bg-accent animate-pulse" />
-            </div>
+                <h3 className="font-display text-[16px] font-bold tracking-tight text-ink">
+                  {isBusy ? 'Making the prototype…' : 'No prototype is ready yet'}
+                </h3>
+                <p className="mt-1.5 max-w-sm text-center text-[12px] text-muted leading-relaxed">
+                  {isBusy
+                    ? 'The AI agent is editing the wireframes into a high-fidelity, animated React app, then bundling it.'
+                    : 'Approve the wireframes and the design, and the prototype is made from them.'}
+                </p>
 
-            <Loader2 className="mb-5 size-10 animate-spin text-accent" />
+                {resumePrototype && (
+                  <button
+                    type="button"
+                    onClick={handleBuildAppNow}
+                    className="mt-4 inline-flex items-center gap-2 rounded-full bg-[#BFB9FF] px-4 py-2 text-[12px] font-semibold text-ink shadow-sm transition hover:bg-[#9B94E8]"
+                  >
+                    <RotateCw className="size-3.5" /> Resume Prototype
+                  </button>
+                )}
 
-            <h3 className="font-display text-[16px] font-bold tracking-tight text-ink">
-              {isBusy ? 'Generating the prototype…' : 'No prototype is ready yet'}
-            </h3>
-            <p className="mt-1.5 max-w-sm text-center text-[12px] text-muted leading-relaxed">
-              {isBusy
-                ? 'The AI agent is taking the wireframe app and editing it into a high-fidelity, animated prototype.'
-                : 'Approve the wireframes and choose a design to generate the prototype.'}
-            </p>
-
-            {resumePrototype && (
-              <button
-                type="button"
-                onClick={handleBuildAppNow}
-                className="mt-4 inline-flex items-center gap-2 rounded-full bg-[#BFB9FF] px-4 py-2 text-[12px] font-semibold text-ink shadow-sm transition hover:bg-[#9B94E8]"
-              >
-                <RotateCw className="size-3.5" /> Resume Prototype
-              </button>
+                <div className="mt-4 flex items-center gap-2 rounded-none border border-accent/20 bg-accent px-4 py-1.5 font-mono text-[11px] text-ink shadow-sm">
+                  <span className="size-2 rounded-full bg-accent animate-ping" />
+                  <span className="truncate max-w-[280px]">
+                    {generating
+                      ? (generationStatus || 'Editing the wireframes into the prototype…')
+                      : (resumePrototype && ['paused', 'failed'].includes(workflowStatus)
+                        ? 'Generation was interrupted. Continue from the saved checkpoint.'
+                        : (statusText || (typeof progress === 'string' ? progress : '') || (isBusy ? 'Designing pages…' : `${project || 'project'} / ${route}`)))}
+                  </span>
+                </div>
+              </div>
             )}
-
-            <div className="mt-4 flex items-center gap-2 rounded-none border border-accent/20 bg-accent px-4 py-1.5 font-mono text-[11px] text-ink shadow-sm">
-              <span className="size-2 rounded-full bg-accent animate-ping" />
-              <span className="truncate max-w-[280px]">
-                {generating
-                  ? (generationStatus || 'Editing the wireframe into the prototype…')
-                  : (resumePrototype && ['paused', 'failed'].includes(workflowStatus)
-                    ? 'Generation was interrupted. Continue from the saved checkpoint.'
-                    : (statusText || (typeof progress === 'string' ? progress : '') || (isBusy ? 'Designing pages…' : `${project || 'project'} / ${route}`)))}
-              </span>
-            </div>
           </div>
-        )}
+        </div>
       </div>
     </div>
   )

@@ -3,7 +3,7 @@
 There are two, and they are not alike.
 
 `app.md` is small and has no technical detail: what the customer asked for, in their own words, who uses the product and
-the site map (every screen, who may open it, what is on it, and how people move through them). The wireframe and the
+the site map (every screen, who may open it, what is on it, and how people move through them). The wireframes and the
 prototype are made from it, so they are drawn from what the customer said and not from a specification.
 
 `builder.md` is the developer's: the specification in full (roles, access, data, API, requirements, workflows, rules),
@@ -128,16 +128,7 @@ def spec_md(doc: dict) -> str:
                        f"{row.get('requirement')}")
         out.append("")
 
-    if _rows(doc, "business_workflows"):
-        out += ["## Workflows", ""]
-        for flow in _rows(doc, "business_workflows"):
-            out.append(f"### {flow.get('workflow_name')} "
-                       f"({flow.get('who') or 'anyone'})")
-            steps = flow.get("steps") or []
-            routes = flow.get("step_routes") or []
-            routes = routes if len(routes) == len(steps) else []
-            out += [""] + [f"{i}. {step}" + (f" — on `{routes[i - 1]}`" if routes and routes[i - 1] else "")
-                           for i, step in enumerate(steps, 1)] + [""]
+    out += _workflows(doc, "## Workflows")
 
     for title, key, render in (
         ("Validation rules", "validation_rules",
@@ -172,6 +163,22 @@ def spec_md(doc: dict) -> str:
         out.append("")
 
     return "\n".join(out)
+
+
+def _workflows(doc: dict, heading: str) -> list[str]:
+    """How people move through the product: each workflow's steps, with the page each step happens on."""
+    flows = _rows(doc, "business_workflows")
+    if not flows:
+        return []
+    out = [heading, ""]
+    for flow in flows:
+        out.append(f"### {flow.get('workflow_name')} ({flow.get('who') or 'anyone'})")
+        steps = flow.get("steps") or []
+        routes = flow.get("step_routes") or []
+        routes = routes if len(routes) == len(steps) else []
+        out += [""] + [f"{i}. {step}" + (f" — on `{routes[i - 1]}`" if routes and routes[i - 1] else "")
+                       for i, step in enumerate(steps, 1)] + [""]
+    return out
 
 
 def _site_map(doc: dict) -> list[str]:
@@ -229,21 +236,12 @@ def app_md(doc: dict, idea: str = "", said: str = "") -> str:
     if site_map:
         out += ["## Site map", ""] + site_map
 
-    workflows = _rows(doc, "business_workflows")
-    if workflows:
-        out += ["## How people move through it", ""]
-        for flow in workflows:
-            out.append(f"### {flow.get('workflow_name')} ({flow.get('who') or 'anyone'})")
-            steps = flow.get("steps") or []
-            routes = flow.get("step_routes") or []
-            routes = routes if len(routes) == len(steps) else []
-            out += [""] + [f"{i}. {step}" + (f" — on `{routes[i - 1]}`" if routes and routes[i - 1] else "")
-                           for i, step in enumerate(steps, 1)] + [""]
+    out += _workflows(doc, "## How people move through it")
     return "\n".join(out)
 
 
 def builder_md(doc: dict, stack: str) -> str:
-    """What the build and QA stages work from."""
+    """What the build, the tests and the deployment work from."""
     summary = doc.get("app_summary") or {}
     out = ["# Developer and QA Handoff", "", "",
            f"**Selected stack**: {stack}.", "",
@@ -260,6 +258,7 @@ def builder_md(doc: dict, stack: str) -> str:
            f"## What is being built", "",
            f"{summary.get('short_description', '')}", "",
            f"**Business goal.** {summary.get('business_goal', '')}", ""]
+
     out += ["# The specification", ""] + spec_md(doc).splitlines() + [""]
 
     if _rows(doc, "acceptance_criteria"):

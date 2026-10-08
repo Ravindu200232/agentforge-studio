@@ -43,8 +43,7 @@ export function elementInfo(frame, el, vpMode = 'desktop') {
     text: (el.innerText || '').trim().slice(0, 160),
     attrs, chain,
     rect: { x: r.x, y: r.y, w: r.width, h: r.height },
-    // The apps are hash-routed: the page is in the hash.
-    route: w.location.pathname + w.location.search + w.location.hash,
+    route: w.location.pathname + w.location.search,
     scroll: { x: w.scrollX, y: w.scrollY },
 
     viewport: {

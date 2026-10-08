@@ -72,17 +72,3 @@ To test/visualize the artifact, use available tools (including other Skills or b
 ## Reference
 
 - **shadcn/ui components**: https://ui.shadcn.com/docs/components
-
-## AgentForge: running it here (added to the official skill)
-
-Everything above is the official skill, unchanged. AgentForge runs on Windows without bash or pnpm, so the two scripts also exist as Node ports that do the same thing:
-
-```
-node scripts/init-artifact.mjs <project-name>     # replaces: bash scripts/init-artifact.sh
-node scripts/bundle-artifact.mjs [project-folder] # replaces: bash scripts/bundle-artifact.sh (inside the project, or name its folder)
-```
-
-- `node_modules` is a link to one shared toolkit that is already installed: React 18, TypeScript, Tailwind 3.4, all shadcn/ui components and their Radix packages, lucide-react, framer-motion, recharts, react-router-dom, react-hook-form, zod, date-fns, sonner. **Do not run npm, pnpm or yarn install and do not add packages**; use what is there.
-- Use `HashRouter` from react-router-dom. The preview opens `bundle.html#/the-route`, one page at a time, and a link to another page must stay inside the app (`<Link to="/orders">`).
-- Import an image so it is inlined into the bundle: `import hero from 'data-url:./assets/hero.png'`.
-- Edit with the file tools (`write_file`, `replace_text`), then run the bundle script; its output names the file and line of any error. `index.html` and `src/main.tsx` need no changes.

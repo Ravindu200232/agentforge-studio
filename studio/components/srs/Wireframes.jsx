@@ -1,31 +1,13 @@
 'use client'
 
-/** The wireframe: one low-fidelity React app, shown a page at a time, and the user journeys through it. */
+/** The wireframes: a low-fidelity React app the agent built, shown as it is, with its pages listed and a box to ask for a change. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import {
-  Loader2,
-  ArrowLeft,
-  Sparkles,
-  Monitor,
-  Tablet,
-  Smartphone,
-} from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, Loader2, RotateCw, Send } from 'lucide-react'
 
 import { api, isJobCancelled } from '@/lib/api'
 import { useStore } from '@/lib/store'
-import { attachPicker, pickedFrom } from '@/lib/picker'
 import { cn } from '@/lib/utils'
-import { Button, Empty, Modal } from '../ui'
-import AppPreview from '../AppPreview'
-import { AppThumbnail } from '../AppPreview'
-import AppTextEdit from '../AppTextEdit'
-import WireframeInspector from './WireframeInspector'
-
-const VIEWPORTS = [
-  { id: 'desktop', label: 'Desktop', Icon: Monitor },
-  { id: 'tablet', label: 'Tablet', Icon: Tablet },
-  { id: 'mobile', label: 'Mobile', Icon: Smartphone },
-]
+import { Button, Empty } from '../ui'
 
 /** The `prj_…` id the drawings live under, whichever way the owner is named. */
 function useSrsId(owner) {
@@ -44,248 +26,58 @@ function useSrsId(owner) {
   return srsId
 }
 
-/** One page, rendered small and not interactive; while the app is being built, a note instead. */
-function Thumbnail({ srsId, page, waiting, stamp }) {
-  if (!srsId || !page.has_html) {
-    const building = page.drawing || waiting
-    return (
-      <div className="relative flex h-full w-full flex-col items-center justify-center overflow-hidden bg-panel">
-        <div className="absolute inset-0 opacity-15 bg-[radial-gradient(var(--accent)_1px,transparent_1px)] [background-size:12px_12px]" />
-        {building ? (
-          <div className="relative z-10 flex flex-col items-center gap-2 text-center p-3">
-            <Loader2 className="size-5 animate-spin text-accent" />
-            <span className="text-[11px] font-semibold text-ink tracking-wide">Building the wireframe…</span>
-          </div>
-        ) : (
-          <span className="relative z-10 text-[11px] text-muted2">not built yet</span>
-        )}
-      </div>
-    )
-  }
-  return <AppThumbnail project={srsId} kind="wireframe" route={page.route} stamp={stamp}
-                       title={page.page_name || page.route} />
+/** Whether the address `here` (`/orders/7`) is the route `pattern` (`/orders/[id]`). */
+function same(pattern, here) {
+  const a = String(pattern || '').split('/').filter(Boolean)
+  const b = String(here || '').split('?')[0].split('/').filter(Boolean)
+  return a.length === b.length && a.every((part, i) => /^\[.+\]$|^:/.test(part) || part === b[i])
 }
 
-/** The wireframe app, full size: the page list, the page, and the few tools that change it. */
-export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = '' }) {
-  const resolved = useSrsId(owner)
-  const srsId = given || resolved
-  const stamp = useStore(state => state.wireframeStamp[srsId] || 0)
-
-  const [pages, setPages] = useState([page])
-  const [viewport, setViewport] = useState('desktop')
-  const [mode, setMode] = useState('')                // '' | 'pick' | 'text'
-  const [route, setRoute] = useState(page.route)
-  const [loaded, setLoaded] = useState(0)
-  const [aiOpen, setAiOpen] = useState(false)
-  const [aiPrompt, setAiPrompt] = useState('')
-  const [element, setElement] = useState('')
-  const [updating, setUpdating] = useState(false)
-  const [regenerating, setRegenerating] = useState(false)
-  const [problem, setProblem] = useState('')
-  const [reload, setReload] = useState(0)
-  const frame = useRef(null)
-
+/** One page, shown small and not clickable: the wireframe app opened at that page and scaled to the card. */
+function Thumbnail({ src, page, waiting }) {
+  const box = useRef(null)
+  const [scale, setScale] = useState(0.22)
   useEffect(() => {
-    if (!owner) return
-    let live = true
-    api.wireframes(owner)
-      .then(found => { if (live && found?.pages?.length) setPages(found.pages) })
-      .catch(() => {})
-    return () => { live = false }
-  }, [owner, stamp])
-
-  // Picking: click an element and it travels with the request, so "make this bigger" says what "this" is.
-  useEffect(() => {
-    const f = frame.current
-    if (mode !== 'pick' || !f) return undefined
-    return attachPicker(f, (el) => {
-      const info = pickedFrom(f, el, viewport)
-      const said = `Selected element <${info.tag}>${info.text ? ` — “${info.text.slice(0, 60)}”` : ''}`
-      setElement(info.outerHTML || '')
-      setAiPrompt(previous => previous.includes(said) ? previous
-        : previous.trim() ? `${previous.trim()}\n\n${said}` : said)
-      setAiOpen(true)
-      setMode('')
-    })
-  }, [mode, loaded, viewport])
-
-  async function updateWithAi() {
-    const request = aiPrompt.trim()
-    if (!request || !srsId || updating) return
-    setUpdating(true); setProblem('')
-    try {
-      await api.aiEditWireframe(srsId, request, route, element)
-      setAiPrompt(''); setElement(''); setAiOpen(false)
-      onSaved?.(null)
-    } catch (failure) {
-      if (!isJobCancelled(failure)) setProblem(failure?.message || 'The AI could not update the wireframe.')
-    } finally {
-      setUpdating(false)
-    }
-  }
-
-  async function regenerate() {
-    if (!srsId || regenerating) return
-    setRegenerating(true); setProblem('')
-    try {
-      await api.generateWireframe(srsId)
-    } catch (failure) {
-      if (!isJobCancelled(failure)) setProblem(failure?.message || 'The wireframe could not be built.')
-    } finally {
-      setRegenerating(false)
-    }
-  }
-
-  const busy = updating || regenerating
-  const active = pages.find(p => p.route === route) || page
-
+    const el = box.current
+    if (!el) return
+    const measure = () => setScale((el.clientWidth || 280) / 1280)
+    measure()
+    const watcher = new ResizeObserver(measure)
+    watcher.observe(el)
+    return () => watcher.disconnect()
+  }, [])
+  const drawing = page.drawing || (waiting && !page.has_html)
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-none border border-black/10 bg-panel/90 shadow-2xl backdrop-blur-xl">
-      <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-black/10 bg-black/30 px-3 backdrop-blur-md">
-        <div className="flex min-w-0 items-center gap-2">
-          <Button variant="outline" size="icon-sm" onClick={onClose} title="Back to wireframes" aria-label="Back to wireframes"
-            className="rounded-lg border-black/10 bg-black/[.05] text-ink">
-            <ArrowLeft className="size-3.5" />
-          </Button>
-          <span className="min-w-0">
-            <span className="block truncate text-[12px] font-semibold text-ink">
-              {active.page_name || active.route}
-            </span>
-            <span className="block truncate font-mono text-[9.5px] text-muted2">
-              {route}{active.roles?.length ? ` · ${active.roles.join(', ')}` : ''}
-            </span>
-          </span>
-        </div>
-        <div className="flex items-center gap-1 rounded-full border border-line/80 bg-panel/80 p-1 shadow-sm">
-          {VIEWPORTS.map(({ id, label, Icon }) => (
-            <button key={id} type="button" title={label} aria-label={label} aria-pressed={viewport === id}
-              onClick={() => setViewport(id)}
-              className={cn('grid h-7 place-items-center rounded-full px-3 text-ink transition-colors',
-                viewport === id ? 'bg-accent shadow-sm' : 'hover:bg-ink/[.06]')}>
-              <Icon className="size-3.5" />
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {problem ? (
-        <p role="alert" className="shrink-0 border-b border-rose-400/20 bg-rose-500/10 px-4 py-2 text-[11.5px] text-rose-300">
-          {problem}
-        </p>
-      ) : null}
-
-      {srsId && (page.has_html || pages.some(p => p.has_html)) ? (
-        <AppPreview
-          key={reload}
-          project={srsId} kind="wireframe" pages={pages} stamp={stamp} viewport={viewport}
-          route={page.route} frameRef={frame} onRoute={setRoute}
-          onLoaded={() => setLoaded(n => n + 1)}
-          frameClassName={cn('transition-all duration-500', busy && 'pointer-events-none scale-[0.99] opacity-40 blur-[6px]')}
-        >
-          <WireframeInspector
-            mode={mode}
-            onMode={setMode}
-            aiOpen={aiOpen}
-            onOpenAi={() => setAiOpen(open => !open)}
-            onReload={() => setReload(n => n + 1)}
-            onRegenerate={regenerate}
-            regenerating={busy}
-          />
-          {(mode === 'pick' || mode === 'text') && (
-            <p className="pointer-events-none absolute inset-x-0 bottom-5 z-30 mx-auto w-fit rounded-full bg-ink/85 px-3.5 py-1.5 text-[11px] font-medium text-white shadow-lg">
-              {mode === 'pick' ? 'Click anything on the page — it goes into your request'
-                               : 'Click any words on the page and retype them'}
-            </p>
-          )}
-          <AppTextEdit
-            frameRef={frame} active={mode === 'text'} loaded={loaded} project={srsId} kind="wireframe"
-            onSaved={() => { setMode(''); onSaved?.(null) }}
-            onAskAi={({ old, value }) => {
-              setAiPrompt(`Change the text “${old}” to “${value}”.`)
-              setMode(''); setAiOpen(true)
-            }}
-          />
-          {aiOpen && (
-            <form
-              onSubmit={event => { event.preventDefault(); updateWithAi() }}
-              className="absolute bottom-4 left-1/2 z-40 w-[min(680px,calc(100%-6rem))] -translate-x-1/2 rounded-xl border border-line bg-panel p-3 shadow-2xl"
-            >
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Sparkles className="size-4 shrink-0 text-accent" />
-                  <div>
-                    <p className="text-[11px] font-semibold text-ink">Update this wireframe with AI</p>
-                    <p className="text-[10px] text-muted">The agent edits the app's source. You are on {route}.</p>
-                  </div>
-                </div>
-                <button type="button" onClick={() => setAiOpen(false)} className="text-[11px] text-muted hover:text-ink">Close</button>
-              </div>
-              <div className="flex items-end gap-2">
-                <textarea
-                  autoFocus
-                  value={aiPrompt}
-                  onChange={event => setAiPrompt(event.target.value)}
-                  placeholder="Describe any change to this page or the whole wireframe…"
-                  rows={2}
-                  className="min-h-[48px] flex-1 resize-none rounded-lg border border-line bg-white px-3 py-2 text-[11px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
-                />
-                <Button variant="solid" size="sm" disabled={!aiPrompt.trim() || busy} className="h-9 rounded-lg text-[11px]">
-                  {updating ? <><Loader2 className="size-3 animate-spin" /> Sending</> : <><Sparkles className="size-3" /> Send</>}
-                </Button>
-              </div>
-            </form>
-          )}
-          {busy && (
-            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-panel/85 backdrop-blur-md">
-              <Loader2 className="size-8 animate-spin text-accent" />
-              <h3 className="mt-4 text-[15px] font-bold tracking-tight text-ink">
-                {regenerating ? 'Building the wireframe…' : 'The AI is updating the wireframe…'}
-              </h3>
-              <p className="mt-1 max-w-sm text-center text-[12px] leading-relaxed text-ink">
-                {regenerating ? 'Every page is built again from the specification.'
-                              : 'It edits the app, then the preview is built again.'}
-              </p>
-            </div>
-          )}
-        </AppPreview>
+    <div ref={box} className="relative h-full w-full overflow-hidden bg-white">
+      {src && page.has_html ? (
+        <iframe title={page.page_name || page.route} src={src} loading="lazy" tabIndex={-1} aria-hidden="true"
+          className="pointer-events-none origin-top-left border-0"
+          style={{ width: '1280px', height: '900px', transform: `scale(${scale})` }} />
       ) : (
-        <div className="flex min-h-0 flex-1 items-center justify-center bg-panel text-[12px] text-muted">
-          {srsId ? 'The wireframe is not built yet.' : 'This project has no specification to build from.'}
+        <div className="absolute inset-0 grid place-items-center bg-panel text-center">
+          {drawing
+            ? <span className="flex flex-col items-center gap-1.5"><Loader2 className="size-5 animate-spin text-accent" />
+                <span className="text-[11px] font-semibold text-ink">Drawing…</span></span>
+            : <span className="text-[11px] text-muted2">not drawn yet</span>}
         </div>
       )}
     </div>
   )
 }
 
-/** The modal the workspace opens a page in. */
-function PageEditor({ owner, page, onClose, onSaved, srsId = '' }) {
-  return (
-    <Modal
-      onClose={onClose}
-      overlayClassName="!p-0 backdrop-blur-none"
-      style={{ maxWidth: 'none', width: '100%', height: '100%', maxHeight: '100%' }}
-      className="overflow-hidden rounded-none border-0 p-0"
-    >
-      <div className="flex h-full min-h-0 gap-4 bg-panel p-5">
-        <WireframeEditor owner={owner} srsId={srsId} page={page}
-          onClose={onClose} onSaved={onSaved} />
-      </div>
-    </Modal>
-  )
-}
-
-export function Wireframes({ srs, onEditPage, onApprove, onRetryPrototype,
-                             generating = false, approving = false }) {
+export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generating = false, approving = false }) {
   const owner = srs?.project || srs?.srs_id || srs?.id || ''
   const srsId = useSrsId(owner)
   const srsStamp = useStore(state => state.srsStamp[owner] || 0)
-  const stamp = useStore(state => state.wireframeStamp[srsId] || 0)
   const [data, setData] = useState(null)
-  const [open, setOpen] = useState(null)
   const [error, setError] = useState('')
-  const [building, setBuilding] = useState(false)
+  const [drawing, setDrawing] = useState(false)
+  const [route, setRoute] = useState('')
+  const [open, setOpen] = useState(false)
+  const [asking, setAsking] = useState(false)
+  const [prompt, setPrompt] = useState('')
   const [designApproved, setDesignApproved] = useState(false)
+  const frame = useRef(null)
 
   useEffect(() => {
     if (!srsId) return
@@ -303,113 +95,199 @@ export function Wireframes({ srs, onEditPage, onApprove, onRetryPrototype,
       .catch(failure => setError(failure?.message || 'The wireframes could not be read.'))
   }, [owner])
 
-  // A chat/feature update may rewrite the SRS or the wireframe without remounting
+  // A chat/feature update may rewrite the SRS or the wireframes without remounting
   // this tab. Refresh only this data view; never reload the whole Studio app.
   useEffect(() => { load() }, [load, srsStamp])
 
-  /** Poll the status periodically while the app is being built. */
+  /** Poll while the agent is drawing, so the pages light up as their files are written. */
   const waiting = generating || Boolean(data?.drawing)
   useEffect(() => {
     if (!waiting) return
     load()
-    const again = setInterval(load, 2000)
+    const again = setInterval(load, 2500)
     return () => clearInterval(again)
   }, [waiting, load])
 
   useEffect(() => { if (!generating) load() }, [generating, load])
 
-  /** Build the whole app again from the specification. */
-  async function regenerate() {
+  // A page on show takes the whole view: whoever hosts this tab is told, and hides what is beside it (the chat) meanwhile.
+  useEffect(() => {
+    onFocus?.(open)
+    return () => onFocus?.(false)
+  }, [open, onFocus])
+
+  const pages = data?.pages || []
+  const built = Boolean(data?.built)
+  const drawn = pages.filter(p => p.has_html).length
+
+  // The page on show: the first drawn one until a page is picked.
+  useEffect(() => {
+    if (!pages.length) return
+    if (!route || !pages.some(p => p.route === route)) setRoute((pages.find(p => p.has_html) || pages[0]).route)
+  }, [pages, route])
+
+  // A link inside the wireframes moves the frame to another page: follow it in the list.
+  useEffect(() => {
+    if (!built || !open) return
+    const id = setInterval(() => {
+      try {
+        const hash = frame.current?.contentWindow?.location?.hash?.slice(1)
+        if (!hash) return
+        const found = pages.find(p => p.route === hash) || pages.find(p => same(p.route, hash))
+        if (found && found.route !== route) setRoute(found.route)
+      } catch { /* the frame is not on our own address yet */ }
+    }, 500)
+    return () => clearInterval(id)
+  }, [built, open, pages, route])
+
+  const src = useMemo(
+    () => (srsId && built ? api.webUrl(srsId, 'wireframe', route, data?.version) : ''),
+    [srsId, built, route, data?.version],
+  )
+
+  /** Draw every page again, from the start. */
+  async function drawAll() {
     if (!srsId) return
-    setBuilding(true); setError('')
+    setDrawing(true); setError('')
     try {
-      await api.generateWireframe(srsId)
+      await api.buildWireframes(srsId)
       load()
     } catch (failure) {
-      if (!isJobCancelled(failure)) setError(failure?.message || 'The wireframe could not be built.')
+      if (!isJobCancelled(failure)) setError(failure?.message || 'The wireframes could not be drawn.')
     } finally {
-      setBuilding(false)
+      setDrawing(false)
     }
   }
 
-  const pages = data?.pages || []
+  async function ask(event) {
+    event?.preventDefault()
+    const request = prompt.trim()
+    if (!srsId || !request || asking) return
+    setAsking(true); setError('')
+    try {
+      await api.editWireframe(srsId, request, route)
+      setPrompt('')
+      load()
+    } catch (failure) {
+      if (!isJobCancelled(failure)) setError(failure?.message || 'The change could not be made.')
+    } finally {
+      setAsking(false)
+    }
+  }
+
   if (error && !data) return <Empty>{error}</Empty>
   if (!data) return <Empty>Reading the wireframes…</Empty>
   if (!pages.length) return <Empty>{waiting
-    ? 'Reading the approved plan and preparing the wireframe pages…'
-    : 'No pages in the specification yet, so there is nothing to build.'}</Empty>
+    ? 'Reading the approved plan and preparing the wireframes…'
+    : 'No pages in the specification yet, so there is nothing to draw.'}</Empty>
 
-  const built = Boolean(data?.app?.built)
-  const busy = waiting || building
+  const busy = drawing || waiting || asking
+  const current = pages.find(p => p.route === route)
+  const index = pages.findIndex(p => p.route === route)
 
   return (
-    <div className="space-y-3">
+    <div className={cn("flex flex-col gap-3", open && "min-h-[520px] flex-1")}>
       {error && <p role="alert" className="text-xs text-rose-400">{error}</p>}
-      {/* Progress while the wireframe app is being built. */}
       {waiting && (
-        <p className="flex items-center gap-2.5 rounded-none border border-accent/30 bg-accent
-                      px-3.5 py-2.5 text-[11.5px] leading-relaxed text-ink">
+        <p className="flex items-center gap-2.5 rounded-none border border-accent/30 bg-accent px-3.5 py-2.5 text-[11.5px] leading-relaxed text-ink">
           <Loader2 className="size-3.5 shrink-0 animate-spin text-accent" />
           <span>
-            Building the wireframe — the agent writes one React app for all {pages.length} pages, and
-            they appear here when it is built. You can carry on; this keeps going without you.
+            The agent is drawing the wireframes: one React page for each screen, then the app is bundled. {drawn} of {pages.length} pages
+            written so far. You can carry on; this keeps going without you.
           </span>
         </p>
       )}
-      <div className="flex flex-wrap items-baseline justify-between gap-3">
+      {!open && <div className="flex flex-wrap items-baseline justify-between gap-3">
         <p className="text-[11.5px] text-muted">
-          {pages.length} page{pages.length === 1 ? '' : 's'}, low fidelity, in one React app.
-          Open one to click through it, retype text, or ask for a change.
-          {built ? '' : ' Not built yet.'}
+          {pages.length} page{pages.length === 1 ? '' : 's'} as a low-fidelity React app (shadcn/ui, Tailwind), with sample data.
+          {' Open a page to click through it, or to ask for a change.'}
+          {drawn === pages.length ? ' All drawn.' : ` ${drawn} of ${pages.length} drawn so far.`}
         </p>
         <div className="flex items-center gap-2">
           {onApprove && (designApproved ? (
-            <Button variant="solid" disabled={busy || approving || !built}
+            <Button variant="solid" disabled={busy || approving || drawn === 0}
                     onClick={onRetryPrototype} title="Generate the prototype again using the approved design">
               {approving ? <><Loader2 className="mr-1.5 size-3.5 animate-spin" />Planning prototype…</>
                          : 'Regenerate prototype'}
             </Button>
           ) : (
-            <Button variant="solid" disabled={busy || approving || !built}
-                    onClick={onApprove}
-                    title={built ? 'Approve the wireframe and choose the design'
-                                 : 'Build the wireframe before approving it'}>
+            <Button variant="solid" disabled={busy || approving || drawn === 0} onClick={onApprove}
+                    title={drawn === 0 ? 'Draw the wireframes before approving them' : 'Approve the wireframes and choose the design'}>
               Approve wireframes → Design
             </Button>
           ))}
-          <Button variant="outline" disabled={busy || !srsId} onClick={regenerate}>
-            {busy
-              ? <><Loader2 className="mr-1 size-3 animate-spin" /> Building…</>
-              : built ? 'Build again' : 'Build the wireframe'}
+          <Button variant="outline" disabled={busy || !srsId} onClick={drawAll}>
+            {drawing || waiting
+              ? <><Loader2 className="mr-1 size-3 animate-spin" /> Drawing…</>
+              : drawn ? 'Draw them again' : 'Draw the wireframes'}
           </Button>
         </div>
-      </div>
-      <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
-        {pages.map((page, index) => (
-          <div key={`${page.route || 'wireframe'}-${index}`} className="group relative">
-            <button type="button"
-              onClick={() => (onEditPage ? onEditPage(page) : setOpen(page))}
-              className="w-full overflow-hidden rounded-none border border-line text-left transition hover:border-accent cursor-pointer">
+      </div>}
+
+      {!open && (
+        <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
+          {pages.map((page, index) => (
+            <button key={`${page.route || 'wireframe'}-${index}`} type="button"
+              onClick={() => { setRoute(page.route); setOpen(true) }}
+              className="w-full cursor-pointer overflow-hidden rounded-none border border-line text-left transition hover:border-accent">
               <span className="block aspect-[16/11] overflow-hidden border-b border-line bg-white">
-                <Thumbnail srsId={srsId} page={page} waiting={waiting} stamp={stamp} />
+                <Thumbnail src={srsId && built ? api.webUrl(srsId, 'wireframe', page.route, data?.version) : ''} page={page} waiting={waiting} />
               </span>
               <span className="block space-y-1 p-3">
-                <span className="truncate block text-[12px] font-medium text-ink">{page.page_name}</span>
+                <span className="block truncate text-[12px] font-medium text-ink">{page.page_name}</span>
                 <span className="block truncate font-mono text-[10px] text-muted2">{page.route}</span>
-                <span className="block truncate text-[10px] text-muted2">
-                  {page.roles?.length ? page.roles.join(', ') : 'public'}
-                </span>
-                {page.error && <span className="block text-[10px] text-rose-400" title={page.error}>Build failed · build again</span>}
+                <span className="block truncate text-[10px] text-muted2">{page.roles?.length ? page.roles.join(', ') : 'public'}</span>
               </span>
             </button>
-          </div>
-        ))}
-      </div>
-      {open && (
-        <PageEditor owner={owner} srsId={srsId} page={open}
-          onClose={() => setOpen(null)}
-          onSaved={() => { load() }} />
+          ))}
+        </div>
       )}
+
+      {open && <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex min-w-0 items-center gap-2">
+              <button type="button" onClick={() => setOpen(false)} title="Back to all the pages"
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] font-medium text-ink hover:bg-ink/[.06]">
+                <ArrowLeft className="size-3" /> All pages
+              </button>
+              <span className="flex shrink-0 gap-1">
+                <button type="button" title="The page before" disabled={index <= 0} onClick={() => setRoute(pages[index - 1].route)}
+                  className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06] disabled:opacity-40"><ChevronLeft className="size-3.5" /></button>
+                <button type="button" title="The next page" disabled={index < 0 || index >= pages.length - 1} onClick={() => setRoute(pages[index + 1].route)}
+                  className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06] disabled:opacity-40"><ChevronRight className="size-3.5" /></button>
+              </span>
+              <span className="truncate text-[12px] font-medium text-ink">{current?.page_name || route}</span>
+              <span className="truncate font-mono text-[11px] text-muted2">{current ? current.route : ''}</span>
+            </span>
+            {src && (
+              <span className="flex shrink-0 gap-1">
+                <button type="button" title="Reload" onClick={() => frame.current?.contentWindow?.location.reload()}
+                  className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06]"><RotateCw className="size-3.5" /></button>
+                <a href={src} target="_blank" rel="noreferrer" title="Open in its own window"
+                  className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06]"><ExternalLink className="size-3.5" /></a>
+              </span>
+            )}
+          </div>
+          <div className="relative min-h-0 flex-1 overflow-hidden rounded-none border border-line bg-white">
+            {src ? (
+              <iframe ref={frame} key={data?.version} title="wireframes" src={src} className="absolute inset-0 h-full w-full border-0" />
+            ) : (
+              <div className="absolute inset-0 grid place-items-center bg-panel p-6 text-center text-[12px] text-muted">
+                {waiting ? 'Drawing…' : data?.pages?.[0]?.error || 'The wireframes are not drawn yet.'}
+              </div>
+            )}
+          </div>
+          <form onSubmit={ask} className="flex items-center gap-2">
+            <input value={prompt} onChange={event => setPrompt(event.target.value)} disabled={busy || !built}
+              placeholder={current ? `Ask for a change${current.page_name ? ` to ${current.page_name}` : ''}…` : 'Ask for a change…'}
+              className="min-w-0 flex-1 rounded-none border border-line bg-panel px-3 py-2 text-[12px] text-ink outline-none focus:border-accent disabled:opacity-50" />
+            <Button variant="outline" type="submit" disabled={busy || !built || !prompt.trim()}>
+              {asking ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+            </Button>
+          </form>
+        </div>
+      </div>}
     </div>
   )
 }

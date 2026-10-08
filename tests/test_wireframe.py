@@ -1,291 +1,302 @@
-"""The wireframe stage: one agent run that builds a low-fidelity React app, and the screen list the studio reads."""
+"""The wireframes: a React app the project's agent builds with the web-artifacts-builder skill, from app.md."""
 from __future__ import annotations
 
-import shutil
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "tests"))
-for folder in ("", "src", "srs-agent", "prototype-agent", "builder-agent", "qa-agent", "deploy-agent", ".deps"):
-    path = str(ROOT / folder) if folder else str(ROOT)
+for folder in (".", "src", "srs-agent", "prototype-agent"):
+    path = str(ROOT / folder)
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from server_modules import bus, config, prompts, web_app  # noqa: E402
-from server_modules.session import RunCancelled  # noqa: E402
+from server_modules import prompts, web_app  # noqa: E402
 from srs_agent import document, wireframe  # noqa: E402
-from support import forget_project, isolate_workspaces  # noqa: E402
 
-PROJECT = "prj_wire"
-DOC = {
-    "app_summary": {"app_name": "Bakery"},
-    "public_pages": [{"page_name": "Home", "route": "/", "sections": ["hero", "cake list"], "functions": ["browse cakes"]}],
-    "protected_pages": [{"page_name": "Orders", "route": "/orders", "login_required": True, "allowed_roles": ["Owner"],
-                         "sections": ["order table"], "functions": ["mark an order ready"]}],
-    "business_workflows": [{"workflow_name": "Ordering a cake", "who": "Visitor",
-                            "steps": ["open Home", "see the orders"]}],
-}
-
-
-def setUpModule():
-    isolate_workspaces()
+PROJECT = "prj_bakery"
+PAGES = [
+    {"route": "/", "page_name": "Home", "sections": ["hero"], "functions": ["browse cakes"]},
+    {"route": "/orders/[id]", "page_name": "Order", "login_required": True, "allowed_roles": ["Owner"]},
+    {"route": "/orders", "page_name": "Orders", "login_required": True, "allowed_roles": ["Owner"]},
+]
 
 
 class FakeSession:
     cancelled = False
+    stage = "idle"
 
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, agent=None):
         self.workspace = workspace
         self.record = workspace / ".agentforge"
-        self.stage = "idle"
-        self.saved: dict = {}
+        self.agent = agent
         self.tasks: list[str] = []
-        self.direct: list[str] = []
-        self.on_task = lambda: None
-        self.failed = ""
+        self.directs: list[str] = []
+        self.saved: dict[tuple, object] = {}
+        self.events: list[str] = []
+        self.notes: list[str] = []
+
+    def run_task(self, request, **kwargs):
+        self.tasks.append(request)
+        self.kwargs = kwargs
+        if self.agent:
+            self.agent(self)
+        return {"status": "complete", "text": "done", "plan": "PLAN"}
+
+    def run_direct(self, request, **_kwargs):
+        self.directs.append(request)
+        return {"status": "complete", "text": "done"}
+
+    def write_record(self, *parts, data):
+        self.saved[parts] = data
+        path = self.record.joinpath(*parts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return path
+
+    def read_record(self, *parts, fallback=None):
+        path = self.record.joinpath(*parts)
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return fallback
 
     def begin(self, stage, role=""):
         self.stage = stage
+        self.events.append(f"begin {stage}")
 
     def finish(self, text=""):
         self.stage = "idle"
+        self.events.append(f"finish {text}")
 
     def fail(self, text):
-        self.stage, self.failed = "idle", text
+        self.stage = "idle"
+        self.events.append(f"fail {text}")
 
     def save_context(self):
         pass
 
-    def read_record(self, *parts, fallback=None):
-        return self.saved.get(parts, fallback)
-
-    def write_record(self, *parts, data):
-        self.saved[parts] = data
-        return self.record.joinpath(*parts)
-
-    def run_task(self, request, **_kwargs):
-        self.tasks.append(request)
-        self.on_task()
-        return {"status": "complete", "text": ""}
-
-    def run_direct(self, request, model=""):
-        self.direct.append(request)
-        return {"status": "complete", "text": ""}
+    def note(self, text, role=""):
+        self.notes.append(text)
 
 
-class WireframeTests(unittest.TestCase):
+class Scratch(unittest.TestCase):
     def setUp(self):
-        forget_project(PROJECT)
-        self.workspace = config.workspace_for(PROJECT)
-        (self.workspace / ".agentforge" / "srs" / "handoff").mkdir(parents=True, exist_ok=True)
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.workspace = Path(self.folder.name)
+        (self.workspace / ".agentforge" / "srs" / "handoff").mkdir(parents=True)
         (self.workspace / ".agentforge" / "srs" / "handoff" / "app.md").write_text("# Bakery", encoding="utf-8")
         self.session = FakeSession(self.workspace)
-        self.app = web_app.app_dir(PROJECT, "wireframe")
-        web_app.remove_app(self.app)
-        shutil.rmtree(self.workspace / ".agentforge" / "skills", ignore_errors=True)
-        self.built: list[str] = []
+        self.kit = self.workspace / "kit"
+        for patcher in (
+            mock.patch.object(wireframe, "session_for", lambda project: self.session),
+            mock.patch.object(document, "session_for", lambda project: self.session),
+            mock.patch.object(web_app, "kit_dir", lambda: self.kit),
+            mock.patch.object(web_app, "kit_ready", return_value=True),
+            mock.patch.object(web_app, "prepare_kit", return_value=(True, "")),
+            mock.patch.object(web_app, "build_for"),
+            mock.patch.object(wireframe.document, "screens", return_value=PAGES),
+            mock.patch.object(wireframe.document, "document", return_value={"srs_document": {"app_summary": {"app_name": "Sweet Crumbs"}}}),
+            mock.patch.object(wireframe.bus, "agent_msg"),
+            mock.patch.object(wireframe.bus, "phase"),
+            mock.patch.object(wireframe.bus, "log"),
+            mock.patch.object(wireframe.bus, "sync_state"),
+            mock.patch.object(wireframe.bus, "wireframe_changed"),
+            mock.patch.object(wireframe.bus, "user_msg"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.app = web_app.app_dir(self.workspace, "wireframe")
 
-        def build(session, project, kind, agent=""):
-            self.built.append(kind)
-            self.app.mkdir(parents=True, exist_ok=True)
-            (self.app / "bundle.html").write_text("<html>built</html>", encoding="utf-8")
 
-        patches = [
-            patch.object(wireframe, "session_for", return_value=self.session),
-            patch.object(document, "session_for", return_value=self.session),
-            patch.object(document, "document", return_value={"srs_document": DOC}),
-            patch.object(document.plan_stage, "approved_plan", return_value={}),
-            patch.object(web_app, "runtime_ready", return_value=True),
-            patch.object(web_app, "prepare_runtime", return_value=(True, "ready")),
-            patch.object(web_app, "ensure_built", side_effect=build),
-        ]
-        for name in ("phase", "agent_msg", "log", "sync_state", "wireframe_changed", "user_msg"):
-            patches.append(patch.object(bus, name))
-        self.bus = {}
-        for item in patches:
-            started = item.start()
-            self.addCleanup(item.stop)
-            if getattr(item, "attribute", "") in ("sync_state", "agent_msg", "wireframe_changed"):
-                self.bus[item.attribute] = started
+def writes_pages(session: FakeSession) -> None:
+    """What the agent does: one page file for every route."""
+    pages = web_app.app_dir(session.workspace, "wireframe") / "src" / "pages"
+    pages.mkdir(parents=True, exist_ok=True)
+    for name in ("home", "orders-id", "orders"):
+        (pages / f"{name}.tsx").write_text(f"export default function P() {{ return <p>{name}</p> }}", encoding="utf-8")
 
-    def draw_app(self):
-        """What the agent leaves behind when it has made the app."""
-        (self.app / "src").mkdir(parents=True, exist_ok=True)
-        (self.app / "index.html").write_text("<div id=root></div>", encoding="utf-8")
-        (self.app / "src" / "App.tsx").write_text("export default () => null", encoding="utf-8")
 
-    # --- what the agent is asked ----------------------------------------------------------------
-
-    def test_the_agent_gets_the_short_request_the_skill_the_screens_and_the_journeys(self):
+class GeneratingTests(Scratch):
+    def test_the_agent_gets_the_short_request_the_skill_app_md_and_the_pages_it_writes(self):
         wireframe.generate(PROJECT)
 
         request = self.session.tasks[0]
-        self.assertTrue(request.startswith("Generate a low-fidelity prototype."))
+        self.assertTrue(request.startswith("Generate low-fidelity wireframes."))
         self.assertIn(".agentforge/skills/web-artifacts-builder/SKILL.md", request)
-        self.assertIn("node .agentforge/skills/web-artifacts-builder/scripts/init-artifact.mjs .agentforge/wireframe/app", request)
+        self.assertIn(".agentforge/wireframe/app", request)
         self.assertIn(".agentforge/srs/handoff/app.md", request)
         self.assertNotIn("sitemap.md", request)
-        self.assertIn("- `/` — Home — sections: hero, cake list; functions: browse cakes", request)
-        self.assertIn("- `/orders` — Orders", request)
-        self.assertIn("Ordering a cake", request)
-        self.assertIn("open Home", request)
-        self.assertIn("see the orders", request)
-        self.assertIn("No database, seed data, accounts or sign-in logic", request)
-        self.assertNotIn("{{", request, "every placeholder was filled")
-        self.assertEqual(self.built, ["wireframe"])
-        self.assertTrue((self.workspace / ".agentforge" / "skills" / "web-artifacts-builder" / "SKILL.md").is_file())
+        self.assertIn("- `/` — Home — `src/pages/home.tsx`", request)
+        self.assertIn("- `/orders/[id]` — Order (signed in: Owner) — `src/pages/orders-id.tsx`", request)
+        self.assertIn("`/orders` — Orders (signed in: Owner) — `src/pages/orders.tsx`", request)
+        self.assertIn("low fidelity", request.lower())
+        # a planned run, then written; the pages are the agent's, and are not audited
+        self.assertFalse(self.session.kwargs["audit"])
 
-    def test_the_prompt_holds_no_style_rules_of_its_own(self):
-        raw = (config.PROMPTS / "wireframe" / "generate.md").read_text(encoding="utf-8")
-        self.assertEqual(raw.splitlines()[0], "{{request}}")
-        for rule in ("black-and-white", "HTML", "grid", "popup", "pixel", "monochrome"):
-            self.assertNotIn(rule, raw, f"the prompt must not dictate: {rule}")
-        self.assertLess(len(raw.splitlines()), 25, "the wireframe prompt stays short")
-        self.assertEqual(document.WIREFRAME_APPROVAL_PROMPT, "Generate a low-fidelity prototype.")
+    def test_the_prompt_is_short_and_general(self):
+        text = prompts.load("wireframe/generate")
+        self.assertLess(len(text), 2400)
+        self.assertNotIn("HTML", text)
+        for words in ("web-artifacts-builder", "app.md", "{{routes}}", "@/lib/router"):
+            self.assertIn(words, text)
 
-    def test_a_customers_own_words_replace_the_default_request(self):
-        wireframe.generate(PROJECT, "Generate a low-fidelity prototype. Keep the menu on the left.")
-        self.assertTrue(self.session.tasks[0].startswith("Generate a low-fidelity prototype. Keep the menu on the left."))
+    def test_the_skill_is_staged_and_the_app_is_created_with_the_pages_the_specification_names(self):
+        wireframe.generate(PROJECT)
 
-    def test_a_fresh_run_starts_the_app_over_and_a_stopped_one_is_carried_on(self):
-        self.draw_app()
-        (self.app / "src" / "Old.tsx").write_text("old", encoding="utf-8")
+        self.assertTrue((self.workspace / ".agentforge/skills/web-artifacts-builder/SKILL.md").is_file())
+        self.assertTrue((self.app / "src/components/ui/button.tsx").is_file())
+        routes = (self.app / "src/routes.ts").read_text(encoding="utf-8")
+        self.assertIn('"route": "/orders/[id]"', routes)
+        self.assertIn('"file": "orders-id"', routes)
+        self.assertIn("<title>Sweet Crumbs</title>", (self.app / "index.html").read_text(encoding="utf-8"))
 
-        wireframe.generate(PROJECT)                      # fresh: whatever was there goes
-        self.assertFalse((self.app / "src" / "Old.tsx").exists())
-        self.assertNotIn("carry on with it", self.session.tasks[0])
+    def test_when_the_agent_is_done_the_app_is_bundled_and_the_studio_told(self):
+        wireframe.generate(PROJECT)
 
-        self.draw_app()
-        (self.app / "src" / "Kept.tsx").write_text("kept", encoding="utf-8")
-        wireframe.generate(PROJECT, fresh=False)         # a run that stopped half way
-        self.assertTrue((self.app / "src" / "Kept.tsx").exists())
-        self.assertIn("carry on with it", self.session.tasks[1])
+        web_app.build_for.assert_called_once()
+        self.assertEqual(web_app.build_for.call_args.args[1:3], (PROJECT, "wireframe"))
+        wireframe.bus.wireframe_changed.assert_called_once_with(PROJECT)
+        self.assertEqual(self.session.saved[("wireframe", "state.json")], {"error": ""})
 
-    def test_nothing_is_asked_without_screens_or_the_handoff(self):
-        with patch.object(document, "screens", return_value=[]):
-            with self.assertRaises(ValueError):
+    def test_a_fresh_run_starts_the_app_again_and_a_carried_on_run_keeps_the_pages(self):
+        wireframe.generate(PROJECT)
+        writes_pages(self.session)
+        wireframe.generate(PROJECT, fresh=False)
+        self.assertTrue((self.app / "src/pages/home.tsx").is_file())
+        self.assertIn("pages from a run that stopped", self.session.tasks[1])
+
+        wireframe.generate(PROJECT, fresh=True)
+        self.assertFalse((self.app / "src/pages/home.tsx").exists())
+        self.assertNotIn("run that stopped", self.session.tasks[2])
+
+    def test_a_run_needs_screens_and_the_handoff(self):
+        with mock.patch.object(wireframe.document, "screens", return_value=[]):
+            with self.assertRaisesRegex(ValueError, "no screens"):
                 wireframe.generate(PROJECT)
-        (self.workspace / ".agentforge" / "srs" / "handoff" / "app.md").unlink()
-        with self.assertRaises(ValueError):
+        (self.workspace / ".agentforge/srs/handoff/app.md").unlink()
+        with self.assertRaisesRegex(ValueError, "app.md"):
             wireframe.generate(PROJECT)
-        self.assertEqual(self.session.tasks, [])
 
-    def test_the_toolkit_is_prepared_once_and_a_failure_to_install_it_is_said(self):
-        with patch.object(web_app, "runtime_ready", return_value=False), \
-             patch.object(web_app, "prepare_runtime", return_value=(False, "npm could not be reached")):
-            with self.assertRaises(RuntimeError) as raised:
+    def test_a_toolkit_that_cannot_be_installed_is_said_plainly(self):
+        with mock.patch.object(web_app, "kit_ready", return_value=False), \
+                mock.patch.object(web_app, "prepare_kit", return_value=(False, "npm: network unreachable")):
+            with self.assertRaisesRegex(RuntimeError, "could not be installed: npm: network unreachable"):
                 wireframe.generate(PROJECT)
-        self.assertIn("npm could not be reached", str(raised.exception))
         self.assertEqual(self.session.tasks, [])
-        self.assertTrue(any(call.kwargs.get("title") == "Wireframe toolkit"
-                            for call in self.bus["agent_msg"].call_args_list))
 
-    # --- the run, and what the studio reads --------------------------------------------------------
+    def test_the_first_run_says_the_toolkit_is_being_made_ready(self):
+        with mock.patch.object(web_app, "kit_ready", return_value=False):
+            wireframe.generate(PROJECT)
+        self.assertEqual(wireframe.bus.agent_msg.call_args_list[0].kwargs["title"], "Wireframe toolkit")
 
-    def test_a_whole_run_reports_how_many_pages_are_ready_and_tells_the_preview_to_reload(self):
-        self.session.on_task = self.draw_app
 
-        done = wireframe.run(PROJECT)
+class RunningTests(Scratch):
+    def test_a_whole_run_reports_how_many_pages_are_ready(self):
+        self.session.agent = writes_pages
+        with mock.patch.object(web_app, "build_for", side_effect=lambda *a, **k: (self.app / "bundle.html").write_text("<html>", encoding="utf-8")):
+            result = wireframe.run(PROJECT)
 
-        self.assertEqual(done, {"ok": True, "project": PROJECT, "ready": 2, "total": 2})
-        self.assertEqual(self.session.stage, "idle")
-        self.bus["wireframe_changed"].assert_called_with(PROJECT)
-        states = [call.args[1] for call in self.bus["sync_state"].call_args_list]
-        self.assertEqual(states, ["running", "clean"])
+        self.assertEqual(result["ready"], 3)
+        self.assertEqual(result["total"], 3)
+        self.assertEqual(self.session.events[0], "begin wireframes")
+        self.assertTrue(self.session.events[-1].startswith("finish"))
+        self.assertEqual(wireframe.bus.sync_state.call_args_list[-1].args[1], "clean")
 
-    def test_the_cards_follow_the_one_app_and_carry_the_last_error_until_it_is_built(self):
-        grid = document.wireframes(PROJECT)
-        self.assertEqual([p["route"] for p in grid["pages"]], ["/", "/orders"])
-        self.assertEqual([p["has_html"] for p in grid["pages"]], [False, False])
-        self.assertFalse(grid["app"]["built"])
-        self.assertEqual(grid["journeys"][0]["workflow_name"], "Ordering a cake")
-
-        self.session.saved[("wireframe", "state.json")] = {"error": "the bundle did not build"}
-        self.assertEqual(document.wireframes(PROJECT)["pages"][0]["error"], "the bundle did not build")
-
-        self.draw_app()
-        (self.app / "bundle.html").write_text("<html>built</html>", encoding="utf-8")
-        built = document.wireframes(PROJECT)
-        self.assertEqual([p["has_html"] for p in built["pages"]], [True, True])
-        self.assertEqual({p["error"] for p in built["pages"]}, {""}, "a built app shows no old error")
-        self.assertTrue(built["app"]["built"])
-        self.assertTrue(all(p["drawing"] is False for p in built["pages"]))
-
-    def test_a_failed_build_is_remembered_for_the_cards_and_the_run_fails_loudly(self):
-        self.session.on_task = self.draw_app
-        with patch.object(web_app, "ensure_built", side_effect=web_app.BuildFailed("Failed to resolve './Nope'")):
+    def test_a_failure_is_kept_for_the_studio_to_show(self):
+        with mock.patch.object(web_app, "build_for", side_effect=web_app.BuildFailed("Could not resolve ./missing")):
             with self.assertRaises(web_app.BuildFailed):
                 wireframe.run(PROJECT)
-        self.assertEqual(self.session.saved[("wireframe", "state.json")], {"error": "Failed to resolve './Nope'"})
-        self.assertIn("Failed to resolve", self.session.failed)
-        self.assertEqual(self.bus["sync_state"].call_args.args[1], "failed")
+        self.assertEqual(self.session.saved[("wireframe", "state.json")]["error"], "Could not resolve ./missing")
+        self.assertEqual(wireframe.bus.sync_state.call_args_list[-1].args[1], "failed")
 
-    def test_stopping_a_run_leaves_the_app_for_the_next_one_to_carry_on_with(self):
-        self.session.on_task = lambda: (self.draw_app(), setattr(self.session, "cancelled", True))
-        with self.assertRaises(RunCancelled):
-            wireframe.run(PROJECT)
-        self.assertTrue((self.app / "index.html").is_file())
-        self.assertEqual(self.bus["sync_state"].call_args.args[1], "paused")
 
-    def test_approving_the_specification_builds_the_app_and_moves_on_to_design(self):
-        self.session.on_task = self.draw_app
-        with patch.object(document, "has_document", return_value=True), \
-             patch.object(document.store, "update") as update, \
-             patch.object(document.store, "advance") as advance:
-            done = document.approve(PROJECT, "")
+class ReadingTests(Scratch):
+    def read(self):
+        with mock.patch.object(document, "screens", return_value=PAGES), \
+                mock.patch.object(document, "document", return_value={"srs_document": {"version": "1.0.0"}}), \
+                mock.patch.object(document.journeys, "user_journeys_for", return_value=[]):
+            return document.wireframes(PROJECT)
 
-        self.assertTrue(done["ok"])
-        update.assert_called_with(PROJECT, status="approved")
-        advance.assert_called_with(PROJECT, "design")
-        self.assertTrue(self.session.tasks[0].startswith("Generate a low-fidelity prototype."))
+    def test_nothing_is_drawn_before_the_agent_has_written_and_the_app_is_bundled(self):
+        answer = self.read()
+        self.assertEqual([p["route"] for p in answer["pages"]], ["/", "/orders/[id]", "/orders"])
+        self.assertFalse(any(p["has_html"] for p in answer["pages"]))
+        self.assertFalse(answer["built"])
 
-    def test_a_second_approval_cannot_start_while_the_wireframe_is_being_built(self):
-        self.session.stage = "wireframes"
-        with patch.object(document, "has_document", return_value=True):
-            with self.assertRaises(ValueError):
-                document.approve(PROJECT, "")
-        self.assertEqual(self.session.tasks, [])
+    def test_a_page_is_there_when_its_file_is_written_and_the_app_is_bundled(self):
+        web_app.create_app(self.app, "App", PAGES)
+        writes_pages(self.session)
+        (self.app / "src/pages/orders.tsx").unlink()
+        self.assertFalse(any(p["has_html"] for p in self.read()["pages"]), "not bundled yet")
 
-    # --- changing it ------------------------------------------------------------------------------
+        (self.app / "bundle.html").write_text("<html>", encoding="utf-8")
+        answer = self.read()
+        self.assertEqual([p["has_html"] for p in answer["pages"]], [True, True, False])
+        self.assertTrue(answer["built"])
+        self.assertGreater(answer["version"], 0)
+        self.assertEqual(answer["pages"][1]["slug"], "orders-id")
 
-    def test_a_change_is_one_direct_turn_about_the_page_and_the_picked_element_then_a_rebuild(self):
-        self.draw_app()
+    def test_the_last_error_is_shown_on_every_page(self):
+        self.session.write_record("wireframe", "state.json", data={"error": "the toolkit could not be installed"})
+        self.assertEqual({p["error"] for p in self.read()["pages"]}, {"the toolkit could not be installed"})
 
-        done = wireframe.edit(PROJECT, "  make the   header sticky ", route="/orders",
-                              element='<header class="top">Menu</header>')
 
-        self.assertEqual(done, {"ok": True, "route": "/orders"})
-        request = self.session.direct[0]
-        self.assertTrue(request.startswith("make the header sticky"))
-        self.assertIn("The change is on the page for `/orders`.", request)
-        self.assertIn('<header class="top">Menu</header>', request)
-        self.assertIn("replace_text", request)
-        self.assertEqual(self.built, ["wireframe"])
-        self.bus["wireframe_changed"].assert_called_with(PROJECT)
+class EditingTests(Scratch):
+    def test_one_change_is_a_direct_run_on_the_app_and_it_is_bundled_again(self):
+        web_app.create_app(self.app, "App", PAGES)
+        wireframe.edit(PROJECT, "Make the order table wider", "/orders")
 
-    def test_a_change_needs_words_a_wireframe_and_a_quiet_moment(self):
-        with self.assertRaises(ValueError):
+        request = self.session.directs[0]
+        self.assertIn("Make the order table wider", request)
+        self.assertIn(".agentforge/wireframe/app", request)
+        self.assertIn("`/orders`", request)
+        web_app.build_for.assert_called_once()
+        wireframe.bus.wireframe_changed.assert_called_once_with(PROJECT)
+        self.assertEqual(self.session.events, ["begin wireframe-edit", "finish Wireframes updated."])
+
+    def test_a_change_needs_words_and_wireframes(self):
+        with self.assertRaisesRegex(FileNotFoundError, "no wireframes"):
+            wireframe.edit(PROJECT, "Make it wider")
+        web_app.create_app(self.app, "App", PAGES)
+        with self.assertRaisesRegex(ValueError, "describe"):
             wireframe.edit(PROJECT, "   ")
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "under 4,000"):
             wireframe.edit(PROJECT, "x" * 4001)
-        with self.assertRaises(FileNotFoundError):
-            wireframe.edit(PROJECT, "make it blue")
-        self.draw_app()
+
+    def test_a_change_waits_for_a_run_that_is_still_drawing(self):
+        web_app.create_app(self.app, "App", PAGES)
         self.session.stage = "wireframes"
-        with self.assertRaises(ValueError):
-            wireframe.edit(PROJECT, "make it blue")
-        self.assertEqual(self.session.direct, [])
+        with self.assertRaisesRegex(ValueError, "wait"):
+            wireframe.edit(PROJECT, "Make it wider")
 
 
-class BuildFixPromptTests(unittest.TestCase):
-    def test_the_fix_prompt_carries_the_build_output_and_forbids_installing(self):
-        text = prompts.load("shared/build-fix", app=".agentforge/wireframe/app", log="Failed to resolve './Nope'")
-        self.assertIn(".agentforge/wireframe/app", text)
-        self.assertIn("Failed to resolve './Nope'", text)
-        self.assertIn("Do not install packages", text)
+class ApprovingTests(unittest.TestCase):
+    def test_approving_the_specification_draws_the_wireframes_from_it(self):
+        session = SimpleNamespace(stage="idle")
+        with mock.patch.object(document, "has_document", return_value=True), \
+                mock.patch.object(document, "session_for", return_value=session), \
+                mock.patch.object(document.store, "update") as update, \
+                mock.patch.object(document.store, "advance") as advance, \
+                mock.patch.object(document.bus, "log"), \
+                mock.patch.object(wireframe, "run", return_value={"ok": True, "project": PROJECT, "ready": 2, "total": 3}) as run:
+            answer = document.approve(PROJECT, "Keep it simple.")
+
+        run.assert_called_once_with(PROJECT, "Keep it simple.")
+        update.assert_called_once_with(PROJECT, status="approved")
+        advance.assert_called_once_with(PROJECT, "design")
+        self.assertEqual(answer["drawn"], 2)
+
+    def test_a_run_that_is_still_going_is_not_started_again(self):
+        with mock.patch.object(document, "has_document", return_value=True), \
+                mock.patch.object(document, "session_for", return_value=SimpleNamespace(stage="wireframes")):
+            with self.assertRaisesRegex(ValueError, "wait"):
+                document.approve(PROJECT)
 
 
 if __name__ == "__main__":

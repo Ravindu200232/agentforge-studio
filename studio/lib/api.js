@@ -1,6 +1,4 @@
 
-import { hashFor } from './preview-guard'
-
 export const API = '/__agentforge/api'
 
 let authToken = ''
@@ -146,10 +144,9 @@ export const api = {
   previewLink: (project) => post('/preview-link', { project }),
   previewActivity: (project, runtimeId) => post(`/runtime/${encodeURIComponent(project)}/activity`, { runtimeId }),
 
-  // Look at a project's screens again with a model that can look at pictures. `what`: 'prototype' (every page), 'journeys'
-  // (the prototype's journeys, clicked through in a browser shown live, a picture at every step), 'tests' (the end-to-end
-  // tests' screenshots) or 'both'. `fix: false` only looks and reports; the model is the one the studio last used.
-  reviewScreens: (project, what = 'both', fix = true) => post('/review-screens', { project, what, fix }),
+  // Look at the end-to-end tests' screenshots again with a model that can look at pictures. `fix: false` only looks and
+  // reports; the model is the one the studio last used.
+  reviewScreens: (project, what = 'tests', fix = true) => post('/review-screens', { project, what, fix }),
   // "Try again", pressed while a run waits for a model service that is not answering: it asks again at once.
   connectionRetry: (project) => post('/connection/retry', { project }),
   deleteProject: (project) => post('/delete-project', { project }),
@@ -203,22 +200,20 @@ export const api = {
   wireframes: (owner) => (/^prj_/.test(String(owner || ''))
     ? api.srs(`/projects/${encodeURIComponent(owner)}/wireframes`)
     : req(`/project-wireframes/${encodeURIComponent(owner)}`)),
-  // The wireframe is one React app the agent builds: this builds it again from the specification.
-  generateWireframe: (srsId, prompt = '') =>
-    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/generate`, { prompt }),
-  // One change asked for in words, about the page or the element picked in the preview; the agent edits the app's source.
-  aiEditWireframe: (srsId, prompt, route = '', element = '') =>
-    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/ai-edit`, { prompt, route, element }),
-  // Retype one text in the preview (`kind`: wireframe or prototype): swapped in the source and rebuilt.
-  editAppText: (project, kind, old, text) =>
-    api.srs(`/projects/${encodeURIComponent(project)}/app/text-edit`, { kind, old, new: text }),
-  // Whether the wireframe and the prototype are built: `{ wireframe: { built, stale }, prototype: { built, stale } }`.
-  appStatus: (project) => req(`/app-status/${encodeURIComponent(project)}`),
-  // What the preview <iframe> loads: the built app. The page is chosen by the hash, so the address never changes;
-  // `stamp` makes a new build load fresh.
-  appUrl: (project, kind, route = '', stamp = 0) =>
-    `${API}/app/${encodeURIComponent(project || '')}/${kind}/bundle.html`
-      + `${stamp ? `?v=${stamp}` : ''}${route ? hashFor(route) : ''}`,
+  // Draw the wireframes again (a job), or carry on a run that was stopped.
+  buildWireframes: (srsId, prompt = '', resume = false) =>
+    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/build`, { prompt, resume }),
+  // One change to the wireframes, asked for in words; `route` when it is about one page.
+  editWireframe: (srsId, prompt, route = '') =>
+    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/edit`, { prompt, route }),
+  // The wireframes or the prototype is one bundled page the <iframe> loads; the screen is the address hash, and `version`
+  // (when the bundle was made) makes the frame load the new bundle after a change.
+  webUrl: (project, kind, route = '', version = 0, as = '') =>
+    `${API}/web/${encodeURIComponent(project)}/${kind}`
+      + (version || as ? `?${[version ? `v=${version}` : '', as ? `as=${encodeURIComponent(as)}` : ''].filter(Boolean).join('&')}` : '')
+      + (route ? `#${route}` : ''),
+  // Whether it is bundled, and when.
+  webStatus: (project, kind) => req(`/web/${encodeURIComponent(project)}/${kind}/status`),
 
   siteImages: (project) => req(`/site-images/${encodeURIComponent(project)}`),
   siteImageSave: (project, file, purpose = '') => Promise.resolve(tooBig(file)).then(big => {

@@ -13,6 +13,7 @@ from typing import Any, Callable
 from prototype_agent import design as design_stage
 from prototype_agent import prototype as prototyper
 from srs_agent import document, interview, plan
+from srs_agent import wireframe as wireframer
 
 from . import config, store
 
@@ -198,38 +199,16 @@ def wireframes(project: str, _body: dict) -> Any:
     return document.wireframes(project)
 
 
-@route("POST", rf"/projects/{P}/wireframes/generate")
-def generate_wireframe(project: str, body: dict) -> Any:
-    """The Wireframe tab's Generate / Regenerate button: the whole app again, from the specification."""
-    from srs_agent import wireframe
-
-    return wireframe.run(project, str(body.get("prompt") or ""))
+@route("POST", rf"/projects/{P}/wireframes/build")
+def build_wireframes(project: str, body: dict) -> Any:
+    """Draw the wireframes again, or carry on a run that was stopped (`resume`)."""
+    return wireframer.run(project, str(body.get("prompt") or "").strip(), fresh=not body.get("resume"))
 
 
-@route("POST", rf"/projects/{P}/wireframes/ai-edit")
-def ai_edit_wireframe(project: str, body: dict) -> Any:
-    """One change asked for in words (about the picked element, when one was picked); the agent edits the app."""
-    from srs_agent import wireframe
-
-    return wireframe.edit(project, str(body.get("prompt") or ""), str(body.get("route") or ""),
-                          str(body.get("element") or ""))
-
-
-@route("POST", rf"/projects/{P}/app/text-edit")
-def edit_app_text(project: str, body: dict) -> Any:
-    """Retype one label in the preview: swapped in the source when it is there exactly once, then rebuilt."""
-    from . import bus, web_app
-
-    kind = str(body.get("kind") or "")
-    if kind not in web_app.KINDS:
-        raise ValueError("say which app: wireframe or prototype")
-    done = web_app.replace_text(project, kind, str(body.get("old") or ""), str(body.get("new") or ""))
-    if done.get("ok"):
-        built, log = web_app.bundle(project, kind)
-        if not built:
-            raise ValueError("the app did not build after that edit: " + log[-300:])
-        (bus.wireframe_changed if kind == "wireframe" else bus.prototype_changed)(project)
-    return done
+@route("POST", rf"/projects/{P}/wireframes/edit")
+def edit_wireframe(project: str, body: dict) -> Any:
+    """One change to the wireframes, asked for in words (about one page when `route` is given)."""
+    return wireframer.edit(project, str(body.get("prompt") or ""), str(body.get("route") or ""))
 
 
 @route("POST", rf"/projects/{P}/wireframes/approve")
