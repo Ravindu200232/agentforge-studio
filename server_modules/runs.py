@@ -405,19 +405,21 @@ def _start_preview(project: str, model: str = "", part: str = "") -> None:
 
 
 def review_screens(message: dict[str, Any]) -> dict[str, Any]:
-    """Look at the end-to-end tests' screenshots again with a model that can look at pictures. `fix`: false only looks and
-    reports (nothing is changed); `model` is the model for this run."""
+    """Look at a project's screens again with a model that can look at pictures: the prototype's screens (`what`: "prototype"),
+    the prototype's journeys clicked through in a browser, shown live ("journeys"), the end-to-end tests' screenshots ("tests"),
+    or the screens and the tests together (the default). `fix`: false only looks and reports (nothing is changed); `model` is the
+    model for this run."""
     _remember_model(message)
     project = str(message.get("project") or "").strip()
     if not project:
         raise ValueError("that message names no project")
     store.require(project)
-    what = str(message.get("what") or "tests").strip().lower()
-    if what != "tests":
-        raise ValueError('what must be "tests": the prototype is made by the agent and is not reviewed from pictures')
+    what = str(message.get("what") or "both").strip().lower()
+    if what not in {"prototype", "journeys", "tests", "both"}:
+        raise ValueError('what must be "prototype", "journeys", "tests" or "both"')
     fix = message.get("fix", True) not in (False, "false", 0, "0")
-    _in_background(f"review:{project}", project, bus.DEVELOPER, _review_screens, project, what, fix, _model_from(message),
-                   _project=project)
+    _in_background(f"review:{project}", project, bus.DESIGNER if what in {"prototype", "journeys"} else bus.DEVELOPER,
+                   _review_screens, project, what, fix, _model_from(message), _project=project)
     return {"ok": True, "project": project, "what": what, "fix": fix}
 
 
@@ -427,8 +429,18 @@ def _review_screens(project: str, what: str, fix: bool, model: str = "") -> None
     session = session_for(project)
     outcomes: list[str] = []
     try:
-        session.begin("review", role=bus.DEVELOPER)
-        outcomes.append(f"tests: {e2e_review.run(project, session, fix=fix, model=model, force=True).get('status')}")
+        if what in ("prototype", "both"):
+            session.begin("review", role=bus.DESIGNER)
+            if prototyper.exists(project):
+                outcomes.append(f"prototype: {prototyper.review(project, fix=fix, model=model).get('status')}")
+            elif what == "prototype":
+                raise ValueError("there is no prototype to look at yet")
+        if what == "journeys":
+            session.begin("review", role=bus.DESIGNER)
+            outcomes.append(f"journeys: {prototyper.journeys(project, fix=fix, model=model).get('status')}")
+        if what in ("tests", "both"):
+            session.begin("review", role=bus.DEVELOPER)
+            outcomes.append(f"tests: {e2e_review.run(project, session, fix=fix, model=model, force=True).get('status')}")
         session.finish("Screens reviewed (" + "; ".join(outcomes) + ").")
     except RunCancelled:
         raise

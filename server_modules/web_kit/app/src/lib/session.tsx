@@ -31,6 +31,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   // `?as=<email or role>` opens the app already signed in (how the Studio looks at a signed-in page).
   const [user, setUser] = React.useState<User | null>(() => find(new URLSearchParams(window.location.search).get("as") || ""));
 
+  // Who is signed in, as the Studio's browser reads it when it clicks through the prototype.
+  React.useEffect(() => {
+    (window as unknown as { __afUser?: string }).__afUser = user?.email || "";
+  }, [user]);
+
   const value = React.useMemo<Session>(() => {
     const enter = (account: User | null, own?: Partial<User>) => {
       if (!account) return null;

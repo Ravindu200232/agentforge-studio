@@ -6,13 +6,15 @@ import { useAgentPreview } from '@/lib/agent-preview'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Monitor, Tablet, Smartphone, MousePointerClick, Pencil, RotateCw,
-  ExternalLink, Layers, Eraser, Undo2, ChevronLeft, ChevronRight, Rocket, Loader2,
+  ExternalLink, Layers, Eraser, Undo2, ChevronLeft, ChevronRight, Rocket, Loader2, Route, ScanEye,
 } from 'lucide-react'
 import { useStore } from '@/lib/store'
 import { api } from '@/lib/api'
 import { watchFrame } from '@/lib/console-log'
 import { attachPicker, pickedFrom, pickLabel } from '@/lib/picker'
 import { Tip } from './ui'
+import AgentBrowser from './AgentBrowser'
+import LiveE2EOverlay from './LiveE2EOverlay'
 import { cn } from '@/lib/utils'
 
 const VIEWPORTS = [
@@ -58,6 +60,10 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     selection, addSelection, patchSelection, clearSelection, undo, setUndo } = useAgentPreview(project, 'designer')
   const buildAllowed = useStore(s => Boolean(s.buildAvailability[project]))
   const statusText = useStore(s => s.statusText)
+  // The journeys being clicked through in a real browser: shown live over the prototype, like a build's tests.
+  const liveFrame = useStore(s => s.browserFrame)
+  const liveStep = useStore(s => s.e2eLive)
+  const walking = Boolean(liveFrame?.frame || liveStep)
   const isBusy = busy || generating
   // A prototype stopped part of the way is still resumable until the backend marks the complete one buildable.
   const resumePrototype = canResumePrototype && !isBusy
@@ -330,6 +336,18 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     }
   }
 
+  // Photograph every screen and have a model that can look at pictures say what is wrong; fix it. Or click through the journeys
+  // in a real browser, watch it, and fix what cannot be done by clicking or looks wrong.
+  async function look(what) {
+    try {
+      await api.reviewScreens(project, what, true)
+      addLog('INFO', what === 'journeys' ? 'Clicking through the prototype\u2019s journeys in a real browser\u2026'
+                                         : 'Taking a screenshot of every screen and looking at it\u2026')
+    } catch (error) {
+      addLog('WARN', `The prototype could not be checked: ${error.message}`)
+    }
+  }
+
   async function handleBuildAppNow() {
     if (isBusy || !actionEnabled) return
     if (resumePrototype) {
@@ -408,6 +426,19 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
           </button>
         )}
 
+        {project && protoReady && (
+          <div className="flex items-center gap-1 rounded-full border border-line/80 bg-panel/80 p-1 shadow-sm">
+            <Cell tip="Take a screenshot of every screen and fix what looks wrong" disabled={isBusy || walking}
+                  onClick={() => look('prototype')} className="rounded-full px-3">
+              <ScanEye className="size-3.5" />
+            </Cell>
+            <Cell tip="Click through the journeys in a real browser, live, and fix what cannot be done" disabled={isBusy || walking}
+                  onClick={() => look('journeys')} className="rounded-full px-3">
+              {walking ? <Loader2 className="size-3.5 animate-spin" /> : <Route className="size-3.5" />}
+            </Cell>
+          </div>
+        )}
+
         <a
           href={openUrl}
           target="_blank"
@@ -481,6 +512,10 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
                 className="absolute inset-0 block h-full w-full border-0 bg-white"
               />
             )}
+
+            {/* The journeys being clicked through, live: the browser's picture and pointer, and the step it is on. */}
+            <AgentBrowser />
+            {liveStep && <LiveE2EOverlay event={liveStep} />}
 
             {!protoReady && (
               <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#F2F0EF] p-6 text-center select-none">

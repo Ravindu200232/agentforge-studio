@@ -258,6 +258,7 @@ class GeneratingTests(Scratch):
             mock.patch.object(prototyper.store, "require", return_value={}),
             mock.patch.object(prototyper.store, "advance"),
             mock.patch.object(prototyper, "_draw_with_agent", draw),
+            mock.patch.object(prototyper, "_look_at", lambda project, session, drawn: drawn),
         )
         for patcher in patches:
             patcher.start()
@@ -270,6 +271,14 @@ class GeneratingTests(Scratch):
         with mock.patch.object(wireframe, "generate", side_effect=lambda project: drawn.append(project)):
             answer = prototyper.generate_from_wireframes(PROJECT, "direction")
         self.assertEqual(drawn, [PROJECT])
+        self.assertTrue(answer["complete"])
+
+    def test_the_prototype_is_looked_at_before_it_is_handed_over(self):
+        looked = []
+        self.stage(lambda *a, **k: [{"route": "/", "name": "Home"}])
+        with mock.patch.object(prototyper, "_look_at", side_effect=lambda project, session, drawn: looked.append(project) or drawn):
+            answer = prototyper.generate_from_wireframes(PROJECT, "")
+        self.assertEqual(looked, [PROJECT])
         self.assertTrue(answer["complete"])
 
     def test_the_wireframes_that_are_there_are_not_drawn_again(self):
