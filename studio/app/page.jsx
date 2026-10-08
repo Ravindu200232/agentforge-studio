@@ -141,6 +141,8 @@ export default function Studio() {
   const [accountsChanged, setAccountsChanged] = useState(0)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [mobileView, setMobileView] = useState('view') // 'chat' | 'view'
+  // A wireframe page opened on its own takes the whole view: the chat beside it is hidden until the pages are listed again.
+  const [wireFocus, setWireFocus] = useState(false)
   const opening = useRef(0)
   const wireframeApproval = useRef(null)
   const prototypeApproval = useRef(null)
@@ -779,7 +781,8 @@ export default function Studio() {
           <div className="flex min-h-0 flex-1 bg-bg/40 overflow-hidden">
             <div className={cn(
               "shrink-0 h-full",
-              mobileView === 'chat' ? 'flex w-full lg:w-auto' : 'hidden lg:flex'
+              view === 'wireframe' && wireFocus ? 'hidden'
+                : mobileView === 'chat' ? 'flex w-full lg:w-auto' : 'hidden lg:flex'
             )}>
               <AgentChat key={`${project}-${agentRole}`}
                          projectTitle={projects.find(row => row?.name === project)?.title || ''} />
@@ -833,13 +836,14 @@ export default function Studio() {
                 <SrsResult key={`srs-${project}`} onApprove={approveSrsAndDraw} />
               )}
               {view === 'wireframe' && (
-                <div className="min-h-0 flex-1 overflow-y-auto bg-[radial-gradient(circle_at_top_right,rgba(191, 185, 255,.07),transparent_30%)] p-5">
-                  <div className="mx-auto max-w-[1400px]">
-                    <div className="mb-5">
+                <div className={cn("min-h-0 flex-1 bg-[radial-gradient(circle_at_top_right,rgba(191, 185, 255,.07),transparent_30%)]",
+                                  wireFocus ? 'flex flex-col overflow-hidden p-3' : 'overflow-y-auto p-5')}>
+                  <div className={wireFocus ? 'flex min-h-0 flex-1 flex-col' : 'mx-auto max-w-[1400px]'}>
+                    {!wireFocus && <div className="mb-5">
                       <h1 className="text-lg font-semibold text-ink">Wireframes</h1>
                       <p className="text-xs text-muted">The wireframes, as a React app: click through the pages, or ask for a change.</p>
-                    </div>
-                    <Wireframes srs={{ project }} generating={syncState?.status === 'running' && ['srs', 'wireframe'].includes(syncState?.source)}
+                    </div>}
+                    <Wireframes srs={{ project }} onFocus={setWireFocus} generating={syncState?.status === 'running' && ['srs', 'wireframe'].includes(syncState?.source)}
                                 approving={syncState?.status === 'running' && syncState?.source === 'prototype'}
                                 onApprove={approveWireframesAndBuildPrototype}
                                 onRetryPrototype={() => startPrototypeFromDesign()} />

@@ -152,6 +152,9 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str) -> list
     inputs = [f"- `{app_md_path}` — app.md: what the customer asked for, in their own words, and the site map",
               f"- `{spec_path}` — the approved design: colours, type, space, shape and motion (put them in `src/index.css` and "
               "the Tailwind theme, and use them everywhere)"]
+    if (session.record / srs_document.SRS_DIR / "user-journeys.json").is_file():
+        inputs.insert(1, f"- `{config.RECORD_DIR}/{srs_document.SRS_DIR}/user-journeys.json` — the journeys: who does what, step by step, "
+                         "on which screen; every one has to be possible to click through")
     if customization.get("design_md_workspace_path"):
         inputs.append(f"- `{customization['design_md_workspace_path']}` — the selected theme's guidance "
                       f"({customization.get('design_md_path') or 'DESIGN.md'})")

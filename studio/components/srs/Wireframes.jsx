@@ -2,7 +2,7 @@
 
 /** The wireframes: a low-fidelity React app the agent built, shown as it is, with its pages listed and a box to ask for a change. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, ExternalLink, Loader2, RotateCw, Send } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, Loader2, RotateCw, Send } from 'lucide-react'
 
 import { api, isJobCancelled } from '@/lib/api'
 import { useStore } from '@/lib/store'
@@ -65,7 +65,7 @@ function Thumbnail({ src, page, waiting }) {
   )
 }
 
-export function Wireframes({ srs, onApprove, onRetryPrototype, generating = false, approving = false }) {
+export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generating = false, approving = false }) {
   const owner = srs?.project || srs?.srs_id || srs?.id || ''
   const srsId = useSrsId(owner)
   const srsStamp = useStore(state => state.srsStamp[owner] || 0)
@@ -109,6 +109,12 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, generating = fals
   }, [waiting, load])
 
   useEffect(() => { if (!generating) load() }, [generating, load])
+
+  // A page on show takes the whole view: whoever hosts this tab is told, and hides what is beside it (the chat) meanwhile.
+  useEffect(() => {
+    onFocus?.(open)
+    return () => onFocus?.(false)
+  }, [open, onFocus])
 
   const pages = data?.pages || []
   const built = Boolean(data?.built)
@@ -177,9 +183,10 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, generating = fals
 
   const busy = drawing || waiting || asking
   const current = pages.find(p => p.route === route)
+  const index = pages.findIndex(p => p.route === route)
 
   return (
-    <div className={cn("flex flex-col gap-3", open && "h-full min-h-[520px]")}>
+    <div className={cn("flex flex-col gap-3", open && "min-h-[520px] flex-1")}>
       {error && <p role="alert" className="text-xs text-rose-400">{error}</p>}
       {waiting && (
         <p className="flex items-center gap-2.5 rounded-none border border-accent/30 bg-accent px-3.5 py-2.5 text-[11.5px] leading-relaxed text-ink">
@@ -190,10 +197,10 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, generating = fals
           </span>
         </p>
       )}
-      <div className="flex flex-wrap items-baseline justify-between gap-3">
+      {!open && <div className="flex flex-wrap items-baseline justify-between gap-3">
         <p className="text-[11.5px] text-muted">
           {pages.length} page{pages.length === 1 ? '' : 's'} as a low-fidelity React app (shadcn/ui, Tailwind), with sample data.
-          {open ? ' Click through them, or ask for a change.' : ' Open a page to click through it, or to ask for a change.'}
+          {' Open a page to click through it, or to ask for a change.'}
           {drawn === pages.length ? ' All drawn.' : ` ${drawn} of ${pages.length} drawn so far.`}
         </p>
         <div className="flex items-center gap-2">
@@ -215,7 +222,7 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, generating = fals
               : drawn ? 'Draw them again' : 'Draw the wireframes'}
           </Button>
         </div>
-      </div>
+      </div>}
 
       {!open && (
         <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
@@ -236,33 +243,22 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, generating = fals
         </div>
       )}
 
-      {open && <div className="grid min-h-0 flex-1 gap-4 [grid-template-columns:230px_minmax(0,1fr)]">
-        <ul className="min-h-0 space-y-1 overflow-y-auto pr-1" aria-label="Wireframe pages">
-          {pages.map((page, index) => (
-            <li key={`${page.route || 'wireframe'}-${index}`}
-                ref={el => { if (el && page.route === route) el.scrollIntoView({ block: 'nearest' }) }}>
-              <button type="button" onClick={() => setRoute(page.route)}
-                className={cn('w-full rounded-none border px-3 py-2 text-left transition',
-                  page.route === route ? 'border-accent bg-accent' : 'border-line hover:border-accent')}>
-                <span className="flex items-center gap-2">
-                  <span className={cn('size-1.5 shrink-0 rounded-full', page.has_html ? 'bg-ok' : page.drawing ? 'animate-pulse bg-accent' : 'bg-muted2')} />
-                  <span className="truncate text-[12px] font-medium text-ink">{page.page_name}</span>
-                </span>
-                <span className="mt-0.5 block truncate font-mono text-[10px] text-muted2">{page.route}</span>
-                <span className="block truncate text-[10px] text-muted2">{page.roles?.length ? page.roles.join(', ') : 'public'}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-
-        <div className="flex min-h-0 min-w-0 flex-col gap-2">
+      {open && <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
           <div className="flex items-center justify-between gap-2">
             <span className="flex min-w-0 items-center gap-2">
               <button type="button" onClick={() => setOpen(false)} title="Back to all the pages"
                 className="inline-flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] font-medium text-ink hover:bg-ink/[.06]">
                 <ArrowLeft className="size-3" /> All pages
               </button>
-              <span className="truncate font-mono text-[11px] text-muted2">{current ? `${current.page_name} · ${current.route}` : route}</span>
+              <span className="flex shrink-0 gap-1">
+                <button type="button" title="The page before" disabled={index <= 0} onClick={() => setRoute(pages[index - 1].route)}
+                  className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06] disabled:opacity-40"><ChevronLeft className="size-3.5" /></button>
+                <button type="button" title="The next page" disabled={index < 0 || index >= pages.length - 1} onClick={() => setRoute(pages[index + 1].route)}
+                  className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06] disabled:opacity-40"><ChevronRight className="size-3.5" /></button>
+              </span>
+              <span className="truncate text-[12px] font-medium text-ink">{current?.page_name || route}</span>
+              <span className="truncate font-mono text-[11px] text-muted2">{current ? current.route : ''}</span>
             </span>
             {src && (
               <span className="flex shrink-0 gap-1">
@@ -273,7 +269,7 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, generating = fals
               </span>
             )}
           </div>
-          <div className="relative min-h-[420px] flex-1 overflow-hidden rounded-none border border-line bg-white">
+          <div className="relative min-h-0 flex-1 overflow-hidden rounded-none border border-line bg-white">
             {src ? (
               <iframe ref={frame} key={data?.version} title="wireframes" src={src} className="absolute inset-0 h-full w-full border-0" />
             ) : (

@@ -101,7 +101,7 @@ class DrawingTests(Scratch):
 
     def test_the_prompt_is_short_and_general(self):
         text = prompts.load("prototype/generate")
-        self.assertLess(len(text), 2200)
+        self.assertLess(len(text), 3000)
         self.assertNotIn("HTML", text)
         self.assertIn("web-artifacts-builder", text)
         self.assertIn("high-fidelity", text)
@@ -109,12 +109,27 @@ class DrawingTests(Scratch):
     def test_the_agent_is_told_to_read_the_wireframes_then_plan_then_write(self):
         self.draw()
         request = self.session.tasks[0]
-        read, plan, write = (request.index(part) for part in ("First read the wireframes", "Then plan the prototype", "and write it"))
+        read, plan, write = (request.index(part) for part in ("First read what the product is", "Then plan the prototype", "and write it"))
         self.assertLess(read, plan)
         self.assertLess(plan, write)
         self.assertIn("every page under `.agentforge/wireframe/app/src/pages/`", request)
-        self.assertIn("Never change the wireframes", request)
+        self.assertIn("never change them, and do not copy their files", request)
         self.assertNotIn("copied", request)
+
+    def test_the_prototype_is_asked_to_work_like_a_real_frontend_not_to_be_the_wireframes_in_colour(self):
+        self.draw()
+        request = self.session.tasks[0]
+        for expected in ("a working frontend, not the wireframes in colour", "does what its label says", "one shared place",
+                         "walk every journey below in your head"):
+            self.assertIn(expected, request)
+
+    def test_the_journeys_are_among_what_the_agent_reads_when_the_specification_has_them(self):
+        self.draw()
+        self.assertNotIn("user-journeys.json", self.session.tasks[0])
+        journeys = self.workspace / ".agentforge" / "srs" / "user-journeys.json"
+        journeys.write_text(json.dumps({"journeys": []}), encoding="utf-8")
+        self.draw()
+        self.assertIn("`.agentforge/srs/user-journeys.json` — the journeys: who does what, step by step", self.session.tasks[-1])
 
     def test_the_prototype_is_a_new_app_and_the_wireframes_stay_as_they_were(self):
         self.draw()
@@ -338,6 +353,34 @@ class DemoAccountTests(unittest.TestCase):
         self.assertFalse(demo.signed_in_page({"login_required": False, "allowed_roles": ["admin"]}))
         self.assertTrue(demo.signed_in_page({"allowed_roles": ["admin"]}))
         self.assertFalse(demo.signed_in_page({"allowed_roles": ["Visitor"]}))
+
+
+class AccountsMessageTests(unittest.TestCase):
+    def pages(self, count):
+        return [{"route": f"/p{n}", "name": f"Page {n}"} for n in range(count)]
+
+    def test_a_role_that_opens_many_pages_is_told_how_many_and_the_first_few_not_all_of_them(self):
+        rows = [{"route": "/login", "name": "Sign in"}] + self.pages(70)
+        account = {"role": "Admin", "email": "admin@example.com", "password": "Demo!2026", "lands_on": "/p0",
+                   "can_open": rows[:56], "cannot_open": rows[56:]}
+        text = demo.accounts_message([account], rows, "/login")
+        self.assertIn("`admin@example.com` / `Demo!2026`", text)
+        self.assertIn("lands on **Page 0**", text)
+        self.assertIn("can open 55 pages (Page 0, Page 1, Page 2, Page 3, Page 4, Page 5 and 49 more)", text)
+        self.assertIn("cannot open 15 (Page 55, Page 56, Page 57, Page 58 and 11 more)", text)
+        self.assertNotIn("Page 30", text)
+        self.assertLess(len(text), 900)
+
+    def test_a_role_that_opens_everything_says_there_is_nothing_it_cannot_open(self):
+        rows = [{"route": "/login", "name": "Sign in"}] + self.pages(2)
+        account = {"role": "Owner", "email": "o@example.com", "password": "Demo!2026", "lands_on": "/p1",
+                   "can_open": rows, "cannot_open": []}
+        text = demo.accounts_message([account], rows, "/login")
+        self.assertIn("can open 2 pages (Page 0, Page 1)", text)
+        self.assertTrue(text.endswith("cannot open 0"))
+
+    def test_there_is_nothing_to_say_without_accounts(self):
+        self.assertEqual(demo.accounts_message([], [], ""), "")
 
 
 class PhotographingTests(unittest.TestCase):

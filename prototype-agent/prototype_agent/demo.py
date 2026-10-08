@@ -138,8 +138,16 @@ def draw_accounts(doc: dict) -> list[dict]:
     return out
 
 
+def _some(pages: list[dict], skip: str = "", most: int = 6) -> str:
+    """The first few page names of a list, and how many more there are: a list of seventy pages is not a message."""
+    names = [p["name"] for p in pages if p["route"] != skip]
+    if not names:
+        return "nothing"
+    return ", ".join(names[:most]) + (f" and {len(names) - most} more" if len(names) > most else "")
+
+
 def accounts_message(accounts: list[dict], routes_out: list[dict], sign_in: str) -> str:
-    """What the customer is told when the prototype is finished: how to enter as each role, and what each role can open."""
+    """What the customer is told when the prototype is finished: how to enter as each role, and how much each role can open."""
     if not accounts:
         return ""
     page = next((r for r in routes_out if r["route"] == sign_in), {})
@@ -147,8 +155,8 @@ def accounts_message(accounts: list[dict], routes_out: list[dict], sign_in: str)
     lines = [f"**Demo accounts** — fictitious, made for reviewing the prototype. Sign in on **{page.get('name') or sign_in}** (`{sign_in}`): "
              f"use the demo buttons, or type these.", ""]
     for a in accounts:
-        opens = ", ".join(p["name"] for p in a["can_open"] if p["route"] != sign_in) or "—"
-        blocked = ", ".join(p["name"] for p in a["cannot_open"]) or "nothing"
-        lines += [f"- **{a['role']}** — `{a['email']}` / `{a['password']}`",
-                  f"  lands on **{names.get(a['lands_on'], a['lands_on'])}**; can open: {opens}; cannot open: {blocked}"]
+        opens = [p for p in a["can_open"] if p["route"] != sign_in]
+        lines += [f"- **{a['role']}** — `{a['email']}` / `{a['password']}` — lands on **{names.get(a['lands_on'], a['lands_on'])}**",
+                  f"  can open {len(opens)} page{'s' if len(opens) != 1 else ''} ({_some(opens)}); "
+                  f"cannot open {len(a['cannot_open'])}" + (f" ({_some(a['cannot_open'], most=4)})" if a["cannot_open"] else "")]
     return "\n".join(lines)
