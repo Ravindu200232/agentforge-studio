@@ -162,6 +162,29 @@ def agent_build(message: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "project": project}
 
 
+def _spec_pending(project: str) -> bool:
+    """The plan is approved and the specification is not written (a run of it failed, or was stopped).
+
+    The specification is the pipeline's to write: what a chat agent improvises in its place (a `requirements.md`, a
+    `spec.json`) is not the document the studio's views read, so the specification stays empty."""
+    from srs_agent import document as srs_document
+    from srs_agent import plan as plan_stage
+
+    return bool(plan_stage.approved_plan(project)) and not srs_document.has_document(project)
+
+
+def _write_specification(project: str, said: str = "") -> dict[str, Any]:
+    """Write the specification again, from the approved plan and the interview."""
+    from srs_agent import document as srs_document
+
+    if said:
+        bus.user_msg(project, said)
+    bus.agent_msg(project, "The specification is not written yet, so it is written now from the approved plan and the "
+                           "interview. When it is done, the SRS tab fills.", title="Specification", kind="narration")
+    _in_background(f"srs:{project}", project, bus.DEVELOPER, srs_document.generate, project, _project=project)
+    return {"ok": True, "project": project}
+
+
 def agent_update(message: dict[str, Any]) -> dict[str, Any]:
     """Something typed into the chat stream.
 
@@ -207,6 +230,8 @@ def agent_update_direct(message: dict[str, Any]) -> dict[str, Any]:
         return answered
 
     role = str(message.get("agent") or bus.DEVELOPER)
+    if _spec_pending(project):
+        return _write_specification(project, request)
     if role == bus.DESIGNER and prototyper.exists(project):
         _in_background(f"prototype-edit:{project}", project, bus.DESIGNER, prototyper.revise, project, request,
                        _project=project)
@@ -266,6 +291,8 @@ def agent_resume(message: dict[str, Any]) -> dict[str, Any]:
     record = store.require(project)
     stage = record.get("stage", "interview")
 
+    if stage in ("interview", "plan", "srs") and _spec_pending(project):
+        return _write_specification(project)
     if stage in ("build", "test") and builder.built(project):
         _in_background(f"test:{project}", project, bus.DEVELOPER, qa.run, project, "", _project=project)
     elif stage in ("prototype", "design") and not prototyper.exists(project):
