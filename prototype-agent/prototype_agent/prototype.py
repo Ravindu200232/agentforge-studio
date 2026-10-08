@@ -6,6 +6,10 @@ The wireframes stay exactly as they were approved, so the customer can still loo
 screens and which design there are, bundles the finished app into the one page the studio shows, and leaves what the build reads:
 `routes.json` and, when the product has sign-in, `demo-accounts.json`. How the pages look and behave is the agent's.
 
+When the app is bundled it is looked at: every screen is photographed and a model that can look at pictures says what is visibly wrong
+(`visual_review.py`), and every journey of the specification is clicked through in a real browser, shown live (`journey_walk.py`).
+What they find is given back to the agent to fix, and the app is bundled and looked at again.
+
     <workspace>/.agentforge/prototype/app/              the prototype: `src/pages/<page>.tsx` for every screen, and `bundle.html`
     <workspace>/.agentforge/prototype/routes.json       every screen and the page file it is drawn in
     <workspace>/.agentforge/prototype/demo-accounts.json  the fictitious sign-in accounts, which the build seeds
@@ -21,7 +25,7 @@ from typing import Any
 from server_modules import bus, config, prompts, store, web_app
 from server_modules.session import ProjectSession, RunCancelled, session_for
 
-from . import demo
+from . import demo, journey_walk, visual_review
 from . import design as design_stage
 
 PROTOTYPE_DIR = "prototype"
@@ -276,6 +280,7 @@ def _generate(project: str, direction: str, *, from_wireframes: bool = False) ->
         bus.phase(project, "prototype:draw", "Making the prototype", status="complete")
         if session.cancelled:
             raise RunCancelled(project)
+        drawn = _look_at(project, session, drawn)
 
         checkpoint_path = session.record / PROTOTYPE_DIR / "generation.json"
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -332,6 +337,58 @@ def _generate(project: str, direction: str, *, from_wireframes: bool = False) ->
         if from_wireframes:
             bus.sync_state(project, "failed", str(exc)[:300], source="prototype", error=str(exc)[:300])
         raise
+
+
+def _rebundler(project: str, session: Any):
+    """What puts the app's changed files into the page the studio shows (and the browser looks at) again."""
+    return lambda: web_app.build_for(session, project, KIND, agent=bus.DESIGNER)
+
+
+def _look_at(project: str, session: Any, drawn: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Look at the finished prototype: its screens by their pictures, then its journeys clicked through live. Both skip themselves,
+    saying why, when the model cannot see pictures or there is no browser; neither ever fails the prototype."""
+    accounts = (_read_record(session, PROTOTYPE_DIR, "demo-accounts.json", fallback=None) or {}).get("accounts") or []
+    rebuild = _rebundler(project, session)
+    visual_review.run(project, session, drawn, accounts, rebuild=rebuild)
+    if session.cancelled:
+        raise RunCancelled(project)
+    journey_walk.run(project, session, routes(project) or drawn,
+                     _read_record(session, PROTOTYPE_DIR, "demo-accounts.json", fallback=None) or {}, rebuild=rebuild)
+    if session.cancelled:
+        raise RunCancelled(project)
+    return routes(project) or drawn
+
+
+def review(project: str, fix: bool = True, model: str = "") -> dict[str, Any]:
+    """Look at every screen of the prototype that is already made, with a model that can look at pictures, and fix what it finds
+    (`fix`: false only looks and reports)."""
+    if not exists(project):
+        raise ValueError("there is no prototype to look at yet")
+    session = session_for(project)
+    accounts = (_read_record(session, PROTOTYPE_DIR, "demo-accounts.json", fallback=None) or {}).get("accounts") or []
+    result = visual_review.run(project, session, routes(project), accounts, fix=fix, model=model, force=True,
+                               rebuild=_rebundler(project, session))
+    if session.cancelled:
+        raise RunCancelled(project)
+    if result.get("status") == "done" and fix:
+        bus.prototype_changed(project)          # the pages may have changed: the preview reloads them
+    return result
+
+
+def journeys(project: str, fix: bool = True, model: str = "") -> dict[str, Any]:
+    """Click through the journeys of the prototype that is already made, in a real browser, shown live, with a picture at every step,
+    and fix what cannot be done or looks wrong (`fix`: false only walks and reports)."""
+    if not exists(project):
+        raise ValueError("there is no prototype to click through yet")
+    session = session_for(project)
+    doc = _read_record(session, PROTOTYPE_DIR, "demo-accounts.json", fallback=None) or {}
+    result = journey_walk.run(project, session, routes(project), doc, fix=fix, model=model, force=True,
+                              rebuild=_rebundler(project, session))
+    if session.cancelled:
+        raise RunCancelled(project)
+    if result.get("status") == "done" and fix and result.get("fixed_journeys"):
+        bus.prototype_changed(project)          # the pages may have changed: the preview reloads them
+    return result
 
 
 def revise(project: str, request: str) -> dict[str, Any]:
