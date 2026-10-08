@@ -1,4 +1,6 @@
 
+import { hashFor } from './preview-guard'
+
 export const API = '/__agentforge/api'
 
 let authToken = ''
@@ -201,21 +203,22 @@ export const api = {
   wireframes: (owner) => (/^prj_/.test(String(owner || ''))
     ? api.srs(`/projects/${encodeURIComponent(owner)}/wireframes`)
     : req(`/project-wireframes/${encodeURIComponent(owner)}`)),
-  // Queue asynchronous prototype drawing jobs for specific routes or entire specifications.
-  drawWireframeHtml: (srsId, route = '', quiet = true) =>
-    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/html`, { route, quiet }),
-  // What the tools editor rearranged, as the page itself.
-  saveWireframeHtml: (srsId, route, html) =>
-    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/html/edit`, { route, html }),
-  // A direct, page-scoped request: it skips planning and replaces only this
-  // wireframe's saved HTML with the AI's revised low-fidelity page.
-  aiEditWireframeHtml: (srsId, route, prompt) =>
-    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/html/ai-edit`, { route, prompt }),
-  // Read straight from the agent rather than through a job: it is one page of
-  // HTML and it is what the <iframe> loads.
-  wireframeHtmlUrl: (srsId, route) =>
-    `${API}/srs/projects/${encodeURIComponent(srsId)}/wireframes/html`
-      + `?route=${encodeURIComponent(route)}`,
+  // The wireframe is one React app the agent builds: this builds it again from the specification.
+  generateWireframe: (srsId, prompt = '') =>
+    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/generate`, { prompt }),
+  // One change asked for in words, about the page or the element picked in the preview; the agent edits the app's source.
+  aiEditWireframe: (srsId, prompt, route = '', element = '') =>
+    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/ai-edit`, { prompt, route, element }),
+  // Retype one text in the preview (`kind`: wireframe or prototype): swapped in the source and rebuilt.
+  editAppText: (project, kind, old, text) =>
+    api.srs(`/projects/${encodeURIComponent(project)}/app/text-edit`, { kind, old, new: text }),
+  // Whether the wireframe and the prototype are built: `{ wireframe: { built, stale }, prototype: { built, stale } }`.
+  appStatus: (project) => req(`/app-status/${encodeURIComponent(project)}`),
+  // What the preview <iframe> loads: the built app. The page is chosen by the hash, so the address never changes;
+  // `stamp` makes a new build load fresh.
+  appUrl: (project, kind, route = '', stamp = 0) =>
+    `${API}/app/${encodeURIComponent(project || '')}/${kind}/bundle.html`
+      + `${stamp ? `?v=${stamp}` : ''}${route ? hashFor(route) : ''}`,
 
   siteImages: (project) => req(`/site-images/${encodeURIComponent(project)}`),
   siteImageSave: (project, file, purpose = '') => Promise.resolve(tooBig(file)).then(big => {

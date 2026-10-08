@@ -112,9 +112,9 @@ export default function SrsResult({ onApprove }) {
         <span className="flex shrink-0 items-center gap-2 px-3">
           {anything && !updatingSrs && (srs?.status !== 'approved' || readyPages < pages.length) && (
             <Button variant="solid" disabled={drawingWireframes || busy} onClick={onApprove}
-                    title="Approve the SRS and draw HTML wireframes from its plan and handoff files">
-              {drawingWireframes ? <><Loader2 className="size-3 animate-spin" /> Drawing wireframes…</>
-                : srs?.status === 'approved' ? 'Draw wireframes again' : 'Approve SRS · Draw wireframes'}
+                    title="Approve the SRS and build the wireframe from its plan and handoff files">
+              {drawingWireframes ? <><Loader2 className="size-3 animate-spin" /> Building wireframes…</>
+                : srs?.status === 'approved' ? 'Build wireframes again' : 'Approve SRS · Build wireframes'}
             </Button>
           )}
           {srs?.status === 'approved' && pages.length > 0 && readyPages === pages.length && (

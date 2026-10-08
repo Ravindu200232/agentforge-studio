@@ -1,6 +1,10 @@
 'use client'
 
-/** HTML Prototype viewer with element selection, pencil annotations and the wireframe's text tool: click text, type, save. */
+/**
+ * The prototype viewer: the high-fidelity React app, one page at a time with every page listed on the side, plus element
+ * selection, pencil annotations and the text tool (click words, retype them). The app is framed by the same guarded
+ * preview the wireframe uses, so a button in it goes to another page of the app and nowhere else.
+ */
 
 import { useAgentPreview } from '@/lib/agent-preview'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -8,43 +12,27 @@ import {
   Monitor, Tablet, Smartphone, MousePointerClick, Pencil, RotateCw,
   ExternalLink, Layers, Eraser, Undo2, ChevronLeft, ChevronRight,
   Rocket, Loader2, Type, Route,
-  RotateCcw as UndoIcon, Save, Check,
 } from 'lucide-react'
 import { useStore } from '@/lib/store'
-import { api, API } from '@/lib/api'
+import { api } from '@/lib/api'
 import { watchFrame } from '@/lib/console-log'
 import { attachPicker, pickedFrom, pickLabel } from '@/lib/picker'
+import { goTo } from '@/lib/preview-guard'
 import { Tip } from './ui'
 import AgentBrowser from './AgentBrowser'
+import AppPreview from './AppPreview'
+import AppTextEdit from './AppTextEdit'
 import LiveE2EOverlay from './LiveE2EOverlay'
 import { cn } from '@/lib/utils'
 
 const VIEWPORTS = [
-  { id: 'desktop', label: 'Desktop', w: null, Icon: Monitor },
-  { id: 'tablet', label: 'Tablet', w: 834, Icon: Tablet },
-  { id: 'mobile', label: 'Mobile', w: 390, Icon: Smartphone },
+  { id: 'desktop', label: 'Desktop', Icon: Monitor },
+  { id: 'tablet', label: 'Tablet', Icon: Tablet },
+  { id: 'mobile', label: 'Mobile', Icon: Smartphone },
 ]
 
 const MIN_INK = 3
 let seq = 0
-
-function currentPath(frame) {
-  try {
-    const loc = frame?.contentWindow?.location
-    if (!loc) return 'index.html'
-    const name = (loc.pathname || '').split('/').filter(Boolean).pop() || 'index.html'
-    const cleanName = name.endsWith('.html') ? name : 'index.html'
-    const search = loc.search || ''
-    const hash = loc.hash || ''
-    return cleanName + search + hash
-  } catch {
-    return 'index.html'
-  }
-}
-
-function baseFileName(path) {
-  return (path || '').split('?')[0].split('#')[0] || 'index.html'
-}
 
 export default function PrototypePane({ project, hidden, onBuild, generating = false, generationStatus = '', canResumePrototype = false }) {
   const frameRef = useRef(null)
@@ -52,22 +40,18 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
   const detachRef = useRef(null)
   const strokesRef = useRef([])
   const drawingRef = useRef(false)
-  const lastFileRef = useRef('index.html')
 
   const [vp, setVp] = useState('desktop')
   const [pickOn, setPickOn] = useState(false)
   const [pencilOn, setPencilOn] = useState(false)
-  const [currentFile, setCurrentFile] = useState('index.html')
-  const [protoReady, setProtoReady] = useState(false)
-
-  // The wireframe's text tool, on the prototype page: click text, type, save. Nothing else is edited here.
   const [textOn, setTextOn] = useState(false)
-  const [textDirty, setTextDirty] = useState(false)
-  const [savingProto, setSavingProto] = useState(false)
-  const [saveProtoSuccess, setSaveProtoSuccess] = useState(false)
-  const protoEditorRef = useRef(null)
+  const [route, setRoute] = useState('/')
+  const [pages, setPages] = useState([])
+  const [protoReady, setProtoReady] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
+  const [loaded, setLoaded] = useState(0)
 
-  const trail = useRef(['index.html'])
+  const trail = useRef(['/'])
   const at = useRef(0)
   const jumping = useRef(false)
   const [nav, setNav] = useState({ back: false, forward: false })
@@ -87,35 +71,23 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
   const resumePrototype = canResumePrototype && !isBusy
   const actionEnabled = buildAllowed || resumePrototype
 
-  const prototypeUrl = `${API}/prototype/${encodeURIComponent(project || '')}/${currentFile}`
-  const width = VIEWPORTS.find(x => x.id === vp)?.w
+  const prototypeUrl = api.appUrl(project || '', 'prototype', route)
 
+  // Whether the app is built is asked of the backend; the 1 MB bundle itself is only fetched by the frame.
   const checkPrototypeReady = useCallback(async () => {
     if (!project) return false
     try {
-      const base = baseFileName(currentFile)
-      const map = await fetch(`${API}/prototype/${encodeURIComponent(project)}/routes.json?check=${Date.now()}`)
-      if (!map.ok) { setProtoReady(false); return false }
-      const url = `${API}/prototype/${encodeURIComponent(project)}/${base || 'index.html'}?check=${Date.now()}`
-      const res = await fetch(url)
-      if (res.ok) {
-        const text = await res.text()
-        if (text.includes('Generating HTML Prototype') || text.includes('no index.html in this drawing')) {
-          setProtoReady(false)
-          return false
-        }
-        setProtoReady(true)
-        return true
-      }
-      setProtoReady(false)
-      return false
+      const status = await api.appStatus(project)
+      const ok = Boolean(status?.prototype?.built)
+      setProtoReady(ok)
+      return ok
     } catch {
       setProtoReady(false)
       return false
     }
-  }, [project, currentFile])
+  }, [project])
 
-  // Check on open and on completed file events; never poll an absent idle drawing.
+  // Check on open and on completed builds; never poll an absent idle drawing.
   useEffect(() => {
     const timer = setTimeout(() => { checkPrototypeReady() }, 200)
     return () => clearTimeout(timer)
@@ -127,13 +99,19 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     return () => clearInterval(timer)
   }, [generating, checkPrototypeReady])
 
-  const syncPath = useCallback(() => {
-    const here = currentPath(frameRef.current)
-    if (!here) return
-    if (lastFileRef.current === here) return
-    lastFileRef.current = here
-    setCurrentFile(here)
+  // The pages listed on the side are the screens the specification names.
+  useEffect(() => {
+    if (!project) return
+    let live = true
+    api.wireframes(project)
+      .then(found => { if (live) setPages(found?.pages || []) })
+      .catch(() => { if (live) setPages([]) })
+    return () => { live = false }
+  }, [project, prototypeArtifactStamp])
 
+  // The page the app is on, followed by the list and the back/forward trail.
+  const onRoute = useCallback((here) => {
+    setRoute(here)
     if (jumping.current) {
       jumping.current = false
     } else if (trail.current[at.current] !== here) {
@@ -144,39 +122,18 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
   }, [])
 
   function step(by) {
-    const f = frameRef.current
     const next = at.current + by
-    if (!f || next < 0 || next >= trail.current.length) return
+    if (next < 0 || next >= trail.current.length) return
     at.current = next
     jumping.current = true
-    const targetFile = trail.current[next]
-    lastFileRef.current = targetFile
-    setCurrentFile(targetFile)
-    f.src = `${API}/prototype/${encodeURIComponent(project || '')}/${targetFile}`
+    goTo(frameRef.current, trail.current[next])
     setNav({ back: next > 0, forward: next < trail.current.length - 1 })
   }
 
   function reload() {
-    const f = frameRef.current
-    if (f) {
-      const page = currentPath(f)
-      checkPrototypeReady()
-      const sep = page.includes('?') ? '&' : '?'
-      f.src = `${API}/prototype/${encodeURIComponent(project || '')}/${page}${sep}t=${Date.now()}`
-    }
-  }
-
-  const lastArtifactRefresh = useRef(0)
-  useEffect(() => {
-    if (!prototypeArtifactStamp || prototypeArtifactStamp === lastArtifactRefresh.current) return
-    lastArtifactRefresh.current = prototypeArtifactStamp
-    const f = frameRef.current
-    if (!f) return
-    const page = currentPath(f) || currentFile || 'index.html'
     checkPrototypeReady()
-    const sep = page.includes('?') ? '&' : '?'
-    f.src = `${API}/prototype/${encodeURIComponent(project || '')}/${page}${sep}t=${prototypeArtifactStamp}`
-  }, [prototypeArtifactStamp, project, currentFile, checkPrototypeReady])
+    setReloadKey(k => k + 1)
+  }
 
   const prevBusyRef = useRef(busy)
   useEffect(() => {
@@ -210,8 +167,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     if (!frameRef.current) return
     detachRef.current = attachPicker(frameRef.current, (el) => {
       const info = pickedFrom(frameRef.current, el, vp)
-      const pageFile = currentPath(frameRef.current)
-      const shotRoute = `${API}/prototype/${encodeURIComponent(project)}/${pageFile}`
+      const shotRoute = api.appUrl(project, 'prototype', info.route.split('#').pop())
       attachShot(
         {
           key: `sel-${++seq}`,
@@ -236,49 +192,22 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     if (pickOn) attach()
     else { detachRef.current?.(); detachRef.current = null }
     return () => { detachRef.current?.(); detachRef.current = null }
-  }, [pickOn, attach])
-
-  // The same editor the wireframe pages use, in its text-only form.
-  const attachTextEditor = useCallback(() => {
-    protoEditorRef.current?.detach?.()
-    protoEditorRef.current = null
-    const f = frameRef.current
-    if (!f) return
-    import('@/lib/wireframe-html-editor').then(({ attachEditor }) => {
-      protoEditorRef.current = attachEditor(f, { onDirty: setTextDirty, textOnly: true })
-    })
-  }, [])
-
-  useEffect(() => {
-    const f = frameRef.current
-    if (!f) return
-    const onLoad = () => {
-      watchFrame(f, project, 'designer')
-      syncPath()
-      if (pickOn) attach()
-      if (textOn) attachTextEditor()
-    }
-    f.addEventListener('load', onLoad)
-    return () => f.removeEventListener('load', onLoad)
-  }, [pickOn, attach, textOn, attachTextEditor, syncPath])
-
-  useEffect(() => {
-    const id = setInterval(syncPath, 500)
-    return () => clearInterval(id)
-  }, [syncPath])
+  }, [pickOn, attach, loaded])
 
   const syncCanvas = useCallback(() => {
     const f = frameRef.current, c = canvasRef.current
-    if (!f || !c) return
-    c.style.left = f.offsetLeft + 'px'
-    c.style.top = f.offsetTop + 'px'
-    c.style.width = f.clientWidth + 'px'
-    c.style.height = f.clientHeight + 'px'
+    if (!f || !c || !c.offsetParent) return
+    const frame = f.getBoundingClientRect()
+    const parent = c.offsetParent.getBoundingClientRect()
+    c.style.left = (frame.left - parent.left) + 'px'
+    c.style.top = (frame.top - parent.top) + 'px'
+    c.style.width = frame.width + 'px'
+    c.style.height = frame.height + 'px'
     const dpr = window.devicePixelRatio || 1
-    const want = Math.round(f.clientWidth * dpr)
+    const want = Math.round(frame.width * dpr)
     if (c.width !== want) {
       c.width = want
-      c.height = Math.round(f.clientHeight * dpr)
+      c.height = Math.round(frame.height * dpr)
       const ctx = c.getContext('2d')
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       ctx.strokeStyle = '#ff2d55'
@@ -336,8 +265,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
       drawingRef.current = false
       const strokes = strokesRef.current
       if (strokes.reduce((a, s) => a + s.length, 0) < MIN_INK) return clearStrokes()
-      const pageFile = currentPath(frameRef.current)
-      const shotRoute = `${API}/prototype/${encodeURIComponent(project)}/${pageFile}`
+      const shotRoute = api.appUrl(project, 'prototype', route)
       attachShot(
         {
           key: `sel-${++seq}`,
@@ -345,7 +273,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
           strokes,
           route: shotRoute,
           state: 'shooting',
-          label: `Drawing on ${pageFile}`,
+          label: `Drawing on ${route}`,
         },
         { route: shotRoute, viewport: viewportOf(), strokes }
       )
@@ -363,61 +291,19 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
       window.removeEventListener('pointerup', up)
       window.removeEventListener('resize', onResize)
     }
-  }, [pencilOn, point, syncCanvas, clearStrokes, attachShot, viewportOf, project])
-
-  useEffect(() => () => { protoEditorRef.current?.detach?.() }, [])
-
-  function stopTextEdit() {
-    protoEditorRef.current?.detach?.()
-    protoEditorRef.current = null
-    setTextDirty(false)
-    setTextOn(false)
-  }
+  }, [pencilOn, point, syncCanvas, clearStrokes, attachShot, viewportOf, project, route])
 
   function toggleTextEdit() {
     if (!project) return addLog('WARN', 'Open a project first')
-    if (textOn) return stopTextEdit()
-    setPickOn(false)
-    setPencilOn(false)
-    attachTextEditor()
-    setTextOn(true)
-  }
-
-  async function saveTextEdits() {
-    if (!protoEditorRef.current || !project) return
-    setSavingProto(true)
-    setSaveProtoSuccess(false)
-    try {
-      protoEditorRef.current.editText(false)
-      const base = baseFileName(currentFile)
-      const serializedHtml = protoEditorRef.current.serialize()
-      await api.saveFile(
-        project,
-        `.agentforge/prototype/${base || 'index.html'}`,
-        serializedHtml,
-        `Text edit in ${base || 'index.html'}`
-      )
-      protoEditorRef.current.saved()
-      setTextDirty(false)
-      setSaveProtoSuccess(true)
-      addLog?.('SUCCESS', `Saved ${base || 'index.html'} directly to prototype HTML`)
-      setTimeout(() => setSaveProtoSuccess(false), 3000)
-    } catch (err) {
-      addLog?.('WARN', `Could not save prototype: ${err.message}`)
-    } finally {
-      setSavingProto(false)
-    }
-  }
-
-  function undoText() {
-    if (protoEditorRef.current?.undo?.()) setTextDirty(protoEditorRef.current?.hasHistory?.() ?? false)
+    if (!textOn) { setPickOn(false); setPencilOn(false) }
+    setTextOn(v => !v)
   }
 
   function togglePick() {
     if (!project) return addLog('WARN', 'Open a project first')
     if (!pickOn) {
       setPencilOn(false)
-      if (textOn) stopTextEdit()
+      setTextOn(false)
     }
     setPickOn(v => !v)
   }
@@ -426,7 +312,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     if (!project) return addLog('WARN', 'Open a project first')
     if (!pencilOn) {
       setPickOn(false)
-      if (textOn) stopTextEdit()
+      setTextOn(false)
     }
     setPencilOn(v => { if (v) clearStrokes(); return !v })
   }
@@ -474,15 +360,13 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     }
   }
 
-  // Reload when project changes or when drawing becomes active
+  // A new project starts at its first page, with a fresh trail.
   useEffect(() => {
-    if (frameRef.current && project) {
-      const firstPage = drawing?.pages?.[0]?.file || 'index.html'
-      setCurrentFile(firstPage)
-      lastFileRef.current = firstPage
-      frameRef.current.src = `${API}/prototype/${encodeURIComponent(project)}/${firstPage}`
-    }
-  }, [project, drawing?.id])
+    trail.current = ['/']
+    at.current = 0
+    setRoute('/')
+    setNav({ back: false, forward: false })
+  }, [project])
 
   return (
     <div className={cn('flex min-h-0 flex-1 flex-col bg-transparent', hidden && 'hidden')}>
@@ -503,11 +387,11 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
           </Cell>
         </div>
 
-        {/* Prototype tag & current file */}
+        {/* Prototype tag & current page */}
         <div className="flex min-w-0 flex-1 items-center gap-2 rounded-[14px] bg-black/[.035] px-4 py-2 text-[12px] text-muted ring-1 ring-black/[.045] dark:bg-black/[.045] dark:ring-white/[.06]">
           <Layers className="size-3.5 shrink-0 text-purple-500" />
           <span className="truncate font-mono text-[11.5px] text-ink font-medium">
-            {project} / {currentFile}
+            {project} / {route}
           </span>
         </div>
 
@@ -580,10 +464,10 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
           </Cell>
         </div>
 
-        {/* The wireframe's text tool: click any text on the page and type, then save */}
+        {/* The text tool: click any words on the page, retype them */}
         <div className="flex items-center gap-1 rounded-full border border-line/80 bg-panel/80 p-1 shadow-sm">
           <Cell
-            tip="Edit text: click any text on the page and type, then save"
+            tip="Edit text: click any words on the page and retype them"
             side="left"
             on={textOn}
             onClick={toggleTextEdit}
@@ -595,109 +479,83 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
         </div>
       </div>
 
-      {/* While the text tool is on: what to do, and Save / Undo once something was typed. */}
-      {textOn && (
-        <div className="z-30 flex shrink-0 items-center gap-2 border-b border-black/10 bg-[#F2F0EF]/95 px-3.5 py-2 select-none backdrop-blur-md">
-          <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted">
-            <Type className="size-3 shrink-0" />
-            <span className="truncate">Click any text on the page and type · Esc stops typing</span>
-          </span>
-          <span className="flex-1" />
-          {saveProtoSuccess && (
-            <span className="flex items-center gap-1 text-[11px] text-ink"><Check className="size-3" /> Saved</span>
-          )}
-          <button type="button" onClick={undoText} disabled={!textDirty} title="Undo the last change (Ctrl+Z)"
-                  className="inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-[11px] font-medium text-ink ring-1 ring-inset ring-black/10 hover:bg-black/[.06] disabled:opacity-40">
-            <UndoIcon className="size-3" /> Undo
-          </button>
-          {textDirty && (
-            <button type="button" onClick={saveTextEdits} disabled={savingProto}
-                    className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-accent px-3 text-[11px] font-semibold text-ink shadow-sm hover:bg-press disabled:opacity-50">
-              {savingProto ? <><Loader2 className="size-3 animate-spin" /> Saving…</> : <><Save className="size-3" /> Save page</>}
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Frame Container */}
-      <div className="relative min-h-0 flex-1 overflow-hidden bg-canvas">
-        <canvas ref={canvasRef}
-                className={cn('absolute z-[8]', pencilOn ? 'block' : 'hidden')}
-                style={{ pointerEvents: pencilOn ? 'auto' : 'none',
-                         cursor: pencilOn ? 'crosshair' : 'default' }} />
-
-        {(pickOn || pencilOn) && (
-          <p className="pointer-events-none absolute inset-x-0 bottom-7 z-[9] mx-auto w-fit rounded-full bg-ink/85 px-3.5 py-1.5 text-[11px] font-medium text-ink shadow-lg">
-            {pencilOn ? 'Draw around what you mean — it attaches to the chat'
-                      : 'Click anything on the prototype — it attaches to the chat'}
-          </p>
-        )}
-
-
-        <div className="relative flex min-h-0 h-full w-full items-start justify-center overflow-hidden bg-[#F2F0EF]">
-          <div
-            className={cn("relative h-full w-full max-w-full overflow-hidden bg-[#F2F0EF]", width && "border-x border-black/10 shadow-2xl")}
-            style={{ width: width ? width + 'px' : '100%' }}
+      {/* The preview: every page on the side, the app in the frame. */}
+      <div className="relative flex min-h-0 flex-1 overflow-hidden bg-canvas">
+        {protoReady && (
+          <AppPreview
+            key={`${project}:${reloadKey}`}
+            project={project} kind="prototype" pages={pages} stamp={prototypeArtifactStamp} viewport={vp}
+            frameRef={frameRef} onRoute={onRoute}
+            onLoaded={(frame) => { watchFrame(frame, project, 'designer'); setLoaded(n => n + 1) }}
           >
-            <iframe
-              ref={frameRef}
-              title="prototype-preview"
-              src={prototypeUrl}
-              onLoad={() => {
-                checkPrototypeReady()
+            <canvas ref={canvasRef}
+                    className={cn('absolute z-[8]', pencilOn ? 'block' : 'hidden')}
+                    style={{ pointerEvents: pencilOn ? 'auto' : 'none',
+                             cursor: pencilOn ? 'crosshair' : 'default' }} />
+
+            {(pickOn || pencilOn || textOn) && (
+              <p className="pointer-events-none absolute inset-x-0 bottom-7 z-[9] mx-auto w-fit rounded-full bg-ink/85 px-3.5 py-1.5 text-[11px] font-medium text-white shadow-lg">
+                {pencilOn ? 'Draw around what you mean — it attaches to the chat'
+                  : textOn ? 'Click any words on the page and retype them · Enter saves'
+                    : 'Click anything on the prototype — it attaches to the chat'}
+              </p>
+            )}
+
+            <AppTextEdit
+              frameRef={frameRef} active={textOn} loaded={loaded} project={project} kind="prototype"
+              onSaved={(done) => addLog?.('SUCCESS', `Changed the text in ${done?.file || 'the prototype'}`)}
+              onAskAi={({ old, value }) => {
+                setTextOn(false)
+                addLog('INFO', `Ask in the chat to change “${old}” to “${value}” — it is built in code`)
               }}
-              className={cn(
-                "absolute inset-0 block h-full w-full border-0 bg-white transition-opacity duration-300",
-                !protoReady ? "opacity-0 pointer-events-none" : "opacity-100"
-              )}
             />
 
             {/* The journeys being clicked through, live: the browser's picture and pointer, and the step it is on. */}
             <AgentBrowser />
             {liveStep && <LiveE2EOverlay event={liveStep} />}
+          </AppPreview>
+        )}
 
-            {!protoReady && (
-              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#F2F0EF] p-6 text-center select-none">
-                {/* Glowing top line */}
-                <div className="absolute inset-x-0 top-0 h-[2px] overflow-hidden bg-black/5">
-                  <div className="h-full w-full bg-accent animate-pulse" />
-                </div>
+        {!protoReady && (
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#F2F0EF] p-6 text-center select-none">
+            {/* Glowing top line */}
+            <div className="absolute inset-x-0 top-0 h-[2px] overflow-hidden bg-black/5">
+              <div className="h-full w-full bg-accent animate-pulse" />
+            </div>
 
-                <Loader2 className="mb-5 size-10 animate-spin text-accent" />
+            <Loader2 className="mb-5 size-10 animate-spin text-accent" />
 
-                <h3 className="font-display text-[16px] font-bold tracking-tight text-ink">
-                  {isBusy ? 'Generating HTML Prototype…' : 'No prototype is ready yet'}
-                </h3>
-                <p className="mt-1.5 max-w-sm text-center text-[12px] text-muted leading-relaxed">
-                  {isBusy
-                    ? 'The AI agent is crafting interactive wireframes, layouts, and responsive components.'
-                    : 'Connecting to prototype canvas and mounting UI assets.'}
-                </p>
+            <h3 className="font-display text-[16px] font-bold tracking-tight text-ink">
+              {isBusy ? 'Generating the prototype…' : 'No prototype is ready yet'}
+            </h3>
+            <p className="mt-1.5 max-w-sm text-center text-[12px] text-muted leading-relaxed">
+              {isBusy
+                ? 'The AI agent is taking the wireframe app and editing it into a high-fidelity, animated prototype.'
+                : 'Approve the wireframes and choose a design to generate the prototype.'}
+            </p>
 
-                {resumePrototype && (
-                  <button
-                    type="button"
-                    onClick={handleBuildAppNow}
-                    className="mt-4 inline-flex items-center gap-2 rounded-full bg-[#BFB9FF] px-4 py-2 text-[12px] font-semibold text-ink shadow-sm transition hover:bg-[#9B94E8]"
-                  >
-                    <RotateCw className="size-3.5" /> Resume Prototype
-                  </button>
-                )}
-
-                <div className="mt-4 flex items-center gap-2 rounded-none border border-accent/20 bg-accent px-4 py-1.5 font-mono text-[11px] text-ink shadow-sm">
-                  <span className="size-2 rounded-full bg-accent animate-ping" />
-                  <span className="truncate max-w-[280px]">
-                    {generating
-                      ? (generationStatus || 'Planning and drawing prototype pages…')
-                      : (resumePrototype && ['paused', 'failed'].includes(workflowStatus)
-                        ? 'Generation was interrupted. Continue from the saved checkpoint.'
-                        : (statusText || (typeof progress === 'string' ? progress : '') || (isBusy ? 'Designing pages…' : `${project || 'project'} / ${currentFile}`)))}
-                  </span>
-                </div>
-              </div>
+            {resumePrototype && (
+              <button
+                type="button"
+                onClick={handleBuildAppNow}
+                className="mt-4 inline-flex items-center gap-2 rounded-full bg-[#BFB9FF] px-4 py-2 text-[12px] font-semibold text-ink shadow-sm transition hover:bg-[#9B94E8]"
+              >
+                <RotateCw className="size-3.5" /> Resume Prototype
+              </button>
             )}
+
+            <div className="mt-4 flex items-center gap-2 rounded-none border border-accent/20 bg-accent px-4 py-1.5 font-mono text-[11px] text-ink shadow-sm">
+              <span className="size-2 rounded-full bg-accent animate-ping" />
+              <span className="truncate max-w-[280px]">
+                {generating
+                  ? (generationStatus || 'Editing the wireframe into the prototype…')
+                  : (resumePrototype && ['paused', 'failed'].includes(workflowStatus)
+                    ? 'Generation was interrupted. Continue from the saved checkpoint.'
+                    : (statusText || (typeof progress === 'string' ? progress : '') || (isBusy ? 'Designing pages…' : `${project || 'project'} / ${route}`)))}
+              </span>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   )

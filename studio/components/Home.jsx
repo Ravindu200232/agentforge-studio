@@ -211,7 +211,7 @@ export default function Home({
     s.setProgress('Starting…', 0)
     const selected = config?.model || builderModel
     s.addLog('INFO', `Build mode — ${tierDisplayName(selected)} · Thinking — ${(config?.think ?? think) ? 'on' : 'off'}`)
-    if (prototypeOnly) s.addLog('INFO', '🎨 Prototype Build mode — generating interactive HTML prototype first')
+    if (prototypeOnly) s.addLog('INFO', '🎨 Prototype Build mode — generating the interactive prototype first')
     if (logo) s.addLog('INFO', 'Building around the logo you accepted')
     if (srs) s.addLog('INFO', 'Building from the SRS you approved')
 

@@ -2,29 +2,25 @@
 
 import {
   RefreshCw,
+  RotateCw,
   MousePointer2,
   Sparkles,
-  Trash2,
-  Undo2,
+  Type,
 } from 'lucide-react'
 
 /**
- * A deliberately small low-fidelity wireframe rail. Text is typed straight into the canvas where it is clicked;
- * layout, spacing, and components move through the page-level AI request instead of drag, swap or resize tools.
+ * A deliberately small rail for the wireframe app. It does not move or resize anything: a change is either a few words
+ * retyped in place, or asked for in words (about the whole page, or about the element picked in the preview).
  */
 export default function WireframeInspector({
-  editor,
-  onChange,
-  onUndo,
-  onRedraw,
-  redrawing,
+  mode,
+  onMode,
   onOpenAi,
-  selectionMode,
-  onSelectionMode,
+  aiOpen,
+  onReload,
+  onRegenerate,
+  regenerating,
 }) {
-  if (!editor) return null
-  const element = editor.selected?.()
-
   const IconButton = ({ name, Icon, onClick, disabled = false, active = false }) => (
     <button
       type="button"
@@ -44,21 +40,21 @@ export default function WireframeInspector({
     <aside aria-label="Wireframe tools" className="absolute left-3 top-3 z-40 flex items-start gap-2">
       <nav className="flex w-10 flex-col items-center gap-0.5 rounded-xl border border-line bg-panel p-1 shadow-xl">
         <IconButton
-          name="Delete selected element"
-          Icon={Trash2}
-          disabled={!element}
-          onClick={() => { editor.remove(); onChange?.() }}
+          name="Pick an element to ask the AI about"
+          Icon={MousePointer2}
+          active={mode === 'pick'}
+          onClick={() => onMode?.(mode === 'pick' ? '' : 'pick')}
         />
         <IconButton
-          name="Attach selected elements to AI prompt"
-          Icon={MousePointer2}
-          active={selectionMode}
-          onClick={() => onSelectionMode?.(!selectionMode)}
+          name="Edit text: click any words on the page and retype them"
+          Icon={Type}
+          active={mode === 'text'}
+          onClick={() => onMode?.(mode === 'text' ? '' : 'text')}
         />
-        <IconButton name="Redraw this page" Icon={RefreshCw} onClick={onRedraw} disabled={redrawing} />
-        <IconButton name="Ask AI to update this page" Icon={Sparkles} onClick={onOpenAi} />
+        <IconButton name="Ask AI to update the wireframe" Icon={Sparkles} active={aiOpen} onClick={onOpenAi} />
         <span className="my-0.5 h-px w-6 bg-line" />
-        <IconButton name="Undo last user step" Icon={Undo2} disabled={!editor.hasHistory?.()} onClick={onUndo} />
+        <IconButton name="Reload the preview" Icon={RotateCw} onClick={onReload} />
+        <IconButton name="Build the whole wireframe again" Icon={RefreshCw} onClick={onRegenerate} disabled={regenerating} />
       </nav>
     </aside>
   )

@@ -941,6 +941,14 @@ def srs_pdf(ctx: dict) -> Any:
                "application/pdf", "SRS.pdf")
 
 
+@route("GET", r"/app-status/(?P<project>[^/]+)")
+def app_status(ctx: dict) -> Any:
+    """Is each app built, and is its source newer than its build: what the previews ask before they frame one."""
+    project = _project(ctx)
+    return {kind: {"built": web_app.built(project, kind), "stale": web_app.stale(project, kind)}
+            for kind in web_app.KINDS}
+
+
 @route("GET", r"/app/(?P<project>[^/]+)/(?P<kind>wireframe|prototype)(?:/(?P<name>.*))?")
 def app_file(ctx: dict) -> Any:
     """The wireframe or the prototype, as the preview frames it: `bundle.html`, and the built files it points at.
