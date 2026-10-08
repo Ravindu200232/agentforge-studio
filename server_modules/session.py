@@ -401,6 +401,10 @@ class StudioTools(WorkspaceTools):
                     email = next((str(a.get("email") or "") for a in accounts if wanted in {
                         str(a.get("email") or "").lower(), str(a.get("role") or "").lower(),
                         str(a.get("role_key") or "").lower()}), "")
+                stop_requested = getattr(self, "stop_requested", None)
+                if callable(stop_requested):
+                    return screens.shoot_page(root, page, accounts, out, viewport, email,
+                                               cancelled=stop_requested)
                 return screens.shoot_page(root, page, accounts, out, viewport, email)
         return super()._take_picture(target, viewport, role, out)
 
@@ -564,6 +568,7 @@ class ProjectSession:
         self.record.mkdir(parents=True, exist_ok=True)
 
         self.lock = threading.RLock()
+        self._cancel_lock = threading.Lock()
         self.role = bus.DEVELOPER
         self.stage = "idle"
         self._cancel = threading.Event()
@@ -845,10 +850,21 @@ class ProjectSession:
 
     # --- running ------------------------------------------------------------
 
+    def prepare_run(self) -> None:
+        """Register a new run before it is queued or its worker is started.
+
+        Clearing Stop here closes the race where a customer presses Stop after
+        the request is accepted but before ``begin`` runs on the worker thread.
+        Once queued, ``begin`` may only observe cancellation, never erase it.
+        """
+        with self._cancel_lock:
+            if self._is_discarded():
+                raise RunCancelled(self.project)
+            self._cancel.clear()
+
     def begin(self, stage: str, role: str = bus.DEVELOPER, run_id: str = "") -> None:
-        if self._is_discarded():
+        if self.cancelled:
             raise RunCancelled(self.project)
-        self._cancel.clear()
         from . import llm
 
         llm.bind_stop(self._cancel)  # the direct model calls this run makes honour its Stop too
@@ -893,7 +909,8 @@ class ProjectSession:
         self.stage = "idle"
 
     def cancel(self) -> None:
-        self._cancel.set()
+        with self._cancel_lock:
+            self._cancel.set()
 
     def _is_discarded(self) -> bool:
         """Whether deletion retired this session.

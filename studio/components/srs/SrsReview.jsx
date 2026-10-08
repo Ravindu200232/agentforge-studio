@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { ArrowLeft, Check, FileDown, FolderUp, ListTree, Loader2, Plus, RotateCcw, Trash2 } from 'lucide-react'
-import { api } from '@/lib/api'
+import { api, isJobCancelled } from '@/lib/api'
 import { useStore } from '@/lib/store'
 import { loadSrsView, srsViewFromVersion } from '@/lib/srs-view'
 import { Badge, Button, Empty, SubTab, SubTabs, Tag } from '../ui'
@@ -80,7 +80,7 @@ export default function SrsReview({ projectId, onApproved, onKept, onBack, onNew
       setBusy('')
       onApproved?.('Use the approved SRS handoff files.', projectId)
     } catch (e) {
-      setError(e.message)
+      if (!isJobCancelled(e)) setError(e.message)
       setBusy('')
     }
   }

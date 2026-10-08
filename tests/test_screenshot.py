@@ -5,6 +5,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -197,7 +199,8 @@ class ShootTests(unittest.TestCase):
 class RunTests(unittest.TestCase):
     def test_a_command_that_hangs_is_stopped_with_what_it_started_and_nothing_else(self):
         process = mock.Mock(pid=4242)
-        process.communicate.side_effect = [subprocess.TimeoutExpired("b", 1), ("", "")]
+        process.poll.return_value = None
+        process.communicate.side_effect = subprocess.TimeoutExpired("b", 1)
         with mock.patch.object(screenshot.subprocess, "Popen", return_value=process), \
                 mock.patch.object(screenshot.subprocess, "run") as run, \
                 self.assertRaises(subprocess.TimeoutExpired):
@@ -205,6 +208,15 @@ class RunTests(unittest.TestCase):
         if os.name == "nt":
             self.assertEqual(run.call_args.args[0], ["taskkill", "/PID", "4242", "/T", "/F"])    # this tree, never by image name
         self.assertNotIn("/IM", str(run.call_args_list))
+
+    def test_a_screenshot_process_observes_stop_without_waiting_for_its_timeout(self):
+        stop = threading.Event()
+        threading.Timer(0.15, stop.set).start()
+        started = time.monotonic()
+        with self.assertRaises(InterruptedError):
+            screenshot._run([sys.executable, "-c", "import time; time.sleep(30)"],
+                            seconds=30, cancelled=stop.is_set)
+        self.assertLess(time.monotonic() - started, 1.5)
 
     def test_a_finished_command_returns_its_output(self):
         done = screenshot._run([sys.executable, "-c", "print('hello')"], seconds=20)

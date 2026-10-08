@@ -1311,8 +1311,39 @@ def _queue(router, ctx: dict, label: str) -> Any:
     path = str(ctx.get("path") or "")
     method = str(ctx.get("method") or "POST")
     body = ctx.get("body") if isinstance(ctx.get("body"), dict) else {}
+    match = re.search(r"/projects/([^/]+)", path)
+    project = unquote(match.group(1)) if match and label == "srs" else ""
+    agent = (bus.DESIGNER if any(part in path for part in ("/wireframes", "/design-spec"))
+             else bus.DEVELOPER)
+    on_cancel = None
+    if project:
+        # Register the cancellation token before the queued worker exists. A
+        # Stop received immediately after this response can therefore never be
+        # erased later by ProjectSession.begin().
+        session = session_for(project)
+        session.prepare_run()
+        if path.rstrip("/").endswith("/wireframes/approve"):
+            direction = str(body.get("prompt") or "").strip()
+            store.update(project, build_available=False, status="prototype-generating")
+            if direction:
+                pending = session.record / prototyper.PROTOTYPE_DIR / "generation.json"
+                pending.parent.mkdir(parents=True, exist_ok=True)
+                (pending.parent / "routes.json").unlink(missing_ok=True)
+                pending.write_text(json.dumps({"complete": False, "draw_complete": False,
+                                               "direction": direction}, ensure_ascii=False, indent=2),
+                                   encoding="utf-8")
+        def on_cancel() -> None:
+            if path.rstrip("/").endswith("/wireframes/approve"):
+                bus.sync_state(project, "paused", "Prototype generation stopped.", source="prototype")
+            elif "/wireframes" in path or path.rstrip("/").endswith("/approve"):
+                bus.sync_state(project, "paused", "Wireframe generation stopped.", source="wireframe")
+            elif "/generate-srs" in path:
+                bus.sync_state(project, "paused", "Specification generation stopped.",
+                               source="srs", srs_status="paused")
+            bus.cancelled(project, "Stopped.", agent=agent)
     return {"job_id": jobs.start(lambda: router(method, path, body),
-                                 label=f"{label}{path}")}
+                                 label=f"{label}{path}", project=project,
+                                 agent=agent, on_cancel=on_cancel)}
 
 
 @route("POST", r"/srs/jobs")

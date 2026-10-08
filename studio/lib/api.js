@@ -30,6 +30,20 @@ function networkError(cause) {
   return error
 }
 
+export class JobCancelledError extends Error {
+  constructor(message = 'Stopped') {
+    super(message)
+    this.name = 'JobCancelledError'
+    this.code = 'cancelled'
+    this.cancelled = true
+  }
+}
+
+export function isJobCancelled(error) {
+  return Boolean(error?.cancelled || error?.code === 'cancelled'
+    || error?.name === 'AbortError' || error?.name === 'JobCancelledError')
+}
+
 /** Called when the server says this session is over, from wherever it happens. */
 export function whenSignedOut(fn) {
   onSignedOut = fn
@@ -345,10 +359,11 @@ async function deployJob(method, path, body, { onWait, signal } = {}) {
   const started = await post('/deploy/jobs', { path, method, body })
   const id = started.job_id
   for (let i = 0; ; i++) {
-    if (signal?.aborted) throw new Error('cancelled')
+    if (signal?.aborted) throw new JobCancelledError()
     await new Promise(r => setTimeout(r, i < 10 ? 300 : 900))
     const job = await req(`/deploy/jobs/${id}`)
     if (job.status === 'running') { onWait?.(job.elapsed); continue }
+    if (job.status === 'cancelled') throw new JobCancelledError()
     if (job.status === 'error') throw new Error(job.error || 'the deployment agent failed')
     if (job.http_status >= 400) {
       const detail = job.result?.error ?? job.result?.detail
@@ -383,8 +398,11 @@ async function pollSrs(id, key, { onWait, signal } = {}) {
   const started = Date.now()
   let failures = 0
   while (Date.now() - started < 60 * 60 * 1000) {
-    if (signal?.aborted) throw new Error('cancelled')
-    await new Promise(resolve => setTimeout(resolve, 1500))
+    if (signal?.aborted) {
+      try { localStorage.removeItem(key) } catch { }
+      throw new JobCancelledError()
+    }
+    await new Promise(resolve => setTimeout(resolve, 500))
     let job
     try { job = await req(`/srs/jobs/${id}`); failures = 0 }
     catch (error) {
@@ -394,6 +412,7 @@ async function pollSrs(id, key, { onWait, signal } = {}) {
     }
     if (job.status === 'running') { onWait?.(job.elapsed); continue }
     try { localStorage.removeItem(key) } catch { }
+    if (job.status === 'cancelled') throw new JobCancelledError()
     if (job.status === 'error') throw new Error(job.error || 'The SRS update failed')
     // Format validation error detail lists into human-readable error messages.
     if (job.http_status >= 400) throw new Error(readDetail(job) || `HTTP ${job.http_status}`)
@@ -470,10 +489,11 @@ async function localJob(path, body, { onWait, signal } = {}) {
   const started = await post('/jobs', { path, method: 'POST', body })
   const id = started.job_id
   for (let i = 0; ; i++) {
-    if (signal?.aborted) throw new Error('cancelled')
+    if (signal?.aborted) throw new JobCancelledError()
     await new Promise(r => setTimeout(r, i < 10 ? 300 : 900))
     const job = await req(`/jobs/${id}`)
     if (job.status === 'running') { onWait?.(job.elapsed); continue }
+    if (job.status === 'cancelled') throw new JobCancelledError()
     if (job.status === 'unknown') throw new Error(job.error || 'the job expired')
     if (job.status === 'error') throw new Error(job.error || 'the request failed')
     if (job.http_status >= 400) {

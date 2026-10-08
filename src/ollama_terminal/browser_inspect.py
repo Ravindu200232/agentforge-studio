@@ -11,9 +11,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 
@@ -128,7 +130,53 @@ def _local_url(value: str) -> str:
     return parsed.geturl()
 
 
-def inspect_local_page(root: Path, url: str, viewport: str = "desktop") -> dict[str, Any]:
+def _run_cancellable(command: list[str], root: Path, cancelled: Callable[[], bool]) -> subprocess.CompletedProcess:
+    process = subprocess.Popen(
+        command, cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        env=os.environ.copy(), start_new_session=os.name != "nt")
+
+    def stop_tree() -> None:
+        if process.poll() is not None:
+            return
+        if os.name == "nt":
+            try:
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True,
+                               timeout=1, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except subprocess.TimeoutExpired:
+                process.kill()
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                process.kill()
+
+    deadline = time.monotonic() + MAX_BROWSER_SECONDS
+    while True:
+        if cancelled():
+            stop_tree()
+            try:
+                process.communicate(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            raise InterruptedError("browser inspection stopped")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            stop_tree()
+            try:
+                process.communicate(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            raise subprocess.TimeoutExpired(command, MAX_BROWSER_SECONDS)
+        try:
+            stdout, stderr = process.communicate(timeout=min(0.1, remaining))
+            return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def inspect_local_page(root: Path, url: str, viewport: str = "desktop",
+                       cancelled: Callable[[], bool] | None = None) -> dict[str, Any]:
     """Capture one local page and return the facts a text model can act on."""
     checked_url = _local_url(url)
     choice = str(viewport or "desktop").strip().lower()
@@ -142,11 +190,11 @@ def inspect_local_page(root: Path, url: str, viewport: str = "desktop") -> dict[
     payload = {"url": checked_url, "viewport": {"width": VIEWPORTS[choice][0], "height": VIEWPORTS[choice][1]},
                "screenshot": str(screenshot), "relativeScreenshot": relative.as_posix()}
     try:
-        done = subprocess.run(
-            ["node", "-e", _PLAYWRIGHT_SCRIPT, json.dumps(payload)], cwd=root, stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=MAX_BROWSER_SECONDS,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env=os.environ.copy(), check=False,
-        )
+        command = ["node", "-e", _PLAYWRIGHT_SCRIPT, json.dumps(payload)]
+        done = (_run_cancellable(command, root, cancelled) if cancelled else subprocess.run(
+            command, cwd=root, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=MAX_BROWSER_SECONDS,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env=os.environ.copy(), check=False))
     except FileNotFoundError as exc:
         raise ValueError("Node.js is required for the local browser inspection tool") from exc
     except subprocess.TimeoutExpired as exc:

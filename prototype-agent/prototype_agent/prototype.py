@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import hashlib
-import html as html_text
 import json
 import re
 import shutil
+from pathlib import Path
 from typing import Any
 
 from server_modules import auth_guide, bus, config, prompts, store
@@ -19,6 +19,14 @@ from .assets import normalize_inline_svg
 
 PROTOTYPE_DIR = "prototype"
 ROUTES = (PROTOTYPE_DIR, "routes.json")
+
+
+class PrototypeIncomplete(RuntimeError):
+    """The agent stopped with a resumable, high-fidelity prototype checkpoint."""
+
+    def __init__(self, missing: list[str]):
+        self.missing = missing
+        super().__init__("prototype generation is incomplete: " + ", ".join(missing))
 
 
 def _read_record(session: Any, *parts: str, fallback=None):
@@ -80,16 +88,6 @@ def asset(project: str, name: str) -> tuple[bytes, str]:
             ".json": "application/json", ".svg": "image/svg+xml",
             ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
     return path.read_bytes(), kind.get(path.suffix.lower(), "application/octet-stream")
-
-
-def _fallback_page(row: dict, wireframe: str) -> str:
-    """A page the agent did not write, kept clickable: its approved wireframe wired into the flow, else a titled empty page."""
-    if wireframe.strip():
-        return wireframe
-    name = html_text.escape(str(row.get("name") or row["route"]))
-    return (f'<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
-            f'<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>{name}</title>\n'
-            f'</head>\n<body>\n<main><h1>{name}</h1></main>\n</body>\n</html>\n')
 
 
 def _draw_with_agent(project: str, spec: dict[str, Any], direction: str,
@@ -174,25 +172,32 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str,
         inputs.append(f"- `{guide}` — how signing in, roles, each role's dashboard and the signed-in and signed-out "
                       "navigation work (its sections 1–4 and 6 are for the prototype)")
     inputs += [f"- `{path}` — the wireframe of `{route}`" for route, path in blueprints.items()]
-    direction_text = "\n\n".join(part for part in (
-        ("### The customer's design direction (from Design Customize)\n\n" + str(customization["customizer_prompt"]).strip())
-        if customization.get("customizer_prompt") else "",
-        ("### What the customer asked for on this prototype\n\n" + direction.strip()) if direction.strip() else "",
-    ) if part)
-
     flow = prototype_brief.flow_of(doc, routes_out)
     sign_in = prototype_brief.sign_in_route(doc)
     accounts = prototype_brief.draw_accounts(doc, routes_out, flow, "")
     sign_up = prototype_brief.sign_up_of(doc, routes_out, accounts)
 
+    checkpoint_path = root / "generation.json"
+    checkpoint = _read_record(session, PROTOTYPE_DIR, "generation.json", fallback=None) or {}
+    # Resume is invoked without the original button prompt. Keep the exact
+    # direction that owned the interrupted checkpoint so the fingerprint does
+    # not change merely because the customer pressed Continue.
+    effective_direction = direction.strip()
+    if not effective_direction and checkpoint and not checkpoint.get("complete"):
+        effective_direction = str(checkpoint.get("direction") or "").strip()
+    direction_text = "\n\n".join(part for part in (
+        ("### The customer's design direction (from Design Customize)\n\n" + str(customization["customizer_prompt"]).strip())
+        if customization.get("customizer_prompt") else "",
+        ("### What the customer asked for on this prototype\n\n" + effective_direction)
+        if effective_direction else "",
+    ) if part)
+
     fingerprint = hashlib.sha256(json.dumps(
         {"routes": routes_out, "design": spec, "customization": customization, "blueprints":
          {route: (root / path.removeprefix(record + "/")).read_text(encoding="utf-8") for route, path in blueprints.items()},
-         "app_md": (session.workspace / app_md_path).read_text(encoding="utf-8"), "direction": direction},
+         "app_md": (session.workspace / app_md_path).read_text(encoding="utf-8"), "direction": effective_direction},
         ensure_ascii=False, sort_keys=True, default=str,
     ).encode("utf-8")).hexdigest()
-    checkpoint_path = root / "generation.json"
-    checkpoint = _read_record(session, PROTOTYPE_DIR, "generation.json", fallback=None) or {}
     resuming = checkpoint.get("fingerprint") == fingerprint and not checkpoint.get("complete")
     if not resuming:
         # A changed design, route map or wireframe owns a fresh page set. A matching interrupted run keeps its completed pages.
@@ -200,17 +205,24 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str,
             stale.unlink(missing_ok=True)
         for stale in ("assets/app.css", "assets/app.js", "routes.json"):
             (root / stale).unlink(missing_ok=True)
-    written = [row for row in routes_out if (root / row["file"]).is_file() and (root / row["file"]).stat().st_size >= 1000]
-    checkpoint_path.write_text(json.dumps({"fingerprint": fingerprint, "complete": False, "sign_in": sign_in,
-                                           "accounts": accounts, "flow": flow}, ensure_ascii=False, indent=2), encoding="utf-8")
+    written = [row for row in routes_out if (root / row["file"]).is_file()
+               and (root / row["file"]).read_text(encoding="utf-8", errors="replace").strip()]
+    checkpoint_state = {"fingerprint": fingerprint, "complete": False,
+                        "draw_complete": bool(resuming and checkpoint.get("draw_complete")),
+                        "direction": effective_direction, "sign_in": sign_in,
+                        "accounts": accounts, "flow": flow}
+    checkpoint_path.write_text(json.dumps(checkpoint_state, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # The parts that are the same for every prototype: the route map, the flow and the demo sign-in.
     write("assets/flow.js", prototype_brief.flow_script(routes_out, flow, accounts, sign_in, sign_up))
     write("demo-accounts.json", json.dumps({"sign_in": sign_in, "accounts": accounts}, ensure_ascii=False, indent=2))
 
     def publish(done: set[str]) -> None:
-        """routes.json lists the pages already written, so the preview shows each one as soon as it exists."""
-        write("routes.json", json.dumps({"routes": [row for row in routes_out if row["file"] in done]},
+        """Expose real generated pages only after their shared design system exists."""
+        styled = (root / "assets" / "app.css").is_file() and bool(
+            (root / "assets" / "app.css").read_text(encoding="utf-8", errors="replace").strip())
+        visible = done if styled else set()
+        write("routes.json", json.dumps({"routes": [row for row in routes_out if row["file"] in visible]},
                                         ensure_ascii=False, indent=2), note="updated")
 
     resume = ""
@@ -220,6 +232,19 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str,
                   + "\n".join(f"- `{record}/{name}`" for name in
                               [n for n in ("assets/app.css", "assets/app.js") if (root / n).is_file()]
                               + [row["file"] for row in written]))
+    # A stopped visual/journey review already has the complete drawn file set.
+    # Resume from that checkpoint without regenerating the screens a second time.
+    required_assets = ("assets/app.css", "assets/app.js")
+    drawn_files_complete = all((root / row["file"]).is_file() and
+                               (root / row["file"]).read_text(encoding="utf-8", errors="replace").strip()
+                               for row in routes_out)
+    assets_complete = all((root / name).is_file() and
+                          (root / name).read_text(encoding="utf-8", errors="replace").strip()
+                          for name in required_assets)
+    if resuming and checkpoint_state["draw_complete"] and drawn_files_complete and assets_complete:
+        publish({row["file"] for row in routes_out})
+        return routes_out
+
     request = prompts.load(
         "prototype/generate", inputs="\n".join(inputs), design_direction=direction_text,
         routes=prototype_brief.routes_text(routes_out, blueprints), journeys=prototype_brief.journey_text(flow),
@@ -235,8 +260,15 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str,
     def watch(event: dict) -> None:
         if event.get("project") != project or event.get("type") != "file" or event.get("agent") != bus.DESIGNER:
             return
-        row = by_file.get(str(event.get("name") or ""))
+        name = str(event.get("name") or "")
+        if name == f"{record}/assets/app.css":
+            publish(pages_done)
+            return
+        row = by_file.get(name)
         if not row or row["file"] in pages_done:
+            return
+        page = root / row["file"]
+        if not page.is_file() or not page.read_text(encoding="utf-8", errors="replace").strip():
             return
         pages_done.add(row["file"])
         publish(pages_done)
@@ -256,32 +288,32 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str,
     if result.get("status") != "complete" and result.get("text"):
         bus.log(project, "WARN", f"The agent stopped early: {str(result['text'])[:300]}", agent=bus.DESIGNER)
 
-    # What the agent wrote is used as it is. Only the links to the shared files every page needs are added if one is missing,
-    # and a page it never wrote keeps its wireframe so every link in the prototype still opens something.
-    kept: list[str] = []
+    # What the agent actually wrote is used as it is. A missing screen stays
+    # missing and resumable; copying its low-fidelity wireframe here made an
+    # incomplete run look like a finished but badly designed prototype.
+    missing: list[str] = []
     for row in routes_out:
         path = root / row["file"]
         html = path.read_text(encoding="utf-8") if path.is_file() else ""
         if not html.strip():
-            html = _fallback_page(row, wireframe_source.get(str(row["route"]), ""))
-            kept.append(str(row["route"]))
+            missing.append(str(row["route"]))
+            continue
         finished = normalize_inline_svg(prototype_brief.ensure_assets(html), spec)
         if finished != (path.read_text(encoding="utf-8") if path.is_file() else None):
             write(row["file"], finished, note="patched")
-    if len(kept) == len(routes_out):
-        raise ValueError("the agent wrote no prototype page"
-                         + (f": {str(result.get('text'))[:300]}" if result.get("text") else ""))
-    if kept:
-        bus.agent_msg(project, f"The agent did not write {', '.join(kept)}, so "
-                               f"{'they open' if len(kept) != 1 else 'it opens'} as {'their' if len(kept) != 1 else 'its'} "
-                               "approved wireframe (or a titled page) for now. Ask for it in the chat to have it drawn.",
-                      title="Prototype screens", kind="narration", agent=bus.DESIGNER)
-    for name in ("assets/app.css", "assets/app.js"):
-        if not (root / name).is_file():
-            write(name, "/* The agent wrote no shared " + ("stylesheet" if name.endswith("css") else "script") + ". */\n")
+    for name in required_assets:
+        path = root / name
+        if not path.is_file() or not path.read_text(encoding="utf-8", errors="replace").strip():
+            missing.append(name)
+    publish({row["file"] for row in routes_out if (root / row["file"]).is_file()
+             and (root / row["file"]).read_text(encoding="utf-8", errors="replace").strip()})
+    if missing:
+        checkpoint_state["draw_complete"] = False
+        checkpoint_path.write_text(json.dumps(checkpoint_state, ensure_ascii=False, indent=2), encoding="utf-8")
+        raise PrototypeIncomplete(missing)
     write("routes.json", json.dumps({"routes": routes_out}, ensure_ascii=False, indent=2))
-    checkpoint_path.write_text(json.dumps({"fingerprint": fingerprint, "complete": True, "sign_in": sign_in,
-                                           "accounts": accounts, "flow": flow}, ensure_ascii=False, indent=2), encoding="utf-8")
+    checkpoint_state["draw_complete"] = True
+    checkpoint_path.write_text(json.dumps(checkpoint_state, ensure_ascii=False, indent=2), encoding="utf-8")
     return routes_out
 
 
@@ -315,11 +347,23 @@ def _generate(project: str, direction: str,
         # handoff instead, while every available wireframe is still honoured.
         source = {str(p["route"]): srs_document.wireframe_html(project, str(p["route"]))
                   for p in grid if p.get("has_html")}
-    session.begin("prototype", role=bus.DESIGNER)
-    if from_wireframes:
-        bus.sync_state(project, "running", "Drawing the approved prototype",
-                       source="prototype")
     try:
+        # A partially written or newly regenerated prototype must never enable
+        # a production build. Completion below is the only place that turns
+        # this on. An explicit direction owns a fresh checkpoint even if Stop
+        # arrives before the worker reaches ProjectSession.begin().
+        store.update(project, build_available=False, status="prototype-generating")
+        if direction.strip() and isinstance(getattr(session, "record", None), Path):
+            pending = session.record / PROTOTYPE_DIR / "generation.json"
+            pending.parent.mkdir(parents=True, exist_ok=True)
+            (pending.parent / "routes.json").unlink(missing_ok=True)
+            pending.write_text(json.dumps({"complete": False, "draw_complete": False,
+                                           "direction": direction.strip()},
+                                          ensure_ascii=False, indent=2), encoding="utf-8")
+        session.begin("prototype", role=bus.DESIGNER)
+        if from_wireframes:
+            bus.sync_state(project, "running", "Drawing the approved prototype",
+                           source="prototype")
         spec = design_stage.approved_spec(project)
         if not spec:
             design_stage.draft(project, direction=direction)
@@ -352,6 +396,11 @@ def _generate(project: str, direction: str,
             raise RunCancelled(project)
         drawn = routes(project) or drawn
 
+        checkpoint_path = session.record / PROTOTYPE_DIR / "generation.json"
+        checkpoint = _read_record(session, PROTOTYPE_DIR, "generation.json", fallback=None) or {}
+        checkpoint.update({"draw_complete": True, "complete": True})
+        checkpoint_path.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8")
+
         previous = store.require(project)
         if not previous.get("build_available"):
             store.update(project, prototype_only=True, status="prototyped",
@@ -380,9 +429,21 @@ def _generate(project: str, direction: str,
         session.finish(f"Prototype drawn: {len(drawn)} screens.")
         if from_wireframes:
             bus.sync_state(project, "clean", "Prototype ready", source="prototype")
-        return {"routes": drawn}
+        return {"routes": drawn, "complete": True}
+    except PrototypeIncomplete as exc:
+        bus.phase(project, "prototype:draw", "Drawing the prototype", status="paused",
+                  detail="Waiting to generate: " + ", ".join(exc.missing))
+        store.update(project, build_available=False, status="prototype-incomplete")
+        session.stage = "idle"
+        session.save_context()
+        if from_wireframes:
+            bus.sync_state(project, "paused", "Prototype generation is incomplete and ready to continue.",
+                           source="prototype")
+        bus.cancelled(project, "Prototype paused with completed pages preserved.", agent=bus.DESIGNER)
+        return {"routes": routes(project), "complete": False, "remaining": exc.missing}
     except RunCancelled:
         bus.phase(project, "prototype:draw", "Drawing the prototype", status="paused")
+        store.update(project, build_available=False, status="prototype-incomplete")
         session.stage = "idle"
         session.save_context()
         if from_wireframes:
@@ -390,6 +451,7 @@ def _generate(project: str, direction: str,
         raise
     except Exception as exc:  # noqa: BLE001
         bus.phase(project, "prototype:draw", "Drawing the prototype", status="failed", detail=str(exc)[:300])
+        store.update(project, build_available=False, status="prototype-incomplete")
         session.fail(str(exc))
         if from_wireframes:
             bus.sync_state(project, "failed", str(exc)[:300], source="prototype",

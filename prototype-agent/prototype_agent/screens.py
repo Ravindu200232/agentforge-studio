@@ -14,9 +14,10 @@ import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ollama_terminal import screenshot
+from server_modules.session import RunCancelled
 
 from . import prototype_brief
 
@@ -84,24 +85,28 @@ def find_page(root: Path, target: str, rows: list[dict[str, Any]]) -> dict[str, 
 
 
 def shoot_page(root: Path, row: dict[str, Any], accounts: list[dict[str, Any]], out: Path, viewport: str,
-               email: str | None = None) -> Path:
+               email: str | None = None, cancelled: Callable[[], bool] | None = None) -> Path:
     """One picture of one prototype page, signed in as `email` (default: the account that can open it)."""
     chosen = role_for(row, accounts) if email is None else email
     work = Path(tempfile.mkdtemp(prefix="agentforge-prototype-"))
     try:
         copy_for(root, work / "copy", chosen)
-        return screenshot.shoot(work / "copy" / str(row["file"]), out, viewport)
+        return screenshot.shoot(work / "copy" / str(row["file"]), out, viewport, cancelled=cancelled)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
 def capture_all(root: Path, rows: list[dict[str, Any]], accounts: list[dict[str, Any]],
-                viewports: tuple[str, ...] = VIEWPORTS, on_done=None) -> list[dict[str, Any]]:
+                viewports: tuple[str, ...] = VIEWPORTS, on_done=None,
+                cancelled: Callable[[], bool] | None = None) -> list[dict[str, Any]]:
     """Pictures of every page in `rows` (the prototype's routes) at each of `viewports`, under `root/review/`.
 
     Each answer is {"route", "file", "viewport", "path" (relative to root, "" when it failed), "error"}; one page that will
     not draw costs that page, never the rest."""
-    browser = screenshot.working_browser()
+    try:
+        browser = screenshot.working_browser(cancelled=cancelled)
+    except InterruptedError as exc:
+        raise RunCancelled("prototype") from exc
     if not browser:
         raise ValueError("no browser to take the screenshots with (Edge, Chrome or Chromium)")
     work = Path(tempfile.mkdtemp(prefix="agentforge-prototype-"))
@@ -115,15 +120,24 @@ def capture_all(root: Path, rows: list[dict[str, Any]], accounts: list[dict[str,
         finished = [0]
 
         def take(job: tuple[dict[str, Any], str]) -> dict[str, Any]:
+            if cancelled and cancelled():
+                raise RunCancelled("prototype")
             row, viewport = job
             page = copies[role_for(row, accounts)] / str(row["file"])
             out = root / REVIEW_DIR / f"{Path(str(row['file'])).stem}-{viewport}.png"
             answer = {"route": row.get("route"), "file": row["file"], "viewport": viewport, "path": "", "error": ""}
             try:
-                screenshot.shoot(page, out, viewport, browser)
+                if cancelled:
+                    screenshot.shoot(page, out, viewport, browser, cancelled=cancelled)
+                else:
+                    screenshot.shoot(page, out, viewport, browser)
                 answer["path"] = out.relative_to(root).as_posix()
+            except InterruptedError as exc:
+                raise RunCancelled("prototype") from exc
             except (ValueError, OSError) as exc:
                 answer["error"] = str(exc)[:300]
+            if cancelled and cancelled():
+                raise RunCancelled("prototype")
             if on_done:
                 with lock:
                     finished[0] += 1

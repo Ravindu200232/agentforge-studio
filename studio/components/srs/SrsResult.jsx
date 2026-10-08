@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { BookOpen, ClipboardCheck, Compass, Database, FileCode2, FileDown, FileText, LayoutList, Loader2, MessageSquare, RefreshCw, ShieldAlert, Users, Workflow } from 'lucide-react'
-import { api } from '@/lib/api'
+import { api, isJobCancelled } from '@/lib/api'
 import { diagramRows } from '@/lib/srs-view'
 import { useStore } from '@/lib/store'
 import { Button, Empty, Tip } from '../ui'
@@ -58,8 +58,10 @@ export default function SrsResult({ onApprove }) {
       useStore.getState().addLog('SUCCESS', `Diagram previews refreshed: ${result.rendered || 0}/${result.total || 0} SVG`)
       await load()
     } catch (e) {
-      setError(e.message || 'Could not regenerate diagrams')
-      useStore.getState().addLog('WARN', `Could not regenerate diagrams — ${e.message}`)
+      if (!isJobCancelled(e)) {
+        setError(e.message || 'Could not regenerate diagrams')
+        useStore.getState().addLog('WARN', `Could not regenerate diagrams — ${e.message}`)
+      }
     } finally {
       setRedrawingDiagrams(false)
     }

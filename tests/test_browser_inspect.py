@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,6 +45,15 @@ class BrowserInspectTests(unittest.TestCase):
     def test_invalid_viewport_is_refused_before_starting_a_browser(self):
         with self.assertRaisesRegex(ValueError, "desktop or mobile"):
             browser_inspect.inspect_local_page(Path.cwd(), "http://localhost:3001", "tablet")
+
+    def test_a_running_browser_inspection_stops_immediately(self):
+        stop = threading.Event()
+        threading.Timer(0.15, stop.set).start()
+        started = time.monotonic()
+        with self.assertRaises(InterruptedError):
+            browser_inspect._run_cancellable(
+                [sys.executable, "-c", "import time; time.sleep(30)"], Path.cwd(), stop.is_set)
+        self.assertLess(time.monotonic() - started, 1.5)
 
 
 if __name__ == "__main__":

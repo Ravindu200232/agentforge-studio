@@ -492,9 +492,16 @@ def restore_questions() -> list[dict]:
 # --- the two halves -----------------------------------------------------------
 
 def _spawn(project: str, change_id: str, fn: Any, *args: Any) -> None:
+    session = session_for(project)
+    prepare = getattr(session, "prepare_run", None)
+    if callable(prepare):
+        prepare()
+
     def run() -> None:
         try:
             fn(*args)
+            if getattr(session_for(project), "cancelled", False) is True:
+                raise RunCancelled(project)
         except RunCancelled:
             _mark(project, change_id, "cancelled")
             bus.cancelled(project, "Stopped.")

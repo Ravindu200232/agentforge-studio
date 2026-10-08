@@ -584,9 +584,13 @@ def _fix_request(items: list[tuple[dict[str, Any], list[dict[str, str]]]]) -> tu
 
 # --- the whole test --------------------------------------------------------------------------------------------------
 
-def can_walk() -> tuple[bool, str]:
+def can_walk(cancelled=None) -> tuple[bool, str]:
     """Whether there is a browser to click through the journeys in: (ok, why not)."""
-    if not screenshot.working_browser():
+    try:
+        browser = screenshot.working_browser(cancelled=cancelled)
+    except InterruptedError as exc:
+        raise RunCancelled("prototype") from exc
+    if not browser:
         return False, "no browser (Edge, Chrome or Chromium) could be used to click through the journeys"
     return True, ""
 
@@ -599,7 +603,7 @@ def run(project: str, session: Any, rows: list[dict[str, Any]], accounts_doc: di
     if not enabled() and not force:
         return {"status": "off"}
     try:
-        ok, why = can_walk()
+        ok, why = can_walk(cancelled=lambda: bool(session.cancelled))
         if not ok:
             bus.agent_msg(project, f"The journeys were not clicked through: {why}.", title="Journey test skipped",
                           kind="narration", agent=bus.DESIGNER)
@@ -653,7 +657,8 @@ def _walk_all(project: str, session: Any, model: str, sees: bool, root: Path, ro
     def lane(number: int) -> None:
         llm.bind_stop(stop)
         driver = Driver(relay=(lambda body: live.handle(project, body)) if (watching and number == 0) else None,
-                        live=watching and number == 0, pace=PACE_MS if (watching and number == 0) else 0, sample=sample)
+                        live=watching and number == 0, pace=PACE_MS if (watching and number == 0) else 0, sample=sample,
+                        cancelled=lambda: bool(session.cancelled))
         try:
             driver.start()
             walk = Walk(project, model, root, rows, accounts_doc, graph, driver, streaming=watching and number == 0,

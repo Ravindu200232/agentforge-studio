@@ -9,7 +9,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 
-import { api } from '@/lib/api'
+import { api, isJobCancelled } from '@/lib/api'
 import { useStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
 import { Button, Empty, Modal } from '../ui'
@@ -162,7 +162,7 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
       setStamp(n => n + 1)
       setStale(false); setDirty(false)
     } catch (failure) {
-      setProblem(failure?.message || 'The page could not be drawn.')
+      if (!isJobCancelled(failure)) setProblem(failure?.message || 'The page could not be drawn.')
     } finally {
       setDrawing(false)
     }
@@ -183,7 +183,7 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
       setStamp(n => n + 1)
       onSaved?.(null)
     } catch (failure) {
-      setProblem(failure?.message || 'That layout could not be updated.')
+      if (!isJobCancelled(failure)) setProblem(failure?.message || 'That layout could not be updated.')
     } finally {
       setAiUpdating(false)
       setSaving(false)
@@ -207,7 +207,7 @@ export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = 
       setDirty(false)
       setAiPrompt(''); setAiOpen(false)
     } catch (failure) {
-      setProblem(failure?.message || 'The AI could not update this page.')
+      if (!isJobCancelled(failure)) setProblem(failure?.message || 'The AI could not update this page.')
     } finally {
       setAiUpdating(false)
     }
@@ -417,7 +417,7 @@ export function Wireframes({ srs, onEditPage, onApprove, onRetryPrototype,
       await api.drawWireframeHtml(srsId)
       load()
     } catch (failure) {
-      setError(failure?.message || 'The pages could not be drawn.')
+      if (!isJobCancelled(failure)) setError(failure?.message || 'The pages could not be drawn.')
     } finally {
       setDrawing(false)
     }
@@ -455,7 +455,7 @@ export function Wireframes({ srs, onEditPage, onApprove, onRetryPrototype,
       setDeleteModalOpen(false)
       setSelectedForDel([])
     } catch (failure) {
-      setError(failure?.message || 'The selected wireframes could not be deleted.')
+      if (!isJobCancelled(failure)) setError(failure?.message || 'The selected wireframes could not be deleted.')
     } finally {
       setDeleting(false)
     }

@@ -3,7 +3,7 @@
 /** Displays SRS revision history and provides prompt input to request document revisions. */
 import { useEffect, useRef, useState } from 'react'
 import { ArrowUp, History, Loader2 } from 'lucide-react'
-import { api } from '@/lib/api'
+import { api, isJobCancelled } from '@/lib/api'
 import { useStore } from '@/lib/store'
 import { loadSrsView } from '@/lib/srs-view'
 import { Button, TextArea } from '../ui'
@@ -115,7 +115,7 @@ export function SrsRevisions({ srsId, onRevised, onRequestChange, onPickVersion,
         await onRevised?.(answer, text)
       }
     } catch (e) {
-      appendThread({ role: 'error', text: e.message })
+      if (!isJobCancelled(e)) appendThread({ role: 'error', text: e.message })
     } finally {
       setBusy('')
     }

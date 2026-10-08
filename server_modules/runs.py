@@ -14,7 +14,7 @@ from builder_agent import build as builder
 from prototype_agent import prototype as prototyper
 from qa_agent import verify as qa
 
-from . import bus, changes, config, plugins, preview_runtime, prompts, secrets_guard, store
+from . import bus, changes, config, jobs, plugins, preview_runtime, prompts, secrets_guard, store
 from .session import PREVIEW_START, RunCancelled, session_for
 
 # How many times the agent fixes and the Studio starts the preview again before it gives up.
@@ -67,22 +67,28 @@ def _in_background(name: str, project: str, agent: str, fn, *args: Any, **kwargs
         current = _active.get(project)
         if current:
             raise ValueError("this project is already working — wait for it to finish or stop it first")
+        session_for(project).prepare_run()
         _active[project] = name
     bus.run_state(project, "queued", agent=agent)
-    threading.Thread(target=_guarded, args=(name, fn, args, kwargs),
+    threading.Thread(target=_guarded, args=(name, fn, args, kwargs, agent),
                      name=name, daemon=True).start()
 
 
-def _guarded(name: str, fn, args: tuple, kwargs: dict) -> None:
+def _guarded(name: str, fn, args: tuple, kwargs: dict, agent: str = bus.DEVELOPER) -> None:
     project = kwargs.pop("_project", "")
     try:
         fn(*args, **kwargs)
+        # Some stage functions deliberately return after preserving a partial
+        # checkpoint. A Stop that arrived during their final cleanup still owns
+        # the terminal state and cannot be replaced by a late completion.
+        if project and getattr(session_for(project), "cancelled", False) is True:
+            raise RunCancelled(project)
     except RunCancelled:
         if project:
-            bus.cancelled(project, "Stopped.")
+            bus.cancelled(project, "Stopped.", agent=agent)
     except Exception as exc:  # noqa: BLE001 - the studio must see why, not hang
         if project:
-            bus.failed(project, str(exc) or exc.__class__.__name__)
+            bus.failed(project, str(exc) or exc.__class__.__name__, agent=agent)
     finally:
         if project:
             with _active_lock:
@@ -324,7 +330,9 @@ def _start_preview(project: str, model: str = "", part: str = "") -> None:
     message, and it is not planned first - the prompt already says exactly what to do.
     """
     session = session_for(project)
+    stopped = lambda: getattr(session, "cancelled", False) is True
     session.begin(PREVIEW_START, role=bus.DEVELOPER)
+    opened = False
     try:
         state: dict[str, Any] = {}
         said = ""
@@ -343,18 +351,26 @@ def _start_preview(project: str, model: str = "", part: str = "") -> None:
                 preview_runtime.reopen(project)
             else:
                 preview_runtime.open_preview(project)
-            state = preview_runtime.wait_settled(project)
-            if state.get("status") == "running" and (not part or preview_runtime.wait_part(project, part, since)):
+            opened = True
+            state = preview_runtime.wait_settled(project, cancelled=stopped)
+            if stopped():
+                raise RunCancelled(project)
+            if state.get("status") == "running" and (not part or preview_runtime.wait_part(
+                    project, part, since, cancelled=stopped)):
                 text = said or (f"{part} is listening again." if part else "The app is running in the preview.")
                 bus.agent_msg(project, text, agent=bus.DEVELOPER)
                 session.finish(text)
                 return
+            if stopped():
+                raise RunCancelled(project)
         reason = (f"{part} still does not listen." if part and state.get("status") == "running"
                   else state.get("detail") or "The preview still did not answer.")
         if said:
             bus.agent_msg(project, said, agent=bus.DEVELOPER)
         session.fail(f"{'That part of the app' if part else 'The app'} still does not start. {reason}")
     except RunCancelled:
+        if opened:
+            preview_runtime.stop(project)
         raise
     except Exception as exc:  # noqa: BLE001 - shown as the run's failure, then re-raised
         session.fail(f"The agent could not start the app: {exc}")
@@ -431,8 +447,9 @@ def cancel(project: str, _agent: str = "") -> dict[str, Any]:
     store.require(project)
     session = session_for(project)
     active = active_run(project)
-    was_running = bool(active or session.stage != "idle")
     session.cancel()
+    queued_jobs = jobs.cancel_project(project)
+    was_running = bool(active or session.stage != "idle" or queued_jobs)
     if was_running:
         bus.log(project, "WARN", "Stop requested — ending the current step now.")
         return {"ok": True, "status": "stopping"}

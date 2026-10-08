@@ -79,7 +79,7 @@ class Harness(unittest.TestCase):
             self.addCleanup(patch.stop)
         self.pictures: list[tuple[str, str]] = []
 
-    def capture(self, root, pages, accounts, viewports=screens.VIEWPORTS, on_done=None):
+    def capture(self, root, pages, accounts, viewports=screens.VIEWPORTS, on_done=None, cancelled=None):
         """Stands in for the browser: a small PNG per page and width."""
         shots = []
         for row in pages:

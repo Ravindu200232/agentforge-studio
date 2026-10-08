@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'
-import { api } from '@/lib/api'
+import { api, isJobCancelled } from '@/lib/api'
 import { useStore } from '@/lib/store'
 
 /**
@@ -24,7 +24,7 @@ export default function DiagramMissing({ diagram }) {
     try {
       await api.srs(`/projects/${project}/diagrams/redraw`, { kinds: [diagram.name], deep: true })
     } catch (e) {
-      setError(e.message || 'The diagram could not be drawn again')
+      if (!isJobCancelled(e)) setError(e.message || 'The diagram could not be drawn again')
     } finally {
       setBusy(false)
     }

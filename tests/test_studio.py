@@ -1427,11 +1427,16 @@ class PrototypeFromWireframesTests(unittest.TestCase):
                 runs.append((request, kwargs))
                 pages = self.record / "prototype"
                 (pages / "assets" / "app.css").write_text(":root{--accent:#c2410c}", encoding="utf-8")
+                (pages / "assets" / "app.js").write_text("window.appReady=true", encoding="utf-8")
                 (pages / "index.html").write_text(
                     "<!DOCTYPE html><html><head></head><body><h1>Fresh cakes</h1></body></html>", encoding="utf-8")
                 (pages / "login.html").write_text(
                     "<!DOCTYPE html><html><head></head><body><form data-sign-in></form>"
                     "<div data-demo-login></div></body></html>", encoding="utf-8")
+                (pages / "checkout.html").write_text(
+                    "<!DOCTYPE html><html><head></head><body><main class='checkout-shell'>"
+                    "<h1>Secure checkout</h1><form><label>Card details</label><input></form>"
+                    "</main></body></html>", encoding="utf-8")
                 return {"plan": "THE SILENT PLAN", "status": "complete", "text": "done"}
 
         with tempfile.TemporaryDirectory() as folder:
@@ -1484,9 +1489,11 @@ class PrototypeFromWireframesTests(unittest.TestCase):
             self.assertIn("Fresh cakes", home)
             self.assertIn("assets/flow.js", home)
             self.assertIn("assets/app.css", home)
-            # a page the agent never wrote keeps its wireframe instead of stopping the run
-            self.assertIn("CHECKOUT_WIREFRAME", (prototype / "checkout.html").read_text(encoding="utf-8"))
-            self.assertTrue(any("/checkout" in call.args[1] for call in messages.call_args_list))
+            # The generated checkout is kept; the low-fidelity blueprint is
+            # never copied into the published prototype.
+            checkout = (prototype / "checkout.html").read_text(encoding="utf-8")
+            self.assertIn("Secure checkout", checkout)
+            self.assertNotIn("CHECKOUT_WIREFRAME", checkout)
             flow = (prototype / "assets" / "flow.js").read_text(encoding="utf-8")
             self.assertIn("owner@example.com", flow)
             self.assertIn("P.loginAs", flow)
@@ -1494,7 +1501,91 @@ class PrototypeFromWireframesTests(unittest.TestCase):
             self.assertEqual((prototype / "plan.md").read_text(encoding="utf-8"), "THE SILENT PLAN")
             saved = json.loads((prototype / "routes.json").read_text(encoding="utf-8"))
             self.assertEqual([row["file"] for row in saved["routes"]], ["index.html", "login.html", "checkout.html"])
-            self.assertTrue(json.loads((prototype / "generation.json").read_text(encoding="utf-8"))["complete"])
+            checkpoint = json.loads((prototype / "generation.json").read_text(encoding="utf-8"))
+            self.assertTrue(checkpoint["draw_complete"])
+            self.assertFalse(checkpoint["complete"])
+
+    def test_an_incomplete_draw_keeps_real_pages_and_resumes_with_the_saved_direction(self):
+        from prototype_agent import prototype as prototyper
+        from srs_agent import document as srs_document
+
+        doc = a_document(public_pages=[
+            {"page_name": "Home", "route": "/", "sections": ["hero"], "functions": ["browse"]},
+            {"page_name": "Checkout", "route": "/checkout", "sections": ["form"], "functions": ["pay"]},
+        ])
+        approved = a_plan(screens=[
+            {"name": "Home", "route": "/", "purpose": "Browse", "who": ["Visitor"]},
+            {"name": "Checkout", "route": "/checkout", "purpose": "Pay", "who": ["Visitor"]},
+        ])
+        prompts_seen = []
+
+        class Session:
+            cancelled = False
+
+            def __init__(self, root):
+                self.workspace = root
+                self.record = root / ".agentforge"
+                self.round = 0
+
+            def read_record(self, *parts, fallback=None):
+                path = self.record.joinpath(*parts)
+                try:
+                    return json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    return fallback
+
+            def run_task(self, request, **_kwargs):
+                prompts_seen.append(request)
+                self.round += 1
+                root = self.record / "prototype"
+                if self.round == 1:
+                    (root / "assets" / "app.css").write_text("body{color:#123}", encoding="utf-8")
+                    (root / "assets" / "app.js").write_text("window.ready=true", encoding="utf-8")
+                    (root / "index.html").write_text(
+                        "<!doctype html><html><body><h1>Approved visual home</h1></body></html>", encoding="utf-8")
+                else:
+                    (root / "checkout.html").write_text(
+                        "<!doctype html><html><body><h1>Polished checkout</h1></body></html>", encoding="utf-8")
+                return {"status": "complete", "text": "done"}
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            handoff = root / ".agentforge" / "srs" / "handoff"
+            handoff.mkdir(parents=True)
+            (handoff / "app.md").write_text("approved app", encoding="utf-8")
+            session = Session(root)
+            patches = (
+                patch.object(prototyper, "session_for", return_value=session),
+                patch.object(prototyper.design_stage, "approved_customization", return_value={}),
+                patch.object(srs_document, "document", return_value={"srs_document": doc}),
+                patch.object(srs_document.plan_stage, "approved_plan", return_value=approved),
+                patch.object(prototyper.bus, "file_written"),
+                patch.object(prototyper.bus, "progress"),
+                patch.object(prototyper.bus, "log"),
+            )
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+                with self.assertRaises(prototyper.PrototypeIncomplete):
+                    prototyper._draw_with_agent("test", {"tokens": {}}, "warm premium direction",
+                                                wireframe_source={"/": "<main>HOME_WIRE</main>",
+                                                                  "/checkout": "<form>CHECKOUT_WIRE</form>"})
+                prototype = session.record / "prototype"
+                saved_home = (prototype / "index.html").read_text(encoding="utf-8")
+                self.assertFalse((prototype / "checkout.html").exists())
+                partial = json.loads((prototype / "routes.json").read_text(encoding="utf-8"))
+                self.assertEqual([row["route"] for row in partial["routes"]], ["/"])
+
+                rows = prototyper._draw_with_agent("test", {"tokens": {}}, "",
+                                                   wireframe_source={"/": "<main>HOME_WIRE</main>",
+                                                                     "/checkout": "<form>CHECKOUT_WIRE</form>"})
+
+            self.assertEqual((prototype / "index.html").read_text(encoding="utf-8"), saved_home)
+            self.assertEqual([row["route"] for row in rows], ["/", "/checkout"])
+            self.assertIn("warm premium direction", prompts_seen[1])
+            self.assertIn("Resuming an interrupted run", prompts_seen[1])
+            self.assertNotIn("HOME_WIRE", (prototype / "index.html").read_text(encoding="utf-8"))
+            checkpoint = json.loads((prototype / "generation.json").read_text(encoding="utf-8"))
+            self.assertTrue(checkpoint["draw_complete"])
+            self.assertFalse(checkpoint["complete"])
 
     def test_each_demo_role_opens_its_own_pages_and_lands_on_the_top_of_its_area(self):
         from prototype_agent import prototype_brief
@@ -1545,11 +1636,61 @@ class PrototypeFromWireframesTests(unittest.TestCase):
              ]}), \
              patch.object(srs_document, "wireframe_html", return_value="<html></html>"), \
              patch.object(prototyper, "_draw_with_agent", draw), \
+             patch.object(prototyper.store, "update"), \
              patch.object(prototyper, "session_for") as session:
             with self.assertRaisesRegex(RuntimeError, "stop after the draw"):
                 prototyper.generate_from_wireframes("test", "direction")
         session.return_value.begin.assert_called_once()
         self.assertEqual(drawn["source"], {"/": "<html></html>"})
+
+    def test_an_omitted_generated_page_keeps_building_disabled(self):
+        from prototype_agent import prototype as prototyper
+        from srs_agent import document as srs_document
+
+        class Session:
+            cancelled = False
+            stage = "idle"
+
+            def __init__(self, root):
+                self.workspace = root
+                self.record = root / ".agentforge"
+                self.record.mkdir()
+
+            def begin(self, *_args, **_kwargs):
+                self.stage = "prototype"
+
+            def save_context(self):
+                pass
+
+            def read_record(self, *parts, fallback=None):
+                path = self.record.joinpath(*parts)
+                try:
+                    return json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    return fallback
+
+        with tempfile.TemporaryDirectory() as folder:
+            session = Session(Path(folder))
+            updates = []
+            with patch.object(srs_document, "has_document", return_value=True), \
+                 patch.object(srs_document, "wireframes", return_value={"pages": [{"route": "/", "has_html": True}]}), \
+                 patch.object(srs_document, "wireframe_html", return_value="<main>wireframe</main>"), \
+                 patch.object(prototyper.design_stage, "current", return_value={"approved": True}), \
+                 patch.object(prototyper.design_stage, "approved_spec", return_value={"tokens": {}}), \
+                 patch.object(prototyper, "session_for", return_value=session), \
+                 patch.object(prototyper, "_draw_with_agent",
+                              side_effect=prototyper.PrototypeIncomplete(["/checkout"])), \
+                 patch.object(prototyper.store, "update", side_effect=lambda _project, **values: updates.append(values)), \
+                 patch.object(prototyper.bus, "phase"), \
+                 patch.object(prototyper.bus, "sync_state"), \
+                 patch.object(prototyper.bus, "agent_msg"), \
+                 patch.object(prototyper.bus, "cancelled"):
+                answer = prototyper.generate_from_wireframes("test", "fresh direction")
+
+        self.assertFalse(answer["complete"])
+        self.assertEqual(answer["remaining"], ["/checkout"])
+        self.assertTrue(updates)
+        self.assertTrue(all(update.get("build_available") is False for update in updates))
 
     def test_selected_design_md_is_read_only_from_the_chosen_theme(self):
         from prototype_agent import design as design_stage

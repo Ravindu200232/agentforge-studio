@@ -13,14 +13,15 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 for folder in (".", "src"):
     sys.path.insert(0, str(ROOT / folder))
 
 from ollama_terminal.tools import WorkspaceTools  # noqa: E402
-from server_modules import llm  # noqa: E402
-from server_modules.session import RetryingClient, RunCancelled  # noqa: E402
+from server_modules import jobs, llm, runs  # noqa: E402
+from server_modules.session import ProjectSession, RetryingClient, RunCancelled  # noqa: E402
 
 
 class SlowModel:
@@ -167,6 +168,83 @@ class DirectCallTests(unittest.TestCase):
         failed = []
         llm.in_lanes([1, 2], lambda item: 1 / 0, on_error=lambda item, exc: failed.append(item))
         self.assertEqual(sorted(failed), [1, 2])
+
+    def test_a_blocking_tool_worker_is_abandoned_when_the_run_stops(self):
+        class SlowMcp:
+            def is_mcp_tool(self, _name):
+                return True
+
+            def call(self, _name, _args):
+                time.sleep(30)
+                return "late"
+
+        stop = threading.Event()
+        with tempfile.TemporaryDirectory() as folder:
+            tools = WorkspaceTools(Path(folder), client=None, approve=lambda _q: True, mcp=SlowMcp())
+            tools.stop_requested = stop.is_set
+            stop_after(stop, 0.15)
+            started = time.monotonic()
+            result = tools.execute("slow_external_tool", {})
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertIn("stopped", result)
+
+
+class QueuedRunTests(unittest.TestCase):
+    def test_stop_between_queue_and_begin_is_not_cleared(self):
+        session = ProjectSession.__new__(ProjectSession)
+        session.project = "queued-stop"
+        session.lock = threading.RLock()
+        session._cancel_lock = threading.Lock()
+        session._cancel = threading.Event()
+        session._discarded = threading.Event()
+        session.prepare_run()
+        session.cancel()
+        with self.assertRaises(RunCancelled):
+            session.begin("srs")
+
+    def test_a_cancelled_job_is_terminal_immediately_and_late_done_cannot_replace_it(self):
+        started = threading.Event()
+        release = threading.Event()
+        notices = []
+
+        def work():
+            started.set()
+            release.wait(5)
+            return {"late": "done"}
+
+        job = jobs.start(work, label="fast-stop", project="job-fast-stop",
+                         on_cancel=lambda: notices.append("cancelled"))
+        self.assertTrue(started.wait(1))
+        began = time.monotonic()
+        self.assertEqual(jobs.cancel_project("job-fast-stop"), 1)
+        polled = jobs.poll(job)
+        self.assertEqual(polled["status"], "cancelled")
+        self.assertEqual(polled["result"], {"cancelled": True, "stopped": True})
+        self.assertLess(time.monotonic() - began, 1.5)
+        release.set()
+        time.sleep(0.1)
+        self.assertEqual(jobs.poll(job)["status"], "cancelled")
+        self.assertEqual(notices, ["cancelled"])
+
+    def test_the_project_stop_endpoint_cancels_its_queued_job_too(self):
+        release = threading.Event()
+        started = threading.Event()
+        session = mock.Mock(stage="idle")
+
+        def work():
+            started.set()
+            release.wait(5)
+
+        job = jobs.start(work, project="endpoint-stop")
+        self.assertTrue(started.wait(1))
+        with mock.patch.object(runs.store, "require"), \
+             mock.patch.object(runs, "session_for", return_value=session), \
+             mock.patch.object(runs, "active_run", return_value=""):
+            answer = runs.cancel("endpoint-stop")
+        self.assertEqual(answer["status"], "stopping")
+        session.cancel.assert_called_once_with()
+        self.assertEqual(jobs.poll(job)["status"], "cancelled")
+        release.set()
 
 
 if __name__ == "__main__":

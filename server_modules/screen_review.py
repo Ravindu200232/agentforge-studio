@@ -7,7 +7,7 @@ and in what the fix may touch; the rest is here.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from . import bus, vision
 
@@ -44,7 +44,8 @@ def clean(data: Any) -> dict[str, Any]:
             "summary": str(data.get("summary") or "").strip()[:300], "defects": defects[:MAX_DEFECTS]}
 
 
-def can_review(model: str, need_browser: bool = False) -> tuple[bool, str]:
+def can_review(model: str, need_browser: bool = False,
+               cancelled: Callable[[], bool] | None = None) -> tuple[bool, str]:
     """Whether `model` can be shown screenshots (and, when the review takes them itself, there is a browser to take them
     with): (ok, why not). Ollama says whether a model reads images; the model picker marks the ones that do."""
     seen = vision.supports(model)
@@ -55,7 +56,7 @@ def can_review(model: str, need_browser: bool = False) -> tuple[bool, str]:
     if need_browser:
         from ollama_terminal import screenshot
 
-        if not screenshot.working_browser():
+        if not screenshot.working_browser(cancelled=cancelled):
             return False, "no browser (Edge, Chrome or Chromium) could be used to take the screenshots"
     return True, ""
 

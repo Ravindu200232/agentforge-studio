@@ -172,11 +172,14 @@ export function reduceSession(session, event) {
       break
     case 'done': case 'error': case 'cancelled':
       next.busy = false; next.agentState = ''; next.liveFile = null; next.liveBuf = ''
-      next.browserFrame = null; next.approval = null; next.ask = null; next.connection = null
+      next.browserFrame = null; next.e2eLive = null; next.drawing = null
+      next.approval = null; next.ask = null; next.connection = null
       next.tests = { ...s.tests, running: false }
       next.e2eParallel = { ...s.e2eParallel, active: false }; next.reasoning = false
       next.workflowStatus = event.type === 'done' ? 'completed' : event.type === 'cancelled' ? 'paused' : 'failed'
-      if (event.type !== 'done') chat({ role: 'assistant', tone: 'bad', title: event.type === 'cancelled' ? 'Paused' : 'Run failed',
+      if (event.type === 'cancelled') chat({ role: 'assistant', tone: 'info', title: 'Paused',
+        text: event.text || 'Your progress is saved. Continue when ready.' })
+      else if (event.type === 'error') chat({ role: 'assistant', tone: 'bad', title: 'Run failed',
         text: event.text || 'Your files and conversation are saved. Continue when ready.' })
       break
     default: break

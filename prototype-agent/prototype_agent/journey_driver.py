@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 from ollama_terminal import screenshot
 from server_modules import mermaid
+from server_modules.session import RunCancelled
 
 SCRIPT = Path(__file__).resolve().parents[2] / "server_modules" / "scripts" / "prototype-driver.mjs"
 SIZE = (1280, 800)
@@ -31,12 +34,14 @@ class Driver:
     """One browser, one tab, a fresh profile. Not thread-safe: a walk is one driver."""
 
     def __init__(self, relay: Callable[[dict[str, Any]], None] | None = None, live: bool = False, pace: int = 0,
-                 size: tuple[int, int] = SIZE, sample: str = ""):
+                 size: tuple[int, int] = SIZE, sample: str = "",
+                 cancelled: Callable[[], bool] | None = None):
         self.relay = relay
         self.live = live
         self.pace = pace
         self.size = size
         self.sample = sample
+        self.cancelled = cancelled
         self._process: subprocess.Popen | None = None
         self._next = 0
         self._answers: dict[int, dict[str, Any]] = {}
@@ -46,7 +51,12 @@ class Driver:
     # --- the process ------------------------------------------------------------------------------------------
 
     def start(self) -> "Driver":
-        browser = screenshot.working_browser()
+        if self.cancelled and self.cancelled():
+            raise RunCancelled("prototype")
+        try:
+            browser = screenshot.working_browser(cancelled=self.cancelled)
+        except InterruptedError as exc:
+            raise RunCancelled("prototype") from exc
         if not browser:
             raise DriverError("no browser (Edge, Chrome or Chromium) could be used to walk the journeys")
         nodes = mermaid._node_binaries()  # noqa: SLF001 - the one Node lookup the Studio has
@@ -56,13 +66,13 @@ class Driver:
         self._process = subprocess.Popen(
             [nodes[0], str(SCRIPT)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors="replace", bufsize=1, cwd=str(mermaid._STUDIO_ROOT), env=env,  # noqa: SLF001
-            creationflags=mermaid._NO_WINDOW)  # noqa: SLF001
+            creationflags=mermaid._NO_WINDOW, start_new_session=os.name != "nt")  # noqa: SLF001
         threading.Thread(target=self._read, daemon=True, name="journey-driver").start()
         try:
             self.call("launch", seconds=LAUNCH_SECONDS, exe=browser[0], how=browser[1], width=self.size[0],
                       height=self.size[1], live=self.live, pace=self.pace, sample=self.sample)
         except Exception:
-            self.close()
+            self.close(fast=bool(self.cancelled and self.cancelled()))
             raise
         return self
 
@@ -104,9 +114,16 @@ class Driver:
             process.stdin.flush()
         except OSError as exc:
             raise DriverError(f"the browser could not be reached: {exc}") from exc
-        if not waiting.wait(seconds):
-            self.close()
-            raise DriverError(f"the browser did not answer `{command}` within {seconds} seconds")
+        deadline = time.monotonic() + seconds
+        while not waiting.wait(0.1):
+            if self.cancelled and self.cancelled():
+                with self._lock:
+                    self._waiting.pop(number, None)
+                self.close(fast=True)
+                raise RunCancelled("prototype")
+            if time.monotonic() >= deadline:
+                self.close(fast=True)
+                raise DriverError(f"the browser did not answer `{command}` within {seconds} seconds")
         with self._lock:
             answer = self._answers.pop(number, None)
             self._waiting.pop(number, None)
@@ -116,12 +133,12 @@ class Driver:
             raise DriverError(str(answer.get("error") or f"`{command}` failed"))
         return answer
 
-    def close(self) -> None:
+    def close(self, fast: bool = False) -> None:
         process, self._process = self._process, None
         if process is None:
             return
         try:
-            if process.poll() is None:
+            if process.poll() is None and not fast:
                 try:
                     process.stdin.write(json.dumps({"id": 0, "cmd": "close"}) + "\n")
                     process.stdin.flush()
@@ -132,12 +149,18 @@ class Driver:
             if process.poll() is None:
                 # Only this browser, by its own process: never every browser on the computer.
                 if os.name == "nt":
-                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True,
-                                   creationflags=mermaid._NO_WINDOW)  # noqa: SLF001
+                    try:
+                        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True,
+                                       timeout=1, creationflags=mermaid._NO_WINDOW)  # noqa: SLF001
+                    except subprocess.TimeoutExpired:
+                        process.kill()
                 else:
-                    process.kill()
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except OSError:
+                        process.kill()
             try:
-                process.wait(5)
+                process.wait(0.5 if fast else 5)
             except subprocess.TimeoutExpired:
                 pass
             for stream in (process.stdin, process.stdout):

@@ -5,7 +5,7 @@ import { Eye, Code2, Database, EthernetPort, FileText, FlaskConical, History, Pl
 import { useStore } from '@/lib/store'
 import { answerQuestion, connect, send } from '@/lib/ws'
 import { forgetConsole } from '@/lib/console-log'
-import { api } from '@/lib/api'
+import { api, isJobCancelled } from '@/lib/api'
 import { previewHref } from '@/lib/preview'
 import { catalogue, TIERS } from '@/lib/models'
 import { readFolder } from '@/lib/importer'
@@ -425,6 +425,13 @@ export default function Studio() {
       })
       useStore.getState().bumpProjects()
     }).catch(error => {
+      if (isJobCancelled(error)) {
+        useStore.getState().applyProjectEvent({
+          type: 'sync_state', project: name, status: 'paused', source: 'wireframe',
+          detail: 'Wireframe generation stopped. Saved progress can be continued.',
+        })
+        return
+      }
       useStore.getState().applyProjectEvent({
         type: 'sync_state', project: name, status: 'failed', source: 'wireframe',
         error: error.message,
@@ -454,12 +461,28 @@ export default function Studio() {
       prompt: [PROTOTYPE_APPROVAL_PROMPT, customizerPrompt].filter(Boolean).join('\n\n'),
     })
     prototypeApproval.current = job
-    job.then(() => {
+    job.then(result => {
+      if (result?.complete === false) {
+        useStore.getState().applyProjectEvent({
+          type: 'sync_state', project: name, status: 'paused', source: 'prototype',
+          detail: 'Prototype generation paused with completed pages saved.',
+        })
+        useStore.getState().bumpProjects()
+        return
+      }
       useStore.getState().applyProjectEvent({
         type: 'sync_state', project: name, status: 'clean', source: 'prototype',
       })
       useStore.getState().bumpProjects()
     }).catch(error => {
+      if (isJobCancelled(error)) {
+        useStore.getState().applyProjectEvent({
+          type: 'sync_state', project: name, status: 'paused', source: 'prototype',
+          detail: 'Prototype generation stopped. Completed pages were saved.',
+        })
+        useStore.getState().bumpProjects()
+        return
+      }
       useStore.getState().applyProjectEvent({
         type: 'sync_state', project: name, status: 'failed', source: 'prototype',
         error: error.message,

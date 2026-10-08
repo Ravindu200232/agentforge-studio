@@ -36,9 +36,12 @@ def enabled() -> bool:
     return bool(config.setting("prototype_visual_review", True))
 
 
-def can_review(model: str) -> tuple[bool, str]:
+def can_review(model: str, cancelled=None) -> tuple[bool, str]:
     """Whether `model` can be shown screenshots and there is a browser to take them: (ok, why not)."""
-    return screen_review.can_review(model, need_browser=True)
+    try:
+        return screen_review.can_review(model, need_browser=True, cancelled=cancelled)
+    except InterruptedError as exc:
+        raise RunCancelled("prototype") from exc
 
 
 def _images(root: Path, shots: list[dict[str, Any]], file: str) -> tuple[list[bytes], list[dict[str, str]], list[str]]:
@@ -93,7 +96,7 @@ def run(project: str, session: Any, rows: list[dict[str, Any]], accounts: list[d
         return {"status": "off"}
     try:
         model = str(session.agent(model).model)
-        ok, why = can_review(model)
+        ok, why = can_review(model, cancelled=lambda: bool(session.cancelled))
         if not ok:
             bus.agent_msg(project, f"The screens were not checked by looking at them: {why}.",
                           title="Visual review skipped", kind="narration", agent=bus.DESIGNER)
@@ -119,7 +122,8 @@ def _review(project: str, session: Any, model: str, rows: list[dict[str, Any]], 
 
     def photograph(pages: list[dict[str, Any]], label: str) -> list[dict[str, Any]]:
         return screens.capture_all(root, pages, accounts, on_done=lambda done, total: bus.progress(
-            project, label, done * 100 / total, agent=bus.DESIGNER))
+            project, label, done * 100 / total, agent=bus.DESIGNER),
+            cancelled=lambda: bool(session.cancelled))
 
     def look(pages: list[dict[str, Any]], shots: list[dict[str, Any]], label: str) -> list[dict[str, Any]]:
         counted = [0]

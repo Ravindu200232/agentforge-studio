@@ -82,7 +82,9 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
   const liveStep = useStore(s => s.e2eLive)
   const walking = Boolean(liveFrame?.frame || liveStep)
   const isBusy = busy || generating
-  const resumePrototype = canResumePrototype && !protoReady && !isBusy
+  // Partial checkpoints may already expose several real pages. They are still
+  // resumable until the backend marks the complete prototype buildable.
+  const resumePrototype = canResumePrototype && !isBusy
   const actionEnabled = buildAllowed || resumePrototype
 
   const prototypeUrl = `${API}/prototype/${encodeURIComponent(project || '')}/${currentFile}`

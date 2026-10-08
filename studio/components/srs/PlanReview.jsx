@@ -5,7 +5,7 @@ import {
   ArrowLeft, Check, ChevronDown, Loader2, MessageCircleMore, PencilLine,
   Plus, Route, ShieldCheck, Sparkles, UsersRound, Workflow,
 } from 'lucide-react'
-import { api } from '@/lib/api'
+import { api, isJobCancelled } from '@/lib/api'
 import { useStore } from '@/lib/store'
 import { Button, TextArea } from '../ui'
 import { cn } from '@/lib/utils'
@@ -34,7 +34,7 @@ export default function PlanReview({ projectId, onGenerated, onGenerating, onCan
       if (text) setDirty(true)
       setPhase('ready')
     } catch (e) {
-      setError(e.message)
+      if (!isJobCancelled(e)) setError(e.message)
       setPhase('ready')
     }
   }
@@ -86,7 +86,7 @@ export default function PlanReview({ projectId, onGenerated, onGenerating, onCan
     try {
       await api.srs(`/projects/${projectId}/plan/approve`, {})
     } catch (e) {
-      setError(e.message)
+      if (!isJobCancelled(e)) setError(e.message)
       setPhase('ready')
       return
     }
@@ -114,6 +114,11 @@ export default function PlanReview({ projectId, onGenerated, onGenerating, onCan
       addLog('SUCCESS', 'Specification written')
       useStore.getState().bumpProjects()
     }).catch(e => {
+      if (isJobCancelled(e)) {
+        sync('paused', { srs_status: 'paused', error: '' })
+        setPhase('ready')
+        return
+      }
       sync('failed', { srs_status: 'failed', error: e.message })
       addLog('ERROR', `Specification failed — ${e.message}`)
     })

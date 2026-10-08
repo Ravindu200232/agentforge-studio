@@ -13,6 +13,8 @@ import traceback
 import uuid
 from typing import Any, Callable
 
+from .session import RunCancelled
+
 _lock = threading.RLock()
 _jobs: dict[str, dict[str, Any]] = {}
 
@@ -28,38 +30,87 @@ def _sweep() -> None:
             _jobs.pop(job_id, None)
 
 
-def start(work: Callable[[], Any], label: str = "") -> str:
+def start(work: Callable[[], Any], label: str = "", *, project: str = "",
+          agent: str = "", on_cancel: Callable[[], None] | None = None) -> str:
     """Run `work` on its own thread and hand back the id to poll."""
     _sweep()
     job_id = f"job_{uuid.uuid4().hex[:16]}"
     record = {"id": job_id, "label": label, "status": "running",
               "started_at": time.time(), "finished_at": 0.0,
-              "result": None, "error": "", "http_status": 200}
+              "result": None, "error": "", "http_status": 200,
+              "project": project, "agent": agent,
+              "cancel_event": threading.Event(), "on_cancel": on_cancel,
+              "cancel_notified": False}
     with _lock:
         _jobs[job_id] = record
 
     def runner() -> None:
         try:
+            if record["cancel_event"].is_set():
+                raise RunCancelled(project)
             result = work()
             with _lock:
+                if record["cancel_event"].is_set():
+                    raise RunCancelled(project)
                 record["result"] = result
                 record["status"] = "done"
                 record["http_status"] = 200
+        except RunCancelled:
+            _cancelled(record)
         except FileNotFoundError as exc:
-            _fail(record, 404, str(exc) or "not found")
+            _cancelled(record) if record["cancel_event"].is_set() else _fail(record, 404, str(exc) or "not found")
         except KeyError as exc:
-            _fail(record, 404, f"{exc} was not found")
+            _cancelled(record) if record["cancel_event"].is_set() else _fail(record, 404, f"{exc} was not found")
         except (ValueError, TypeError) as exc:
-            _fail(record, 400, str(exc))
+            _cancelled(record) if record["cancel_event"].is_set() else _fail(record, 400, str(exc))
         except Exception as exc:  # noqa: BLE001 - the browser needs a reason, not a hang
-            _fail(record, 500, str(exc) or exc.__class__.__name__,
-                  traceback.format_exc())
+            if record["cancel_event"].is_set():
+                _cancelled(record)
+            else:
+                _fail(record, 500, str(exc) or exc.__class__.__name__,
+                      traceback.format_exc())
         finally:
             with _lock:
-                record["finished_at"] = time.time()
+                if not record["finished_at"]:
+                    record["finished_at"] = time.time()
 
     threading.Thread(target=runner, name=f"job:{label or job_id}", daemon=True).start()
     return job_id
+
+
+def _cancelled(record: dict[str, Any]) -> None:
+    callback = None
+    with _lock:
+        if record["status"] != "running":
+            return
+        record["status"] = "cancelled"
+        record["result"] = {"cancelled": True, "stopped": True}
+        record["error"] = ""
+        record["http_status"] = 200
+        record["finished_at"] = time.time()
+        if not record["cancel_notified"]:
+            record["cancel_notified"] = True
+            callback = record.get("on_cancel")
+    if callback:
+        try:
+            callback()
+        except Exception:  # noqa: BLE001 - cancellation remains terminal even if its notification cannot be written
+            pass
+
+
+def cancel_project(project: str) -> int:
+    """Cancel every queued or running job owned by a project."""
+    matched: list[dict[str, Any]] = []
+    with _lock:
+        for record in _jobs.values():
+            if record.get("project") == project and record["status"] == "running":
+                record["cancel_event"].set()
+                matched.append(record)
+    # Mark queued jobs terminal immediately. A worker that is already inside a
+    # cancellation-aware operation will observe the same event and unwind.
+    for record in matched:
+        _cancelled(record)
+    return len(matched)
 
 
 def _fail(record: dict[str, Any], status: int, message: str, detail: str = "") -> None:

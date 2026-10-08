@@ -273,12 +273,37 @@ class WorkspaceTools:
 
     def execute(self, name: str, args: dict[str, Any]) -> str:
         try:
-            if self.mcp is not None and self.mcp.is_mcp_tool(name):
-                return self.mcp.call(name, args)[:MAX_OUTPUT]
-            method = getattr(self, f"tool_{name}", None)
-            if method is None or name not in {s["function"]["name"] for s in TOOL_SCHEMAS}:
-                raise ValueError(f"Unknown tool: {name}")
-            return str(method(**args))[:MAX_OUTPUT]
+            def invoke() -> str:
+                if self.mcp is not None and self.mcp.is_mcp_tool(name):
+                    return self.mcp.call(name, args)[:MAX_OUTPUT]
+                method = getattr(self, f"tool_{name}", None)
+                if method is None or name not in {s["function"]["name"] for s in TOOL_SCHEMAS}:
+                    raise ValueError(f"Unknown tool: {name}")
+                return str(method(**args))[:MAX_OUTPUT]
+
+            stop_requested = getattr(self, "stop_requested", None)
+            if not callable(stop_requested):
+                return invoke()
+            if stop_requested():
+                raise InterruptedError("the run was stopped")
+            done = threading.Event()
+            answer: dict[str, Any] = {}
+
+            def worker() -> None:
+                try:
+                    answer["value"] = invoke()
+                except Exception as exc:  # noqa: BLE001 - re-raised on the calling agent thread
+                    answer["error"] = exc
+                finally:
+                    done.set()
+
+            threading.Thread(target=worker, name=f"tool:{name}", daemon=True).start()
+            while not done.wait(0.05):
+                if stop_requested():
+                    raise InterruptedError("the run was stopped")
+            if "error" in answer:
+                raise answer["error"]
+            return str(answer.get("value") or "")[:MAX_OUTPUT]
         except Exception as exc:
             return f"Tool error: {exc}"
 
@@ -537,12 +562,16 @@ class WorkspaceTools:
     def _take_picture(self, target: str, viewport: str, role: str, out: Path) -> Path:
         """Photograph `target` into `out`: a local preview URL, or an HTML file in the workspace. (The studio also knows the
         prototype's pages, by file name and by route.)"""
+        stop_requested = getattr(self, "stop_requested", None)
+        cancelled = stop_requested if callable(stop_requested) else None
         if target.lower().startswith("http"):
-            return screenshots.shoot(screenshots.local_url(target), out, viewport)
+            return (screenshots.shoot(screenshots.local_url(target), out, viewport, cancelled=cancelled)
+                    if cancelled else screenshots.shoot(screenshots.local_url(target), out, viewport))
         page = self._path(target)
         if page.suffix.lower() not in {".html", ".htm"} or not page.is_file():
             raise ValueError(f"{target} is not an HTML file in the workspace, a prototype page or a local preview URL")
-        return screenshots.shoot(page, out, viewport)
+        return (screenshots.shoot(page, out, viewport, cancelled=cancelled)
+                if cancelled else screenshots.shoot(page, out, viewport))
 
     def tool_screenshot(self, target: str = "", viewport: str = "desktop", role: str = "") -> str:
         """A silent screenshot, kept under .agentforge/qa/shots and, for a model that can look at pictures, shown to it."""
@@ -570,5 +599,8 @@ class WorkspaceTools:
         default_url = getattr(self, "browser_url", lambda: "")()
         if not url and not default_url:
             raise ValueError("No managed local preview is running. Start the Studio preview and try again.")
-        result = inspect_local_page(self.root, url or default_url, viewport)
+        stop_requested = getattr(self, "stop_requested", None)
+        result = (inspect_local_page(self.root, url or default_url, viewport, cancelled=stop_requested)
+                  if callable(stop_requested)
+                  else inspect_local_page(self.root, url or default_url, viewport))
         return json.dumps(result, ensure_ascii=False)

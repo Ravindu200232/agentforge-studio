@@ -17,7 +17,9 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlsplit
 
 VIEWPORTS = {"desktop": (1440, 900), "mobile": (390, 844)}
@@ -87,10 +89,13 @@ _working: dict[str, tuple[str, str] | None] = {}
 _working_lock = threading.Lock()
 
 
-def working_browser(refresh: bool = False) -> tuple[str, str] | None:
+def working_browser(refresh: bool = False, cancelled: Callable[[], bool] | None = None) -> tuple[str, str] | None:
     """The first browser that really takes a picture of a page here, found by trying each on a tiny page once. None when
     there is no browser, or none of them works."""
-    with _working_lock:
+    while not _working_lock.acquire(timeout=0.1):
+        if cancelled and cancelled():
+            raise InterruptedError("screenshot stopped")
+    try:
         if not refresh and "chosen" in _working:
             return _working["chosen"]
         probe = Path(tempfile.mkdtemp(prefix="agentforge-probe-"))
@@ -100,7 +105,11 @@ def working_browser(refresh: bool = False) -> tuple[str, str] | None:
             page.write_text("<!doctype html><title>probe</title><h1>probe</h1>" + MEASURE, encoding="utf-8")
             for candidate in find_browsers():
                 try:
-                    shoot(page, probe / "probe.png", "mobile", candidate, seconds=PROBE_SECONDS)
+                    if cancelled:
+                        shoot(page, probe / "probe.png", "mobile", candidate, seconds=PROBE_SECONDS,
+                              cancelled=cancelled)
+                    else:
+                        shoot(page, probe / "probe.png", "mobile", candidate, seconds=PROBE_SECONDS)
                     chosen = candidate
                     break
                 except (ValueError, OSError):
@@ -109,6 +118,8 @@ def working_browser(refresh: bool = False) -> tuple[str, str] | None:
             shutil.rmtree(probe, ignore_errors=True)
         _working["chosen"] = chosen
         return chosen
+    finally:
+        _working_lock.release()
 
 
 def local_url(value: str) -> str:
@@ -121,25 +132,51 @@ def local_url(value: str) -> str:
     return parsed.geturl()
 
 
-def _run(command: list[str], seconds: int = SECONDS) -> subprocess.CompletedProcess:
+def _stop_tree(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True,
+                           check=False, timeout=1, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except subprocess.TimeoutExpired:
+            process.kill()
+    else:
+        try:
+            os.killpg(process.pid, 9)
+        except OSError:
+            process.kill()
+
+
+def _run(command: list[str], seconds: int = SECONDS,
+         cancelled: Callable[[], bool] | None = None) -> subprocess.CompletedProcess:
     """The command to its end, or - after `seconds` - stopped together with every process it started (a browser starts
     several, and only the one this started is ever touched: never another Chrome or Edge the person has open)."""
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True,
                                encoding="utf-8", errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                                start_new_session=os.name != "nt")
-    try:
-        stdout, stderr = process.communicate(timeout=seconds)
-    except subprocess.TimeoutExpired:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        else:
+    deadline = time.monotonic() + seconds
+    while True:
+        if cancelled and cancelled():
+            _stop_tree(process)
             try:
-                os.killpg(process.pid, 9)
-            except OSError:
+                process.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
                 process.kill()
-        process.communicate()
-        raise
+            raise InterruptedError("screenshot stopped")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _stop_tree(process)
+            try:
+                process.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            raise subprocess.TimeoutExpired(command, seconds)
+        try:
+            stdout, stderr = process.communicate(timeout=min(0.1, remaining))
+            break
+        except subprocess.TimeoutExpired:
+            continue
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
@@ -151,11 +188,13 @@ def _flags(how: str, profile: str, width: int, height: int) -> list[str]:
 
 
 def shoot(source: Path | str, out: Path, viewport: str = "desktop", browser: tuple[str, str] | None = None,
-          seconds: int = SECONDS) -> Path:
+          seconds: int = SECONDS, cancelled: Callable[[], bool] | None = None) -> Path:
     """One picture of `source` (an HTML file on disk, or a local preview URL) at `viewport`, saved to `out`."""
     if viewport not in VIEWPORTS:
         raise ValueError("viewport must be desktop or mobile")
-    browser = browser or working_browser()
+    if cancelled and cancelled():
+        raise InterruptedError("screenshot stopped")
+    browser = browser or working_browser(cancelled=cancelled)
     if not browser:
         raise ValueError("no browser to take the screenshots with (Edge, Chrome or Chromium)")
     path, how = browser
@@ -165,15 +204,17 @@ def shoot(source: Path | str, out: Path, viewport: str = "desktop", browser: tup
     name = url if is_url else Path(source).name
     out.parent.mkdir(parents=True, exist_ok=True)
     profile = tempfile.mkdtemp(prefix="agentforge-shot-")
+    run = (lambda command: _run(command, seconds, cancelled=cancelled)) if cancelled \
+        else (lambda command: _run(command, seconds))
     try:
         tall = height
         if not is_url:
             # First how tall the page is, then a window that tall. The measure is a title the page writes once it has loaded.
-            measured = _run([path, *_flags(how, profile, width, height), "--dump-dom", url], seconds)
+            measured = run([path, *_flags(how, profile, width, height), "--dump-dom", url])
             found = re.search(re.escape(HEIGHT_MARK) + r"(\d+)", measured.stdout or "")
             tall = max(MIN_HEIGHT, min(int(found.group(1)) if found else height, MAX_HEIGHT[viewport]))
         out.unlink(missing_ok=True)
-        _run([path, *_flags(how, profile, width, tall), f"--screenshot={out}", url], seconds)
+        run([path, *_flags(how, profile, width, tall), f"--screenshot={out}", url])
     except subprocess.TimeoutExpired as exc:
         raise ValueError(f"the browser took longer than {seconds} seconds to draw {name}") from exc
     finally:

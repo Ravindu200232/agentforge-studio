@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from typing import Callable
 from urllib.request import urlopen
 
 from . import bus, config, deploy_vars, plugins, secrets_guard, supabase_connect
@@ -456,10 +457,13 @@ def ports(project: str) -> dict:
             "current": bool(declared["runtime"] and declared["runtime"] == current_runtime)}
 
 
-def wait_part(project: str, part: str, since: float, seconds: float = 60) -> bool:
+def wait_part(project: str, part: str, since: float, seconds: float = 60,
+              cancelled: Callable[[], bool] | None = None) -> bool:
     """Whether `part`, as the run started after `since` lists it, comes to listen within `seconds`."""
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
+        if cancelled and cancelled():
+            return False
         try:
             fresh = _ports_file(project).stat().st_mtime >= since
         except OSError:
@@ -468,18 +472,21 @@ def wait_part(project: str, part: str, since: float, seconds: float = 60) -> boo
             return True
         if status(project)["status"] in {"failed", "stopped"}:
             return False
-        time.sleep(1.5)
+        time.sleep(0.1)
     return False
 
 
-def wait_settled(project: str, seconds: float = READY_SECONDS + 15) -> dict:
+def wait_settled(project: str, seconds: float = READY_SECONDS + 15,
+                 cancelled: Callable[[], bool] | None = None) -> dict:
     """The preview's state once it is no longer starting, or after `seconds`."""
     deadline = time.monotonic() + seconds
     while True:
+        if cancelled and cancelled():
+            return {"status": "cancelled", "url": "", "detail": "Stopped."}
         state = status(project)
         if state["status"] != "starting" or time.monotonic() >= deadline:
             return state
-        time.sleep(1)
+        time.sleep(0.1)
 
 
 def open_preview(project: str) -> dict:

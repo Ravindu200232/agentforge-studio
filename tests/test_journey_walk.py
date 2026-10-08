@@ -6,6 +6,8 @@ import json
 import shutil
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,6 +32,21 @@ ROWS = [{"route": "/", "file": "index.html", "name": "Home"},
 ACCOUNTS_DOC = {"sign_in": "/login", "accounts": [
     {"role": "Customer", "role_key": "customer", "display_name": "Demo Customer", "email": "customer@example.com", "lands_on": "/wishlist"},
     {"role": "Shop Owner", "role_key": "shop_owner", "display_name": "Demo Owner", "email": "owner@example.com", "lands_on": "/admin"}]}
+
+
+class DriverStopTests(unittest.TestCase):
+    def test_a_waiting_browser_call_stops_without_waiting_for_its_command_timeout(self):
+        stop = threading.Event()
+        driver = Driver(cancelled=stop.is_set)
+        process = mock.Mock(pid=1234)
+        process.poll.return_value = None
+        driver._process = process
+        threading.Timer(0.15, stop.set).start()
+        started = time.monotonic()
+        with mock.patch.object(driver, "close") as close, self.assertRaises(RunCancelled):
+            driver.call("state", seconds=30)
+        self.assertLess(time.monotonic() - started, 1.5)
+        close.assert_called_once_with(fast=True)
 
 
 def step(sid, text, route):

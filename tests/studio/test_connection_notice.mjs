@@ -50,6 +50,23 @@ for (const type of ['done', 'error', 'cancelled']) {
   assert.ok(held.connection)
   assert.equal(feed([{ type }], held).connection, null, type)
 }
+
+// Stop clears every streaming/testing overlay and is shown as a saved pause,
+// rather than a failed run.
+const active = { ...emptySession(), busy: true, liveFile: 'page.jsx', liveBuf: 'partial',
+  drawing: { kind: 'prototype' }, browserFrame: { frame: 'png' }, e2eLive: { step: 2 },
+  tests: { running: true, rows: [] }, e2eParallel: { active: true, lanes: [{ state: 'running' }] } }
+const stopped = feed([{ type: 'cancelled', text: 'Stopped.' }], active)
+assert.equal(stopped.busy, false)
+assert.equal(stopped.liveFile, null)
+assert.equal(stopped.liveBuf, '')
+assert.equal(stopped.drawing, null)
+assert.equal(stopped.browserFrame, null)
+assert.equal(stopped.e2eLive, null)
+assert.equal(stopped.tests.running, false)
+assert.equal(stopped.e2eParallel.active, false)
+assert.equal(stopped.workflowStatus, 'paused')
+assert.equal(stopped.chat.at(-1).tone, 'info')
 const held = feed([running, { type: 'connection', state: 'retrying', failed: 1, of: 10, pause: 2 }])
 assert.equal(feed([{ type: 'run_state', status: 'idle' }], held).connection, null)
 
