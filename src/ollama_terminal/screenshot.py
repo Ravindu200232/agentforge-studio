@@ -187,6 +187,26 @@ def _flags(how: str, profile: str, width: int, height: int) -> list[str]:
             "--disable-background-networking", f"--user-data-dir={profile}"]
 
 
+def dump_dom(source: Path, suffix: str = "", budget_ms: int = 120_000, seconds: int = 240,
+             browser: tuple[str, str] | None = None, cancelled: Callable[[], bool] | None = None) -> str:
+    """The page `source` (an HTML file on disk) after it has run for up to `budget_ms` of the browser's own clock, as HTML.
+
+    For a page that works something out and writes it into itself: the browser's clock runs ahead while the page waits, so a
+    minute of the page's timers takes a few seconds."""
+    browser = browser or working_browser(cancelled=cancelled)
+    if not browser:
+        raise ValueError("no browser to open the page with (Edge, Chrome or Chromium)")
+    path, how = browser
+    flags = [flag for flag in _flags(how, "", 1280, 800) if not flag.startswith(("--virtual-time-budget", "--user-data-dir"))]
+    profile = tempfile.mkdtemp(prefix="agentforge-dom-")
+    try:
+        done = _run([path, *flags, f"--virtual-time-budget={budget_ms}", f"--user-data-dir={profile}", "--dump-dom",
+                     Path(source).resolve().as_uri() + suffix], seconds, cancelled=cancelled)
+        return done.stdout or ""
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
+
+
 def shoot(source: Path | str, out: Path, viewport: str = "desktop", browser: tuple[str, str] | None = None,
           seconds: int = SECONDS, cancelled: Callable[[], bool] | None = None, suffix: str = "") -> Path:
     """One picture of `source` (an HTML file on disk, or a local preview URL) at `viewport`, saved to `out`.

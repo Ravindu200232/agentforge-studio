@@ -16,6 +16,8 @@ if str(ROOT) not in sys.path:
 
 from server_modules import web_app  # noqa: E402
 
+REAL_CHECK = web_app.check_pages          # the tests of the bundling leave the browser alone
+
 PAGES = [
     {"route": "/", "page_name": "Home"},
     {"route": "/orders/[id]", "page_name": "Order", "login_required": True, "allowed_roles": ["baker"]},
@@ -31,9 +33,10 @@ class Scratch(unittest.TestCase):
         self.addCleanup(self.folder.cleanup)
         self.root = Path(self.folder.name)
         self.kit = self.root / "kit"
-        patch = mock.patch.object(web_app, "kit_dir", lambda: self.kit)
-        patch.start()
-        self.addCleanup(patch.stop)
+        for patch in (mock.patch.object(web_app, "kit_dir", lambda: self.kit),
+                      mock.patch.object(web_app, "check_pages", return_value=None)):
+            patch.start()
+            self.addCleanup(patch.stop)
 
     def app(self, name: str = "app") -> Path:
         return self.root / name
@@ -224,6 +227,80 @@ class BundlingTests(Scratch):
         self.assertTrue(page[head:].startswith(b'<meta http-equiv="Content-Security-Policy"'))
         self.assertIn(b"connect-src 'none'", page)
         self.assertTrue(web_app.preview_page(b"<p>no head</p>").startswith(b"<meta"))
+
+
+class CheckingThePagesTests(Scratch):
+    DOM = ('<html><body><div id="root"></div><pre id="af-selftest" hidden>'
+           '[{"route":"/admin/analytics","error":"ReferenceError: yen is not defined"},{"route":"/blank","error":"the page is blank"}]'
+           '</pre></body></html>')
+
+    def made(self) -> Path:
+        app = self.app()
+        web_app.create_app(app, "App", PAGES)
+        (app / web_app.BUNDLE).write_text("<html></html>", encoding="utf-8")
+        return app
+
+    def check(self, dom, browser=("edge", "chrome")):
+        from ollama_terminal import screenshot
+
+        with mock.patch.object(screenshot, "working_browser", return_value=browser),                 mock.patch.object(screenshot, "dump_dom", return_value=dom) as dump:
+            return REAL_CHECK(self.made()), dump
+
+    def test_the_screens_that_crash_are_named_with_what_went_wrong(self):
+        found, dump = self.check(self.DOM)
+        self.assertEqual(found, [("/admin/analytics", "ReferenceError: yen is not defined"), ("/blank", "the page is blank")])
+        self.assertEqual(dump.call_args.args[1], "?selftest=1#/")
+
+    def test_an_app_whose_screens_all_open_has_nothing_to_fix(self):
+        self.assertEqual(self.check('<pre id="af-selftest" hidden>[]</pre>')[0], [])
+
+    def test_a_check_that_cannot_run_says_nothing_and_stops_nothing(self):
+        self.assertIsNone(self.check(self.DOM, browser=None)[0], "no browser")
+        self.assertIsNone(self.check("<html><body>the page never answered</body></html>")[0])
+        self.assertIsNone(self.check('<pre id="af-selftest" hidden>not json</pre>')[0])
+        from ollama_terminal import screenshot
+        with mock.patch.object(screenshot, "working_browser", side_effect=OSError("no")):
+            self.assertIsNone(REAL_CHECK(self.made()))
+
+    def test_a_screen_that_crashes_is_given_to_the_agent_and_checked_again(self):
+        app = self.made()
+        told = []
+        answers = iter([[("/admin/analytics", "ReferenceError: yen is not defined")], []])
+        with mock.patch.object(web_app, "bundle", return_value=(True, "")),                 mock.patch.object(web_app, "check_pages", side_effect=lambda a: next(answers)):
+            web_app.ensure_built(app, told.append)
+        self.assertEqual(len(told), 1)
+        self.assertIn("`/admin/analytics`: ReferenceError: yen is not defined", told[0])
+        self.assertIn("bundle, but crash", told[0])
+
+    def test_a_screen_that_still_crashes_after_the_tries_is_not_an_error(self):
+        app = self.made()
+        told = []
+        with mock.patch.object(web_app, "bundle", return_value=(True, "")),                 mock.patch.object(web_app, "check_pages", return_value=[("/x", "TypeError: nope")]):
+            web_app.ensure_built(app, told.append)          # bundled; the page shows its own error
+        self.assertEqual(len(told), 2)
+
+    def test_an_app_that_cannot_be_checked_is_taken_as_it_is(self):
+        told = []
+        with mock.patch.object(web_app, "bundle", return_value=(True, "")), mock.patch.object(web_app, "check_pages", return_value=None):
+            web_app.ensure_built(self.made(), told.append)
+        self.assertEqual(told, [])
+
+
+class KitOwnedFilesTests(Scratch):
+    def test_the_router_and_the_session_are_written_again_when_the_studio_has_changed_them(self):
+        app = self.app()
+        web_app.create_app(app, "App", PAGES)
+        router = app / "src" / "lib" / "router.tsx"
+        router.write_text("// an older router", encoding="utf-8")
+        (app / "src" / "App.tsx").write_text("// the agent's own App", encoding="utf-8")
+        web_app.sync_kit_files(app)
+        self.assertEqual(router.read_bytes(), (web_app.KIT_SOURCE / "app" / "src" / "lib" / "router.tsx").read_bytes())
+        self.assertEqual((app / "src" / "App.tsx").read_text(encoding="utf-8"), "// the agent's own App")
+
+    def test_a_page_that_crashes_is_caught_and_the_selftest_is_in_the_router(self):
+        router = (web_app.KIT_SOURCE / "app" / "src" / "lib" / "router.tsx").read_text(encoding="utf-8")
+        for needle in ("getDerivedStateFromError", "data-af-error", "window.__afErrors", 'id="af-selftest"', "selftest"):
+            self.assertIn(needle, router)
 
 
 class KitTests(Scratch):

@@ -297,12 +297,26 @@ def stale(app: Path) -> bool:
     return not built(app) or not marker.is_file() or marker.read_text(encoding="utf-8").strip() != fingerprint(app)
 
 
+# What the Studio owns in every app and writes again each time it is bundled: the agent imports them and never edits them, so an app made
+# before they changed gets the change too.
+KIT_OWNED = ("src/lib/router.tsx", "src/lib/session.tsx")
+
+
+def sync_kit_files(app: Path) -> None:
+    for name in KIT_OWNED:
+        source, target = KIT_SOURCE / "app" / name, app / name
+        if source.is_file() and (not target.is_file() or target.read_bytes() != source.read_bytes()):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+
+
 def bundle(app: Path) -> tuple[bool, str]:
     """Step 3 of the skill: all of the app in one HTML file, `bundle.html`. Returns (ok, what the bundler said)."""
     ok, text = prepare_kit()
     if not ok:
         return False, text
     link_node_modules(app)
+    sync_kit_files(app)
     with _build_locks.setdefault(str(app), threading.Lock()):
         ok, text = _run([node_exe() or "node", str(kit_dir() / "node_modules" / "vite" / "bin" / "vite.js"), "build"],
                         app, timeout=600, env={"NODE_ENV": "production", "FORCE_COLOR": "0"})
@@ -315,16 +329,61 @@ def bundle(app: Path) -> tuple[bool, str]:
         return True, text[-1000:]
 
 
+_SELFTEST = re.compile(r'<pre id="af-selftest"[^>]*>(.*?)</pre>', re.DOTALL)
+
+
+def check_pages(app: Path) -> list[tuple[str, str]] | None:
+    """Open every screen of the bundled app in a browser that is already on the computer; the screens that crash, as (route, what
+    went wrong). `[]` when none does; None when it could not be checked (no browser, or the page said nothing).
+
+    A page can bundle and still crash the moment it is opened (a name it uses that is not there), which no bundler can see."""
+    import html as htmllib
+    import tempfile
+
+    try:
+        from ollama_terminal import screenshot
+
+        browser = screenshot.working_browser()
+        if not browser or not built(app):
+            return None
+        with tempfile.TemporaryDirectory(prefix="agentforge-check-") as folder:
+            page = Path(folder) / "app.html"
+            shutil.copyfile(app / BUNDLE, page)
+            dom = screenshot.dump_dom(page, "?selftest=1#/", browser=browser)
+    except Exception:  # noqa: BLE001 - a check that cannot run is not a reason to stop
+        return None
+    found = _SELFTEST.search(dom or "")
+    if not found:
+        return None
+    try:
+        return [(str(row["route"]), str(row["error"])[:300]) for row in json.loads(htmllib.unescape(found.group(1)))]
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _crashing(rows: list[tuple[str, str]]) -> str:
+    return ("These pages bundle, but crash as soon as they are opened. Fix each one in its page file (`src/pages/<file>.tsx`), "
+            "and in what it imports:\n\n" + "\n".join(f"- `{route}`: {error}" for route, error in rows[:20]))
+
+
 def ensure_built(app: Path, repair: Callable[[str], None] | None = None, rounds: int = 2) -> None:
-    """Bundle the app; when it does not bundle, give what the bundler said to `repair` (the agent fixes the files) and try again."""
-    ok, text = bundle(app)
-    for _ in range(rounds):
-        if ok or repair is None:
-            break
-        repair(text)
+    """Bundle the app and open its screens. When it does not bundle, or a screen crashes, give what was said to `repair` (the agent
+    fixes the files) and try again. An app that does not bundle after the agent's tries is an error; a screen that still crashes is
+    not: it shows what is wrong in its own place, and the rest of the app works."""
+    tries = 0
+    while True:
         ok, text = bundle(app)
-    if not ok:
-        raise BuildFailed(text)
+        if ok:
+            crashing = check_pages(app)
+            if not crashing:
+                return
+            text = _crashing(crashing)
+        if repair is None or tries >= rounds:
+            if not ok:
+                raise BuildFailed(text)
+            return
+        tries += 1
+        repair(text)
 
 
 def build_for(session, project: str, kind: str, agent: str = "") -> None:

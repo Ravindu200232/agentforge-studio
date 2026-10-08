@@ -239,7 +239,8 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, generating = fals
       {open && <div className="grid min-h-0 flex-1 gap-4 [grid-template-columns:230px_minmax(0,1fr)]">
         <ul className="min-h-0 space-y-1 overflow-y-auto pr-1" aria-label="Wireframe pages">
           {pages.map((page, index) => (
-            <li key={`${page.route || 'wireframe'}-${index}`}>
+            <li key={`${page.route || 'wireframe'}-${index}`}
+                ref={el => { if (el && page.route === route) el.scrollIntoView({ block: 'nearest' }) }}>
               <button type="button" onClick={() => setRoute(page.route)}
                 className={cn('w-full rounded-none border px-3 py-2 text-left transition',
                   page.route === route ? 'border-accent bg-accent' : 'border-line hover:border-accent')}>
