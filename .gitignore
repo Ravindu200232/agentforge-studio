@@ -49,3 +49,6 @@ release/installer/AssemblyInfo.generated.cs
 release/cache/
 engine-proxy/.wrangler/
 engine-proxy/.dev.vars
+
+# The shared UI toolkit installed from prompts/design/skills/web-artifacts-builder/scripts/runtime
+tools/web-artifacts-runtime/

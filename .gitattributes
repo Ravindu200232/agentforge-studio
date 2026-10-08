@@ -1,0 +1,5 @@
+# The vendored web-artifacts-builder skill is Anthropic's, byte for byte: shell scripts must keep
+# LF (a CRLF checkout breaks them under bash) and the tarball is binary.
+*.sh text eol=lf
+*.tar.gz binary
+prompts/design/skills/web-artifacts-builder/** -text
