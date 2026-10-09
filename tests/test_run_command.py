@@ -55,5 +55,41 @@ class RunCommandEncodingTests(unittest.TestCase):
         self.assertNotIn("Æ’", result)
 
 
+class BackgroundProcessTests(unittest.TestCase):
+    """Found live: an agent started `next start` in the background from its command. The server inherited the command's output, and
+    the tool waited for that pipe to close - for as long as the server ran - so a whole build stood still for fifty minutes."""
+
+    def test_a_command_that_leaves_a_background_process_holding_its_output_still_returns(self):
+        import tempfile
+        import time
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "spawn.py").write_text(
+                "import subprocess, sys
+"
+                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(25)'])
+"
+                "print('spawned the background process')
+", encoding="utf-8")
+            tools = WorkspaceTools(root, client=None, approve=lambda _q: True)
+            started = time.monotonic()
+            answer = tools.tool_run_command("python spawn.py")
+            took = time.monotonic() - started
+        self.assertLess(took, 15, "the tool waited for the background process")
+        self.assertIn("exit_code=0", answer)
+        self.assertIn("spawned the background process", answer)
+        self.assertIn("still holds its output open", answer)
+
+    def test_a_command_that_finishes_normally_has_no_such_note(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            tools = WorkspaceTools(Path(folder), client=None, approve=lambda _q: True)
+            answer = tools.tool_run_command("python -c \"print('all done')\"")
+        self.assertIn("all done", answer)
+        self.assertNotIn("still holds its output open", answer)
+
+
 if __name__ == "__main__":
     unittest.main()

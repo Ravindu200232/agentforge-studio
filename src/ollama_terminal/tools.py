@@ -26,6 +26,10 @@ from .mcp_client import MCPManager
 MAX_OUTPUT = 24_000
 MAX_READ = 32_000
 MAX_COMMAND_SECONDS = 600
+# A command that has finished but left a background process holding its output open (a server started with `Start-Process`, say)
+# is not waited for after this long: the output is only for the model to read, and waiting for the pipe to close would wait for
+# as long as that server runs.
+OUTPUT_GRACE_SECONDS = 5
 SERVER_COMMAND_SECONDS = 75
 
 # A CLI that colours its own output (netlify, vercel, npm...) still does so once piped,
@@ -551,9 +555,16 @@ class WorkspaceTools:
             started = time.monotonic()
             heartbeat = 0
             reader_done = False
+            exited_at = 0.0
             while process.poll() is None or not reader_done:
                 if stopped_at and process.poll() is not None and time.monotonic() - stopped_at > 2:
                     break  # stopped: a grandchild still holding the output open is not waited for
+                if process.poll() is not None:
+                    exited_at = exited_at or time.monotonic()
+                    if not reader_done and time.monotonic() - exited_at > OUTPUT_GRACE_SECONDS:
+                        append("(The command has finished, but a process it started in the background still holds its output "
+                               "open, so nothing more is read from it.)\n")
+                        break
                 try:
                     line = lines.get(timeout=0.25)
                     if line is None:
