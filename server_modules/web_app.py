@@ -43,6 +43,9 @@ BUILT = ".built"
 PREVIEW_POLICY = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; "
                   "img-src * data: blob:; font-src * data:; media-src * data: blob:; connect-src 'none'; frame-src 'none'; "
                   "base-uri 'none'; form-action 'none'")
+# A plain HTML wireframe has its own stylesheet and script beside its pages: they may be read from the same address, and nothing else.
+HTML_POLICY = ("default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src * data: blob:; "
+               "font-src data:; connect-src 'none'; frame-src 'self'; base-uri 'none'; form-action 'none'")
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _REPARSE_POINT = 0x400
 _kit_lock = threading.Lock()
@@ -171,12 +174,18 @@ def _ts(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
 
 
-def write_routes(app: Path, pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """`src/routes.ts`: every screen of the specification and the page file it is drawn in. Returns the rows."""
+def route_rows(pages: list[dict[str, Any]], extension: str = "") -> list[dict[str, Any]]:
+    """Every screen of the specification and the file it is drawn in (`extension`: ".html" for a plain HTML page)."""
     files = page_files([str(p["route"]) for p in pages])
-    rows = [{"route": str(p["route"]), "name": str(p.get("page_name") or p.get("name") or p["route"]), "file": files[str(p["route"])],
+    return [{"route": str(p["route"]), "name": str(p.get("page_name") or p.get("name") or p["route"]),
+             "file": files[str(p["route"])] + extension,
              "roles": [str(r) for r in (p.get("allowed_roles") or p.get("roles") or [])],
              "signedIn": bool(p.get("login_required", p.get("signed_in", False)))} for p in pages]
+
+
+def write_routes(app: Path, pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`src/routes.ts`: every screen of the specification and the page file it is drawn in. Returns the rows."""
+    rows = route_rows(pages)
     path = app / "src" / "routes.ts"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("// Written by the Studio from the specification. Do not edit: add or change pages in src/pages.\n"
@@ -526,9 +535,9 @@ def page(app: Path) -> bytes:
 _HEAD = re.compile(rb"<head[^>]*>", re.IGNORECASE)
 
 
-def preview_page(html: bytes) -> bytes:
+def preview_page(html: bytes, policy: str = PREVIEW_POLICY) -> bytes:
     """The bundled page with its policy first in the head, so nothing the app is written to do can call out."""
-    meta = b'<meta http-equiv="Content-Security-Policy" content="' + PREVIEW_POLICY.encode("ascii") + b'">'
+    meta = b'<meta http-equiv="Content-Security-Policy" content="' + policy.encode("ascii") + b'">'
     found = _HEAD.search(html)
     return html[:found.end()] + meta + html[found.end():] if found else meta + html
 

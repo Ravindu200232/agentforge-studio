@@ -29,6 +29,7 @@ from prototype_agent import prototype as prototyper
 from qa_agent import report_pdf
 from qa_agent import verify as qa
 from srs_agent import document as srs_document
+from srs_agent import wireframe as wireframer
 
 from . import bus, changes, cli_monitor, cli_signin, config, connection, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, web_app, workspace_picker
 from . import database_rows as database_rows_module
@@ -971,6 +972,24 @@ def web_app_page(ctx: dict) -> Any:
         return Raw(web_app.preview_page(web_app.page(app)), "text/html; charset=utf-8")
     except FileNotFoundError as exc:
         raise HttpError(404, f"the {ctx['_match'].group('kind')} is not drawn yet") from exc
+
+
+_HTML_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+               ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".json": "application/json", ".txt": "text/plain; charset=utf-8"}
+
+
+@route("GET", r"/web/(?P<project>[^/]+)/wireframe-html(?:/(?P<name>.*))?")
+def wireframe_html_file(ctx: dict) -> Any:
+    """The plain HTML version of the wireframes: its pages, its stylesheet and its script, each at its own address."""
+    project = _project(ctx)
+    root = wireframer.html_path(project).resolve()
+    path = (root / (unquote(ctx["_match"].group("name") or "") or "index.html")).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise HttpError(404, "that page is not in the HTML wireframes")
+    body = path.read_bytes()
+    if path.suffix.lower() in (".html", ".htm"):
+        body = web_app.preview_page(body, web_app.HTML_POLICY)
+    return Raw(body, _HTML_TYPES.get(path.suffix.lower(), "application/octet-stream"))
 
 
 @route("POST", r"/design-theme-preview")

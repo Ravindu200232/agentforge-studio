@@ -206,6 +206,12 @@ def build_wireframes(project: str, body: dict) -> Any:
     return wireframer.run(project, str(body.get("prompt") or "").strip(), fresh=not body.get("resume"))
 
 
+@route("POST", rf"/projects/{P}/wireframes/html")
+def build_html_wireframes(project: str, body: dict) -> Any:
+    """The same wireframes as plain HTML pages in `.agentforge/wireframe-html` (to compare with the React app)."""
+    return wireframer.run_html(project, str(body.get("prompt") or "").strip(), fresh=not body.get("resume"))
+
+
 @route("POST", rf"/projects/{P}/wireframes/edit")
 def edit_wireframe(project: str, body: dict) -> Any:
     """One change to the wireframes, asked for in words (about one page when `route` is given, and about the `elements` pointed at)."""
