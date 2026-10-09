@@ -28,7 +28,7 @@ from server_modules.validation import corpus as corpus_rules
 from server_modules.validation import review as review_rules
 from server_modules.validation import srs_schema
 
-from . import diagram_fallback
+from . import diagram_fallback, diagram_look
 from . import handoff as handoff_files
 from . import plan as plan_stage
 
@@ -806,6 +806,8 @@ def generate(project: str) -> dict[str, Any]:
                 f"{rendered} rendered to SVG."
                 + ("" if mermaid.available() else
                    " Install @mermaid-js/mermaid-cli to see them as pictures."))
+        # Each drawn diagram is photographed and looked at by a model that can see pictures, and fixed (two rounds at most).
+        diagram_look.run(project, session, doc["diagrams"])
 
         doc = envelope["srs_document"]
         doc["approved_plan_markdown"] = plan_stage.markdown(project)
@@ -1551,6 +1553,8 @@ def redraw_diagrams(project: str, *, deep: bool = False,
         doc["diagrams"] = [old[kind] if keep_old(kind) else refreshed.get(kind, old.get(kind))
                            for kind in DIAGRAM_KINDS
                            if refreshed.get(kind) or old.get(kind)]
+        if deep:
+            diagram_look.run(project, session, doc["diagrams"])         # a refresh of saved sources changes none of them
         _write_record_visible(session, project, DOCUMENT, envelope)
         rendered = sum(1 for entry in doc["diagrams"] if entry.get("svg"))
         total = sum(1 for entry in doc["diagrams"] if entry.get("applicable"))
