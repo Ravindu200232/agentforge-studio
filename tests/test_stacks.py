@@ -66,8 +66,11 @@ class RegistryTests(unittest.TestCase):
                 self.assertTrue((ROOT / "prompts" / "deployment" / "skills" / row["skill"] / "SKILL.md").is_file())
 
     def test_a_server_stack_is_only_offered_where_a_server_can_run(self):
-        for stack in ("remix-mongo", "remix-mongo-only", "vite-mongo-only", "mern-microservices-only"):
+        for stack in ("vite-mongo-only", "mern-microservices-only"):
             self.assertEqual(deployment_stacks()[stack]["targets"], ["aws_ec2", "aws_ecs", "azure"], stack)
+        # Remix runs as one server, or as serverless functions on Vercel (its Vercel preset).
+        for stack in ("remix-mongo", "remix-mongo-only"):
+            self.assertEqual(deployment_stacks()[stack]["targets"], ["vercel", "aws_ec2", "aws_ecs", "azure"], stack)
         self.assertEqual(deployment_stacks()["nextjs-mongo-only"]["targets"], "all")
 
     def test_every_stack_has_a_template_a_guide_and_an_uploads_rule_where_it_needs_one(self):

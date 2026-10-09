@@ -158,10 +158,11 @@ MONGO_STACKS = ("nextjs-mongo", "vite-mongo", "remix-mongo", "mern-microservices
 # The same MongoDB applications without Supabase (uploaded files in MongoDB itself).
 MONGO_ONLY_STACKS = ("nextjs-mongo-only", "vite-mongo-only", "remix-mongo-only", "mern-microservices-only")
 ALL_STACKS = SUPABASE_STACKS + MONGO_STACKS + MONGO_ONLY_STACKS
-# vite-mongo's Express server, remix-mongo's server and mern-microservices' gateway/services need a real,
-# long-running process - never a static or serverless-functions-only target.
-RESTRICTED_STACKS = ("vite-mongo", "remix-mongo", "mern-microservices",
-                     "vite-mongo-only", "remix-mongo-only", "mern-microservices-only")
+# vite-mongo's Express server and mern-microservices' gateway/services need a real, long-running process - never a static or
+# serverless-functions-only target. Remix + MongoDB runs either as one server (AWS, Azure) or, with the Vercel preset, as
+# serverless functions on Vercel.
+RESTRICTED_STACKS = ("vite-mongo", "mern-microservices", "vite-mongo-only", "mern-microservices-only")
+REMIX_MONGO_STACKS = ("remix-mongo", "remix-mongo-only")
 
 
 class StackTests(DeployFlowCase):
@@ -189,6 +190,19 @@ class StackTests(DeployFlowCase):
             self.assertNotIn("vercel", allowed)
             self.assertNotIn("netlify", allowed)
             self.assertNotIn("github", allowed)
+
+    def test_remix_with_mongodb_goes_to_vercel_or_a_real_server_but_not_to_netlify_or_github(self):
+        for stack in REMIX_MONGO_STACKS:
+            allowed = set(deploy.allowed_targets(stack))
+            self.assertEqual(allowed, {"vercel", "aws_ec2", "aws_ecs", "azure"} & set(deploy.SKILLS_FOR))
+            self.assertNotIn("netlify", allowed)
+            self.assertNotIn("github", allowed)
+
+    def test_the_remix_mongo_page_says_how_to_make_the_project_ready_for_vercel(self):
+        page = " ".join(prompts.skill("deployment", "stack-remix-mongo").split())
+        for words in ("## On Vercel", "@vercel/remix", "vercelPreset()", "@vercel/remix/vite", "serverless functions",
+                      "the one cached Mongoose connection"):
+            self.assertIn(words, page)
 
     def test_the_microservices_stack_page_says_how_to_deploy_separate_instances(self):
         page = " ".join(prompts.skill("deployment", "stack-mern-microservices").split())

@@ -32,7 +32,7 @@
   "remix-mongo": {
     "name": "Remix + MongoDB + Supabase bucket",
     "skill": "stack-remix-mongo",
-    "targets": ["aws_ec2", "aws_ecs", "azure"]
+    "targets": ["vercel", "aws_ec2", "aws_ecs", "azure"]
   },
   "nextjs-mongo-only": {
     "name": "Next.js + MongoDB",
@@ -55,7 +55,7 @@
   "remix-mongo-only": {
     "name": "Remix + MongoDB",
     "skill": "stack-remix-mongo",
-    "targets": ["aws_ec2", "aws_ecs", "azure"],
+    "targets": ["vercel", "aws_ec2", "aws_ecs", "azure"],
     "supabase": false
   }
 }

@@ -1,12 +1,13 @@
 ---
 name: stack-remix-mongo
-description: What a Remix + MongoDB application needs to deploy well on AWS or Azure as one server process: build output, the real Atlas connection string, session auth, headers, health, and the questions to ask the customer.
+description: What a Remix + MongoDB application needs to deploy well on Vercel (as serverless functions), or on AWS or Azure as one server process: build output, the real Atlas connection string, session auth, headers, health, and the questions to ask the customer.
 ---
 
 # Deploying a Remix + MongoDB application
 
-Read this page after `core/SKILL.md` and the page for the chosen target (AWS EC2, AWS ECS or Azure App
-Service - this stack is a long-running Node server, so it is not offered on Vercel, Netlify or GitHub).
+Read this page after `core/SKILL.md` and the page for the chosen target (Vercel, AWS EC2, AWS ECS or Azure App
+Service - on AWS and Azure this stack is one long-running Node server; on Vercel it runs as serverless functions,
+see "On Vercel" below. It is not offered on Netlify or GitHub).
 It says what is particular to a Remix v2 (Vite) application on MongoDB. It covers both `remix-mongo`
 (uploaded files in a Supabase Storage bucket) and `remix-mongo-only` (no Supabase at all, uploaded files in
 MongoDB GridFS). Where it and the target page disagree about a target's own commands, the target page wins.
@@ -37,6 +38,22 @@ MongoDB GridFS). Where it and the target page disagree about a target's own comm
 - The connection is reused across requests the way `lib/db.js` already does (`readyState === 1`
   short-circuit, cached on `globalThis`); confirm the project did not remove that caching, or every request
   opens a fresh connection and Atlas's connection limit is reached quickly under load.
+
+## On Vercel
+
+Vercel does not run `remix-serve`: it builds the app in its own cloud and runs each request as a serverless function.
+The project is made ready for that in the source, before `vercel deploy`, and nothing else about the app changes:
+
+- Add `@vercel/remix` (`npm install @vercel/remix`, so the lockfile changes with it). In `vite.config.js` import
+  `vercelPreset` from `@vercel/remix/vite` and pass it to the Remix plugin: `remix({ presets: [vercelPreset()] })`
+  (keep the plugin options the project already has). Leave the project's `build` script as it is (`remix vite:build`):
+  the preset writes what Vercel runs. Do not add a custom server, an `api/` folder or a rewrite of your own.
+- The project's `start` script stays for local use; Vercel never calls it. Remove nothing the project's own scripts need.
+- `MONGODB_URI` and `SESSION_SECRET` (and the three Supabase variables when the stack has the bucket) are Vercel
+  environment variables, added as the Vercel page says: sensitive, for Production, read on the server only.
+- Each function instance keeps the one cached Mongoose connection of `lib/db.js`, so the Atlas network access
+  list has to let Vercel in: `0.0.0.0/0` on the cluster the Studio provided, said in the plan as a trade-off, not asked.
+- The health route and the smoke proof below are the same; the proof goes through `<project>.vercel.app`.
 
 ## The MongoDB connection
 
