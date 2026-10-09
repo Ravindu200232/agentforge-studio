@@ -219,12 +219,14 @@ def _extract_components(app: Path) -> None:
 
 def _add_components(app: Path) -> None:
     """The shadcn/ui components the skill's archive lacks (`Field`, `InputGroup`, `Empty`, `Spinner`...), beside the others; one the
-    agent already has is left as it is."""
+    agent already has is left as it is, except a copy with the one mistake an earlier kit had in it (`Slot.Root`, which is the name in
+    the single Radix package; the kit's own is `Slot`)."""
     target = app / "src" / "components" / "ui"
     target.mkdir(parents=True, exist_ok=True)
     for source in sorted((KIT_SOURCE / "components").glob("*.tsx")):
-        if not (target / source.name).exists():
-            shutil.copyfile(source, target / source.name)
+        copy = target / source.name
+        if not copy.exists() or "Slot.Root" in copy.read_text(encoding="utf-8", errors="replace"):
+            shutil.copyfile(source, copy)
 
 
 def create_app(app: Path, title: str, pages: list[dict[str, Any]], *, accounts: list[dict] | None = None,

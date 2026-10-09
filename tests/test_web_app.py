@@ -109,6 +109,27 @@ class ShadcnTests(Scratch):
                     "button", "input", "textarea", "label", "separator"}
                 self.assertTrue(archive, f"{path.name} imports ui/{local}")
 
+    def test_a_copy_with_the_mistake_an_earlier_kit_had_is_made_right_and_the_agents_own_is_not_touched(self):
+        app = self.app()
+        web_app.create_app(app, "App", PAGES)
+        ui = app / "src" / "components" / "ui"
+        (ui / "item.tsx").write_text('const Comp = asChild ? Slot.Root : "div"', encoding="utf-8")
+        (ui / "kbd.tsx").write_text("// the agent's own kbd", encoding="utf-8")
+        web_app.create_app(app, "App", PAGES)
+        self.assertNotIn("Slot.Root", (ui / "item.tsx").read_text(encoding="utf-8"))
+        self.assertEqual((ui / "item.tsx").read_bytes(), (web_app.KIT_SOURCE / "components" / "item.tsx").read_bytes())
+        self.assertEqual((ui / "kbd.tsx").read_text(encoding="utf-8"), "// the agent's own kbd")
+
+    def test_no_component_uses_the_names_of_the_single_radix_package_the_kit_does_not_install(self):
+        for path in sorted((web_app.KIT_SOURCE / "components").glob("*.tsx")):
+            self.assertNotIn("Slot.Root", path.read_text(encoding="utf-8"), path.name)
+
+    def test_the_kit_has_the_version_of_the_day_picker_the_skills_calendar_is_written_for(self):
+        package = json.loads((web_app.KIT_SOURCE / "package.json").read_text(encoding="utf-8"))
+        self.assertTrue(package["dependencies"]["react-day-picker"].startswith("^9"))
+        lock = json.loads((web_app.KIT_SOURCE / "package-lock.json").read_text(encoding="utf-8"))
+        self.assertTrue(lock["packages"]["node_modules/react-day-picker"]["version"].startswith("9."))
+
     def test_the_kit_installs_the_plugin_the_field_components_need_for_container_queries(self):
         package = json.loads((web_app.KIT_SOURCE / "package.json").read_text(encoding="utf-8"))
         self.assertIn("@tailwindcss/container-queries", package["devDependencies"])
