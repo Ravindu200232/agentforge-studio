@@ -26,7 +26,7 @@ class Fixture(unittest.TestCase):
 
     def setUp(self):
         self.record: dict = {"id": PROJECT}
-        self.settings: dict = {"permission_mode": "plan", "bypass_permissions": False}
+        self.settings: dict = {"permission_mode": "auto", "bypass_permissions": False}
         self.events: list[dict] = []
         self.addCleanup(bus.subscribe(self.events.append))
         self.addCleanup(forget_project, PROJECT)
@@ -82,25 +82,26 @@ class CommandTests(unittest.TestCase):
 
 
 class ModeTests(Fixture):
-    def test_a_project_that_never_chose_is_in_plan_mode_as_it_always_was(self):
-        self.assertEqual(permissions.mode_of(PROJECT), "plan")
+    def test_the_modes_are_auto_manual_accept_edits_and_bypass_and_plan_is_not_one_of_them(self):
+        self.assertEqual(permissions.MODES, ("auto", "manual", "accept_edits", "bypass"))
+        self.assertNotIn("plan", permissions.LABELS)
 
-    def test_a_project_that_turned_plan_mode_off_before_modes_existed_is_in_auto(self):
-        self.record["plan_mode"] = False
+    def test_a_project_that_never_chose_is_in_the_default_mode(self):
         self.assertEqual(permissions.mode_of(PROJECT), "auto")
+        self.settings["permission_mode"] = "manual"
+        self.assertEqual(permissions.mode_of(PROJECT), "manual")
 
     def test_a_mode_is_set_for_a_project_and_asks_again_about_what_was_allowed(self):
         permissions._grants[PROJECT] = {"edits"}
         self.assertEqual(permissions.set_mode(PROJECT, "manual"), "manual")
         self.assertEqual(self.record["permission_mode"], "manual")
-        self.assertIs(self.record["plan_mode"], False)
+        self.assertNotIn("plan_mode", self.record)                      # whether changes are planned first is not the mode's
         self.assertNotIn(PROJECT, permissions._grants)
-        permissions.set_mode(PROJECT, "plan")
-        self.assertIs(self.record["plan_mode"], True)
 
-    def test_a_mode_that_does_not_exist_is_refused(self):
-        with self.assertRaises(ValueError):
-            permissions.set_mode(PROJECT, "yolo")
+    def test_a_mode_that_does_not_exist_is_refused_and_so_is_plan(self):
+        for mode in ("yolo", "plan"):
+            with self.assertRaises(ValueError):
+                permissions.set_mode(PROJECT, mode)
 
     def test_bypass_has_to_be_turned_on_first(self):
         with self.assertRaises(ValueError) as caught:
@@ -119,28 +120,29 @@ class ModeTests(Fixture):
 
     def test_a_new_project_starts_in_the_mode_picked_beside_the_first_input_else_the_default(self):
         self.assertEqual(permissions.start_project(PROJECT, "accept_edits"), "accept_edits")
-        self.assertEqual(permissions.start_project(PROJECT, "bypass"), "plan")          # not turned on: the default
-        self.assertEqual(permissions.start_project(PROJECT, ""), "plan")
-        self.settings["permission_mode"] = "auto"
-        self.assertEqual(permissions.start_project(PROJECT, "nonsense"), "auto")
+        self.assertEqual(permissions.start_project(PROJECT, "bypass"), "auto")          # not turned on: the default
+        self.assertEqual(permissions.start_project(PROJECT, ""), "auto")
+        self.settings["permission_mode"] = "manual"
+        self.assertEqual(permissions.start_project(PROJECT, "nonsense"), "manual")
 
-    def test_plan_mode_is_what_makes_a_typed_change_planned_first(self):
+    def test_a_typed_change_is_planned_first_in_every_mode_unless_plan_mode_was_turned_off_for_the_project(self):
         with mock.patch("srs_agent.document.has_document", return_value=True):
-            for mode, planned in (("plan", True), ("auto", False), ("manual", False), ("accept_edits", False)):
+            for mode in ("auto", "manual", "accept_edits"):
                 self.mode(mode)
-                self.assertEqual(changes.applies(PROJECT), planned, mode)
+                self.assertTrue(changes.applies(PROJECT), mode)
+            self.record["plan_mode"] = False
+            self.assertFalse(changes.applies(PROJECT))
 
 
 class AskingTests(Fixture):
     def asked(self, mode, action, granted=()):
         return permissions.needs_asking(mode, action, set(granted))
 
-    def test_auto_and_plan_go_ahead_with_the_usual_and_ask_about_the_unusual(self):
-        for mode in ("auto", "plan"):
-            self.assertFalse(self.asked(mode, self.edit()))
-            self.assertFalse(self.asked(mode, self.command("npm run build")))
-            self.assertTrue(self.asked(mode, self.command("terraform apply")))
-            self.assertTrue(self.asked(mode, self.command("sudo ls")))
+    def test_auto_goes_ahead_with_the_usual_and_asks_about_the_unusual(self):
+        self.assertFalse(self.asked("auto", self.edit()))
+        self.assertFalse(self.asked("auto", self.command("npm run build")))
+        self.assertTrue(self.asked("auto", self.command("terraform apply")))
+        self.assertTrue(self.asked("auto", self.command("sudo ls")))
 
     def test_manual_asks_about_everything(self):
         self.assertTrue(self.asked("manual", self.edit()))
@@ -318,9 +320,10 @@ class RouteTests(Fixture):
         with self.assertRaises(ValueError):
             httpd.set_permission_mode({"mode": "bypass"})
 
-    def test_the_old_plan_mode_switch_still_works_and_maps_to_modes(self):
-        self.assertEqual(httpd.set_plan_mode({"enabled": False})["permission_mode"], "auto")
-        self.assertEqual(httpd.set_plan_mode({"enabled": True})["permission_mode"], "plan")
+    def test_the_plan_first_switch_is_not_a_mode_and_is_left_as_it_was(self):
+        self.assertIs(httpd.set_plan_mode({"enabled": False})["plan_mode"], False)
+        self.assertNotIn("permission_mode", self.record)
+        self.assertIs(httpd.set_plan_mode({"enabled": True})["plan_mode"], True)
 
     def test_bypass_is_turned_on_and_the_default_mode_is_changed_through_the_settings_route(self):
         status = httpd.permission_settings({"bypass": True, "default": "bypass"})
@@ -328,7 +331,7 @@ class RouteTests(Fixture):
         self.assertEqual(status["default"], "bypass")
         status = httpd.permission_settings({"bypass": False})
         self.assertFalse(status["bypass_enabled"])
-        self.assertEqual(status["default"], "plan")
+        self.assertEqual(status["default"], "auto")
         self.assertEqual([m["id"] for m in httpd.permission_status({})["modes"]], list(permissions.MODES))
 
 

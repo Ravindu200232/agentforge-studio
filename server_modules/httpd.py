@@ -770,7 +770,7 @@ def workflow(ctx: dict) -> Any:
         "agents": bus.run_status(project),
         "build_available": store.build_available(record),
         "sync": _last_sync(project),
-        "plan_mode": permissions.mode_of(project) == "plan",
+        "plan_mode": record.get("plan_mode", True),
         "permission_mode": permissions.mode_of(project),
         "bypass_enabled": permissions.bypass_enabled(),
     }
@@ -794,8 +794,8 @@ def set_plan_mode(ctx: dict) -> Any:
     change and waits for approval; off applies it at once, the way a project
     with no specification yet already does."""
     project = _project(ctx)
-    mode = permissions.set_mode(project, "plan" if bool(ctx.get("enabled", True)) else "auto")
-    return {"project": project, "plan_mode": mode == "plan", "permission_mode": mode}
+    record = store.update(project, plan_mode=bool(ctx.get("enabled", True)))
+    return {"project": project, "plan_mode": record.get("plan_mode", True)}
 
 
 @route("GET", r"/permissions")
@@ -821,7 +821,7 @@ def get_permission_mode(ctx: dict) -> Any:
 
 @route("POST", r"/projects/(?P<project>[^/]+)/permission-mode")
 def set_permission_mode(ctx: dict) -> Any:
-    """Put one project in a permission mode: auto, manual, accept_edits, plan or bypass (once it has been turned on)."""
+    """Put one project in a permission mode: auto, manual, accept_edits or bypass (once it has been turned on)."""
     project = _project(ctx)
     permissions.set_mode(project, str(ctx.get("mode") or ""))
     return permissions.status(project)

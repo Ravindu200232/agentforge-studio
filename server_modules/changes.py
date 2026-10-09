@@ -148,9 +148,8 @@ def applies(project: str) -> bool:
     never set it behaves exactly as it always has, plan mode on)."""
     from srs_agent import document as srs_document
 
-    from . import permissions
-
-    if permissions.mode_of(project) != "plan":
+    record = store.get(project)
+    if record is not None and not record.get("plan_mode", True):
         return False
     return srs_document.has_document(project)
 

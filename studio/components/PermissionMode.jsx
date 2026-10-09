@@ -15,12 +15,11 @@ export const MODES = [
   { id: 'auto', label: 'Auto', hint: 'The agent handles permission decisions: it edits and runs the usual commands, and asks about anything unusual' },
   { id: 'manual', label: 'Manual', hint: 'Always ask before making changes' },
   { id: 'accept_edits', label: 'Accept edits', hint: 'Automatically accept all file edits' },
-  { id: 'plan', label: 'Plan', hint: 'Create a plan before making changes' },
 ]
 const BYPASS = { id: 'bypass', label: 'Bypass permissions', hint: 'Nothing is asked and nothing is refused' }
 
 export function modeLabel(id) {
-  return [...MODES, BYPASS].find(mode => mode.id === id)?.label || 'Plan'
+  return [...MODES, BYPASS].find(mode => mode.id === id)?.label || 'Auto'
 }
 
 /** The current mode of a project, or the one a new project starts in. */
@@ -40,7 +39,7 @@ export default function PermissionMode({ project = null, className = '' }) {
   useEffect(() => {
     if (loaded) return
     api.permissions().then(status => useStore.getState().setPermissionSettings({
-      defaultPermissionMode: status.default || 'plan', bypassEnabled: Boolean(status.bypass_enabled), permissionsLoaded: true,
+      defaultPermissionMode: status.default || 'auto', bypassEnabled: Boolean(status.bypass_enabled), permissionsLoaded: true,
     })).catch(() => {})
   }, [loaded])
 
@@ -70,7 +69,7 @@ export default function PermissionMode({ project = null, className = '' }) {
     try {
       const status = await api.setPermissions({ bypass: on })
       const store = useStore.getState()
-      store.setPermissionSettings({ bypassEnabled: Boolean(status.bypass_enabled), defaultPermissionMode: status.default || 'plan' })
+      store.setPermissionSettings({ bypassEnabled: Boolean(status.bypass_enabled), defaultPermissionMode: status.default || 'auto' })
       if (!on && project && mode === 'bypass') store.setPermissionMode(project, 'auto')
       setConfirming(false)
     } catch (error) {
@@ -135,7 +134,7 @@ export default function PermissionMode({ project = null, className = '' }) {
                 </button>
                 <button type="button" onClick={() => setBypass(false)} disabled={busy}
                   className="text-[12.5px] font-medium text-muted2 hover:text-ink disabled:opacity-50">Disable</button>
-                <span className="w-2 text-right text-[12.5px] text-muted2">5</span>
+                <span className="w-2 text-right text-[12.5px] text-muted2">{MODES.length + 1}</span>
               </div>
             ) : confirming ? (
               <div className="px-4 py-2">

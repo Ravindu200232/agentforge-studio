@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 for folder in (".", "src", "srs-agent", "builder-agent", "prototype-agent", "qa-agent", "deploy-agent"):
     sys.path.insert(0, str(ROOT / folder))
 
-from server_modules import config, routes_srs, store  # noqa: E402
+from server_modules import config, permissions, routes_srs, store  # noqa: E402
 
 RECORD = {"id": "prj_pick", "name": "Pick", "stack": "", "language": "English", "status": "new"}
 
@@ -20,7 +20,7 @@ class FirstInputModelTests(unittest.TestCase):
         with mock.patch.object(config, "setting", side_effect=lambda key, default=None: saved.get(key, default)), \
              mock.patch.object(config, "thinking", return_value=saved.get("thinking_level", "high")), \
              mock.patch.object(config, "save_settings") as save, \
-             mock.patch.object(store, "create", return_value=RECORD):
+             mock.patch.object(store, "create", return_value=RECORD),              mock.patch.object(permissions, "start_project", return_value="auto"):          # the project is not in the store here
             routes_srs.dispatch("POST", "/projects", {"idea": "a shop", **body})
         return save
 

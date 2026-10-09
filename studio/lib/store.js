@@ -64,10 +64,10 @@ export const useStore = create((set, get) => ({
   buildAvailability: {},
   projectSync: {},
   srsStamp: {},
-  // What the agent may do without asking, per project: auto, manual, accept_edits, plan or bypass (server_modules/permissions.py).
+  // What the agent may do without asking, per project: auto, manual, accept_edits or bypass (server_modules/permissions.py).
   // A project that never picked one is in the default mode, which is also what a new project starts in.
   permissionModeByProject: {},
-  defaultPermissionMode: 'plan',
+  defaultPermissionMode: 'auto',
   bypassEnabled: false,
   permissionsLoaded: false,
   setPermissionMode: (project, mode) => set(state => ({
@@ -164,7 +164,7 @@ export const useStore = create((set, get) => ({
       projectSync: { ...state.projectSync, [snapshot.project]: snapshot.sync },
       projectSessions: { ...state.projectSessions, [snapshot.project]: restored },
       permissionModeByProject: { ...state.permissionModeByProject,
-        [snapshot.project]: snapshot.permission_mode || (snapshot.plan_mode === false ? 'auto' : 'plan') },
+        [snapshot.project]: snapshot.permission_mode || 'auto' },
       ...(snapshot.bypass_enabled !== undefined ? { bypassEnabled: Boolean(snapshot.bypass_enabled) } : {}),
       ...(state.project === snapshot.project ? restored[state.agentRole] : {}) }
   }),

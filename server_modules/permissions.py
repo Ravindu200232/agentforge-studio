@@ -6,9 +6,10 @@ A project is in one mode, picked beside the chat input and beside the first inpu
                    that is not one of those, a risky command) is asked about in the chat instead of being refused
     manual         every edit and every command is asked about first
     accept_edits   edits go ahead; commands are asked about, except the ones that only look at things
-    plan           a typed change is planned first and carried out once the plan is approved (`changes.py`); the carrying out
-                   is as `auto`
     bypass         nothing is asked and nothing is refused; it has to be turned on in the mode menu first
+
+Planning is not a mode: a change typed into a project that has a specification is planned first and carried out once the plan
+is approved (`changes.py`), whatever the mode. The mode is what the carrying out may do without asking.
 
 A question is a card in the chat stream (`bus.ask_and_wait`, kind "permission") with three answers: allow, allow and do not ask
 again this session (for edits, or for that program), and deny (with a note for the agent, if the person wants to give one). The run
@@ -23,9 +24,9 @@ from ollama_terminal import tools
 
 from . import bus, config, store
 
-MODES = ("auto", "manual", "accept_edits", "plan", "bypass")
-DEFAULT_MODE = "plan"                    # what every project did before there were modes: plan first, then carry it out
-LABELS = {"auto": "Auto", "manual": "Manual", "accept_edits": "Accept edits", "plan": "Plan", "bypass": "Bypass permissions"}
+MODES = ("auto", "manual", "accept_edits", "bypass")
+DEFAULT_MODE = "auto"                    # what every project did before there were modes: edits and the usual commands on its own
+LABELS = {"auto": "Auto", "manual": "Manual", "accept_edits": "Accept edits", "bypass": "Bypass permissions"}
 
 _lock = threading.Lock()
 _grants: dict[str, set[str]] = {}        # project -> what the person said not to ask about again, until the mode changes
@@ -41,14 +42,10 @@ def default_mode() -> str:
 
 
 def mode_of(project: str) -> str:
-    """The mode a project is in: the one picked for it; else, for a project that turned plan mode off before there were modes,
-    `auto`; else the default (`plan`)."""
-    record = store.get(project) or {}
-    mode = str(record.get("permission_mode") or "")
+    """The mode a project is in: the one picked for it, else the default."""
+    mode = str((store.get(project) or {}).get("permission_mode") or "")
     if mode in MODES:
-        return mode if mode != "bypass" or bypass_enabled() else "auto"
-    if record.get("plan_mode") is False:
-        return "auto"
+        return mode if mode != "bypass" or bypass_enabled() else DEFAULT_MODE
     return default_mode()
 
 
@@ -59,7 +56,7 @@ def set_mode(project: str, mode: str) -> str:
         raise ValueError(f"the mode must be one of: {', '.join(MODES)}")
     if mode == "bypass" and not bypass_enabled():
         raise ValueError("turn on bypass permissions first: it lets the agent run any command and change any file without asking")
-    store.update(project, permission_mode=mode, plan_mode=(mode == "plan"))
+    store.update(project, permission_mode=mode)
     with _lock:
         _grants.pop(project, None)
     return mode
@@ -84,13 +81,13 @@ def start_project(project: str, wanted: str = "") -> str:
 
 
 def enable_bypass(on: bool) -> bool:
-    """Allow (or stop allowing) the bypass mode. Turning it off puts every project that was in it back to `auto`."""
+    """Allow (or stop allowing) the bypass mode. Turning it off puts every project that was in it back to the default mode."""
     config.save_settings({"bypass_permissions": bool(on)})
     if not on:
         for record in store.listing():
             project = str(record.get("name") or "")
             if project and (store.get(project) or {}).get("permission_mode") == "bypass":
-                store.update(project, permission_mode="auto", plan_mode=False)
+                store.update(project, permission_mode=DEFAULT_MODE)
         if config.setting("permission_mode") == "bypass":
             config.save_settings({"permission_mode": DEFAULT_MODE})
     return bypass_enabled()
