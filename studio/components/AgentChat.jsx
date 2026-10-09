@@ -278,7 +278,8 @@ export default function AgentChat({ projectTitle = '', readOnly = false, classNa
       console: consoleReport(),
     }
     if (selection.length) {
-      payload.elements = selection.filter(s => s.kind === 'element').map(s => s.info)
+      // The things pointed at, and what each drawing was around: the agent is told about them in words.
+      payload.elements = selection.flatMap(s => (s.kind === 'element' ? [s.info] : s.marked || []))
       payload.shots = selection.filter(s => s.shot)
         .map(s => ({ kind: s.kind, image: s.shot, label: s.label }))
     }

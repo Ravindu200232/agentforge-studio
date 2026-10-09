@@ -5,8 +5,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, Loader2, RotateCw, Send } from 'lucide-react'
 
 import { api, isJobCancelled } from '@/lib/api'
+import { useFrameTools } from '@/lib/use-frame-tools'
 import { useStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
+import AppTextEdit from '../AppTextEdit'
+import { Chips, DrawLayer, ToolButtons, ToolHint } from '../FrameTools'
 import { Button, Empty } from '../ui'
 
 /** The `prj_…` id the drawings live under, whichever way the owner is named. */
@@ -77,7 +80,12 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
   const [asking, setAsking] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [designApproved, setDesignApproved] = useState(false)
+  const [loadedCount, setLoadedCount] = useState(0)
   const frame = useRef(null)
+  // The select, pencil and text tools over the page on show: they work on the page's own frame, and what they pick goes with the
+  // next request typed under it.
+  const tools = useFrameTools(frame, { loaded: loadedCount })
+  const { setMode, clearItems } = tools
 
   useEffect(() => {
     if (!srsId) return
@@ -120,6 +128,10 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
   const built = Boolean(data?.built)
   const drawn = pages.filter(p => p.has_html).length
 
+  // Back at the list of pages, or on another page: no tool in hand, and nothing is left pointed at.
+  useEffect(() => { if (!open) setMode(null) }, [open, setMode])
+  useEffect(() => { clearItems() }, [route, clearItems])
+
   // The page on show: the first drawn one until a page is picked.
   useEffect(() => {
     if (!pages.length) return
@@ -159,20 +171,35 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
     }
   }
 
-  async function ask(event) {
-    event?.preventDefault()
-    const request = prompt.trim()
-    if (!srsId || !request || asking) return
+  /** One change, asked for in words, about this page and about what was pointed at. */
+  async function send(request, elements = []) {
+    if (!srsId || !request || asking) return false
     setAsking(true); setError('')
     try {
-      await api.editWireframe(srsId, request, route)
-      setPrompt('')
+      await api.editWireframe(srsId, request, route, elements)
       load()
+      return true
     } catch (failure) {
       if (!isJobCancelled(failure)) setError(failure?.message || 'The change could not be made.')
+      return false
     } finally {
       setAsking(false)
     }
+  }
+
+  async function ask(event) {
+    event?.preventDefault()
+    const request = prompt.trim()
+    if (!request) return
+    if (await send(request, tools.elements)) {
+      setPrompt('')
+      tools.clearItems()
+    }
+  }
+
+  /** Words that could not be swapped directly are asked of the agent instead. */
+  function askToChange({ old, value }) {
+    send(`Change the text "${old}" to "${value}"${current?.page_name ? ` on the ${current.page_name} page` : ''}.`)
   }
 
   if (error && !data) return <Empty>{error}</Empty>
@@ -261,7 +288,8 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
               <span className="truncate font-mono text-[11px] text-muted2">{current ? current.route : ''}</span>
             </span>
             {src && (
-              <span className="flex shrink-0 gap-1">
+              <span className="flex shrink-0 items-center gap-1.5">
+                <ToolButtons small mode={tools.mode} onTool={tools.chooseTool} inked={tools.inked} onErase={tools.clearInk} />
                 <button type="button" title="Reload" onClick={() => frame.current?.contentWindow?.location.reload()}
                   className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06]"><RotateCw className="size-3.5" /></button>
                 <a href={src} target="_blank" rel="noreferrer" title="Open in its own window"
@@ -271,13 +299,19 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
           </div>
           <div className="relative min-h-0 flex-1 overflow-hidden rounded-none border border-line bg-white">
             {src ? (
-              <iframe ref={frame} key={data?.version} title="wireframes" src={src} className="absolute inset-0 h-full w-full border-0" />
+              <>
+                <iframe ref={frame} key={data?.version} title="wireframes" src={src} onLoad={() => setLoadedCount(n => n + 1)}
+                  className="absolute inset-0 h-full w-full border-0" />
+                <DrawLayer canvasRef={tools.canvasRef} active={tools.mode === 'pencil'} />
+                <ToolHint mode={tools.mode} />
+              </>
             ) : (
               <div className="absolute inset-0 grid place-items-center bg-panel p-6 text-center text-[12px] text-muted">
                 {waiting ? 'Drawing…' : data?.pages?.[0]?.error || 'The wireframes are not drawn yet.'}
               </div>
             )}
           </div>
+          <Chips items={tools.items} onRemove={tools.removeItem} />
           <form onSubmit={ask} className="flex items-center gap-2">
             <input value={prompt} onChange={event => setPrompt(event.target.value)} disabled={busy || !built}
               placeholder={current ? `Ask for a change${current.page_name ? ` to ${current.page_name}` : ''}…` : 'Ask for a change…'}
@@ -287,6 +321,8 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
             </Button>
           </form>
         </div>
+        <AppTextEdit frameRef={frame} active={tools.mode === 'text'} loaded={loadedCount} project={srsId} kind="wireframe"
+          onSaved={load} onAskAi={askToChange} />
       </div>}
     </div>
   )

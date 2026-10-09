@@ -204,8 +204,14 @@ export const api = {
   buildWireframes: (srsId, prompt = '', resume = false) =>
     api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/build`, { prompt, resume }),
   // One change to the wireframes, asked for in words; `route` when it is about one page.
-  editWireframe: (srsId, prompt, route = '') =>
-    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/edit`, { prompt, route }),
+  editWireframe: (srsId, prompt, route = '', elements = []) =>
+    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/edit`, { prompt, route, elements }),
+  // One change to the prototype, asked for in words; `elements` are the things on the page they pointed at.
+  editPrototype: (project, prompt, elements = []) =>
+    api.srs(`/projects/${encodeURIComponent(project)}/prototype/edit`, { prompt, elements }),
+  // Retype words on a page of the wireframes or the prototype (`kind`): swapped in the app's source when they are written in one place.
+  editAppText: (project, kind, old, text) =>
+    api.srs(`/projects/${encodeURIComponent(project)}/app/text-edit`, { kind, old, new: text }),
   // The wireframes or the prototype is one bundled page the <iframe> loads; the screen is the address hash, and `version`
   // (when the bundle was made) makes the frame load the new bundle after a change.
   webUrl: (project, kind, route = '', version = 0, as = '') =>

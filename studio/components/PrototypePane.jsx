@@ -6,13 +6,14 @@ import { useAgentPreview } from '@/lib/agent-preview'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Monitor, Tablet, Smartphone, MousePointerClick, Pencil, RotateCw,
-  ExternalLink, Layers, Eraser, Undo2, ChevronLeft, ChevronRight, Rocket, Loader2, Route, ScanEye,
+  ExternalLink, Layers, Eraser, Undo2, ChevronLeft, ChevronRight, Rocket, Loader2, Route, ScanEye, Type,
 } from 'lucide-react'
 import { useStore } from '@/lib/store'
 import { api } from '@/lib/api'
 import { watchFrame } from '@/lib/console-log'
-import { attachPicker, pickedFrom, pickLabel } from '@/lib/picker'
+import { attachPicker, elementsUnderStrokes, pickedFrom, pickLabel } from '@/lib/picker'
 import { Tip } from './ui'
+import AppTextEdit from './AppTextEdit'
 import AgentBrowser from './AgentBrowser'
 import LiveE2EOverlay from './LiveE2EOverlay'
 import { cn } from '@/lib/utils'
@@ -47,6 +48,8 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
   const [vp, setVp] = useState('desktop')
   const [pickOn, setPickOn] = useState(false)
   const [pencilOn, setPencilOn] = useState(false)
+  const [textOn, setTextOn] = useState(false)
+  const [loadedTick, setLoadedTick] = useState(0)
   const [route, setRoute] = useState('/')
   const [pages, setPages] = useState([])
   const [status, setStatus] = useState({ built: false, version: 0 })
@@ -207,6 +210,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     if (!f) return
     const onLoad = () => {
       watchFrame(f, project, 'designer')
+      setLoadedTick(n => n + 1)
       syncRoute()
       if (pickOn) attach()
     }
@@ -290,6 +294,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
           key: `sel-${++seq}`,
           kind: 'drawing',
           strokes,
+          marked: elementsUnderStrokes(frameRef.current, strokes, vp),
           route: shotRoute,
           state: 'shooting',
           label: `Drawing on ${here}`,
@@ -310,18 +315,33 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
       window.removeEventListener('pointerup', up)
       window.removeEventListener('resize', onResize)
     }
-  }, [pencilOn, point, syncCanvas, clearStrokes, attachShot, viewportOf, project])
+  }, [pencilOn, point, syncCanvas, clearStrokes, attachShot, viewportOf, project, vp])
 
   function togglePick() {
     if (!project) return addLog('WARN', 'Open a project first')
-    if (!pickOn) setPencilOn(false)
+    if (!pickOn) { setPencilOn(false); setTextOn(false) }
     setPickOn(v => !v)
   }
 
   function togglePencil() {
     if (!project) return addLog('WARN', 'Open a project first')
-    if (!pencilOn) setPickOn(false)
+    if (!pencilOn) { setPickOn(false); setTextOn(false) }
     setPencilOn(v => { if (v) clearStrokes(); return !v })
+  }
+
+  // The T tool: click words on the prototype and retype them.
+  function toggleText() {
+    if (!project) return addLog('WARN', 'Open a project first')
+    if (!textOn) { setPickOn(false); setPencilOn(false) }
+    setTextOn(v => !v)
+  }
+
+  // Words that are not written in one place of the source are asked of the agent instead.
+  function askToChange({ old, value }) {
+    addLog('INFO', `Asking the agent to change “${old}” to “${value}”…`)
+    api.editPrototype(project, `Change the text "${old}" to "${value}" on the ${lastRouteRef.current} page.`)
+      .then(() => checkReady())
+      .catch(error => addLog('WARN', `The text could not be changed: ${error.message}`))
   }
 
   async function undoLast() {
@@ -375,6 +395,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     trail.current = ['/']
     at.current = 0
     setRoute('/')
+    setTextOn(false)
     setNav({ back: false, forward: false })
     setStatus({ built: false, version: 0 })
   }, [project])
@@ -469,6 +490,10 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
                 side="left" on={pencilOn} onClick={togglePencil} className="rounded-full">
             <Pencil className="size-3.5" />
           </Cell>
+          <Cell tip="Click words on the prototype and retype them"
+                side="left" on={textOn} onClick={toggleText} className="rounded-full">
+            <Type className="size-3.5" />
+          </Cell>
           <Cell tip={selection.length
                        ? `Clear ${selection.length} attachment${selection.length === 1 ? '' : 's'}`
                        : 'Nothing attached yet'}
@@ -491,12 +516,15 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
                 style={{ pointerEvents: pencilOn ? 'auto' : 'none',
                          cursor: pencilOn ? 'crosshair' : 'default' }} />
 
-        {(pickOn || pencilOn) && (
+        {(pickOn || pencilOn || textOn) && (
           <p className="pointer-events-none absolute inset-x-0 bottom-7 z-[9] mx-auto w-fit rounded-full bg-ink/85 px-3.5 py-1.5 text-[11px] font-medium text-ink shadow-lg">
             {pencilOn ? 'Draw around what you mean — it attaches to the chat'
-                      : 'Click anything on the prototype — it attaches to the chat'}
+              : textOn ? 'Click any words on the prototype, then type the new ones'
+              : 'Click anything on the prototype — it attaches to the chat'}
           </p>
         )}
+        <AppTextEdit frameRef={frameRef} active={textOn} loaded={loadedTick} project={project} kind="prototype"
+          onSaved={() => checkReady()} onAskAi={askToChange} />
 
         <div className="relative flex min-h-0 h-full w-full items-start justify-center overflow-hidden bg-[#F2F0EF]">
           <div

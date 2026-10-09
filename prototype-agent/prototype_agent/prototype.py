@@ -22,7 +22,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from server_modules import bus, config, prompts, store, web_app
+from server_modules import bus, config, pointed, prompts, store, web_app
 from server_modules.session import ProjectSession, RunCancelled, session_for
 
 from . import demo, journey_walk, visual_review
@@ -392,8 +392,8 @@ def journeys(project: str, fix: bool = True, model: str = "") -> dict[str, Any]:
     return result
 
 
-def revise(project: str, request: str) -> dict[str, Any]:
-    """Change the prototype from a message typed into the chat stream."""
+def revise(project: str, request: str, elements: Any = None) -> dict[str, Any]:
+    """Change the prototype from a message typed into the chat stream (with the things on the page they pointed at, when they did)."""
     if not exists(project):
         raise ValueError("there is no prototype to change yet")
 
@@ -401,7 +401,8 @@ def revise(project: str, request: str) -> dict[str, Any]:
     session.begin("prototype-edit", role=bus.DESIGNER)
     try:
         bus.user_msg(project, request, agent=bus.DESIGNER)
-        session.run_direct(prompts.load("prototype/revise", request=request, skill=web_app.stage_skill(session.workspace),
+        session.run_direct(prompts.load("prototype/revise", request=request + pointed.describe(elements),
+                                        skill=web_app.stage_skill(session.workspace),
                                         app=app_path(project).relative_to(session.workspace).as_posix()))
         web_app.build_for(session, project, KIND, agent=bus.DESIGNER)
         bus.prototype_changed(project)

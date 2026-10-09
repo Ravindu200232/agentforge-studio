@@ -15,7 +15,8 @@ from prototype_agent import prototype as prototyper
 from srs_agent import document, interview, plan
 from srs_agent import wireframe as wireframer
 
-from . import config, store
+from . import bus, config, store, web_app
+from .session import session_for
 
 Handler = Callable[[str, dict[str, Any]], Any]
 
@@ -207,8 +208,45 @@ def build_wireframes(project: str, body: dict) -> Any:
 
 @route("POST", rf"/projects/{P}/wireframes/edit")
 def edit_wireframe(project: str, body: dict) -> Any:
-    """One change to the wireframes, asked for in words (about one page when `route` is given)."""
-    return wireframer.edit(project, str(body.get("prompt") or ""), str(body.get("route") or ""))
+    """One change to the wireframes, asked for in words (about one page when `route` is given, and about the `elements` pointed at)."""
+    return wireframer.edit(project, str(body.get("prompt") or ""), str(body.get("route") or ""), body.get("elements"))
+
+
+@route("POST", rf"/projects/{P}/prototype/edit")
+def edit_prototype(project: str, body: dict) -> Any:
+    """One change to the prototype, asked for in words (and about the `elements` pointed at)."""
+    return prototyper.revise(project, " ".join(str(body.get("prompt") or "").split()), body.get("elements"))
+
+
+# What is still working on an app: its words are not swapped under it.
+_WORKING = ("srs", "wireframes", "wireframe-edit", "prototype", "prototype-edit", "review", "build")
+
+
+@route("POST", rf"/projects/{P}/app/text-edit")
+def edit_app_text(project: str, body: dict) -> Any:
+    """Retype some words on a page of the wireframes or the prototype: `old` becomes `new` in the app's source when `old` is
+    written there in exactly one place, and the app is bundled again. Otherwise `{"ok": false, "reason"}` says why not, and the studio
+    hands the change to the agent."""
+    kind = str(body.get("kind") or "")
+    if kind not in web_app.KINDS:
+        raise ValueError("the words are on the wireframes or on the prototype")
+    session = session_for(project)
+    if session.stage in _WORKING:
+        raise ValueError("wait for the agent to finish: it is still working on the app")
+    app = web_app.app_dir(session.workspace, kind)
+    if not web_app.built(app):
+        raise FileNotFoundError(f"the {kind} is not drawn yet")
+    done = web_app.edit_text(app, str(body.get("old") or ""), str(body.get("new") or ""))
+    if not done.get("ok"):
+        return done
+    original = done.pop("original")
+    made, log = web_app.bundle(app)
+    if not made:
+        (app / done["file"]).write_bytes(original.encode("utf-8"))
+        web_app.bundle(app)                                      # the page the studio shows is the one it had
+        return {"ok": False, "reason": "does not bundle", "detail": log[-300:]}
+    (bus.prototype_changed if kind == "prototype" else bus.wireframe_changed)(project)
+    return done
 
 
 @route("POST", rf"/projects/{P}/wireframes/approve")

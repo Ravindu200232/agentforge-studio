@@ -355,6 +355,86 @@ def bundle(app: Path) -> tuple[bool, str]:
         return True, text[-1000:]
 
 
+# --- retyping words on a page ------------------------------------------------------------------------------------------------
+
+# What is not the page's own words: the toolkit's components, the route table, the demo accounts and what the Studio writes again.
+_NOT_WORDS = ("components/ui/", "lib/router.tsx", "lib/session.tsx", "routes.ts", "demo.ts", "vite-env.d.ts")
+
+
+def _spelling(word: str) -> str:
+    """A word as the source may write it: the characters that need escaping in JSX or in a string have more than one spelling."""
+    out = []
+    for char in word:
+        if char == "&":
+            out.append(r"(?:&amp;|&)")
+        elif char == "'":
+            out.append(r"(?:&apos;|&#39;|\\'|')")
+        elif char == '"':
+            out.append(r'(?:&quot;|\\"|")')
+        elif char == "<":
+            out.append(r"(?:&lt;|<)")
+        elif char == ">":
+            out.append(r"(?:&gt;|>)")
+        else:
+            out.append(re.escape(char))
+    return "".join(out)
+
+
+def _literal(text: str, quote: str) -> str:
+    text = text.replace("\\", "\\\\").replace(quote, "\\" + quote).replace("\r", "").replace("\n", "\\n")
+    return text.replace("${", "\\${") if quote == "`" else text
+
+
+def _jsx_text(text: str) -> str:
+    for char, escaped in (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ("{", "&#123;"), ("}", "&#125;")):
+        text = text.replace(char, escaped)
+    return " ".join(text.split())
+
+
+def edit_text(app: Path, old: str, new: str) -> dict[str, Any]:
+    """Change the words `old` on a page to `new` in the app's source, when they are written there in exactly one place.
+
+    The words must be a whole piece of text (the text of one element, or one whole string), so that "Cart" is never found inside
+    "Cartographer". Returns {"ok": True, "file", "line"}, or {"ok": False, "reason"}: "found in several places" when a swap could change
+    the wrong one, "built in code" when no file writes them out that way (the app puts them together, or they are not text at all)."""
+    old = " ".join(str(old or "").split())
+    new = str(new or "").strip()
+    if not old:
+        return {"ok": False, "reason": "no words"}
+    if not new:
+        return {"ok": False, "reason": "the new words are empty"}
+    pattern = re.compile(
+        r"(?P<pre>^|[>\"'`}])(?P<space1>[ \t\r\n]*)(?P<text>" + r"[ \t\r\n]+".join(_spelling(word) for word in old.split())
+        + r")(?P<space2>[ \t\r\n]*)(?P<post>$|[<\"'`{])", re.MULTILINE)
+    found = []
+    source = app / "src"
+    for path in sorted(p for p in source.rglob("*") if p.is_file() and p.suffix in (".tsx", ".ts", ".jsx", ".js")):
+        relative = path.relative_to(source).as_posix()
+        if any(part in relative for part in _NOT_WORDS):
+            continue
+        raw = path.read_bytes().decode("utf-8", errors="replace")
+        for match in pattern.finditer(raw):
+            pre, post = match.group("pre"), match.group("post")
+            if pre in "\"'`" and pre:
+                if post != pre:
+                    continue                        # a quote that closes something else: these words are only part of a string
+                kind = pre
+            elif post in "\"'`" and post:
+                continue
+            else:
+                kind = ""
+            found.append((path, raw, match, kind))
+    if not found:
+        return {"ok": False, "reason": "built in code"}
+    if len(found) > 1:
+        return {"ok": False, "reason": "found in several places"}
+    path, raw, match, kind = found[0]
+    replacement = _literal(new, kind) if kind else _jsx_text(new)
+    start, end = match.start("text"), match.end("text")
+    path.write_bytes((raw[:start] + replacement + raw[end:]).encode("utf-8"))
+    return {"ok": True, "file": path.relative_to(app).as_posix(), "line": raw.count("\n", 0, start) + 1, "original": raw}
+
+
 _SELFTEST = re.compile(r'<pre id="af-selftest"[^>]*>(.*?)</pre>', re.DOTALL)
 
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from server_modules import bus, prompts, web_app
+from server_modules import bus, pointed, prompts, web_app
 from server_modules.session import RunCancelled, session_for
 
 from . import document
@@ -130,8 +130,9 @@ def run(project: str, request: str = "", fresh: bool = True) -> dict[str, Any]:
         raise
 
 
-def edit(project: str, prompt: str, route: str = "") -> dict[str, Any]:
-    """One change to the wireframes, asked for in words (and about one page, when it was asked for from that page)."""
+def edit(project: str, prompt: str, route: str = "", elements: Any = None) -> dict[str, Any]:
+    """One change to the wireframes, asked for in words (and about one page, when it was asked for from that page), with the things
+    on the page they pointed at, when they did."""
     request = " ".join(str(prompt or "").split())
     if not request:
         raise ValueError("describe the wireframe change first")
@@ -145,7 +146,8 @@ def edit(project: str, prompt: str, route: str = "") -> dict[str, Any]:
     session.begin("wireframe-edit", role=bus.DESIGNER)
     try:
         bus.user_msg(project, request, agent=bus.DESIGNER)
-        session.run_direct(prompts.load("wireframe/edit", request=request, skill=web_app.stage_skill(session.workspace),
+        session.run_direct(prompts.load("wireframe/edit", request=request + pointed.describe(elements),
+                                        skill=web_app.stage_skill(session.workspace),
                                         app=_relative(project),
                                         where=(f"The change is on the page for `{route}`." if route else "")))
         web_app.build_for(session, project, KIND, agent=bus.DESIGNER)

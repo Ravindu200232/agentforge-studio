@@ -14,7 +14,7 @@ from builder_agent import build as builder
 from prototype_agent import prototype as prototyper
 from qa_agent import verify as qa
 
-from . import bus, changes, config, jobs, plugins, preview_runtime, prompts, secrets_guard, store
+from . import bus, changes, config, jobs, plugins, pointed, preview_runtime, prompts, secrets_guard, store
 from .session import PREVIEW_START, RunCancelled, session_for
 
 # How many times the agent fixes and the Studio starts the preview again before it gives up.
@@ -324,7 +324,7 @@ def element_edit(message: dict[str, Any]) -> dict[str, Any]:
     request = str(message.get("prompt") or "").strip()
     where = " ".join(part for part in (f"on {route}" if route else "",
                                        f"({target})" if target else "") if part)
-    return agent_update({**message, "prompt": f"{request}\n\nThey pointed at this {where}."})
+    return agent_update({**message, "prompt": f"{request}\n\nThey pointed at this {where}." + pointed.describe(message.get("elements"))})
 
 
 def preview_start(message: dict[str, Any]) -> dict[str, Any]:
