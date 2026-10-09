@@ -241,6 +241,21 @@ class Agent:
         """
         if not (self.cloud or served_from_cloud(self.model)):
             return self.client.chat(**kwargs)
+        # A reply streamed from the cloud can be cut off part-way ("peer closed connection without sending complete message
+        # body"). The words are only being collected here, so nothing is lost but that attempt: the request is asked for again,
+        # the way the host's retrying client would have asked for a request that failed before its first word.
+        attempt = 0
+        while True:
+            try:
+                return self._streamed_response(kwargs)
+            except Exception as exc:  # noqa: BLE001 - raised again unless it is a bad minute of the service
+                again = getattr(self.client, "_next_attempt", None)
+                if not callable(again):
+                    raise
+                attempt = again(exc, attempt)         # raises when it is not worth asking again, or the attempts are gone
+
+    def _streamed_response(self, kwargs: dict[str, Any]) -> Any:
+        """One streamed request, read to its end and put back together as the ordinary response."""
         stream = self.client.chat(**{**kwargs, "stream": True})
         if not hasattr(stream, "__iter__"):
             return stream

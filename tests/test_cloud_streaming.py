@@ -88,5 +88,53 @@ class AgentStreamTests(unittest.TestCase):
         self.assertFalse(agent.calls[0]["stream"])
 
 
+class CutOffReplyTests(unittest.TestCase):
+    """A streamed reply that is cut off part-way is asked for again, whole: nothing was shown, so nothing is said twice."""
+
+    def agent(self):
+        agent = Agent.__new__(Agent)
+        agent.model, agent.cloud = "deepseek-v4.1-flash:cloud", False
+        agent.asked = 0
+        agent.retries: list[tuple] = []
+        outer = agent
+
+        class Cut(Exception):
+            pass
+
+        def chunk(text):
+            return SimpleNamespace(message=SimpleNamespace(content=text, thinking=None, tool_calls=None))
+
+        def broken():
+            yield chunk("hel")
+            raise Cut("peer closed connection without sending complete message body (incomplete chunked read)")
+
+        class Client:
+            def chat(inner, **kwargs):
+                outer.asked += 1
+                return broken() if outer.asked == 1 else iter([chunk("hello"), chunk(" again")])
+
+            def _next_attempt(inner, exc, attempt):
+                outer.retries.append((type(exc).__name__, attempt))
+                return attempt + 1
+        agent.client = Client()
+        return agent
+
+    def test_a_reply_cut_off_part_way_is_asked_for_again_and_comes_back_whole(self):
+        agent = self.agent()
+        answer = agent._chat_response({"model": agent.model, "messages": []})
+        self.assertEqual(answer.message.content, "hello again")          # not "helhello again"
+        self.assertEqual(agent.asked, 2)
+        self.assertEqual(agent.retries, [("Cut", 0)])
+
+    def test_a_client_that_does_not_retry_lets_the_failure_through_as_before(self):
+        agent = self.agent()
+        del type(agent.client)._next_attempt
+        with self.assertRaises(Exception) as caught:
+            agent._chat_response({"model": agent.model, "messages": []})
+        self.assertIn("peer closed connection", str(caught.exception))
+        self.assertEqual(agent.asked, 1)
+
+
+
 if __name__ == "__main__":
     unittest.main()
