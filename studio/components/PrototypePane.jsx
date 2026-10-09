@@ -531,7 +531,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
                 </h3>
                 <p className="mt-1.5 max-w-sm text-center text-[12px] text-muted leading-relaxed">
                   {isBusy
-                    ? 'The AI agent is editing the wireframes into a high-fidelity, animated React app, then bundling it.'
+                    ? 'The AI agent is reading the wireframes and writing a high-fidelity, animated React app, then bundling it and looking at every screen.'
                     : 'Approve the wireframes and the design, and the prototype is made from them.'}
                 </p>
 
@@ -549,7 +549,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
                   <span className="size-2 rounded-full bg-accent animate-ping" />
                   <span className="truncate max-w-[280px]">
                     {generating
-                      ? (generationStatus || 'Editing the wireframes into the prototype…')
+                      ? (generationStatus || 'Making the prototype from the wireframes…')
                       : (resumePrototype && ['paused', 'failed'].includes(workflowStatus)
                         ? 'Generation was interrupted. Continue from the saved checkpoint.'
                         : (statusText || (typeof progress === 'string' ? progress : '') || (isBusy ? 'Designing pages…' : `${project || 'project'} / ${route}`)))}
