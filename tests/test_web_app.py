@@ -302,6 +302,16 @@ class KitOwnedFilesTests(Scratch):
         for needle in ("getDerivedStateFromError", "data-af-error", "window.__afErrors", 'id="af-selftest"', "selftest"):
             self.assertIn(needle, router)
 
+    def test_a_product_with_no_page_at_the_root_opens_on_its_sign_in_page_or_its_first_screen(self):
+        router = (web_app.KIT_SOURCE / "app" / "src" / "lib" / "router.tsx").read_text(encoding="utf-8")
+        self.assertIn('import { signInRoute } from "@/demo";', router)
+        self.assertIn('path === "/"', router)
+        self.assertIn("matchRoute(signInRoute) ? signInRoute : routes[0]?.route", router)
+
+    def test_the_session_says_who_is_signed_in_for_the_browser_that_clicks_through_the_prototype(self):
+        session = (web_app.KIT_SOURCE / "app" / "src" / "lib" / "session.tsx").read_text(encoding="utf-8")
+        self.assertIn("__afUser", session)
+
 
 class KitTests(Scratch):
     def test_the_kit_is_only_installed_once(self):

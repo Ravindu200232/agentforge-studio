@@ -1,4 +1,5 @@
 import * as React from "react";
+import { signInRoute } from "@/demo";
 import { routes, type RouteDef } from "@/routes";
 
 // The app's routes live in the address hash (`#/orders`), so the whole app is one HTML file that can be opened from anywhere.
@@ -158,6 +159,12 @@ function SelfTest() {
 export function Router({ pages }: { pages: Record<string, { default?: React.ComponentType }> }) {
   const path = useLocation();
   const found = matchRoute(path);
+  // A product with no page at "/" (people sign in first, or land on a dashboard) opens on its sign-in page, else on its first screen.
+  const home = !found && path === "/" ? (matchRoute(signInRoute) ? signInRoute : routes[0]?.route || "") : "";
+
+  React.useEffect(() => {
+    if (home) navigate(home);
+  }, [home]);
 
   React.useEffect(() => {
     window.scrollTo(0, 0);
