@@ -25,6 +25,7 @@ from typing import Any, Callable, Sequence, TypeVar
 
 import httpx
 import ollama
+from ollama_terminal.agent import served_from_cloud
 
 from . import bus, config, connection
 
@@ -321,8 +322,8 @@ def complete(system: str, user: str, model: str = "", think: bool | None = None,
         "model": _model(model),
         "messages": [{"role": "system", "content": system},
                      _user_message(user, images)],
-        "stream": bool(config.setting("cloud")),
     }
+    kwargs["stream"] = bool(config.setting("cloud")) or served_from_cloud(kwargs["model"])
     kwargs["think"] = config.thinking_enabled() if think is None else think
     context = _context_for(kwargs["model"])
     if context and not config.setting("cloud"):
@@ -355,8 +356,8 @@ def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None
     messages = [{"role": "system", "content": system}, _user_message(user, images)]
     last = ""
     for _ in range(max(1, attempts)):
-        kwargs: dict[str, Any] = {"model": _model(model), "messages": messages,
-                                  "stream": bool(config.setting("cloud"))}
+        kwargs: dict[str, Any] = {"model": _model(model), "messages": messages}
+        kwargs["stream"] = bool(config.setting("cloud")) or served_from_cloud(kwargs["model"])
         # Local Ollama supports JSON mode and returns syntactically valid JSON.
         # Ollama Cloud currently does not support constrained output, so keep
         # the existing prompt-and-validator repair path for hosted models.

@@ -146,6 +146,14 @@ def _mechanical_digest(chunk: str, limit: int = 3000) -> str:
     return ("[unsummarized stretch] " + "\n".join(parts))[:limit] if parts else ""
 
 
+def served_from_cloud(model: str) -> bool:
+    """Whether `model` runs on ollama.com (`name:cloud`, `name:tag-cloud`), even when it is reached through this computer's own
+    Ollama. Its replies are streamed: a long answer sent as one response is cut off by the service's edge (Cloudflare answers
+    "524", a timeout, after about a hundred seconds without a byte) - a stream keeps bytes flowing."""
+    name = str(model or "").strip().lower()
+    return name.endswith(":cloud") or name.endswith("-cloud")
+
+
 class Agent:
     def __init__(self, client: Any, model: str, workspace: Path,
                  approve: Callable[[str], bool], context: int | None = None,
@@ -231,7 +239,7 @@ class Agent:
         keep their existing single-response path.  The assembled object has
         the ordinary response shape used by the tool loop below.
         """
-        if not self.cloud:
+        if not (self.cloud or served_from_cloud(self.model)):
             return self.client.chat(**kwargs)
         stream = self.client.chat(**{**kwargs, "stream": True})
         if not hasattr(stream, "__iter__"):
