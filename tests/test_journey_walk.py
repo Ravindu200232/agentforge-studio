@@ -146,6 +146,8 @@ class FakeBrowser:
             self.dialog = False
         elif element.get("opens_menu"):
             self.menu = True
+        elif element.get("signs_out"):
+            self.user, self.path, self.menu, self.dialog = "", "/", False, False
         elif element.get("signs_in") is not None:
             email = self.filled_by_label("email")
             secret = self.filled_by_label("password")
@@ -509,6 +511,72 @@ class WalkTests(Harness):
         walk.driver.state = state
         walked = self.go(walk, self.journey("Customer", step("UJ-001-S01", "Customer opens the Wishlist", "/wishlist")))
         self.assertTrue(walked["setup"]["ok"], walked["setup"])
+
+    def test_a_journey_that_begins_with_signing_in_is_walked_signed_out_and_its_first_step_signs_in(self):
+        walk = self.walk_with()
+        journey = self.journey("Customer", step("UJ-001-S01", "Customer types their email and password and gets in", "/login"),
+                               step("UJ-001-S02", "Customer opens the Wishlist", "/wishlist"))
+        walked = self.go(walk, journey)
+        self.assertIsNone(walked["setup"])                                    # nobody was signed in beforehand
+        self.assertEqual(walk.driver.calls[0], ("goto", "/login", ""))
+        first, second = walked["steps"]
+        self.assertTrue(first["reached"], first["notes"])
+        self.assertEqual(first["actions"], ['the demo account was typed in and "Sign in" pressed'])
+        self.assertEqual(walk.driver.user, "customer@example.com")
+        self.assertTrue(second["reached"])
+        self.assertEqual(jw.problems(journey, walked, None), [])
+
+    def test_a_first_step_that_signs_in_with_a_form_that_does_not_work_is_not_reached_and_says_so(self):
+        pages = {**SHOP, "/login": {"heading": "Sign in", "elements": [
+            *SIGN_IN_FORM[:2], {**SIGN_IN_FORM[2], "signs_in": {"email": "somebody@else.com", "password": "x"}}]}}
+        walked = self.go(self.walk_with(pages), self.journey("Customer", step("UJ-001-S01", "Customer signs in", "/login")))
+        first = walked["steps"][0]
+        self.assertFalse(first["reached"])
+        self.assertIn("did not sign anyone in", first["notes"][0])
+
+    def test_a_first_step_that_signs_in_on_a_page_with_no_way_in_says_so(self):
+        pages = {**SHOP, "/login": {"heading": "Sign in", "elements": []}}
+        walked = self.go(self.walk_with(pages), self.journey("Customer", step("UJ-001-S01", "Customer signs in", "/login")))
+        self.assertFalse(walked["steps"][0]["reached"])
+        self.assertIn("no form for the demo account", walked["steps"][0]["notes"][0])
+
+    SIGN_OUT = {"tag": "button", "text": "Sign out", "signOut": True, "signs_out": True, "area": "nav"}
+
+    def test_a_signed_in_person_signs_out_once_to_reach_a_sign_in_or_sign_up_screen(self):
+        pages = {**SHOP, "/wishlist": {"heading": "Wishlist", "elements": [self.SIGN_OUT]}}
+        walk = self.walk_with(pages)
+        journey = self.journey("Customer", step("UJ-001-S01", "Customer reads the Wishlist", "/wishlist"),
+                               step("UJ-001-S02", "Customer opens Sign In again", "/login"))
+        walked = self.go(walk, journey)
+        second = walked["steps"][1]
+        self.assertTrue(second["reached"], second["notes"])
+        self.assertEqual(second["actions"], ['clicked "Sign out"', 'clicked "Sign in"'])
+        self.assertEqual(walk.driver.user, "")
+
+    def test_the_sign_out_that_is_in_a_menu_is_found_by_opening_the_menu(self):
+        pages = {**SHOP, "/wishlist": {"heading": "Wishlist", "elements": [
+            {"tag": "button", "text": "Account", "popup": True, "opens_menu": True, "area": "nav"}], "menu": [self.SIGN_OUT]}}
+        walk = self.walk_with(pages)
+        journey = self.journey("Customer", step("UJ-001-S01", "Customer reads the Wishlist", "/wishlist"),
+                               step("UJ-001-S02", "Customer opens Sign In again", "/login"))
+        second = self.go(walk, journey)["steps"][1]
+        self.assertTrue(second["reached"], second["notes"])
+        self.assertEqual(walk.driver.user, "")
+
+    def test_a_signed_in_person_is_not_signed_out_to_reach_any_other_screen(self):
+        pages = {**SHOP, "/wishlist": {"heading": "Wishlist", "elements": [link("Cart", "/cart"), self.SIGN_OUT]}}
+        walk = self.walk_with(pages)
+        journey = self.journey("Customer", step("UJ-001-S01", "Customer opens My Orders", "/account/orders"))
+        walked = self.go(walk, journey, [])
+        self.assertFalse(walked["steps"][0]["reached"])
+        self.assertNotIn(("click", "Sign out"), walk.driver.calls)
+        self.assertEqual(walk.driver.user, "customer@example.com")
+
+    def test_somebody_who_is_not_signed_in_is_not_asked_to_sign_out(self):
+        walk = self.walk_with({**SHOP, "/": {"heading": "Home", "elements": [self.SIGN_OUT]}})
+        walked = self.go(walk, self.journey("Visitor", step("UJ-001-S01", "Visitor opens Sign In", "/login")), [])
+        self.assertFalse(walked["steps"][0]["reached"])
+        self.assertNotIn(("click", "Sign out"), walk.driver.calls)
 
     def test_a_screen_with_no_link_to_the_next_one_is_a_step_that_could_not_be_done_and_the_walk_goes_on(self):
         pages = {**SHOP, "/": {"heading": "Home", "elements": [link("Sign in", "/login")]}}

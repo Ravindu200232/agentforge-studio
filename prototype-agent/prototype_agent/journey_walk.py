@@ -271,6 +271,9 @@ class Walk:
         self.graph, self.driver, self.streaming, self.cancelled = graph, driver, streaming, cancelled
         self.at: tuple[dict[str, Any], int] = ({"name": "", "who": "", "steps": []}, 0)      # the journey and step being walked
         self.model_tried = False
+        self.account: dict[str, Any] | None = None             # the demo account the journey is walked as
+        self.signed_out = False                                # whether this step has already signed the person out
+        self.sign_in_first = False                             # whether the journey begins with signing in
 
     # what the Studio shows live: only the journey that is on the screen
     def event(self, state: str, **fields: Any) -> None:
@@ -301,8 +304,14 @@ class Walk:
                                "reached": False, "actions": [], "notes": [str(exc)], "visited": [], "shots": [], "page": "",
                                "errors": [], "crashed": ""} for s in steps]}
         self.event("journey_start", title=title, role=journey["who"], total=len(steps), index=0)
-        account = account_for(journey["who"], self.accounts)
-        setup = self._sign_in(account, out) if account else self._start()
+        account = self.account = account_for(journey["who"], self.accounts)
+        first = page_route(steps[0]["route"], self.rows) if steps else ""
+        self.sign_in_first = bool(account and first and first == self.sign_in)
+        if self.sign_in_first:
+            # The journey begins with signing in: it is walked signed out, on the sign-in page, and its first step signs in.
+            setup = self._start(self.sign_in)
+        else:
+            setup = self._sign_in(account, out) if account else self._start()
         walked = []
         for number, step in enumerate(steps, 1):
             if self.cancelled():
@@ -316,9 +325,9 @@ class Walk:
         return {"id": journey["id"], "name": journey["name"], "who": journey["who"], "account": (account or {}).get("email", ""),
                 "setup": setup, "steps": walked}
 
-    def _start(self) -> dict[str, Any] | None:
+    def _start(self, route: str = "") -> dict[str, Any] | None:
         """Someone who never signs in starts where a visitor does: at the prototype's home page, not on a blank tab."""
-        home = page_route("/", self.rows) or (str(self.rows[0].get("route")) if self.rows else "")
+        home = route or page_route("/", self.rows) or (str(self.rows[0].get("route")) if self.rows else "")
         try:
             self.open(home or "/")
             return None
@@ -386,10 +395,26 @@ class Walk:
                 return f'"{e.get("text")}" was pressed'
         return ""
 
+    def _sign_in_here(self, actions: list[str], notes: list[str]) -> tuple[bool, bool]:
+        """The step is signing in, and the person is on the sign-in page: the demo account is typed in (or its button pressed).
+        Returns (whether anything was done, whether somebody is signed in now)."""
+        account = self.account or {}
+        used = self._type_credentials(account) or self._demo_button(account)
+        if not used:
+            notes.append(f"the sign-in page has no form for the demo account {account.get('email')} and no button for {account.get('role')}")
+            return False, False
+        actions.append(used)
+        state = self.driver.state()
+        signed = bool(state.get("user")) or self.here(state) != self.sign_in
+        if not signed:
+            notes.append(f"signing in with the demo account {account.get('email')} did not sign anyone in")
+        return True, signed
+
     def _step(self, journey: dict[str, Any], number: int, step: dict[str, Any], out: Path) -> dict[str, Any]:
         target = page_route(step["route"], self.rows)
         self.at = (journey, number)
         self.model_tried = False
+        self.signed_out = False
         notes: list[str] = []
         actions: list[str] = []
         visited: list[str] = []
@@ -407,7 +432,11 @@ class Walk:
             reached = bool(target) and target in visited
             arrival = self.driver.screenshot(out / f"{sid}-a.jpg").name
             changed = False
-            if reached and _DOING.search(step["step"]):
+            if reached and number == 1 and self.sign_in_first and not self.driver.state().get("user"):
+                # The journey began on the sign-in page, signed out: its first step is the person signing in.
+                changed, signed = self._sign_in_here(actions, notes)
+                reached = reached and signed
+            elif reached and _DOING.search(step["step"]):
                 changed = self._do(journey, number, step, actions, visited, notes)
             final = self.driver.screenshot(out / f"{sid}.jpg").name
             shots = [arrival, final] if changed else [final]
@@ -447,6 +476,12 @@ class Walk:
                 if self._clear_filters(elements, actions):
                     state = self.driver.state()
                     continue
+            if link is None and state.get("user") and not self.signed_out and self._for_signed_out(target):
+                # A sign-in or sign-up screen is not reached from inside: a person signs out first, once, and looks again.
+                self.signed_out = True
+                if self._sign_out(step, actions):
+                    state = self.driver.state()
+                    continue
             if link is None:
                 link = self._link_in_a_menu(target, step, elements, actions)
             if link is None:
@@ -466,6 +501,32 @@ class Walk:
                 return
         if self.here(state) != target:
             notes.append(f"{self.name_of(target)} was not reached in {HOPS} clicks")
+
+    def _for_signed_out(self, route: str) -> bool:
+        """Whether a screen is one only a signed-out person goes to: the sign-in page, or signing up."""
+        return route == self.sign_in or bool(re.search(r"sign-?up|register|create-?account|log-?in|sign-?in", route, re.I))
+
+    def _sign_out(self, step: dict[str, Any], actions: list[str]) -> bool:
+        """Press the screen's own Sign out, opening the menus there are to find it. Returns whether the person was signed out."""
+        try:
+            found = next((e for e in self.driver.elements() if e.get("signOut") and not e.get("external") and not e.get("disabled")), None)
+            if found is None:
+                openers = [e for e in self.driver.elements() if e.get("popup") and e.get("tag") != "select" and e.get("role") != "combobox"
+                           and not e.get("disabled") and e.get("area") in {"nav", "main"}]
+                for opener in openers[:MENUS]:
+                    self.driver.click(opener["i"])
+                    found = next((e for e in self.driver.elements() if e.get("signOut") and not e.get("disabled")), None)
+                    if found is not None:
+                        break
+                    self.driver.key("Escape")
+            if found is None:
+                return False
+            self.event("step", title=step["step"], label=found.get("text") or "Sign out", verb="CLICK", route=step["route"])
+            self.driver.click(found["i"])
+            actions.append(f'clicked "{found.get("text") or "Sign out"}"')
+            return True
+        except DriverError:
+            return False
 
     def _page_of(self, link: dict[str, Any]) -> str:
         page = page_for(link.get("to") or "", self.rows)
