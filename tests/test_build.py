@@ -249,6 +249,35 @@ class FreshProjectTemplateTests(StraightThroughCase):
         self.assertNothingWasAsked()
 
 
+class ShadcnInTheBuildTests(StraightThroughCase):
+    def test_the_build_is_told_to_use_shadcn_ui_and_has_its_skill_and_rules_in_the_workspace(self):
+        self.session.results.append({"status": "complete", "text": "done", "plan": "p"})
+        build.run(RUN_PROJECT)
+        request = self.session.requests[0]
+        for expected in ("## shadcn/ui", ".agentforge/skills/shadcn/SKILL.md", "npx shadcn@latest init", "npx shadcn@latest add",
+                         "the prototype's theme", "Do not write a replacement for a component shadcn/ui has"):
+            self.assertIn(expected, request)
+        self.assertNotIn("{{", request)
+        staged = self.session.workspace / ".agentforge" / "skills" / "shadcn"
+        for name in ("SKILL.md", "rules/forms.md", "rules/composition.md", "rules/styling.md"):
+            self.assertTrue((staged / name).is_file(), name)
+
+    def test_the_foundation_phase_sets_shadcn_up_first_and_keeps_each_layout_part_its_own_component(self):
+        from server_modules import prompts
+        text = prompts.load("builder/phase-foundation")
+        self.assertIn("shadcn/ui, set up as the shadcn/ui section of the request says", text)
+        self.assertIn("each of the layout parts (header, navigation, sidebar, footer) its own component, written once", text)
+
+    def test_a_change_to_the_interface_is_told_to_use_the_components_the_application_has(self):
+        self.enterContext(mock.patch.object(build, "built", return_value=True))
+        self.session.results.append({"status": "complete", "text": "done"})
+        build.update(RUN_PROJECT, "add a due date")
+        request = self.session.requests[0]
+        self.assertIn("shadcn/ui components the application already has", request)
+        self.assertIn(".agentforge/skills/shadcn/rules/", request)
+        self.assertTrue((self.session.workspace / ".agentforge" / "skills" / "shadcn" / "SKILL.md").is_file())
+
+
 class UpdateStraightThroughTests(StraightThroughCase):
     def setUp(self):
         super().setUp()

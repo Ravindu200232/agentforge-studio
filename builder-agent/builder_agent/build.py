@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from server_modules import (auth_guide, bus, changes, config, deploy_vars, mongo_connect, plugins, prompts, reference_staging,
-                            store, supabase_connect)
+                            store, supabase_connect, web_app)
 from server_modules.qa_report import summary_counts
 from server_modules.session import Phases, RunCancelled, session_for
 from server_modules.validation import build_report
@@ -393,6 +393,7 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         request = prompts.load("builder/generate", stack=stack,
                                report_template=build_report.stage_template(session.workspace))
         request += _prototype_context_block(session.workspace)
+        request += "\n\n" + prompts.load("builder/shadcn", shadcn=web_app.stage_shadcn(session.workspace)).strip()
         request += "\n\n## Scaffold installation\n" + json.dumps(installed, indent=2)
         guide_paths = reference_staging.stage(session.workspace, GUIDES_DIR,
                                               scaffold.build_guide_files(stack))
@@ -456,7 +457,7 @@ def update(project: str, request: str) -> dict[str, Any]:
     session.begin("build-edit", role=bus.DEVELOPER)
     try:
         bus.user_msg(project, request)
-        full_request = prompts.load("builder/update", request=request)
+        full_request = prompts.load("builder/update", request=request, shadcn=web_app.stage_shadcn(session.workspace))
         result = session.run_task(full_request, audit=False)
         return _finish_update(project, session, result)
     except RunCancelled:
