@@ -561,6 +561,40 @@ def record_answer(project: str, payload: dict[str, Any]) -> dict[str, Any]:
         return view(session, data)
 
 
+SKIPPED_ID = "skipped"
+SKIPPED_ANSWER = ("The customer chose not to be interviewed, so nothing was asked. Work from the idea and the chosen stack alone: "
+                  "decide every other detail the way a careful analyst would for this kind of product, and state each of those "
+                  "decisions as an assumption the customer can correct when they read the plan.")
+
+
+def skip(project: str) -> dict[str, Any]:
+    """The customer does not want to be asked anything: the interview is over, and the plan is written from the idea alone.
+
+    What was already answered is kept. The transcript says plainly that nothing was asked, so the plan states what it assumed
+    instead of reading an empty interview as "no requirements"."""
+    with _ask_lock(project):
+        session = session_for(project)
+        data = state(session)
+        if data.get("done"):
+            return view(session, data)
+        if SKIPPED_ID not in data["order"]:
+            data["transcript"] = [q for q in data["transcript"] if q.get("id") != SKIPPED_ID]
+            data["transcript"].append({"id": SKIPPED_ID, "question": "Would you like to be interviewed about the requirements?",
+                                       "answer_type": "yes_no", "kind": "yes_no"})
+            data["answers"][SKIPPED_ID] = {"question_id": SKIPPED_ID, "topic": SKIPPED_ID, "value": False, "text": SKIPPED_ANSWER,
+                                           "selected_values": [], "custom_text": "", "attachments": [], "at": time.time()}
+            data["order"].append(SKIPPED_ID)
+        data["pending"] = None
+        data["done"] = True
+        save(session, data)
+        bus.log(project, "INFO", "The interview was skipped — the plan is written from the idea and the chosen stack.")
+        bus.agent_state(project, "", agent=bus.DEVELOPER)
+        store.advance(project, "plan")
+        session.note("The customer skipped the requirements interview. The plan is written from their idea and the chosen stack, "
+                     "and states what it assumed.")
+        return view(session, data)
+
+
 def view(session: ProjectSession, data: dict[str, Any] | None = None) -> dict[str, Any]:
     """What the studio's Interview screen reads."""
     data = data if data is not None else state(session)

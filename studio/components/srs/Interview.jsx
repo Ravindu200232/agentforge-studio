@@ -64,7 +64,9 @@ export default function Interview({ projectId, onDone, onCancel }) {
     setText(!options.length && prefill?.length ? String(prefill[0]) : '')
   }, [q?.id])
 
-  function draftPlanNow() {
+  // Nothing answered yet: the interview is skipped for good, so the plan says it assumed what it was not told.
+  async function draftPlanNow() {
+    if (!(state.answers || []).length) await api.srs(`/projects/${projectId}/interview/skip`, {}).catch(() => {})
     onDone?.(state)
   }
 

@@ -104,6 +104,12 @@ def interview_answer(project: str, body: dict) -> Any:
                                                          for key in ("text", "custom") if body.get(key)}})
 
 
+@route("POST", rf"/projects/{P}/interview/skip")
+def interview_skip(project: str, _body: dict) -> Any:
+    """No interview: the plan is written from the idea and the chosen stack, and says what it assumed."""
+    return interview.skip(project)
+
+
 # --- the plan ---------------------------------------------------------------
 
 @route("GET", rf"/projects/{P}/plan")
