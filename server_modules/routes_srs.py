@@ -15,7 +15,7 @@ from prototype_agent import prototype as prototyper
 from srs_agent import document, interview, plan
 from srs_agent import wireframe as wireframer
 
-from . import bus, config, privacy, store, web_app
+from . import bus, config, permissions, privacy, store, web_app
 from .session import session_for
 
 Handler = Callable[[str, dict[str, Any]], Any]
@@ -73,6 +73,7 @@ def create_project(_project: str, body: dict) -> Any:
                           stack=str(body.get("stack") or ""),
                           workspace_path=str(body.get("workspace_path") or ""))
     privacy.tell(record["id"], hidden.found)
+    permissions.start_project(record["id"], str(body.get("permission_mode") or ""))
     return {"project": {"id": record["id"], "name": record["name"],
                         "stack": record["stack"], "language": record["language"],
                         "status": record["status"]}}

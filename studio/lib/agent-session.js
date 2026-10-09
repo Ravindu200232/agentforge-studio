@@ -5,7 +5,7 @@ export const ROLES = ['designer', 'developer']
 export function emptySession() {
   return { logs: [], chat: [], runStats: null, agentState: '', agentDetail: '', reasoning: false, busy: false,
     steps: {}, phases: [], files: {}, fileHistory: {}, readFiles: {}, activeFile: null, liveFile: null, liveBuf: '',
-    progress: emptyProgress(), selection: [], approval: null, ask: null, drawing: null,
+    progress: emptyProgress(), selection: [], approval: null, ask: null, drawing: null, permissions: [],
     browserFrame: null, browserConsole: [], question: null, undo: null, previewRoute: '/', draft: '',
     tests: { running: false, attempt: 0, rows: [], fixing: [], pass: 0, fail: 0, warn: 0 },
     e2eLive: null, qaReport: null, e2eParallel: { active: false, lanes: [] }, connection: null,
@@ -107,11 +107,16 @@ export function reduceSession(session, event) {
     // recovers one after a reload - when the two disagreed, a question shown
     // live and a question recovered went to different places.
     case 'approval':
-      if (event.kind === 'question') next.ask = event
+      // Several can wait at once (the agent writes some files in parallel): each is a card in the stream, answered on its own.
+      if (event.kind === 'permission') next.permissions = [...(s.permissions || []).filter(card => card.id !== event.id), event]
+      else if (event.kind === 'question') next.ask = event
       else if (event.kind === 'prototype') next.drawing = event
       else next.approval = event
       break
-    case 'approval_resolved': next.approval = null; next.ask = null; next.drawing = null; break
+    case 'approval_resolved':
+      if ((s.permissions || []).some(card => card.id === event.id)) { next.permissions = s.permissions.filter(card => card.id !== event.id); break }
+      next.approval = null; next.ask = null; next.drawing = null
+      break
     case 'browser_frame': next.browserFrame = event.frame ? event : null; break
     case 'undo_point': next.undo = event; break
     case 'ask': next.question = event; break
@@ -173,7 +178,7 @@ export function reduceSession(session, event) {
     case 'done': case 'error': case 'cancelled':
       next.busy = false; next.agentState = ''; next.liveFile = null; next.liveBuf = ''
       next.browserFrame = null; next.e2eLive = null; next.drawing = null
-      next.approval = null; next.ask = null; next.connection = null
+      next.approval = null; next.ask = null; next.permissions = []; next.connection = null
       next.tests = { ...s.tests, running: false }
       next.e2eParallel = { ...s.e2eParallel, active: false }; next.reasoning = false
       next.workflowStatus = event.type === 'done' ? 'completed' : event.type === 'cancelled' ? 'paused' : 'failed'

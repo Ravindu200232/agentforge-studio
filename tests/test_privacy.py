@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 for folder in (".", "src", "srs-agent", "builder-agent", "prototype-agent", "qa-agent", ".deps/py312"):
     sys.path.insert(0, str(ROOT / folder))
 
-from server_modules import bus, config, httpd, privacy, routes_srs, runs  # noqa: E402
+from server_modules import bus, config, httpd, permissions, privacy, routes_srs, runs  # noqa: E402
 from support import forget_project, isolate_workspaces  # noqa: E402
 
 PROJECT = "prj_privacy_test"
@@ -157,9 +157,10 @@ class EntryPointTests(unittest.TestCase):
         self.events: list[dict] = []
         self.addCleanup(bus.subscribe(self.events.append))
         self.addCleanup(forget_project, PROJECT)
-        patch = mock.patch.object(privacy, "scrub", fake_scrub)
-        patch.start()
-        self.addCleanup(patch.stop)
+        for patch in (mock.patch.object(privacy, "scrub", fake_scrub),
+                      mock.patch.object(permissions, "start_project", return_value="plan")):      # the projects here are not in the store
+            patch.start()
+            self.addCleanup(patch.stop)
 
     def said(self, title):
         """What the chat was told under this title (the subscriber hears each event twice: once live, once from the log)."""

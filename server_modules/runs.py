@@ -14,7 +14,7 @@ from builder_agent import build as builder
 from prototype_agent import prototype as prototyper
 from qa_agent import verify as qa
 
-from . import bus, changes, config, jobs, plugins, pointed, preview_runtime, privacy, prompts, secrets_guard, store
+from . import bus, changes, config, jobs, permissions, plugins, pointed, preview_runtime, privacy, prompts, secrets_guard, store
 from .session import PREVIEW_START, RunCancelled, session_for
 
 # How many times the agent fixes and the Studio starts the preview again before it gives up.
@@ -150,6 +150,7 @@ def agent_build(message: dict[str, Any]) -> dict[str, Any]:
                               stack=str(message.get("stack") or ""),
                               workspace_path=str(message.get("workspace_path") or ""))
         project = record["id"]
+        permissions.start_project(project, str(message.get("permission_mode") or ""))
     else:
         # A late WebSocket/fallback request can arrive after the customer
         # deleted an SRS or project.  Do not announce a ghost project (or let

@@ -134,6 +134,10 @@ export const api = {
   saveSettings: (s) => post('/settings', s),
   mcpProbe: (server) => post('/mcp/probe', server),
   setPlanMode: (project, enabled) => post(`/projects/${encodeURIComponent(project)}/plan-mode`, { enabled }),
+  // What the agent may do without asking (server_modules/permissions.py): the modes, the one a new project starts in, bypass on or off.
+  permissions: () => req('/permissions'),
+  setPermissions: (patch) => post('/permissions', patch),
+  setPermissionMode: (project, mode) => post(`/projects/${encodeURIComponent(project)}/permission-mode`, { mode }),
   files: (project, agent = 'developer') => req(`/files/${encodeURIComponent(project)}?agent=${agent}`),
   saveFile: (project, path, content, changeSummary = '') => post('/save-file', { project, path, content, change_summary: changeSummary }),
   open: (project) => post(`/open/${encodeURIComponent(project)}`, {}),

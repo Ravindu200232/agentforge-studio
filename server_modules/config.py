@@ -79,6 +79,8 @@ DEFAULTS: dict[str, Any] = {
     "e2e_visual_review": True,         # after the end-to-end tests, a model that can look at pictures reviews their screenshots
     "prototype_visual_review": True,   # after the prototype is bundled, a model that can look at pictures reviews every screen
     "prototype_journey_test": True,    # then every journey is clicked through in a browser, live, with a picture at every step
+    "permission_mode": "plan",         # the mode a new project starts in (permissions.py): auto, manual, accept_edits, plan, bypass
+    "bypass_permissions": False,       # the bypass mode is only offered once the person has turned it on in the mode menu
     "privacy_filter": True,            # everything typed goes through Microsoft Presidio first: personal data reaches no model (privacy.py)
     "privacy_model": "en_core_web_sm", # the spaCy model Presidio finds names with (without it: patterns only, no names)
     "privacy_entities": [],            # which kinds of personal data are hidden; empty is privacy.DEFAULT_ENTITIES

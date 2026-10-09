@@ -23,6 +23,8 @@ import { answerAsk, answerOption, answerQuestion, answerValue, declineAsk, revis
 import { cn } from '@/lib/utils'
 import ChangePlan from './ChangePlan'
 import EditAttach from './EditAttach'
+import PermissionCard from './PermissionCard'
+import PermissionMode from './PermissionMode'
 import PluginAccounts from './PluginAccounts'
 import VisionBadge from './VisionBadge'
 import { Dropdown, Modal } from './ui'
@@ -71,23 +73,7 @@ export default function AgentChat({ projectTitle = '', readOnly = false, classNa
   const selection = useStore(s => s.selection)
   const removeSelection = useStore(s => s.removeSelection)
   const clearSelection = useStore(s => s.clearSelection)
-  const planMode = useStore(s => s.planModeByProject[project] ?? true)
-  const setPlanModeStore = useStore(s => s.setPlanMode)
-  const [planModeBusy, setPlanModeBusy] = useState(false)
-  const togglePlanMode = async () => {
-    if (!project || planModeBusy) return
-    const next = !planMode
-    setPlanModeBusy(true)
-    setPlanModeStore(project, next)   // optimistic — a typed change reads this immediately
-    try {
-      await api.setPlanMode(project, next)
-    } catch (e) {
-      setPlanModeStore(project, !next)
-      useStore.getState().addLog('WARN', `Could not change plan mode — ${e.message}`)
-    } finally {
-      setPlanModeBusy(false)
-    }
-  }
+  const permissions = useStore(s => s.permissions)
 
   // Collapsing gives the whole width back to the work when someone wants it.
   const [open, setOpen] = useState(true)
@@ -369,9 +355,10 @@ export default function AgentChat({ projectTitle = '', readOnly = false, classNa
                   live={lifecycleStream.busy && turn.id === turns.at(-1)?.id} />
           ))}
           {lifecycleStream.busy && connection && !ask && <ConnectionNotice connection={connection} project={project} />}
-          {lifecycleStream.busy && !connection && (reasoning || Boolean(agentState)) && !ask &&
+          {lifecycleStream.busy && !connection && (reasoning || Boolean(agentState)) && !ask && !(permissions || []).length &&
             <Thinking reasoning={reasoning} state={agentState} detail={agentDetail} />}
           {ask && <Asked ask={ask} onPick={said => { setText(said); box.current?.focus() }} />}
+          {(permissions || []).map(card => <PermissionCard key={card.id} card={card} />)}
           {queued.map(item => (
             <Queued key={item.id} item={item}
                     onDrop={() => useStore.getState().dropQueued(item.id)} />
@@ -429,23 +416,14 @@ export default function AgentChat({ projectTitle = '', readOnly = false, classNa
                 <EditAttach attach={attach} project={project}
                         onSpoken={said => setText((text ? text.trimEnd() + ' ' : '') + said)} disabled={reading} />
                 <PluginPicker project={project} />
-                {selection.length ? (
+                <PermissionMode project={project} className="ml-1" />
+                {selection.length > 0 && (
                   <span
                     title="Element-specific edits are scoped to the selected artifact."
                     className="ml-1 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold text-muted2">
                     <ListChecks className="size-3" />
                     Direct element edit
                   </span>
-                ) : (
-                  <button type="button" onClick={togglePlanMode} disabled={!project || planModeBusy}
-                    title={planMode
-                      ? 'Every request is planned first: you read the plan and approve it before anything changes. Click to apply changes directly instead.'
-                      : 'Changes apply at once, with no plan to approve first. Click to plan first instead.'}
-                    className={cn('ml-1 inline-flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[10px] font-medium transition-colors disabled:opacity-50',
-                      planMode ? 'bg-panel2 text-ink hover:border-line2' : 'text-muted2 hover:bg-panel2 hover:text-ink')}>
-                    <ListChecks className="size-3" />
-                    {planMode ? 'Plan first' : 'Apply directly'}
-                  </button>
                 )}
               </span>
             ) : <span />}
@@ -1360,6 +1338,15 @@ const Turn = memo(function Turn({ turn, live }) {
       </div>
     )
     if (['command', 'command_output'].includes(turn.kind)) return <CommandTurn turn={turn} live={live} />
+    if (turn.kind === 'permission') {
+      const allowed = /^allowed/i.test(turn.text || '')
+      return (
+        <div className="my-1 ml-1 flex min-w-0 items-center gap-2 text-[11.5px] text-muted">
+          {allowed ? <Check className="size-3 shrink-0 text-ok" /> : <X className="size-3 shrink-0 text-bad" />}
+          <span className="min-w-0 truncate" title={turn.text}>{turn.text}</span>
+        </div>
+      )
+    }
     return (
       <div className="my-3 min-w-0 pl-1">
         <div className="min-w-0 flex-1">

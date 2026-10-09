@@ -64,12 +64,15 @@ export const useStore = create((set, get) => ({
   buildAvailability: {},
   projectSync: {},
   srsStamp: {},
-  // Whether a typed change is planned first (propose -> approve) or applied
-  // at once — per project, defaulting true (today's always-on behavior) for
-  // any project that has never set it.
-  planModeByProject: {},
-  setPlanMode: (project, enabled) => set(state => ({
-    planModeByProject: { ...state.planModeByProject, [project]: enabled } })),
+  // What the agent may do without asking, per project: auto, manual, accept_edits, plan or bypass (server_modules/permissions.py).
+  // A project that never picked one is in the default mode, which is also what a new project starts in.
+  permissionModeByProject: {},
+  defaultPermissionMode: 'plan',
+  bypassEnabled: false,
+  permissionsLoaded: false,
+  setPermissionMode: (project, mode) => set(state => ({
+    permissionModeByProject: { ...state.permissionModeByProject, [project]: mode } })),
+  setPermissionSettings: (patch) => set(patch),
   // Artifact-specific refresh signals. They update only the matching panel and
   // never reset project navigation or reload the whole Studio app.
   prototypeArtifactStamp: {},
@@ -95,7 +98,7 @@ export const useStore = create((set, get) => ({
     get().reset(null)
     get().resetSrs()
     try { LS?.removeItem('agentforge-project-views') } catch { }
-    set({ accountEpoch: get().accountEpoch + 1, streams: {}, projectSessions: {}, projectViews: {}, buildAvailability: {}, projectSync: {}, planModeByProject: {},
+    set({ accountEpoch: get().accountEpoch + 1, streams: {}, projectSessions: {}, projectViews: {}, buildAvailability: {}, projectSync: {}, permissionModeByProject: {},
       srsStamp: {}, prototypeArtifactStamp: {}, runtimes: {}, queue: [] })
   },
   switchAgent: (agentRole) => set(state => {
@@ -160,8 +163,9 @@ export const useStore = create((set, get) => ({
     return { buildAvailability: { ...state.buildAvailability, [snapshot.project]: allowed },
       projectSync: { ...state.projectSync, [snapshot.project]: snapshot.sync },
       projectSessions: { ...state.projectSessions, [snapshot.project]: restored },
-      planModeByProject: { ...state.planModeByProject,
-        [snapshot.project]: snapshot.plan_mode !== false },
+      permissionModeByProject: { ...state.permissionModeByProject,
+        [snapshot.project]: snapshot.permission_mode || (snapshot.plan_mode === false ? 'auto' : 'plan') },
+      ...(snapshot.bypass_enabled !== undefined ? { bypassEnabled: Boolean(snapshot.bypass_enabled) } : {}),
       ...(state.project === snapshot.project ? restored[state.agentRole] : {}) }
   }),
 

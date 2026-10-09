@@ -15,16 +15,19 @@ const HINTS = {
 /** The three tools, and the eraser for what was drawn. */
 export function ToolButtons({ mode, onTool, inked, onErase, small = false }) {
   const size = small ? 'size-7' : 'h-9 px-2'
-  const cell = (id, tip, Icon, disabled = false, onClick = () => onTool(id)) => (
-    <Tip key={id} text={tip}>
-      <button type="button" disabled={disabled} onClick={onClick} aria-label={tip}
-        aria-pressed={mode === id ? true : undefined}
-        className={cn('grid place-items-center rounded-full text-ink transition-colors', size,
-          mode === id ? 'bg-accent shadow-sm' : 'hover:bg-ink/[.06]', 'disabled:pointer-events-none disabled:text-faint')}>
-        <Icon className="size-3.5" />
-      </button>
-    </Tip>
-  )
+  const cell = (id, tip, icon, disabled = false, onClick = () => onTool(id)) => {
+    const Icon = icon
+    return (
+      <Tip key={id} text={tip}>
+        <button type="button" disabled={disabled} onClick={onClick} aria-label={tip}
+          aria-pressed={mode === id ? true : undefined}
+          className={cn('grid place-items-center rounded-full text-ink transition-colors', size,
+            mode === id ? 'bg-accent shadow-sm' : 'hover:bg-ink/[.06]', 'disabled:pointer-events-none disabled:text-faint')}>
+          <Icon className="size-3.5" />
+        </button>
+      </Tip>
+    )
+  }
   return (
     <div className="flex items-center gap-0.5 rounded-full border border-line/80 bg-panel/80 p-0.5 shadow-sm" role="toolbar" aria-label="Page tools">
       {cell('pick', 'Select: click things on the page to ask about them', MousePointerClick)}

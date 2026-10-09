@@ -77,6 +77,19 @@ export function declineAsk() {
   return true
 }
 
+/**
+ * The answer to a permission card: `allow`, `always` (and do not ask again this session) or `deny` (with a note for the agent).
+ * The card goes at once; the run it holds still goes on when the server has the answer.
+ */
+export function answerPermission(card, verdict, note = '') {
+  const store = useStore.getState()
+  store.applyProjectEvent({ type: 'approval_resolved', project: card.project, agent: card.agent, id: card.id })
+  const reply = verdict === 'deny' && note.trim() ? `deny:${note.trim()}` : verdict
+  api.decide({ id: card.id, project: card.project, decision: 'answer', reply })
+     .then(result => { if (result?.ok === false) store.addLog('WARN', result.detail || 'That request is no longer waiting.') })
+     .catch(e => store.addLog('WARN', `Could not send that answer — ${e.message}`))
+}
+
 /** Sends feedback to request a revision for the current wireframe drawing. */
 export function reviseDrawing(feedback) {
   const drawing = useStore.getState().drawing
@@ -99,6 +112,7 @@ function route(question) {
   const store = useStore.getState()
   if (question?.kind === 'prototype') store.setDrawing(question)
   else if (question?.kind === 'question') store.setAsk(question)
+  else if (question?.kind === 'permission') store.applyProjectEvent({ ...question, type: 'approval' })
   else if (question?.kind === 'plan') {
     api.decide({ id: question.id, decision: 'accept' }).catch(() => {})
   }
@@ -108,8 +122,10 @@ function route(question) {
 async function recoverPendingDecision() {
   try {
     const { pending } = await api.decisions()
-    const question = (pending || [])[0]
     const store = useStore.getState()
+    // Every permission card still waiting comes back; of the other questions, one at a time.
+    for (const card of (pending || []).filter(row => row.kind === 'permission' && row.project === store.project)) route(card)
+    const question = (pending || []).find(row => row.kind !== 'permission')
     if (question && question.project === store.project && (!question.agent || question.agent === store.agentRole) && !store.approval && !store.ask && !store.drawing) route(question)
   } catch {
     // An older backend has no such endpoint; the announcement is all there is.

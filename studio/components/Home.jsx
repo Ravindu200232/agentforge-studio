@@ -13,6 +13,7 @@ import { useAttachments } from '@/lib/use-attachments'
 import { AttachButtons, AttachList } from './srs/Attachments'
 import LogoPanel from './LogoPanel'
 import BuildSetup from './BuildSetup'
+import PermissionMode from './PermissionMode'
 import PluginAccounts from './PluginAccounts'
 import DesignCustomize from './DesignCustomize'
 import AgentChat from './AgentChat'
@@ -225,6 +226,7 @@ export default function Home({
       stack: config?.stack || stack,
       think: config?.think ?? think,
       thinking_level: config?.thinking_level || s.thinkingLevel,
+      permission_mode: s.defaultPermissionMode,
       qa_model: models.qa,
       logo,
       srs_id: srs || '',
@@ -269,6 +271,7 @@ export default function Home({
         // What is picked beside this input is what the interview and the specification run on.
         model: builderModel,
         thinking_level: s.thinkingLevel,
+        permission_mode: s.defaultPermissionMode,
       })
       const id = created.project.id
       if (useStore.getState().accountEpoch !== epoch || useStore.getState().srsPhase !== 'planning') return
@@ -471,6 +474,7 @@ export default function Home({
                     onPluginsOpen={() => setPluginsOpen(true)}
                   />
                   <AttachButtons attach={attach} cell />
+                  <PermissionMode />
 
                   {/* Language stays available without adding another text label. */}
                   <div className="relative" ref={langRef}>

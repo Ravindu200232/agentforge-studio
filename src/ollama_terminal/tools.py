@@ -144,24 +144,63 @@ def _segment_program(segment: str) -> str:
     return name
 
 
-def _command_problem(command: str) -> str | None:
-    """Why `command` is blocked, or `None` when it is fine to run."""
+def command_check(command: str) -> tuple[str, str, str]:
+    """How `command` sits with what a build/test/deploy stage runs: (level, why, program).
+
+    `level` is "" when it is one of the usual commands; "unusual" when a program in it is not (`program` names it); "danger" when
+    it can wreck the computer or send a credential out. A host that asks the person (the studio's permission modes) asks about
+    both; one that does not (the terminal agent) refuses both."""
     lowered = command.lower()
     for pattern, message in _DENY_PATTERNS:
         if pattern.search(lowered):
-            return message
+            return "danger", message, ""
     for segment in _split_top_level(command):
         program = _segment_program(segment)
         if not program or program in _ALLOWED_PROGRAMS:
             continue
         if program in _DANGEROUS_CMDLETS:
-            return f"'{program}' is not allowed"
+            return "danger", f"'{program}' is not allowed", program
         if _CMDLET_SHAPE.match(program):
             continue  # an unlisted PowerShell Verb-Noun cmdlet — allowed by shape
-        return (f"'{program}' is not one of the commands a build/test/deploy "
+        return ("unusual",
+                f"'{program}' is not one of the commands a build/test/deploy "
                 f"stage runs (npm/git/node/python/vercel/... and their usual "
-                f"companions) — use one of those instead")
-    return None
+                f"companions) — use one of those instead", program)
+    return "", "", ""
+
+
+def _command_problem(command: str) -> str | None:
+    """Why `command` is blocked, or `None` when it is fine to run."""
+    level, why, _program = command_check(command)
+    return why if level else None
+
+
+def command_programs(command: str) -> list[str]:
+    """The program of every part of a command line (`npm i && node x.js` is `npm`, `node`)."""
+    return [program for program in (_segment_program(part) for part in _split_top_level(command)) if program]
+
+
+# What looks at things and changes nothing: the commands that need no question even when the person asked to be asked about commands.
+READ_ONLY_PROGRAMS = {"ls", "dir", "cat", "type", "echo", "pwd", "cd", "head", "tail", "wc", "grep", "rg", "which", "where",
+                      "get-childitem", "get-content", "select-string", "get-location", "test", "true", "false"}
+READ_ONLY_GIT = {"status", "diff", "log", "show", "branch", "rev-parse", "remote", "ls-files"}
+
+
+def read_only(command: str) -> bool:
+    """Whether every part of `command` only looks at things."""
+    parts = _split_top_level(command)
+    if not parts:
+        return False
+    for part in parts:
+        program = _segment_program(part)
+        if program == "git":
+            words = part.split()
+            sub = next((w for w in words[1:] if not w.startswith("-")), "")
+            if sub not in READ_ONLY_GIT:
+                return False
+        elif program not in READ_ONLY_PROGRAMS:
+            return False
+    return True
 
 
 def tools_unsupported(exc: Exception) -> bool:
@@ -254,6 +293,10 @@ class WorkspaceTools:
                              if protected_app_root and self.root.is_relative_to(Path(protected_app_root).resolve())
                              else None)
         self.mcp = mcp
+        # A host that asks the person before an edit or a command (the studio's permission modes) sets this: it is given what the
+        # agent wants to do ({"kind": "edit" | "command", ...}) and returns "" to go ahead, else what to tell the model. Without
+        # it `approve` is asked, and a command that is not a usual one is refused.
+        self.permission: Callable[[dict[str, Any]], str] | None = None
         # Pictures the screenshot tool took, until the agent has shown them to the model (once), and whether this
         # model can look at pictures at all (the studio sets it from what Ollama says of the model).
         self._pictures: list[tuple[str, bytes]] = []
@@ -379,10 +422,19 @@ class WorkspaceTools:
                 continue
         return "\n".join(hits) or "No matches"
 
+    def _permitted(self, action: dict[str, Any], question: str) -> str:
+        """"" when the action may go ahead, else what to tell the model."""
+        if self.permission is None:
+            return "" if self.approve(question) else "Denied by user"
+        return self.permission(action) or ""
+
     def tool_write_file(self, path: str, content: str) -> str:
         file = self._path(path)
-        if not self.approve(f"Write {file} ({len(content)} characters)?"):
-            return "Denied by user"
+        denied = self._permitted({"kind": "edit", "file": file.relative_to(self.root).as_posix(),
+                                  "detail": f"{len(content)} characters", "write": True},
+                                 f"Write {file} ({len(content)} characters)?")
+        if denied:
+            return denied
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_text(content, encoding="utf-8")
         return f"Wrote {file.relative_to(self.root)}"
@@ -394,17 +446,20 @@ class WorkspaceTools:
         content = file.read_text(encoding="utf-8")
         if content.count(old) != 1:
             raise ValueError(f"Expected exactly one match; found {content.count(old)}")
-        if not self.approve(f"Edit {file} (replace {len(old)} characters)?"):
-            return "Denied by user"
+        denied = self._permitted({"kind": "edit", "file": file.relative_to(self.root).as_posix(),
+                                  "detail": f"replace {len(old)} characters", "write": False},
+                                 f"Edit {file} (replace {len(old)} characters)?")
+        if denied:
+            return denied
         file.write_text(content.replace(old, new, 1), encoding="utf-8")
         return f"Edited {file.relative_to(self.root)}"
 
     def tool_run_command(self, command: str, timeout_seconds: int = 600) -> str:
         if not command.strip():
             raise ValueError("Empty command")
-        problem = _command_problem(command)
-        if problem:
-            raise ValueError(f"Command blocked: {problem}")
+        level, why, program = command_check(command)
+        if level and self.permission is None:
+            raise ValueError(f"Command blocked: {why}")
         # A generated app may own one or more Node processes. Killing every
         # `node.exe` also kills the Studio, unrelated previews and the build
         # itself. Commands must target a known PID when cleanup is needed.
@@ -420,8 +475,10 @@ class WorkspaceTools:
         if server_command and getattr(self, "managed_preview", False):
             raise ValueError("Do not run a development or production server from the agent. "
                              "The Studio starts the managed preview automatically after the build.")
-        if not self.approve(f"Run in {self.root}: {command} ?"):
-            return "Denied by user"
+        denied = self._permitted({"kind": "command", "command": command, "level": level, "why": why, "program": program},
+                                 f"Run in {self.root}: {command} ?")
+        if denied:
+            return denied
         timeout = min(max(int(timeout_seconds), 1), MAX_COMMAND_SECONDS)
         if server_command:
             timeout = min(timeout, SERVER_COMMAND_SECONDS)

@@ -30,7 +30,7 @@ from ollama_terminal.agent import Agent
 from ollama_terminal.mcp_client import NAME_PREFIX as MCP_NAME_PREFIX
 from ollama_terminal.tools import WorkspaceTools, describe_call
 
-from . import bus, config, connection, deploy_vars, live, plugins, prompts, stage_evidence, supabase_connect, vision
+from . import bus, config, connection, deploy_vars, live, permissions, plugins, prompts, stage_evidence, supabase_connect, vision
 
 
 class RunCancelled(Exception):
@@ -709,6 +709,8 @@ class ProjectSession:
                     role_of=lambda: self.role,
                     mcp=self._agent.mcp,
                 )
+                # What the agent may do without asking is the project's permission mode (permissions.py).
+                self._agent.tools.permission = permissions.gate_for(self.project, lambda: self.cancelled, lambda: self.role)
                 # A command running when Stop is pressed is stopped with its process tree, not waited for.
                 self._agent.tools.stop_requested = lambda: self.cancelled
                 # Whether the model in use can look at the screenshots its tool takes (Ollama says so: vision.py).

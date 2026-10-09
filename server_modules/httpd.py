@@ -31,7 +31,7 @@ from qa_agent import verify as qa
 from srs_agent import document as srs_document
 from srs_agent import wireframe as wireframer
 
-from . import bus, changes, cli_monitor, cli_signin, config, connection, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, preview_runtime, privacy, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, web_app, workspace_picker
+from . import bus, changes, cli_monitor, cli_signin, config, connection, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, permissions, preview_runtime, privacy, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, web_app, workspace_picker
 from . import database_rows as database_rows_module
 from .session import session_for
 
@@ -601,6 +601,8 @@ def decide(ctx: dict) -> Any:
             return {"ok": False, "detail": problem}                 # the question stays open, with this to read
         ctx = {**ctx, "reply": prompts.load("deployment/value-saved", variable=asked["variable"]).strip()}
         held = ""
+    elif asked.get("kind") == "permission":
+        held = ""
     else:
         held = secrets_guard.refusal(str(ctx.get("reply") or ctx.get("feedback") or ""))
         if not held:
@@ -624,6 +626,8 @@ def decide(ctx: dict) -> Any:
 
     if bus.deliver(decision_id, reply if choice == "answer" else ""):
         return {"ok": True}                        # a build holding still before its plan takes the answer and goes on
+    if question.get("kind") == "permission":
+        return {"ok": False, "detail": "that request is no longer waiting"}       # the run it was for has ended
     if project and question.get("change_id"):
         # The planner asked it: the answer (or "you decide") goes back to that request.
         return changes.answer(project, str(question["change_id"]), reply if choice == "answer" else "",
@@ -766,7 +770,9 @@ def workflow(ctx: dict) -> Any:
         "agents": bus.run_status(project),
         "build_available": store.build_available(record),
         "sync": _last_sync(project),
-        "plan_mode": record.get("plan_mode", True),
+        "plan_mode": permissions.mode_of(project) == "plan",
+        "permission_mode": permissions.mode_of(project),
+        "bypass_enabled": permissions.bypass_enabled(),
     }
 
 
@@ -788,8 +794,37 @@ def set_plan_mode(ctx: dict) -> Any:
     change and waits for approval; off applies it at once, the way a project
     with no specification yet already does."""
     project = _project(ctx)
-    record = store.update(project, plan_mode=bool(ctx.get("enabled", True)))
-    return {"project": project, "plan_mode": record.get("plan_mode", True)}
+    mode = permissions.set_mode(project, "plan" if bool(ctx.get("enabled", True)) else "auto")
+    return {"project": project, "plan_mode": mode == "plan", "permission_mode": mode}
+
+
+@route("GET", r"/permissions")
+def permission_status(_ctx: dict) -> Any:
+    """The modes, the one a new project starts in, and whether the bypass mode is turned on."""
+    return permissions.status()
+
+
+@route("POST", r"/permissions")
+def permission_settings(ctx: dict) -> Any:
+    """Turn the bypass mode on or off (`bypass`), or change the mode a new project starts in (`default`)."""
+    if "bypass" in ctx:
+        permissions.enable_bypass(bool(ctx.get("bypass")))
+    if ctx.get("default"):
+        permissions.set_default(str(ctx["default"]))
+    return permissions.status()
+
+
+@route("GET", r"/projects/(?P<project>[^/]+)/permission-mode")
+def get_permission_mode(ctx: dict) -> Any:
+    return permissions.status(_project(ctx))
+
+
+@route("POST", r"/projects/(?P<project>[^/]+)/permission-mode")
+def set_permission_mode(ctx: dict) -> Any:
+    """Put one project in a permission mode: auto, manual, accept_edits, plan or bypass (once it has been turned on)."""
+    project = _project(ctx)
+    permissions.set_mode(project, str(ctx.get("mode") or ""))
+    return permissions.status(project)
 
 
 @route("GET", r"/lifecycle/(?P<project>[^/]+)")

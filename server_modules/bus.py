@@ -594,7 +594,8 @@ def waiting_question(project: str) -> dict | None:
     """The question a run of this project is holding still for, as it is on screen."""
     with _lock:
         return next((dict(_pending_decisions[i]) for i, w in _waiters.items()
-                     if w["project"] == project and i in _pending_decisions), None)
+                     if w["project"] == project and i in _pending_decisions
+                     and _pending_decisions[i].get("kind") != "permission"), None)   # permission cards are answered on the card, never by typing
 
 
 def run_status(project: str) -> dict[str, dict]:
