@@ -238,6 +238,47 @@ def _add_components(app: Path) -> None:
             shutil.copyfile(source, copy)
 
 
+# A wireframe is black, white and grey. The Studio writes this palette into a wireframe's Tailwind config, so that no page can bring colour
+# in whatever it says: every colour name Tailwind has (`red-500`, `green-600`, ...) is the same grey scale, and the shadcn `destructive`
+# colour is a dark grey.
+GREY_SCALE = {"50": "#fafafa", "100": "#f4f4f5", "200": "#e4e4e7", "300": "#d4d4d8", "400": "#a1a1aa", "500": "#71717a",
+              "600": "#52525b", "700": "#3f3f46", "800": "#27272a", "900": "#18181b", "950": "#09090b"}
+COLOUR_NAMES = ("slate", "gray", "zinc", "neutral", "stone", "red", "orange", "amber", "yellow", "lime", "green", "emerald", "teal",
+                "cyan", "sky", "blue", "indigo", "violet", "purple", "fuchsia", "pink", "rose")
+DESTRUCTIVE_GREY = "0 0% 25%"
+
+
+def wireframe_tailwind(base: str) -> str:
+    """The kit's Tailwind config with the greys-only palette on the end."""
+    config = base.replace("module.exports = {", "const config = {", 1)
+    return (config.rstrip() + "\n\n// Written by the Studio: a wireframe is black, white and grey, so every colour name is the same grey scale here and the\n"
+            "// shadcn `destructive` colour is a dark grey. Do not edit.\n"
+            f"const grey = {json.dumps(GREY_SCALE)};\n"
+            "config.theme.colors = { transparent: \"transparent\", current: \"currentColor\", inherit: \"inherit\", "
+            "white: \"#ffffff\", black: \"#000000\" };\n"
+            f"for (const name of {json.dumps(list(COLOUR_NAMES))}) config.theme.colors[name] = grey;\n"
+            "config.theme.extend.colors.destructive = { DEFAULT: \"#3f3f46\", foreground: \"#fafafa\" };\n"
+            "module.exports = config;\n")
+
+
+def lock_palette(app: Path) -> None:
+    """Make a wireframe app grey: its Tailwind config is the kit's with the palette above, and its `--destructive` is a grey."""
+    if app.parent.name != "wireframe":
+        return
+    source = KIT_SOURCE / "app" / "tailwind.config.cjs"
+    config = app / "tailwind.config.cjs"
+    if source.is_file():
+        wanted = wireframe_tailwind(source.read_text(encoding="utf-8"))
+        if not config.is_file() or config.read_text(encoding="utf-8") != wanted:
+            config.write_text(wanted, encoding="utf-8")
+    css = app / "src" / "index.css"
+    if css.is_file():
+        text = css.read_text(encoding="utf-8")
+        grey = re.sub(r"(--destructive:\s*)[^;]+;", lambda m: m.group(1) + DESTRUCTIVE_GREY + ";", text)
+        if grey != text:
+            css.write_text(grey, encoding="utf-8")
+
+
 def create_app(app: Path, title: str, pages: list[dict[str, Any]], *, accounts: list[dict] | None = None,
                sign_in: str = "", sign_up: dict | None = None) -> list[dict[str, Any]]:
     """Step 1 of the skill, in code: a project with React, TypeScript, Vite, Tailwind and the shadcn/ui components in it.
@@ -255,6 +296,7 @@ def create_app(app: Path, title: str, pages: list[dict[str, Any]], *, accounts: 
     if not (app / "src" / "components" / "ui").is_dir():
         _extract_components(app)
     _add_components(app)
+    lock_palette(app)
     package = app / "package.json"
     if not package.exists():
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "app"
@@ -340,6 +382,7 @@ KIT_OWNED = ("src/lib/router.tsx", "src/lib/session.tsx")
 
 
 def sync_kit_files(app: Path) -> None:
+    lock_palette(app)                       # a wireframe made before the palette was grey becomes grey when it is bundled again
     for name in KIT_OWNED:
         source, target = KIT_SOURCE / "app" / name, app / name
         if source.is_file() and (not target.is_file() or target.read_bytes() != source.read_bytes()):

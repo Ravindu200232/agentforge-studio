@@ -111,6 +111,8 @@ A wireframe must communicate:
 * How the page connects to the rest of the product
 
 Visual rules
+This is an international low-fidelity wireframe: black, white and neutral greys only. There is no colour anywhere in it, of any hue, and that includes red. An error, a warning, a destructive action, a required marker, an overdue or out-of-stock state, a success message, a link, a badge, a chart series, a selected row and a focus ring are drawn in grey like everything else, and are told apart without colour (see "Showing state without colour").
+
 Use exclusively:
 
 * White and neutral grayscale backgrounds
@@ -122,10 +124,11 @@ Use exclusively:
 * Carefully controlled spacing
 * Simple image placeholders
 * Neutral chart placeholders
-* Lucide outline icons where useful
+* Lucide outline icons where useful, in dark grey
 
 Do not use:
 
+* Any colour of any hue (red, green, amber, blue, purple, ...), not even for errors, warnings, success or destructive actions
 * Brand colors
 * Gradient backgrounds
 * Decorative illustrations
@@ -140,6 +143,23 @@ Do not use:
 Avoid making every section look like a separate large card.
 Use whitespace, section headings, subtle dividers, alignment, and grouping to establish hierarchy.
 A professional wireframe should look intentional and sophisticated even without color.
+
+Showing state without colour
+* A status is a word: draw it as a grey pill or outline with its label ("Overdue", "Low stock", "Paid", "Draft"), with a small outline icon where it helps, never as a green, amber or red dot.
+* An error or a required field says so in words ("Required", "Enter a valid email") with an outline icon, in dark grey, under the field; the field itself gets a darker or thicker border, not a red one.
+* A destructive action is a dark outlined button labelled for what it does ("Delete product") that opens a confirmation dialog. It is not red.
+* A selected or active item is a darker fill, a thicker border or a heavier weight. A link is underlined. A disabled control is light grey with a dashed border.
+* The importance of a button is its fill: primary is solid near-black with white text, secondary is outlined, tertiary is plain underlined text.
+* A chart is grey bars, lines and areas in different tones (and patterns, where tones are too close) with a legend and real axis labels.
+
+Standard low-fidelity conventions
+* An image or photo is a light grey box with a thin diagonal cross and a caption saying what goes there. An avatar is a grey circle with initials. A logo is a grey box with the product's name. A map is a grey box with a pin icon. A video is a grey box with a play triangle.
+* Text is real, specific copy for this product, never squiggles or lorem ipsum. Loading states are grey skeleton bars.
+* Annotations, when one is needed, are short plain notes in grey italics beside the element, never in colour.
+
+How colour is kept out of the app
+* The app's Tailwind palette is greys only: every colour name (red-500, green-600, blue-700, ...) is the same grey scale and the shadcn `destructive` colour is dark grey. Write colour as `foreground`, `muted-foreground`, `muted`, `border`, `primary`, `secondary`, `accent` or `neutral-*`.
+* Never write a colour value of your own: no `#hex`, `rgb()`, `hsl()` or named colour in a class (`bg-[#...]`), in a `style`, in an SVG `fill` or `stroke`, or in `src/index.css`. SVGs use `currentColor` or a grey.
 5. VISUAL HIERARCHY & LAYOUT ENGINE
 Design every page with a deliberate hierarchy.
 Application-level structure
@@ -508,6 +528,7 @@ Verify:
 * Consistent alignments
 * Appropriate content density
 * No unnecessary nested cards
+* No colour anywhere: search the pages and components for colour names in classes (`red-`, `green-`, `amber-`, `yellow-`, `orange-`, `blue-`, `indigo-`, `violet-`, `purple-`, `pink-`, `rose-`, `emerald-`, `teal-`, `cyan-`, `sky-`), `#` colour values, `rgb(`, `hsl(` and colours in `style` or SVG attributes, and replace each with a grey; states are told apart by words, icons, weight and borders
 * No accidental blank layouts
 * No unfinished placeholder pages
 * Logical use of tables, forms, and panels
@@ -610,7 +631,7 @@ The final deliverable MUST:
 * Preserve the existing Vite/Tailwind/shadcn setup.
 * Use only installed Radix-based shadcn/ui components.
 * Use Lucide icons where appropriate.
-* Remain fully grayscale and low fidelity.
+* Remain fully grayscale (black, white and neutral greys only: no red, no colour of any hue) and low fidelity, in the international low-fidelity style described above.
 * Use real customer-specific language.
 * Represent every supplied page.
 * Include complete sections appropriate to each page.

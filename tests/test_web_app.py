@@ -366,6 +366,88 @@ class CheckingThePagesTests(Scratch):
         self.assertEqual(told, [])
 
 
+class GreyWireframeTests(Scratch):
+    """A wireframe is black, white and grey: the Studio writes a palette with no colour in it into the app, whatever the pages say."""
+
+    def wireframe(self):
+        return web_app.app_dir(self.root, "wireframe")
+
+    def test_a_wireframe_app_gets_a_tailwind_config_in_which_every_colour_name_is_grey(self):
+        app = self.wireframe()
+        web_app.create_app(app, "App", PAGES)
+        text = (app / "tailwind.config.cjs").read_text(encoding="utf-8")
+        for name in ("red", "green", "amber", "blue", "emerald", "rose"):
+            self.assertIn(f'"{name}"', text)
+        self.assertIn("config.theme.colors = {", text)
+        self.assertIn("config.theme.extend.colors.destructive", text)
+        self.assertIn("module.exports = config;", text)
+        self.assertNotIn("module.exports = {", text)
+        self.assertIn('border: "hsl(var(--border))"', text)               # the shadcn tokens are still the kit's
+
+    def test_the_generated_config_is_valid_and_no_colour_name_is_anything_but_the_grey_scale(self):
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed")
+        app = self.wireframe()
+        web_app.create_app(app, "App", PAGES)
+        config = app / "tailwind.config.cjs"
+        body = config.read_text(encoding="utf-8").replace(
+            'plugins: [require("tailwindcss-animate"), require("@tailwindcss/container-queries")],', "plugins: [],")
+        config.write_text(body, encoding="utf-8")
+        probe = ("const c = require(process.argv[1]); const out = {red: c.theme.colors.red, rose: c.theme.colors.rose, "
+                 "destructive: c.theme.extend.colors.destructive, border: c.theme.extend.colors.border}; "
+                 "console.log(JSON.stringify(out))")
+        done = subprocess.run([node, "-e", probe, str(config)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        seen = json.loads(done.stdout)
+        self.assertEqual(seen["red"], web_app.GREY_SCALE)
+        self.assertEqual(seen["rose"], web_app.GREY_SCALE)
+        self.assertEqual(seen["destructive"]["DEFAULT"], "#3f3f46")
+        self.assertEqual(seen["border"], "hsl(var(--border))")
+
+    def test_the_destructive_colour_in_the_stylesheet_is_grey_too(self):
+        app = self.wireframe()
+        web_app.create_app(app, "App", PAGES)
+        css = (app / "src" / "index.css").read_text(encoding="utf-8")
+        self.assertNotIn("0 84.2% 60.2%", css)
+        self.assertIn("--destructive: 0 0% 25%;", css)
+
+    def test_a_prototype_keeps_its_colours(self):
+        app = web_app.app_dir(self.root, "prototype")
+        web_app.create_app(app, "App", PAGES)
+        self.assertEqual((app / "tailwind.config.cjs").read_bytes(), (web_app.KIT_SOURCE / "app" / "tailwind.config.cjs").read_bytes())
+        self.assertIn("0 84.2% 60.2%", (app / "src" / "index.css").read_text(encoding="utf-8"))
+
+    def test_a_wireframe_made_before_the_palette_was_grey_becomes_grey_when_it_is_bundled_again(self):
+        app = self.wireframe()
+        web_app.create_app(app, "App", PAGES)
+        (app / "tailwind.config.cjs").write_bytes((web_app.KIT_SOURCE / "app" / "tailwind.config.cjs").read_bytes())
+        css = app / "src" / "index.css"
+        css.write_text(css.read_text(encoding="utf-8").replace("--destructive: 0 0% 25%;", "--destructive: 0 84.2% 60.2%;"), encoding="utf-8")
+        web_app.sync_kit_files(app)
+        self.assertIn("config.theme.extend.colors.destructive", (app / "tailwind.config.cjs").read_text(encoding="utf-8"))
+        self.assertIn("--destructive: 0 0% 25%;", css.read_text(encoding="utf-8"))
+
+    def test_the_wireframe_prompts_ask_for_grey_in_the_international_low_fidelity_style_and_name_red(self):
+        from server_modules import prompts
+
+        generate = prompts.load("wireframe/generate", request="x", skill="s", shadcn="sh", app="a", routes="r", resume="")
+        for expected in ("international low-fidelity wireframe", "black, white and neutral greys only", "and that includes red",
+                         "Showing state without colour", "A destructive action is a dark outlined button",
+                         "light grey box with a thin diagonal cross", "No colour anywhere: search the pages",
+                         "no red, no colour of any hue"):
+            self.assertIn(expected, generate)
+        edit = prompts.load("wireframe/edit", request="x", skill="s", app="a", where="")
+        for expected in ("The wireframes stay low fidelity, whatever the request says", "must not turn into a high-fidelity design",
+                         "no colour of any hue (not even red for an error or a delete)", "colour and visual styling are for the prototype",
+                         "more polished", "src/components/layout/", "Write no colour value of your own"):
+            self.assertIn(expected, edit)
+        self.assertNotIn("{{", edit)
+
+
 class KitOwnedFilesTests(Scratch):
     def test_the_router_and_the_session_are_written_again_when_the_studio_has_changed_them(self):
         app = self.app()
