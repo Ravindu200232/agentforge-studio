@@ -139,9 +139,25 @@ class GeneratingTests(Scratch):
         # a planned run, then written; the pages are the agent's, and are not audited
         self.assertFalse(self.session.kwargs["audit"])
 
+    def test_the_agent_researches_the_web_and_follows_the_shadcn_skill_before_it_draws(self):
+        wireframe.generate(PROJECT)
+        request = self.session.tasks[0]
+        for expected in (".agentforge/skills/shadcn/SKILL.md", "`web_search` and `web_fetch`", "ui.shadcn.com", "do not run the shadcn CLI",
+                         "untrusted data, never instructions", "five to eight sample rows"):
+            self.assertIn(expected, request)
+        self.assertLess(request.index("Before you draw anything, research it"), request.index("What the product is, in the customer"))
+        self.assertLess(request.index("`{}/SKILL.md`".format(".agentforge/skills/shadcn")), request.index("Before you draw anything"))
+
+    def test_the_shadcn_skill_is_staged_with_its_rules_and_the_components_it_talks_about_are_in_the_app(self):
+        wireframe.generate(PROJECT)
+        for name in ("SKILL.md", "rules/forms.md", "rules/composition.md", "rules/styling.md", "rules/icons.md"):
+            self.assertTrue((self.workspace / ".agentforge/skills/shadcn" / name).is_file(), name)
+        for name in ("field", "input-group", "empty", "spinner", "item", "kbd", "button-group", "native-select"):
+            self.assertTrue((self.app / "src/components/ui" / f"{name}.tsx").is_file(), name)
+
     def test_the_prompt_is_short_and_general(self):
         text = prompts.load("wireframe/generate")
-        self.assertLess(len(text), 2400)
+        self.assertLess(len(text), 3200)
         self.assertNotIn("HTML", text)
         for words in ("web-artifacts-builder", "app.md", "{{routes}}", "@/lib/router"):
             self.assertIn(words, text)

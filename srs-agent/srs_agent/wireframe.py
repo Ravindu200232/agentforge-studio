@@ -80,13 +80,14 @@ def generate(project: str, request: str = "", fresh: bool = True) -> dict[str, A
     title = str((document.document(project).get("srs_document", {}).get("app_summary") or {}).get("app_name") or project)
     rows = web_app.create_app(app, title, pages)
     skill = web_app.stage_skill(session.workspace)
+    shadcn = web_app.stage_shadcn(session.workspace)
 
     bus.phase(project, "wireframes", "Drawing the wireframes", detail=f"{len(rows)} page(s) from the approved specification.",
               agent=bus.DESIGNER)
     resume = (f"The app already has pages from a run that stopped: read what is in `{_relative(project)}/src/pages`, keep it, "
               "and write the pages that are still missing." if carrying_on else "")
     result = session.run_task(
-        prompts.load("wireframe/generate", request=request or APPROVAL_PROMPT, skill=skill, app=_relative(project),
+        prompts.load("wireframe/generate", request=request or APPROVAL_PROMPT, skill=skill, shadcn=shadcn, app=_relative(project),
                      routes=routes_text(rows), resume=resume),
         audit=False, parallel_write_limit=4)
     if session.cancelled:

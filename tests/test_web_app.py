@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import sys
 import tarfile
 import tempfile
@@ -58,6 +59,64 @@ class SkillTests(unittest.TestCase):
             self.assertEqual((Path(tmp) / relative / "SKILL.md").read_bytes(), (web_app.SKILL_SOURCE / "SKILL.md").read_bytes())
             self.assertTrue((Path(tmp) / relative / "LICENSE.txt").is_file())
             self.assertFalse((Path(tmp) / relative / "scripts").exists())
+
+
+class ShadcnTests(Scratch):
+    def test_the_shadcn_skill_is_shadcn_uis_own_unchanged_with_its_licence_and_where_it_came_from(self):
+        text = (web_app.SHADCN_SOURCE / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("name: shadcn", text)
+        self.assertIn("rules/forms.md", text)
+        self.assertIn("MIT License", (web_app.SHADCN_SOURCE / "LICENSE.txt").read_text(encoding="utf-8"))
+        self.assertIn("https://github.com/shadcn-ui/ui", (web_app.SHADCN_SOURCE / "SOURCE.md").read_text(encoding="utf-8"))
+        for name in ("forms", "composition", "styling", "icons", "base-vs-radix"):
+            self.assertTrue((web_app.SHADCN_SOURCE / "rules" / f"{name}.md").is_file(), name)
+
+    def test_the_agent_is_given_the_shadcn_skill_with_its_rules_inside_its_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relative = web_app.stage_shadcn(Path(tmp))
+            self.assertEqual(relative, ".agentforge/skills/shadcn")
+            self.assertEqual((Path(tmp) / relative / "SKILL.md").read_bytes(), (web_app.SHADCN_SOURCE / "SKILL.md").read_bytes())
+            self.assertTrue((Path(tmp) / relative / "rules" / "forms.md").is_file())
+
+    def test_the_components_the_archive_lacks_are_added_to_a_new_app_and_never_over_one_the_agent_has_written(self):
+        app = self.app()
+        web_app.create_app(app, "App", PAGES)
+        ui = app / "src" / "components" / "ui"
+        for name in ("field", "input-group", "empty", "spinner", "item", "kbd", "button-group", "native-select", "pagination",
+                     "alert-dialog", "input-otp"):
+            self.assertTrue((ui / f"{name}.tsx").is_file(), name)
+        self.assertTrue((ui / "button.tsx").is_file())                   # the archive's own are still there
+        (ui / "empty.tsx").write_text("// the agent's own", encoding="utf-8")
+        web_app.create_app(app, "App", PAGES)
+        self.assertEqual((ui / "empty.tsx").read_text(encoding="utf-8"), "// the agent's own")
+
+    def test_every_component_is_written_for_this_app_and_every_package_it_imports_is_installed_by_the_kit(self):
+        package = json.loads((web_app.KIT_SOURCE / "package.json").read_text(encoding="utf-8"))
+        installed = {*package["dependencies"], *package["devDependencies"]}
+        for path in sorted((web_app.KIT_SOURCE / "components").glob("*.tsx")):
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn('from "cn"', text, path.name)
+            self.assertNotIn('from "radix-ui"', text, path.name)
+            self.assertNotIn("@/registry", text, path.name)
+            self.assertNotIn("shadow-xs", text, path.name)
+            for name in re.findall(r'from "([^"./@][^"]*|@[^"/]+/[^"/]+)', text):
+                package_name = name if name.startswith("@") else name.split("/")[0]
+                if package_name in {"react"}:
+                    continue
+                self.assertIn(package_name, installed, f"{path.name} imports {package_name}")
+            for local in re.findall(r'from "@/components/ui/([^"]+)"', text):
+                archive = (web_app.KIT_SOURCE / "components" / f"{local}.tsx").is_file() or local in {
+                    "button", "input", "textarea", "label", "separator"}
+                self.assertTrue(archive, f"{path.name} imports ui/{local}")
+
+    def test_the_kit_installs_the_plugin_the_field_components_need_for_container_queries(self):
+        package = json.loads((web_app.KIT_SOURCE / "package.json").read_text(encoding="utf-8"))
+        self.assertIn("@tailwindcss/container-queries", package["devDependencies"])
+        config = (web_app.KIT_SOURCE / "app" / "tailwind.config.cjs").read_text(encoding="utf-8")
+        self.assertIn('require("@tailwindcss/container-queries")', config)
+        lock = json.loads((web_app.KIT_SOURCE / "package-lock.json").read_text(encoding="utf-8"))
+        for name in ("@tailwindcss/container-queries", "@radix-ui/react-alert-dialog", "input-otp"):
+            self.assertIn(f"node_modules/{name}", lock["packages"], name)
 
 
 class PageFileTests(unittest.TestCase):

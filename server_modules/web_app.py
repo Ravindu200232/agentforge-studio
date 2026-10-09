@@ -29,6 +29,10 @@ from . import bus, config, prompts
 
 SKILL = "web-artifacts-builder"
 SKILL_SOURCE = config.PROMPTS / "skills" / SKILL
+# shadcn/ui's own skill (https://github.com/shadcn-ui/ui, `skills/shadcn`, unchanged) and the components of that repository the skill's
+# archive does not have (`web_kit/components`, ported to Tailwind 3 and the single Radix packages the kit installs).
+SHADCN = "shadcn"
+SHADCN_SOURCE = config.PROMPTS / "skills" / SHADCN
 KIT_SOURCE = Path(__file__).resolve().parent / "web_kit"
 COMPONENTS_ARCHIVE = SKILL_SOURCE / "scripts" / "shadcn-components.tar.gz"
 KINDS = ("wireframe", "prototype")
@@ -131,6 +135,17 @@ def stage_skill(workspace: Path) -> str:
     return relative
 
 
+def stage_shadcn(workspace: Path) -> str:
+    """Put shadcn/ui's skill (its `SKILL.md`, the `rules/` and the references) where the project's agent can read it."""
+    relative = f"{config.RECORD_DIR}/skills/{SHADCN}"
+    target = workspace / relative
+    for source in sorted(p for p in SHADCN_SOURCE.rglob("*") if p.is_file()):
+        copy = target / source.relative_to(SHADCN_SOURCE)
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, copy)
+    return relative
+
+
 def app_dir(workspace: Path, kind: str) -> Path:
     if kind not in KINDS:
         raise ValueError(f"unknown kind of app: {kind}")
@@ -202,6 +217,16 @@ def _extract_components(app: Path) -> None:
                     target.write_bytes(source.read())
 
 
+def _add_components(app: Path) -> None:
+    """The shadcn/ui components the skill's archive lacks (`Field`, `InputGroup`, `Empty`, `Spinner`...), beside the others; one the
+    agent already has is left as it is."""
+    target = app / "src" / "components" / "ui"
+    target.mkdir(parents=True, exist_ok=True)
+    for source in sorted((KIT_SOURCE / "components").glob("*.tsx")):
+        if not (target / source.name).exists():
+            shutil.copyfile(source, target / source.name)
+
+
 def create_app(app: Path, title: str, pages: list[dict[str, Any]], *, accounts: list[dict] | None = None,
                sign_in: str = "", sign_up: dict | None = None) -> list[dict[str, Any]]:
     """Step 1 of the skill, in code: a project with React, TypeScript, Vite, Tailwind and the shadcn/ui components in it.
@@ -218,6 +243,7 @@ def create_app(app: Path, title: str, pages: list[dict[str, Any]], *, accounts: 
         target.write_text(text.replace("{{title}}", re.sub(r"[<>&\"]", "", title) or "App"), encoding="utf-8")
     if not (app / "src" / "components" / "ui").is_dir():
         _extract_components(app)
+    _add_components(app)
     package = app / "package.json"
     if not package.exists():
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "app"

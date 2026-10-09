@@ -192,16 +192,17 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str) -> list
 
     uploaded = _uploaded_site_images(session, app)
     skill = web_app.stage_skill(session.workspace)
+    shadcn = web_app.stage_shadcn(session.workspace)
     resume = ("## Resuming an interrupted run\n\nThe app already has the pages an earlier run wrote: read them, keep what is "
               "finished, and write only the pages that are still missing." if resuming else "")
     request = prompts.load(
-        "prototype/generate", request=headline, skill=skill, app=app_rel, wireframe=wire_rel, inputs="\n".join(inputs),
+        "prototype/generate", request=headline, skill=skill, shadcn=shadcn, app=app_rel, wireframe=wire_rel, inputs="\n".join(inputs),
         design_direction=design_direction,
         routes=wireframe_stage.routes_text([{"route": r["route"], "name": r["name"], "file": files[str(r["route"])],
                                              "roles": r["roles"], "signedIn": r["signed_in"]} for r in routes_out]),
         sign_in=_sign_in_text(accounts, sign_in, routes_out),
         uploads=(json.dumps(uploaded, ensure_ascii=False, indent=2) if uploaded
-                 else "None — use fitting real photographs by their address, or draw the picture in code."),
+                 else "None — find fitting real pictures on the web and use them by their address."),
         resume=resume)
 
     result = session.run_task(request, audit=False, parallel_write_limit=4)
