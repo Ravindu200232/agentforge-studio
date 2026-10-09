@@ -54,10 +54,10 @@ export function ToolHint({ mode }) {
 }
 
 /** What was pointed at or drawn around, waiting to go with the next request. */
-export function Chips({ items, onRemove }) {
+export function Chips({ items, onRemove, className }) {
   if (!items.length) return null
   return (
-    <ul className="flex flex-wrap gap-1.5" aria-label="Pointed at">
+    <ul className={cn('flex flex-wrap gap-1.5', className)} aria-label="Pointed at">
       {items.map(item => (
         <li key={item.key}
           className="inline-flex max-w-full items-center gap-1 rounded-full border border-line bg-panel py-0.5 pl-2.5 pr-1 text-[10.5px] text-ink">

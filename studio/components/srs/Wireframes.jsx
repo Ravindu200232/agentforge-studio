@@ -311,15 +311,21 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
               </div>
             )}
           </div>
-          <Chips items={tools.items} onRemove={tools.removeItem} />
-          <form onSubmit={ask} className="flex items-center gap-2">
-            <input value={prompt} onChange={event => setPrompt(event.target.value)} disabled={busy || !built}
-              placeholder={current ? `Ask for a change${current.page_name ? ` to ${current.page_name}` : ''}…` : 'Ask for a change…'}
-              className="min-w-0 flex-1 rounded-none border border-line bg-panel px-3 py-2 text-[12px] text-ink outline-none focus:border-accent disabled:opacity-50" />
-            <Button variant="outline" type="submit" disabled={busy || !built || !prompt.trim()}>
-              {asking ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
-            </Button>
-          </form>
+          {/* The same bar the Studio's own prompt is: centred, not as wide as the page, rounded, with the send button inside it. */}
+          <div className="mx-auto flex w-full max-w-[720px] shrink-0 flex-col gap-2 pb-1">
+            <Chips items={tools.items} onRemove={tools.removeItem} className="justify-center" />
+            <form onSubmit={ask}
+              className="flex items-center gap-2 rounded-[22px] border border-line bg-panel py-1.5 pl-4 pr-1.5 shadow-lg transition-all focus-within:border-accent/60">
+              <input value={prompt} onChange={event => setPrompt(event.target.value)} disabled={busy || !built}
+                aria-label="Ask for a change"
+                placeholder={current ? `Ask for a change${current.page_name ? ` to ${current.page_name}` : ''}…` : 'Ask for a change…'}
+                className="min-w-0 flex-1 bg-transparent py-1.5 text-[13px] text-ink outline-none placeholder:text-muted2 disabled:opacity-50" />
+              <button type="submit" disabled={busy || !built || !prompt.trim()} aria-label="Send the change" title="Send"
+                className="grid size-8 shrink-0 place-items-center rounded-full bg-accent text-ink shadow-sm transition-all hover:bg-press active:scale-95 disabled:pointer-events-none disabled:opacity-40">
+                {asking ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+              </button>
+            </form>
+          </div>
         </div>
         <AppTextEdit frameRef={frame} active={tools.mode === 'text'} loaded={loadedCount} project={srsId} kind="wireframe"
           onSaved={load} onAskAi={askToChange} />
