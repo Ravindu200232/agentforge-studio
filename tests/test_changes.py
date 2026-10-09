@@ -404,10 +404,10 @@ class RoutingTests(unittest.TestCase):
     def test_chat_requests_are_planned_when_there_is_a_specification_and_answered_directly_when_not(self):
         with mock.patch.object(runs.changes, "applies", lambda project: True), \
                 mock.patch.object(runs.changes, "submit", lambda *a, **k: {"planned": True}), \
-                mock.patch.object(runs, "agent_update_direct", lambda message: {"planned": False}):
+                mock.patch.object(runs, "agent_update_direct", lambda message, screened=False: {"planned": False}):
             self.assertEqual(runs.agent_update({"project": "p", "prompt": "change it"}), {"planned": True})
         with mock.patch.object(runs.changes, "applies", lambda project: False), \
-                mock.patch.object(runs, "agent_update_direct", lambda message: {"planned": False}):
+                mock.patch.object(runs, "agent_update_direct", lambda message, screened=False: {"planned": False}):
             self.assertEqual(runs.agent_update({"project": "p", "prompt": "change it"}), {"planned": False})
 
     def test_the_prompt_pack_carries_the_instructions(self):

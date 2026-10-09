@@ -29,11 +29,16 @@ $env:PYTHONPATH = "$deps;$root\src;$root\srs-agent;$root\prototype-agent;$root\b
 # own .deps folder for this Python version, so your Python's own packages are never changed, and a
 # first launch cannot leave Next.js running alone with every API request (including sign-in) failing
 # as an HTTP 500.
-& $python -c "import ollama, httpx, pydantic, cryptography" 2>$null
+& $python -c "import ollama, httpx, pydantic, cryptography, presidio_analyzer, presidio_anonymizer, spacy, en_core_web_sm" 2>$null
 if ($LASTEXITCODE -ne 0) {
+    # Microsoft Presidio (with spaCy and its small English model) is the privacy filter every message goes through before a model.
     Write-Host 'Installing missing backend Python dependencies...'
     & $python -m pip install --upgrade --target "$deps" `
-        'ollama>=0.6.2,<1' 'httpx>=0.27,<1' 'pydantic>=2.6,<3' 'cryptography>=42,<48'
+        'ollama>=0.6.2,<1' 'httpx>=0.27,<1' 'pydantic>=2.6,<3' 'cryptography>=42,<48' `
+        'presidio-analyzer>=2.2,<3' 'presidio-anonymizer>=2.2,<3' 'spacy>=3.7,<4'
+    if ($LASTEXITCODE -eq 0) {
+        & $python -m pip install --upgrade --no-deps --target "$deps" 'https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl'
+    }
     if ($LASTEXITCODE -ne 0) {
         Write-Error 'Backend dependencies could not be installed. Check your Internet connection, then run studio.bat again.'
         exit 2

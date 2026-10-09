@@ -127,7 +127,7 @@ class PointedTests(unittest.TestCase):
 
     def test_a_change_aimed_at_something_tells_the_agent_what_it_is(self):
         sent = []
-        with mock.patch.object(runs, "agent_update", lambda message: sent.append(message) or {"ok": True}):
+        with mock.patch.object(runs, "agent_update", lambda message, screened=False: sent.append(message) or {"ok": True}):
             runs.element_edit({"project": "p", "route": "/prototype", "prompt": "Make it green", "elements": [self.ELEMENT]})
         self.assertIn("Make it green", sent[0]["prompt"])
         self.assertIn("`<button>` with the words “Add to cart”", sent[0]["prompt"])

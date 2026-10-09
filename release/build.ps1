@@ -38,7 +38,10 @@ if (-not $Repo) {
 }
 $PythonVersion = '3.12.10'
 $StudioModules = @{ 'puppeteer' = '25.12.0'; 'marked' = '4.3.0'; '@mermaid-js/mermaid-cli' = '11.17.0' }
-$BackendPackages = @('ollama>=0.6.2,<1', 'httpx>=0.27,<1', 'pydantic>=2.6,<3', 'cryptography>=42,<48')
+$BackendPackages = @('ollama>=0.6.2,<1', 'httpx>=0.27,<1', 'pydantic>=2.6,<3', 'cryptography>=42,<48',
+                     'presidio-analyzer>=2.2,<3', 'presidio-anonymizer>=2.2,<3', 'spacy>=3.7,<4')
+# The privacy filter's English model (Presidio finds names with it); a plain wheel, so it is installed without its dependencies.
+$PrivacyModel = 'https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl'
 
 function Step($text) { Write-Host "`n== $text" -ForegroundColor Cyan }
 
@@ -141,6 +144,8 @@ if (Want 'python') {
     $hostPython = Find-Python312
     & $hostPython -m pip install --disable-pip-version-check --target $site --only-binary=:all: --platform win_amd64 --python-version 3.12 --implementation cp @BackendPackages
     if ($LASTEXITCODE -ne 0) { throw 'pip install failed' }
+    & $hostPython -m pip install --disable-pip-version-check --target $site --no-deps $PrivacyModel
+    if ($LASTEXITCODE -ne 0) { throw 'pip install of the privacy filter model failed' }
 }
 
 if (Want 'package') {

@@ -31,7 +31,7 @@ _deps = ROOT / ".deps"
 if _deps.is_dir() and str(_deps) not in sys.path:
     sys.path.insert(0, str(_deps))
 
-from server_modules import config, httpd, runs, wsd  # noqa: E402
+from server_modules import config, httpd, privacy, runs, wsd  # noqa: E402
 
 
 def main() -> int:
@@ -43,6 +43,7 @@ def main() -> int:
 
         return stdio_bridge.serve()
 
+    privacy.warm_up()                       # Presidio takes a few seconds to load; the first message should not wait for it
     feed = wsd.FeedServer(handler=runs.handle, port=config.WS_PORT)
     feed.start()
 

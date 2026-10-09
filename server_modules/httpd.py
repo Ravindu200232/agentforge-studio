@@ -31,7 +31,7 @@ from qa_agent import verify as qa
 from srs_agent import document as srs_document
 from srs_agent import wireframe as wireframer
 
-from . import bus, changes, cli_monitor, cli_signin, config, connection, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, web_app, workspace_picker
+from . import bus, changes, cli_monitor, cli_signin, config, connection, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, preview_runtime, privacy, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, web_app, workspace_picker
 from . import database_rows as database_rows_module
 from .session import session_for
 
@@ -163,6 +163,12 @@ def models(_ctx: dict) -> Any:
         "cloud_account": "",
         "selected": saved.get("model", ""),
     }
+
+
+@route("GET", r"/privacy")
+def privacy_status(_ctx: dict) -> Any:
+    """Whether the privacy filter (Microsoft Presidio) is on and ready, and what it hides."""
+    return privacy.status()
 
 
 @route("GET", r"/models/capabilities")
@@ -597,6 +603,12 @@ def decide(ctx: dict) -> Any:
         held = ""
     else:
         held = secrets_guard.refusal(str(ctx.get("reply") or ctx.get("feedback") or ""))
+        if not held:
+            try:
+                project_of = asked.get("project", "")
+                ctx = {**ctx, **{key: privacy.screen(project_of, str(ctx[key])) for key in ("reply", "feedback") if ctx.get(key)}}
+            except privacy.NotSent as exc:
+                held = str(exc)
     if held:
         # The question stays open: it is answered again, without the secret.
         asked = next((d for d in bus.pending_decisions() if d.get("id") == decision_id), {})
@@ -618,7 +630,7 @@ def decide(ctx: dict) -> Any:
                               str(ctx.get("model") or ""))
     if project and choice in {"answer", "revise"} and reply:
         runs.agent_update_direct({"project": project, "prompt": reply,
-                                  "agent": question.get("agent", bus.DEVELOPER)})
+                                  "agent": question.get("agent", bus.DEVELOPER)}, screened=True)
     elif project:
         bus.log(project, "INFO", f"Question answered: {choice}",
                 agent=question.get("agent", bus.DEVELOPER))
@@ -848,8 +860,13 @@ def change_decide(ctx: dict) -> Any:
     """Approve, revise or cancel the plan shown in the chat."""
     project = _project(ctx)
     excluded = ctx.get("excluded_stages")
+    try:
+        feedback = privacy.screen(project, str(ctx.get("feedback") or ""))
+    except privacy.NotSent as exc:
+        bus.agent_msg(project, str(exc), title="Not sent")
+        return {"ok": False, "detail": str(exc)}
     return changes.decide(project, unquote(ctx["_match"].group("change")), str(ctx.get("decision") or ""),
-                          str(ctx.get("feedback") or ""), str(ctx.get("model") or ""),
+                          feedback, str(ctx.get("model") or ""),
                           excluded_stages=excluded if isinstance(excluded, list) else None)
 
 

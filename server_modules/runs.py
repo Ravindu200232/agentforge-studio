@@ -14,7 +14,7 @@ from builder_agent import build as builder
 from prototype_agent import prototype as prototyper
 from qa_agent import verify as qa
 
-from . import bus, changes, config, jobs, plugins, pointed, preview_runtime, prompts, secrets_guard, store
+from . import bus, changes, config, jobs, plugins, pointed, preview_runtime, privacy, prompts, secrets_guard, store
 from .session import PREVIEW_START, RunCancelled, session_for
 
 # How many times the agent fixes and the Studio starts the preview again before it gives up.
@@ -119,11 +119,30 @@ def active_run(project: str) -> str:
 
 # --- the messages -----------------------------------------------------------
 
+def _private(project: str, text: str) -> tuple[str, dict[str, Any] | None]:
+    """What the person typed with its personal data hidden (the privacy filter), or, when the filter could not run, the answer
+    to give instead: nothing is sent to the model then."""
+    try:
+        return privacy.screen(project, text), None
+    except privacy.NotSent as exc:
+        held = str(exc)
+        if project:
+            bus.agent_msg(project, held, title="Not sent")
+        return text, {"ok": False, "detail": held}
+
+
 def agent_build(message: dict[str, Any]) -> dict[str, Any]:
     """Build — or, when `prototype_only`, draw the prototype first."""
     _remember_model(message)
     project = str(message.get("srs_id") or message.get("project") or "").strip()
     direction = str(message.get("prompt") or "").strip()
+    try:
+        hidden = privacy.scrub(direction) if privacy.enabled() else privacy.Scrubbed(direction)
+    except privacy.NotSent as exc:
+        if project:
+            bus.agent_msg(project, str(exc), title="Not sent")
+        return {"ok": False, "detail": str(exc)}
+    direction = hidden.text
 
     if not project:
         record = store.create(idea=direction or "See the attached files.",
@@ -136,6 +155,7 @@ def agent_build(message: dict[str, Any]) -> dict[str, Any]:
         # deleted an SRS or project.  Do not announce a ghost project (or let
         # a stale worker revive its workspace) when its record is gone.
         store.require(project)
+    privacy.tell(project, hidden.found)
 
     if message.get("stack"):
         store.update(project, stack=str(message["stack"]))
@@ -185,12 +205,15 @@ def _write_specification(project: str, said: str = "") -> dict[str, Any]:
     return {"ok": True, "project": project}
 
 
-def agent_update(message: dict[str, Any]) -> dict[str, Any]:
+def agent_update(message: dict[str, Any], screened: bool = False) -> dict[str, Any]:
     """Something typed into the chat stream.
 
     A project with a specification plans it first: the plan is shown in the chat and nothing is
     changed until it is approved (`changes.py`). A project with nothing to change yet is answered
     where it stands.
+
+    What was typed goes through the privacy filter first. `screened` says the caller already did that for what the person
+    typed (and added text that is not theirs, such as the description of what they pointed at): only the server sets it.
     """
     _remember_model(message)
     project = str(message.get("project") or "").strip()
@@ -203,17 +226,22 @@ def agent_update(message: dict[str, Any]) -> dict[str, Any]:
     if held:
         bus.agent_msg(project, held, title="Not sent")
         return {"ok": False, "detail": held}
+    if not screened:
+        request, held = _private(project, request)
+        if held:
+            return held
+        message = {**message, "prompt": request}
     answered = _answer_held(project, request)
     if answered:
         return answered
     if changes.applies(project):
         return changes.submit(project, request, _model_from(message))
-    return agent_update_direct(message)
+    return agent_update_direct(message, screened=True)
 
 
-def agent_update_direct(message: dict[str, Any]) -> dict[str, Any]:
+def agent_update_direct(message: dict[str, Any], screened: bool = False) -> dict[str, Any]:
     """A change applied at once, with no plan to approve: the feedback on a drawing, an answer to a
-    question the run itself asked, a message to a project that has no specification yet."""
+    question the run itself asked, a message to a project that has no specification yet. (`screened`: see `agent_update`.)"""
     _remember_model(message)
     project = str(message.get("project") or "").strip()
     request = str(message.get("prompt") or "").strip()
@@ -225,6 +253,10 @@ def agent_update_direct(message: dict[str, Any]) -> dict[str, Any]:
     if held:
         bus.agent_msg(project, held, title="Not sent")
         return {"ok": False, "detail": held}
+    if not screened:
+        request, held = _private(project, request)
+        if held:
+            return held
     answered = _answer_held(project, request)
     if answered:
         return answered
@@ -324,7 +356,12 @@ def element_edit(message: dict[str, Any]) -> dict[str, Any]:
     request = str(message.get("prompt") or "").strip()
     where = " ".join(part for part in (f"on {route}" if route else "",
                                        f"({target})" if target else "") if part)
-    return agent_update({**message, "prompt": f"{request}\n\nThey pointed at this {where}." + pointed.describe(message.get("elements"))})
+    # Only what they typed is filtered: the description of the page (its own sample names, say) is how the agent finds the thing.
+    request, held = _private(project, request)
+    if held:
+        return held
+    return agent_update({**message, "prompt": f"{request}\n\nThey pointed at this {where}." + pointed.describe(message.get("elements"))},
+                        screened=True)
 
 
 def preview_start(message: dict[str, Any]) -> dict[str, Any]:
