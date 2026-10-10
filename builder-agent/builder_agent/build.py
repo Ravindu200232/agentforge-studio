@@ -132,6 +132,43 @@ def _conform_reports(project: str, session: Any, plan: str) -> None:
                                  + "; ".join(found[:5]))
 
 
+def settled_qa_report(project: str, session: Any) -> dict[str, Any]:
+    """`qa/report.json`, complete. The agent writes it as it tests; when it ended the work without marking it complete (or
+    without writing it at all), the Studio completes it here: what the testing proved is read from the runners' own output on
+    disk (`qa_agent.evidence`), so one forgotten field is never a reason to fail a finished build. It was: every resume of a
+    build failed with "ended without a complete qa/report.json", seven times in three projects."""
+    saved = session.read_record("qa", "report.json", fallback=None)
+    if isinstance(saved, dict) and saved.get("complete"):
+        return saved
+    qa_report = saved if isinstance(saved, dict) else {}
+    why = "was not written" if not isinstance(saved, dict) else "was not marked complete"
+    qa_report.update(project=project, complete=True)
+    qa_report.setdefault("provenance", "Read by the Studio from the test runners' own output on disk.")
+    notes = qa_report.get("studioNotes") if isinstance(qa_report.get("studioNotes"), list) else []
+    notes.append(f"The agent's qa/report.json {why} when the build ended; the Studio completed it from the runners' output.")
+    qa_report["studioNotes"] = notes[-5:]
+    session.write_record("qa", "report.json", data=qa_report)
+    bus.log(project, "INFO", f"qa/report.json {why} by the agent; completed from the test runners' own output.")
+    return qa_report
+
+
+def journey_failures_message(coverage: dict[str, Any]) -> str:
+    """What the chat says when journeys failed: which, and that nothing runs them again until the person asks."""
+    missing, failed = list(coverage.get("missing") or []), list(coverage.get("failed") or [])
+    required = int(coverage.get("required") or 0)
+    lines = []
+    if failed:
+        lines.append(f"{len(failed)} of {required} journeys failed their end-to-end test: {', '.join(failed[:20])}.")
+    if missing:
+        lines.append(f"{len(missing)} journey(s) have no end-to-end test named with their id: {', '.join(missing[:20])}.")
+    lines.append("They are not run again by themselves. Say **fix the failing journeys** (or press the button) to have them "
+                 "fixed and only those journeys run again.")
+    return " ".join(lines)
+
+
+FIX_JOURNEYS = "fix the failing journeys"
+
+
 def _finish_run(project: str, session: Any, build_result: dict[str, Any], plan: str = "") -> dict[str, Any]:
     # A page of the prototype that was not built fails the build by name, whatever the later phases found.
     build_phases.gate(session)
@@ -139,31 +176,18 @@ def _finish_run(project: str, session: Any, build_result: dict[str, Any], plan: 
     bus.phase(project, "build:write", "Building the application", status="complete")
 
     built_report = report(project)
-    qa_report = session.read_record("qa", "report.json", fallback=None)
     if not (session.workspace / "package.json").is_file() or not built_report:
         raise ValueError("builder finished without a runnable app and build/report.json")
-    if not isinstance(qa_report, dict) or not qa_report.get("complete"):
-        if not _recoverably_incomplete(qa_report):
-            raise ValueError("the single build plan ended without a complete qa/report.json")
-        qa_report["complete"] = True
-        session.write_record("qa", "report.json", data=qa_report)
-        bus.log(project, "WARN",
-               "qa/report.json had real recorded evidence but its `complete` flag was "
-               "never written (likely an interrupted earlier run) - set it rather than "
-               "fail a build whose testing genuinely finished.")
-    # The SRS emits one stable UJ id per business journey. Derive coverage
-    # from Playwright's actual result JSON rather than accepting a generic
-    # E2E count or an agent-authored success sentence.
+    qa_report = settled_qa_report(project, session)
+    # The SRS emits one stable UJ id per business journey. Coverage is derived from Playwright's own result JSON, never
+    # from a generic count or an agent-written sentence - and journeys that fail are a result, not a reason to fail the
+    # build: they are listed, kept failed in the report, and run again only when the person asks (`FIX_JOURNEYS`). Failing
+    # the build made it loop: a fix, a whole new build, the whole suite again, the same failure (six times in one project).
     from qa_agent import build_evidence
     derived = build_evidence.derive(session.workspace, qa_report)
     journey_coverage = (((derived.get("report") or {}).get("e2e") or {})
                         .get("journeyCoverage") or {})
-    if journey_coverage.get("required") and journey_coverage.get("status") != "passed":
-        missing = [*journey_coverage.get("missing", []), *journey_coverage.get("failed", [])]
-        qa_report["complete"] = False
-        session.write_record("qa", "report.json", data=qa_report)
-        raise ValueError("E2E user-journey coverage is incomplete: "
-                         + ", ".join(missing or ["no passing journey tests recorded"]))
+    journeys_failed = bool(journey_coverage.get("required")) and journey_coverage.get("status") != "passed"
     gaps = built_report.get("gaps") or []
     # The report is agent-authored.  A prose ``summary`` remains valid
     # evidence when its layer rows are structured, so normalize it rather
@@ -172,13 +196,20 @@ def _finish_run(project: str, session: Any, build_result: dict[str, Any], plan: 
     failed = summary["fail"]
     store.update(project, spec_only=False, prototype_only=False,
                  build_available=True,
-                 status="tested-with-failures" if failed else "tested")
+                 status="tested-with-failures" if failed or journeys_failed else "tested")
     store.advance(project, "test")
     build_phases.finish_state(session)
     bus.agent_msg(project, "The single build plan is complete: app, focused unit tests and final checks."
                   + (f" {len(gaps)} disclosed gap(s) remain." if gaps else "")
                   + (f" {failed} test failure(s) are recorded." if failed else ""),
                   title="Build and testing complete")
+    if journeys_failed:
+        bus.agent_msg(project, journey_failures_message(journey_coverage), title="Journeys that failed",
+                      actions=[{"label": "Fix the failing journeys", "prompt": FIX_JOURNEYS}])
+    elif journey_coverage.get("mobileWarnings"):
+        bus.agent_msg(project, "Every journey passed on the desktop browser. At phone width these did not: "
+                      + ", ".join(journey_coverage["mobileWarnings"][:20]) + " (shown as warnings).",
+                      title="Journeys at phone width", kind="narration")
     session.note(
         "The single sequential plan completed the application, focused business "
         "unit tests and final product checks. Routes delivered: "
@@ -422,14 +453,21 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
             request += f"\n\n## What the customer asked for on top of that\n\n{direction.strip()}"
 
         # The end-to-end screenshots are copied as the tests take them: the next test run empties Playwright's output folder.
-        from qa_agent import e2e_review, screen_keeper
+        from qa_agent import e2e_review, e2e_run, screen_keeper
         with screen_keeper.Keeper(session.workspace):
             build_result = _build_in_phases(project, session, stack, request, direction)
         if build_result.get("status") == "blocked":
             raise ValueError(build_result.get("text") or "the build was blocked")
-        # The plan's own end-to-end tests are done: a model that can look at pictures looks at their screenshots, and what
-        # it finds is fixed. Whatever keeps it from looking is said in the chat, and the screens are shown either way.
-        e2e_review.run(project, session)
+        # The agent wrote the journeys; the Studio runs the whole suite now, once (not again when the app is exactly what
+        # the last run tested, as when a stopped build is carried on with nothing left to do).
+        with screen_keeper.Keeper(session.workspace):
+            ran = e2e_run.run(project, session, reason="build")
+        if session.cancelled:
+            raise RunCancelled(project)
+        # A model that can look at pictures looks at the screenshots of that run, round by round, asking before each round
+        # after the first. Whatever keeps it from looking is said in the chat, and the screens are shown either way.
+        if ran.get("status") in {"passed", "failed"}:
+            e2e_review.run(project, session)
         if session.cancelled:
             raise RunCancelled(project)
         return _finish_run(project, session, build_result, build_result.get("plan") or "")

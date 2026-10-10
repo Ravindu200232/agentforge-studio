@@ -310,7 +310,8 @@ class Agent:
                      if self.mode == "plan" else
                      "ACT MODE: The user approved the plan. Use the offered tools to implement and "
                      "verify every deliverable. Do not stop after a partial result. "
-                     "For package installs and builds, set run_command timeout_seconds as needed (up to 3600). "
+                     "For package installs and builds, set run_command timeout_seconds as needed (up to 600; a "
+                     "deployment's release command up to 1800). "
                      f"End with {COMPLETE} only when the entire plan is done and checked. "
                      f"If an external blocker prevents progress, end with {BLOCKED} and explain it.")
         memory = f"\nMemory summary from earlier turns:\n{self.memory_summary}" if self.memory_summary else ""

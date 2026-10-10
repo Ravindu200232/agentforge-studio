@@ -35,6 +35,9 @@ PLAYWRIGHT_JSON = "test-results/results.json"
 PLAYWRIGHT_RUNS = ".agentforge/qa/runs"
 PREVIEW_RUNTIME = ".agentforge/preview-runtime.json"
 VITEST_JSON = ".agentforge/qa/vitest.json"
+# The Studio's own end-to-end runs (`e2e_run.py`): when the last full one started.
+E2E_RUN_RECORD = ".agentforge/qa/e2e-run.json"
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 # What PowerShell and Windows consoles do to UTF-8 on its way into a log file.
 _MOJIBAKE = (("ΓÇ║", "›"), ("ΓÇö", "—"), ("ΓÇô", "–"), ("Â·", "·"),
@@ -190,10 +193,16 @@ def _from_playwright_json(data: Any, workspace: Path | None = None) -> dict | No
                           "flaky": "flaky"}.get(str(last or test.get("status")), "unknown")
                 final = results[-1] if results else {}
                 duration = final.get("duration")
+                failure = final.get("error") if isinstance(final.get("error"), dict) else next(
+                    (e for e in _rows(final.get("errors")) if isinstance(e, dict)), {})
+                why = _ANSI.sub("", str(failure.get("message") or "")).strip().splitlines()
                 tests.append({"index": len(tests) + 1, "project": test.get("projectName") or "",
                               "file": _spec_of(spec.get("file") or file),
                               "suite": " › ".join(here), "title": spec.get("title") or "",
                               "status": status,
+                              # Passed on its retry: the last attempt decides, and this says it needed one.
+                              "flaky": test.get("status") == "flaky",
+                              "error": why[0][:300] if why and status != "passed" else "",
                               "seconds": round(duration / 1000, 1) if isinstance(duration, (int, float)) else None,
                               "screenshot": _screenshot_of(final, workspace),
                               "api_calls": _api_calls_of(final, workspace)})
@@ -234,6 +243,39 @@ def _runs_found(workspace: Path) -> list[dict]:
             found.append({**run, "source": log.relative_to(workspace).as_posix(),
                           "at": _iso(log), "rank": 0})
     return found
+
+
+def _last_full_run(workspace: Path) -> float:
+    """When the Studio's last full end-to-end run started (epoch seconds), or 0 when it has not run one."""
+    saved = _json(workspace / E2E_RUN_RECORD)
+    full = saved.get("full") if isinstance(saved, dict) else None
+    try:
+        return float((full or {}).get("at") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def newest_tests(workspace: Path) -> list[dict]:
+    """Every test's newest result: a re-run of one journey replaces that journey's result and nothing else.
+
+    Only runs from the Studio's last full end-to-end run on count, when it has made one: a test renamed or removed since
+    then, and every earlier attempt, no longer speaks for a journey."""
+    since = _last_full_run(workspace)
+    latest: dict[tuple[str, str, str], dict] = {}
+    found = []
+    for run in _runs_found(workspace):
+        try:
+            when = (workspace / run["source"]).stat().st_mtime
+        except OSError:
+            when = 0.0
+        if since and when < since - 5:
+            continue
+        found.append((when, run.get("rank", 0), run))
+    for _when, _rank, run in sorted(found, key=lambda item: (item[0], item[1])):
+        for test in run.get("tests") or []:
+            latest[(str(test.get("project") or ""), str(test.get("file") or ""), str(test.get("title") or ""))] = {
+                **test, "source": run.get("source", "")}
+    return list(latest.values())
 
 
 def browser_runs(workspace: Path) -> dict | None:
@@ -619,7 +661,10 @@ def derive(workspace: Path, have: dict) -> dict:
         a11y = [t for t in tests if _A11Y.search(said(t))]
         visual = [t for t in tests if t not in a11y and _VISUAL.search(said(t))]
         journey_tests = [t for t in tests if t not in a11y and t not in visual]
-        journey_coverage = journey_contracts.e2e_coverage(workspace, journey_tests)
+        # Coverage is judged on each journey test's newest result (one journey run again counts for itself), not on the
+        # newest run of a whole spec file, which ignored a re-run of a few of its tests.
+        journey_coverage = journey_contracts.e2e_coverage(workspace, [
+            t for t in newest_tests(workspace) if not _A11Y.search(said(t)) and not _VISUAL.search(said(t))])
         flows = _group(journey_tests, lambda t: True)
         total = sum(f["stage_total"] for f in flows)
         e2e = {"ran": True, "flows": flows, "stage_total": total,

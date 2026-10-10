@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.request import urlopen
 
-from . import bus, config, deploy_vars, plugins, secrets_guard, supabase_connect
+from . import bus, config, deploy_vars, node_hooks, plugins, secrets_guard, supabase_connect
 
 _lock = threading.RLock()
 _processes: dict[str, dict] = {}
@@ -584,9 +584,9 @@ def open_preview(project: str) -> dict:
                        "AGENTFORGE_PORTS_FILE": str(_ports_file(project)),
                        "AGENTFORGE_PREVIEW_RUNTIME_ID": runtime_id}
         # The Studio frames this app. Let this machine's pages do that, whatever the app's
-        # own headers say; only this preview process is affected (see preview_hooks).
-        environment["NODE_OPTIONS"] = " ".join(
-            part for part in (environment.get("NODE_OPTIONS", ""), f'--require "{FRAME_HOOK.as_posix()}"') if part)
+        # own headers say; only this preview process is affected (see preview_hooks). And a cluster name
+        # this computer's DNS could not look up is asked of public DNS, as in the build's own commands.
+        node_hooks.add(environment, FRAME_HOOK, node_hooks.DNS_FALLBACK)
         # In the desktop app the Studio is at agentforge://app, another site than this preview: its cookies have to be ones a
         # framed page may keep, or nothing the app signs in survives (frame-headers.cjs).
         if os.environ.get("AGENTFORGE_TRANSPORT") == "stdio":

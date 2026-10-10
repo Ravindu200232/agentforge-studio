@@ -1366,6 +1366,7 @@ const Turn = memo(function Turn({ turn, live }) {
               )
               : <ReadableAgentText text={turn.text} />}
           {turn.images?.length > 0 && <TurnPictures images={turn.images} project={project} />}
+          {turn.actions?.length > 0 && <TurnActions actions={turn.actions} project={project} />}
         </div>
       </div>
     )
@@ -1403,6 +1404,32 @@ const Turn = memo(function Turn({ turn, live }) {
     </div>
   )
 })
+
+/** Buttons under a message ("Fix the failing journeys"): each sends its prompt as if it had been typed, to the developer. */
+function TurnActions({ actions, project }) {
+  const busy = useStore(s => s.busy)
+  function go(action) {
+    const s = useStore.getState()
+    if (!project || busy) return
+    send({
+      type: 'agent_update', project, agent: 'developer', prompt: action.prompt,
+      model: s.models.builder || s.models.agent, think: s.think, thinking_level: s.thinkingLevel,
+    })
+    s.setBusy(true)
+  }
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {actions.map(action => (
+        <button key={action.label} onClick={() => go(action)} disabled={busy}
+                title={busy ? 'Wait for the run in progress to end' : action.prompt}
+                className="rounded-xl border border-line2 bg-panel px-2.5 py-1.5 text-[11.5px] font-semibold text-ink
+                           transition-colors hover:border-accent hover:text-accent disabled:opacity-40">
+          {action.label}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 /** The screenshots a message carries (the visual review's, the screenshot tool's): a thumbnail each, the full picture on click. */
 function TurnPictures({ images, project }) {

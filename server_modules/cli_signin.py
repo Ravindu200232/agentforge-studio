@@ -167,6 +167,20 @@ def _netlify_token() -> str:
     return str(saved.get("accessToken") or "")
 
 
+def env_tokens() -> dict[str, str]:
+    """For a deployment's commands: the token saved in the Studio for a deploy CLI that is not signed in by itself, under the name
+    that CLI reads it from (`VERCEL_TOKEN`, `NETLIFY_AUTH_TOKEN`). A token pasted in the Deploy panel used to show the account as
+    connected while the CLI the agent runs was signed out, and the deployment stopped halfway to ask. A CLI that is signed in by
+    itself is left to its own login, which it renews."""
+    out: dict[str, str] = {}
+    vercel, netlify = str(config.setting("vercel_token", "") or ""), str(config.setting("netlify_token", "") or "")
+    if vercel and not _vercel_token():
+        out["VERCEL_TOKEN"] = vercel
+    if netlify and not _netlify_token():
+        out["NETLIFY_AUTH_TOKEN"] = netlify
+    return out
+
+
 def _json_of(text: str) -> Any:
     start = (text or "").find("{")
     if start < 0:

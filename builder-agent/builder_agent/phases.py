@@ -198,6 +198,13 @@ def resume_state(session: Any, finger: str) -> dict[str, Any] | None:
     return saved
 
 
+def unfinished(session: Any) -> bool:
+    """Whether a build of this app stopped part-way (a phase still to do): carrying on means carrying on the build."""
+    saved = session.read_record(*STATE, fallback=None)
+    return isinstance(saved, dict) and not saved.get("finished") and any(
+        isinstance(item, dict) and item.get("status") != "done" for item in saved.get("phases") or [])
+
+
 def finish_state(session: Any) -> None:
     """The build ended well: the next one starts from a fresh plan."""
     saved = session.read_record(*STATE, fallback=None)

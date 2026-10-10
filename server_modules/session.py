@@ -63,6 +63,40 @@ _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.+?)```", re.DOTALL)
 # The one stage whose agent may run the app's server itself: the preview did not start, and the
 # agent is starting it to find out why.
 PREVIEW_START = "preview_start"
+# The stages whose commands run the built app (its seed, its tests, its build): they get the database the build ran on.
+APP_STAGES = {"build", "build-edit", PREVIEW_START, "change", "test", "review"}
+# The stages in which the Studio, not the agent, runs the whole end-to-end suite (`qa_agent/e2e_run.py`).
+E2E_OWNED_STAGES = {"build", "build-edit", "change", "test", "review"}
+
+
+def command_environment(project: str, stage: str) -> dict[str, str]:
+    """What a command run for this project in `stage` is given: this machine's environment, the enabled plugins' variables, the
+    live channel its Playwright runs stream to, this project's own Supabase project, the database the build ran on (for the
+    stages that run the app) or the deployment's values (for a deployment), and the Node hooks every process gets.
+
+    One place, so the agent's commands, the Studio's own end-to-end run and the preview are given the same database."""
+    from . import node_hooks
+
+    enabled = config.record_dir(project) / "plugins.json"
+    choices = json.loads(enabled.read_text(encoding="utf-8")) if enabled.is_file() else []
+    # A generated app's Playwright run streams what its browser shows to this address (or, with no port to post to, this
+    # folder), and the studio's preview displays it while the test runs.
+    env = {**os.environ, **plugins.environment(choices), **live.channel_for(project)}
+    # A Supabase-stack project gets the one real project `supabase_connect` made for it, in build, test and deploy alike.
+    env.update(supabase_connect.env_for(project))
+    if stage.startswith("deploy"):
+        # A deployment may also override with what the customer saved for it explicitly (pointing production at a different
+        # Supabase project, or an unrelated variable), and its CLI is signed in with the token saved here when there is one.
+        env.update(deploy_vars.environment(build=False, project=project))
+        from . import cli_signin
+
+        env.update(cli_signin.env_tokens())
+    elif stage in APP_STAGES:
+        # A build, a change, a test run and a review need the same saved values (the database connection string, a key the
+        # customer gave before the plan) reachable by their own commands: a change that fixes a journey and runs it again uses
+        # the database the build seeded, never a local fallback.
+        env.update(deploy_vars.environment(build=True, project=project))
+    return node_hooks.add(env, node_hooks.DNS_FALLBACK)
 
 # A build stage is a long conversation with a remote service, and remote
 # services have bad minutes. Losing an hour of work to one 502 is not a model
@@ -464,28 +498,14 @@ class StudioTools(WorkspaceTools):
         previous = self._before(path) if name in {"write_file", "replace_text"} else None
 
         if name == "run_command":
-            enabled = config.record_dir(self.project) / "plugins.json"
-            choices = json.loads(enabled.read_text(encoding="utf-8")) if enabled.is_file() else []
-            # A generated app's Playwright run streams what its browser shows to this
-            # address (or, with no port to post to, this folder), and the studio's
-            # preview displays it while the test runs.
-            self.command_env = {**os.environ, **plugins.environment(choices),
-                                **live.channel_for(self.project)}
-            # A Supabase-stack project gets the one real project `supabase_connect` made for it,
-            # in build, test and deploy alike - unlike the old studio-wide MongoDB setting, there is
-            # no separate "the studio's own" database to fall back to here.
-            self.command_env.update(supabase_connect.env_for(self.project))
             stage = session_for(self.project).stage
+            self.command_env = command_environment(self.project, stage)
             # Starting the app is that stage's whole job (the preview would not start); everywhere
             # else the Studio's preview runtime owns the app's server.
             self.managed_preview = stage != PREVIEW_START
-            if stage.startswith("deploy") or stage in {"build", "build-edit", PREVIEW_START}:
-                # A deployment may also override with what the customer saved for it explicitly
-                # (pointing production at a different Supabase project, or an unrelated variable);
-                # a build/update needs the same saved values (a database connection string, a key the
-                # customer gave before the plan) reachable by its own commands and the preview.
-                self.command_env.update(deploy_vars.environment(build=stage in {"build", "build-edit", PREVIEW_START},
-                                                                project=self.project))
+            # The Studio runs the whole end-to-end suite itself, once (`qa_agent/e2e_run.py`); the agent runs one spec at a time.
+            self.studio_runs_e2e = stage in E2E_OWNED_STAGES
+            self.deploying = stage.startswith("deploy")
         result = super().execute(name, args)
 
         relative = self._relative(path) if path else None

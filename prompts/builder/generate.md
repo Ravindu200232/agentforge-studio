@@ -72,7 +72,9 @@ Where Supabase Storage is used, this project's own Supabase project is already c
 
 ## E2E journey contract
 
-Read `.agentforge/srs/user-journeys.json` before writing the journey tests. It is the complete, product-only list of required user journeys: it contains actors, actions and routes, not instructions for HTML, prototype, build or QA phases. Every `journeys[].id` is mandatory E2E coverage. Give at least one real Playwright business-journey test the corresponding ID in its title, for example `[UJ-001] Visitor places an order`; follow the saved steps and assert the journey's real business outcome. Route smoke, visual and accessibility checks do not count as journey coverage. Before marking QA complete, confirm that every saved UJ id appears in a passing journey-test result; a missing or failed ID must remain an honest failure, never be replaced by a generic E2E count.
+Read `.agentforge/srs/user-journeys.json` before writing the journey tests. It is the complete, product-only list of required user journeys: it contains actors, actions and routes, not instructions for HTML, prototype, build or QA phases. Every `journeys[].id` is mandatory E2E coverage. Write one spec file per journey, named by its id (`e2e/journeys/UJ-001.spec.js`), whose test carries the id in its title, for example `[UJ-001] Visitor places an order`; follow the saved steps and assert the journey's real business outcome. Route smoke, visual and accessibility checks do not count as journey coverage.
+
+Check each journey by running its own file: `node scripts/with-server.mjs -- npx playwright test e2e/journeys/UJ-001.spec.js --project=desktop`. Never run the whole suite: the Studio runs it itself, once, when the build's phases are done, and records which journeys pass. A journey that still fails then is reported honestly, never hidden.
 
 ## Persistence regression check
 
@@ -83,10 +85,6 @@ list after a rerun, treat that as a real persistence/runtime regression: inspect
 the preview logs and the runner commands, identify what removed or hid the data, record it in the
 QA report and repair it. Do not silently accept that empty list as a normal empty state, and do not
 let an external test wrapper hide the finding from the build report.
-
-## Confirming an already-finished plan
-
-Resuming this plan after an interruption and finding every phase's evidence already on disk is not the same as finishing it. Before ending the run, always open `.agentforge/qa/report.json` yourself and check that its `complete` field is literally `true` — an earlier run interrupted after the real testing work but before that one field was written leaves every layer's evidence genuinely passing on disk while the file itself still reads incomplete. If it is not `true`, write it now, merging it in the same way as every other write to this file, never replacing what is already there. Describing the work as complete in your own summary is not a substitute for this: the Studio's own gate checks this exact field, not your description of it, and will keep failing the run on every resume until it is actually set.
 
 Create exactly one short execution plan, including the complete Prototype parity map. That one plan must contain the three sequential phases below. Do not create a separate plan for unit tests or final checks, do not run phases in parallel, and do not restart the plan from the beginning after a failure.
 
@@ -117,7 +115,7 @@ Only after Phase 2 is complete, reread all of these before writing any E2E journ
 - the completed output application's actual routes, components, forms, API handlers, selectors, roles and authentication flow;
 - the Phase 1–2 results already recorded on disk.
 
-Derive E2E selectors, roles, setup and expected outcomes from the saved user-journey contract, the sources above and the current working app. Do not invent routes, labels, selectors or navigation. Run focused E2E tests for every saved business journey, then representative UI/visual, accessibility, performance, security and dependency checks using the scaffold's existing runners. Keep all existing Testing-screen artifact paths unchanged: `test-results/results.json`, screenshots under `test-results` or `e2e/__screenshots__`, `.lighthouseci/summary.json`, `.agentforge/qa/zap/summary.json`, and `.agentforge/qa/routes.json` when produced.
+Derive E2E selectors, roles, setup and expected outcomes from the saved user-journey contract, the sources above and the current working app. Do not invent routes, labels, selectors or navigation. Write the journey test of every saved business journey and run each one's own file (the Studio runs the whole suite after this phase), then representative UI/visual, accessibility, performance, security and dependency checks using the scaffold's existing runners. Keep all existing Testing-screen artifact paths unchanged: `test-results/results.json`, screenshots under `test-results` or `e2e/__screenshots__`, `.lighthouseci/summary.json`, `.agentforge/qa/zap/summary.json`, and `.agentforge/qa/routes.json` when produced.
 
 Run each planned layer once. If a check finds a real product defect, repair only the affected code and rerun only that affected check. Never loop through the whole plan again. When a tool is unavailable, do not keep trying to install or rerun it: record it honestly as an `"unavailable"` gap, as above, and carry on.
 

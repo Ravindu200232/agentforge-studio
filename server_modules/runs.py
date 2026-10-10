@@ -112,6 +112,25 @@ def _answer_held(project: str, text: str) -> dict[str, Any] | None:
     return {"ok": True, "project": project}
 
 
+def _journey_fix(project: str, typed: str, message: dict[str, Any]) -> dict[str, Any] | None:
+    """"Fix the failing journeys" (typed, or the button under the build's result): a request the Studio writes from the results
+    on disk - which journeys, their spec files and why each failed - planned like any change; when it is done, the Studio runs
+    only those journeys again (`changes._execute`). Nothing runs them again unless this is asked. None when it was not asked
+    for, or there is nothing failed to fix."""
+    from qa_agent import e2e_run
+
+    if not e2e_run.fix_asked(typed) or not builder.built(project):
+        return None
+    request, journeys = e2e_run.fix_request(session_for(project).workspace, typed)
+    if not journeys:
+        bus.user_msg(project, typed)
+        bus.agent_msg(project, "Every journey passed its last end-to-end run: there is nothing failed to fix.",
+                      title="Journeys", kind="narration")
+        return {"ok": True, "project": project}
+    bus.user_msg(project, typed)
+    return changes.submit(project, request, _model_from(message), echo=False, flow={"journeys": journeys})
+
+
 def active_run(project: str) -> str:
     with _active_lock:
         return _active.get(project, "")
@@ -235,6 +254,16 @@ def agent_update(message: dict[str, Any], screened: bool = False) -> dict[str, A
     answered = _answer_held(project, request)
     if answered:
         return answered
+    running = active_run(project)
+    if running:
+        # A change planned and carried out while a build or a test run is still writing the same files: two agents on one
+        # workspace, and the change's failure reported under the build's name. It waits for the run to end instead.
+        held = "This project is still working on its current run. Send this again when it has finished, or stop the run first."
+        bus.agent_msg(project, held, title="Not sent")
+        return {"ok": False, "detail": held}
+    fixing = _journey_fix(project, request, message)
+    if fixing:
+        return fixing
     if changes.applies(project):
         return changes.submit(project, request, _model_from(message))
     return agent_update_direct(message, screened=True)
@@ -326,7 +355,9 @@ def agent_resume(message: dict[str, Any]) -> dict[str, Any]:
 
     if stage in ("interview", "plan", "srs") and _spec_pending(project):
         return _write_specification(project)
-    if stage in ("build", "test") and builder.built(project):
+    from builder_agent import phases as build_phases
+
+    if stage in ("build", "test") and builder.built(project) and not build_phases.unfinished(session_for(project)):
         _in_background(f"test:{project}", project, bus.DEVELOPER, qa.run, project, "", _project=project)
     elif stage in ("prototype", "design") and not prototyper.exists(project):
         # An interrupted prototype is still a design job. Sending it straight

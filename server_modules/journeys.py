@@ -248,20 +248,38 @@ def e2e_coverage(workspace: Path, tests: list[dict[str, Any]]) -> dict[str, Any]
         # body must not be accepted as real journey coverage.
         matched = [test for test in tests if matcher.search(" ".join(
             str(test.get(part) or "") for part in ("suite", "title")))]
-        statuses = [str(test.get("status") or "unknown") for test in matched]
-        status = "passed" if matched and all(value == "passed" for value in statuses) else "failed"
+        # The journey is proved on the desktop browser: its desktop test decides (a test that passed only on its retry still
+        # passed - its last attempt is its result - and is marked flaky). The same journey at phone width is reported
+        # beside it, as a warning when it fails, never as the journey failing. A journey tested only at phone width is
+        # judged on that.
+        deciding = [test for test in matched if not _mobile(test)] or matched
+        phone = [test for test in matched if _mobile(test)] if len(deciding) < len(matched) else []
+        statuses = [str(test.get("status") or "unknown") for test in deciding]
+        status = "passed" if deciding and all(value == "passed" for value in statuses) else "failed"
+        mobile = ("not run" if not phone else
+                  "passed" if all(str(test.get("status") or "") == "passed" for test in phone) else "failed")
         rows.append({"id": journey_id, "workflow_name": journey.get("workflow_name") or journey_id,
                      "who": journey.get("who") or "",
                      "steps": [str(step.get("step") or "") for step in journey.get("steps") or []
                                if isinstance(step, dict)],
-                     "status": status, "tests": [{"file": test.get("file") or "",
-                                                      "title": test.get("title") or "",
-                                                      "status": test.get("status") or "unknown"}
-                                                     for test in matched]})
+                     "status": status, "mobile": mobile,
+                     "flaky": any(test.get("flaky") for test in deciding),
+                     "tests": [{"file": test.get("file") or "", "title": test.get("title") or "",
+                                "project": test.get("project") or "",
+                                "status": test.get("status") or "unknown",
+                                **({"error": test["error"]} if test.get("error") else {})}
+                               for test in matched]})
 
     missing = [row["id"] for row in rows if not row["tests"]]
     failed = [row["id"] for row in rows if row["tests"] and row["status"] != "passed"]
     return {"required": len(rows), "covered": len(rows) - len(missing),
             "passed": sum(row["status"] == "passed" for row in rows),
             "missing": missing, "failed": failed, "journeys": rows,
+            "mobileWarnings": [row["id"] for row in rows if row["mobile"] == "failed"],
+            "flaky": [row["id"] for row in rows if row["flaky"] and row["status"] == "passed"],
             "status": "passed" if not missing and not failed else "failed"}
+
+
+def _mobile(test: dict[str, Any]) -> bool:
+    """Whether a test ran in a phone-width browser (Playwright's project name says so: `mobile`, `Pixel 7`, `iPhone`...)."""
+    return bool(re.search(r"mobile|phone|pixel|iphone|android|galaxy", str(test.get("project") or ""), re.I))

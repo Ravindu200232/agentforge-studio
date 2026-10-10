@@ -319,7 +319,8 @@ class ReviewTests(Harness):
         self.assertIn(f"### {OTHER} — `e2e/smoke.spec.js`", request)
         self.assertIn("An 'Application error' page is shown.", request)
         self.assertNotIn("Spacing is uneven.", request)
-        self.assertIn("npm run qa:e2e", request)                                # and the journeys are to be run again
+        self.assertNotIn("npm run qa:e2e", request)          # the agent never runs the suite: the Studio re-runs these tests itself
+        self.assertIn("runs the tests whose screens had problems again itself", request)
 
     def test_after_the_fix_only_the_tests_with_problems_whose_screenshots_are_new_are_looked_at_again(self):
         self.standard()

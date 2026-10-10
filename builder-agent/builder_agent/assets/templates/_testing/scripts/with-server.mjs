@@ -83,12 +83,22 @@ function usesMongo() {
  * database from the app under test. A unique name also makes an interrupted run
  * harmless to the next run.
  */
+// Atlas refuses a database name longer than 38 characters on its shared clusters, and `<app>_build_<ms>_<pid>_e2e` was
+// longer ("Database name ... is too long"), so the run could not start. The run's name is `<base, cut to 23>_<10 chars>_e2e`:
+// the first 8 of the 10 are the start time in base 36, which is how a leftover from a killed run is known to be old.
+const MAX_DATABASE_NAME = 38
+const STAMP = Date.now().toString(36).padStart(8, '0').slice(-8) + (process.pid % 1296).toString(36).padStart(2, '0')
+let qaBases = []
+
 function qaMongoUri() {
   if (!usesMongo()) return null
 
   const explicit = process.env.E2E_MONGODB_URI
-  const source = explicit || process.env.MONGODB_URI || localEnv('MONGODB_URI')
-    || 'mongodb://127.0.0.1:27017/' + (manifest().name || 'app')
+  const fromEnv = process.env.MONGODB_URI || localEnv('MONGODB_URI')
+  if (!explicit && !fromEnv) {
+    console.warn('with-server: no MONGODB_URI is set, so this run uses a MongoDB on this computer (127.0.0.1:27017).')
+  }
+  const source = explicit || fromEnv || 'mongodb://127.0.0.1:27017/' + (manifest().name || 'app')
   const parsed = new URL(source)
 
   if (explicit) {
@@ -97,9 +107,23 @@ function qaMongoUri() {
     return source
   }
 
-  const base = (databaseName(source) || manifest().name || 'app').replace(/[^a-zA-Z0-9_-]/g, '_')
-  parsed.pathname = '/' + base + '_' + Date.now() + '_' + process.pid + '_e2e'
+  const full = (databaseName(source) || manifest().name || 'app').replace(/[^a-zA-Z0-9_-]/g, '_')
+  const base = full.slice(0, MAX_DATABASE_NAME - STAMP.length - '__e2e'.length)
+  qaBases = [...new Set([base, full])]
+  parsed.pathname = '/' + base + '_' + STAMP + '_e2e'
   return parsed.toString()
+}
+
+/** How old a database left behind by an earlier run of this app is, in ms; null when it is not one of those. */
+function leftoverAge(name) {
+  for (const base of qaBases) {
+    if (!name.startsWith(base + '_') || !name.endsWith('_e2e')) continue
+    const middle = name.slice(base.length + 1, -'_e2e'.length)
+    if (/^[0-9a-z]{10}$/.test(middle)) return Date.now() - parseInt(middle.slice(0, 8), 36)
+    const old = middle.match(/^(\d{13})_\d+$/)              // the earlier, longer name: <ms>_<pid>
+    if (old) return Date.now() - Number(old[1])
+  }
+  return null
 }
 
 /** A file under node_modules, looked up from here upwards (npm workspaces hoist). */
@@ -213,21 +237,40 @@ function keepRunResults(commandParts, since) {
   }
 }
 
-async function resetQaDatabase(uri) {
+/** Empty one database (a driver `Db`): dropped, or collection by collection when the user may not drop a database. */
+async function emptyDatabase(db) {
+  try {
+    await db.dropDatabase()
+  } catch (error) {
+    // A database user that may read and write but not drop a whole database (a common Atlas role) can still drop
+    // each collection, and this run's database is uniquely named: emptying it is the same clean start. Without this
+    // the run could not start at all, and the journeys fell back to the shared development data.
+    if (!(error?.code === 13 || /not (allowed|authorized)|unauthorized/i.test(String(error?.message)))) throw error
+    const collections = await db.listCollections({}, { nameOnly: true }).toArray()
+    for (const { name } of collections) {
+      if (!name.startsWith('system.')) await db.collection(name).drop().catch(() => {})
+    }
+  }
+}
+
+async function resetQaDatabase(uri, { leftovers = false } = {}) {
   if (!uri) return
   const { default: mongoose } = await import('mongoose')
   const connection = await mongoose.createConnection(uri, { serverSelectionTimeoutMS: 10_000 }).asPromise()
   try {
-    try {
-      await connection.dropDatabase()
-    } catch (error) {
-      // A database user that may read and write but not drop a whole database (a common Atlas role) can still drop
-      // each collection, and this run's database is uniquely named: emptying it is the same clean start. Without this
-      // the run could not start at all, and the journeys fell back to the shared development data.
-      if (!(error?.code === 13 || /not (allowed|authorized)|unauthorized/i.test(String(error?.message)))) throw error
-      const collections = await connection.db.listCollections({}, { nameOnly: true }).toArray()
-      for (const { name } of collections) {
-        if (!name.startsWith('system.')) await connection.db.collection(name).drop().catch(() => {})
+    await emptyDatabase(connection.db)
+    if (leftovers) {
+      // A run that was killed (a time limit, Stop) never reached its own cleanup, and its database stayed: dropped here once
+      // it is two hours old, so they do not pile up against the cluster's limits. Never a reason to fail this run.
+      try {
+        const client = connection.getClient()
+        const { databases } = await client.db('admin').admin().listDatabases({ nameOnly: true })
+        for (const { name } of databases) {
+          const age = name === databaseName(uri) ? null : leftoverAge(name)
+          if (age !== null && age > 2 * 60 * 60 * 1000) await emptyDatabase(client.db(name)).catch(() => {})
+        }
+      } catch (error) {
+        console.error(`with-server: earlier runs' test databases were not cleaned up: ${error.message}`)
       }
     }
   } finally { await connection.close() }
@@ -246,7 +289,7 @@ async function main() {
   }
 
   if (mongoUri) {
-    await resetQaDatabase(mongoUri)
+    await resetQaDatabase(mongoUri, { leftovers: true })
     if (manifest().scripts?.seed) {
       const seeded = await run(['npm', 'run', 'seed'], qaEnv)
       if (seeded !== 0) throw new Error('could not seed isolated QA database (exit ' + seeded + ')')

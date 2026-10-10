@@ -40,6 +40,34 @@ POWERSHELL_HIDE_START = (
     "else { Microsoft.PowerShell.Management\\Start-Process @args } }; "
 )
 SERVER_COMMAND_SECONDS = 75
+# A deployment's release (`netlify deploy --build`, `vercel deploy --prod`) builds the app and uploads it, which on this
+# computer took longer than ten minutes: killed at the usual limit, it left a half-made deploy and stale build output behind.
+RELEASE_COMMAND_SECONDS = 1800
+# A command that starts the app's server: the program at the start of the command (or of one of its parts), never the
+# same words inside a string the command only reads or prints.
+_SERVER_COMMAND = re.compile(
+    r"(?:^|[;&|(/]\s*|\b(?:npx|pnpm|yarn|bunx|exec)\s+)(?:next\s+(?:dev|start)\b|npm\s+(?:run\s+)?(?:dev|start)\b|start\s+/b\b)",
+    re.I)
+_RELEASE_COMMAND = re.compile(r"(?:^|[;&|(]\s*|\bnpx\s+)(?:netlify\s+deploy\b|vercel\b(?=[^;&|]*(?:\bdeploy\b|--prod\b|\bbuild\b))"
+                              r"|npm\s+run\s+build\b|next\s+build\b)", re.I)
+# A run of the whole end-to-end suite. The Studio runs it itself, once (`qa_agent/e2e_run.py`); an agent runs one journey's
+# spec file, or a --grep of a few, while it writes or fixes them.
+_E2E_SUITE = re.compile(r"\b(?:qa:e2e|test:e2e|playwright\s+test)\b", re.I)
+_E2E_NARROWED = re.compile(r"\.spec\.[cm]?[jt]sx?\b|\.test\.[cm]?[jt]sx?\b|(?:^|\s)(?:--grep|-g)(?:[\s=]|$)|--last-failed\b|--list\b"
+                           r"|(?:^|\s)e2e/[\w./-]+", re.I)
+E2E_SUITE_REFUSED = ("The Studio runs the whole end-to-end suite itself, once, after this work (and again only when the person "
+                     "asks), so it is not run from here. Run one journey's spec file instead, for example: "
+                     "node scripts/with-server.mjs -- npx playwright test e2e/journeys/UJ-001.spec.js --project=desktop")
+
+
+def server_command(command: str) -> bool:
+    """Whether `command` starts the app's server (a development or production server that never exits by itself)."""
+    return bool(_SERVER_COMMAND.search(command))
+
+
+def whole_e2e_suite(command: str) -> bool:
+    """Whether `command` runs the whole end-to-end suite rather than one spec file or a --grep of a few tests."""
+    return bool(_E2E_SUITE.search(command)) and not _E2E_NARROWED.search(command)
 
 # A CLI that colours its own output (netlify, vercel, npm...) still does so once piped,
 # leaving raw escape codes ("[32m...[39m") in what both the model and the chat card see.
@@ -479,21 +507,24 @@ class WorkspaceTools:
         if ("taskkill" in command.lower() and "/im" in command.lower()
                 and "node.exe" in command.lower()) or "stop-process -name node" in command.lower():
             raise ValueError("Do not terminate every node.exe process. Target a known child PID instead.")
-        server_command = any(token in command.lower() for token in
-                             ("next dev", "next start", "npm run dev", "npm run start", "start /b"))
+        starts_server = server_command(command)
         # The Studio has one managed preview process and takes care of its
         # port, environment and lifecycle.  Letting an agent run a server in a
         # foreground terminal always looks successful ("Ready in 439ms") but
         # never exits, consuming the build turn until it times out.
-        if server_command and getattr(self, "managed_preview", False):
+        if starts_server and getattr(self, "managed_preview", False):
             raise ValueError("Do not run a development or production server from the agent. "
                              "The Studio starts the managed preview automatically after the build.")
+        if getattr(self, "studio_runs_e2e", False) and whole_e2e_suite(command):
+            raise ValueError(E2E_SUITE_REFUSED)
         denied = self._permitted({"kind": "command", "command": command, "level": level, "why": why, "program": program},
                                  f"Run in {self.root}: {command} ?")
         if denied:
             return denied
-        timeout = min(max(int(timeout_seconds), 1), MAX_COMMAND_SECONDS)
-        if server_command:
+        ceiling = RELEASE_COMMAND_SECONDS if getattr(self, "deploying", False) and _RELEASE_COMMAND.search(command) \
+            else MAX_COMMAND_SECONDS
+        timeout = min(max(int(timeout_seconds), 1), ceiling)
+        if starts_server:
             timeout = min(timeout, SERVER_COMMAND_SECONDS)
         if os.name != "nt":
             shell_args = [self.shell, "-c", command]

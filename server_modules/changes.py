@@ -678,6 +678,8 @@ def _execute(project: str, change_id: str, model: str) -> None:
             from srs_agent import document as srs_document
 
             srs_document.reconcile(project, change["request"], result["text"], session)
+        if result["status"] == "complete" and change.get("journeys"):
+            _run_fixed_journeys(project, session, [str(j) for j in change["journeys"]])
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -702,6 +704,33 @@ def _execute(project: str, change_id: str, model: str) -> None:
         session.finish(result["text"] or "Change applied.")
     else:
         session.fail(change["error"])
+
+
+def _run_fixed_journeys(project: str, session: Any, journeys: list[str]) -> None:
+    """After a fix of failed journeys the person asked for: only those journeys run again, and the chat says how they did.
+    What still fails is offered to be fixed again, never run again by itself."""
+    from qa_agent import e2e_run
+    from qa_agent.screen_keeper import Keeper
+
+    with Keeper(session.workspace):
+        outcome = e2e_run.run(project, session, grep=journeys, reason="fix")
+    if outcome.get("status") in {"skipped", "error", "build_failed"}:
+        return
+    still = [row["id"] for row in e2e_run.failures(session.workspace)]
+    fixed = [j for j in journeys if j not in still]
+    text = (f"Ran {', '.join(journeys)} again: " + (f"{', '.join(fixed)} now pass" if fixed else "none of them passes yet")
+            + (f"; {', '.join(j for j in journeys if j in still)} still fail" if any(j in still for j in journeys) else "") + ".")
+    if still:
+        bus.agent_msg(project, text + " They are not run again by themselves.", title="Journeys run again",
+                      actions=[{"label": "Fix the failing journeys", "prompt": "fix the failing journeys"}])
+    else:
+        bus.agent_msg(project, text + " Every journey now passes.", title="Journeys run again")
+        from .qa_report import summary_counts
+
+        saved = session.read_record("qa", "report.json", fallback=None)
+        if (store.get(project) or {}).get("status") == "tested-with-failures" and not summary_counts(
+                saved if isinstance(saved, dict) else {})["fail"]:
+            store.update(project, status="tested")
 
 
 def _guides(project: str = "") -> str:

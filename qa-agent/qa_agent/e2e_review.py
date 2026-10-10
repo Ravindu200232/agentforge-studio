@@ -208,6 +208,9 @@ def _review(project: str, session: Any, model: str, groups: list[dict[str, Any]]
         before = {(g["file"], g["title"]): _digest(workspace, g) for g in groups}
         fix_stopped = screen_review.run_fix(project, session, prompts.load("testing/visual-fix", defects=request), model,
                                             bus.DEVELOPER, "Screenshot review")
+        # The agent does not run the tests: the Studio runs only the ones whose screens had problems, for their new pictures.
+        from . import e2e_run
+        e2e_run.run(project, session, grep=sorted({title for (_file, title) in bad}), reason="screenshot review")
         now = {(g["file"], g["title"]): g for g in screens(workspace)}
         # Only the tests that had problems, and whose screenshots are new, are looked at again.
         again = [now[key] for key in sorted(bad) if key in now and _digest(workspace, now[key]) != before.get(key)]

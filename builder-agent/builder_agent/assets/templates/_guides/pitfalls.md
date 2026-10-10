@@ -5,7 +5,7 @@ These are not about any one product. They are the mistakes that cost every build
 ## How to spend the build
 
 - Build the complete application first. Testing is handled by the later focused phases. Do not re-run a layer after its current result is recorded unless affected code changed or it failed.
-- Use the scaffold's runners, do not write your own: `npm run qa:e2e`, `qa:visual`, `qa:a11y`, `qa:perf`, `qa:security`. Each builds nothing and starts nothing by hand: it starts the built app on a free port, runs the layer, stops only its own server. Run `npm run build` first, and again only after **app** code changed.
+- Use the scaffold's runners, do not write your own: `qa:visual`, `qa:a11y`, `qa:perf`, `qa:security`, and for one journey `node scripts/with-server.mjs -- npx playwright test e2e/journeys/UJ-001.spec.js --project=desktop`. Each builds nothing and starts nothing by hand: it starts the built app on a free port, runs the layer, stops only its own server. Run `npm run build` first, and again only after **app** code changed. The whole journey suite (`npm run qa:e2e`) is the Studio's to run, once; it is refused from an agent.
 - Never start dev/production servers yourself, never `taskkill /IM node` / `Stop-Process -Name node`. The Studio owns every preview and assigns each project its own loopback port; if it is stale it is restarted for that project after the build.
 - Unit-test important business rules and complete critical paths in the focused unit phase. Do not use per-file inventory or 100% coverage as a completion gate.
 - Delete throwaway diagnostic scripts before finishing. Keep the ones you cite in the report.

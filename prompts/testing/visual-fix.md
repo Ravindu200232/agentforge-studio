@@ -11,6 +11,6 @@ How to fix:
 - A problem that shows on several screens usually lives in a shared component, layout or stylesheet: fix it once there.
 - Every fix works at both widths: desktop and mobile.
 - If your model can look at pictures you have a `screenshot` tool: use it on a public page you changed (a local preview URL such as the managed preview's) to see that the problem is gone.
-- When the fixes are made, run the minimum build that proves the application still compiles, then run the scaffold's journey suite once the way `playwright.md` says (`npm run qa:e2e`), so every journey's evidence is current, and make sure each journey that passed before still passes. Repair what your change broke; do not repeat the whole suite more than once after that.
+- When the fixes are made, run the minimum build that proves the application still compiles. Do not run the tests: the Studio builds the app and runs the tests whose screens had problems again itself, and looks at their new screenshots.
 
 Do not plan, do not add tests, and do not touch anything the problems do not name. Finish with one sentence saying what you changed.
