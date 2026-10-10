@@ -160,11 +160,34 @@ class TheStudioKnowsWhenTheAppIsWhatItTestedTests(Workspace):
         (self.workspace / "package.json").write_text(json.dumps({"devDependencies": {"@playwright/test": "1"}}), encoding="utf-8")
         (self.workspace / "e2e").mkdir()
         (self.workspace / "e2e" / "a.spec.js").write_text("", encoding="utf-8")
+        e2e_run.ensure_runner("p", self.workspace)                         # as the run that recorded it left it
         e2e_run._save(self.workspace, {"full": {"fingerprint": e2e_run.fingerprint(self.workspace), "exit_code": 0}})
         session = mock.Mock(workspace=self.workspace, cancelled=False, stage="test")
         with mock.patch.object(e2e_run, "_execute") as execute, mock.patch.object(e2e_run.bus, "agent_msg"):
             self.assertEqual(e2e_run.run("p", session, reason="test")["status"], "reused")
         execute.assert_not_called()
+
+
+class ARunIsCurrentRightAfterItRanTests(Workspace):
+    """Found on a real project: the runner was replaced after the source was fingerprinted, so the run that replaced it
+    looked out of date at once and the next call built and ran everything again."""
+
+    def test_a_run_that_brings_the_runner_up_to_date_is_current_afterwards(self):
+        (self.workspace / "package.json").write_text(json.dumps({"devDependencies": {"@playwright/test": "1"}}), encoding="utf-8")
+        (self.workspace / "e2e").mkdir()
+        (self.workspace / "e2e" / "a.spec.js").write_text("", encoding="utf-8")
+        (self.workspace / "scripts").mkdir()
+        (self.workspace / "scripts" / "with-server.mjs").write_text("// an older copy", encoding="utf-8")
+        session = mock.Mock(workspace=self.workspace, cancelled=False, stage="test")
+        finished = {"exit_code": 0, "timed_out": False, "output": "", "seconds": 1.0}
+        with mock.patch.object(e2e_run, "_execute", return_value=finished), \
+                mock.patch.object(e2e_run, "_build_if_needed", return_value=None), \
+                mock.patch.object(e2e_run, "command_environment", return_value={}), \
+                mock.patch.object(e2e_run.bus, "agent_msg"), mock.patch.object(e2e_run.bus, "phase"), \
+                mock.patch.object(e2e_run.bus, "log"), mock.patch.object(e2e_run.live, "finish"):
+            e2e_run.run("p", session, reason="build")
+            self.assertTrue(e2e_run.current(self.workspace))
+            self.assertEqual(e2e_run.run("p", session, reason="test")["status"], "reused")
 
 
 class TheRunnerScriptIsTheStudiosTests(Workspace):

@@ -242,6 +242,9 @@ def run(project: str, session: Any, grep: list[str] | None = None, reason: str =
     pattern = grep_for(grep or [])
     if grep is not None and not pattern:
         return {"status": "skipped", "reason": "no tests named"}
+    # The runner is put in place before the source is fingerprinted: replacing it afterwards made the very run that replaced
+    # it look out of date, and the next call built and ran everything again.
+    ensure_runner(project, workspace)
     now = fingerprint(workspace)
     if not pattern and not force and current(workspace):
         bus.agent_msg(project, "The end-to-end journeys already ran on the app exactly as it is now, so their results are used "
@@ -255,7 +258,6 @@ def run(project: str, session: Any, grep: list[str] | None = None, reason: str =
               agent=bus.DEVELOPER)
     try:
         env = command_environment(project, getattr(session, "stage", "") or "build")
-        ensure_runner(project, workspace)
         built = _build_if_needed(project, session, env, now)
         if built and built["exit_code"] != 0:
             text = (f"The app did not build (exit {built['exit_code']}), so the end-to-end journeys were not run on it.\n\n"
