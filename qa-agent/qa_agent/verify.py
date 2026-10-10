@@ -7,6 +7,7 @@ partial screen, not an empty one.
 """
 from __future__ import annotations
 
+import json
 import time
 import threading
 from typing import Any
@@ -17,6 +18,25 @@ from server_modules.session import ProjectSession, RunCancelled, session_for
 
 QA_DIR = "qa"
 REPORT = (QA_DIR, "report.json")
+
+
+def provenance_text(value: Any) -> str:
+    """How the results were produced, as the sentence the pages show.
+
+    The agent that writes the report sometimes records it as an object (the method and the runner files); a page that
+    shows it as it is cannot draw an object, and the whole testing view fails.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        method = str(value.get("method") or "").strip()
+        files = value.get("runner_files")
+        listed = ", ".join(str(item) for item in files) if isinstance(files, list) else ""
+        text = " ".join(part for part in (method, f"Runner files: {listed}." if listed else "") if part)
+        return text or json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return " ".join(str(item) for item in value if item)
+    return str(value) if value else ""
 
 
 def report(project: str) -> dict[str, Any]:
@@ -32,7 +52,7 @@ def report(project: str) -> dict[str, Any]:
     result = collect(session.workspace, saved)
     result["project"] = project
     result.setdefault("complete", False)
-    result.setdefault("provenance", "no verification has run for this project yet")
+    result["provenance"] = provenance_text(result.get("provenance")) or "no verification has run for this project yet"
     return result
 
 
