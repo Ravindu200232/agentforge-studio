@@ -755,6 +755,7 @@ def _announce(project: str, before: dict, after: dict) -> None:
     if not changed:
         return
     record = f"{config.RECORD_DIR}/"
+    _rebundle(project, changed)
     if any(path.startswith(f"{record}prototype/") for path in changed):
         bus.prototype_changed(project)
     if any(path.startswith(f"{record}srs/") for path in changed):
@@ -764,6 +765,33 @@ def _announce(project: str, before: dict, after: dict) -> None:
 
         if builder.built(project):
             builder.show_preview(project)
+
+
+def _rebundle(project: str, changed: set[str]) -> None:
+    """A change that edited the wireframe's or the prototype's source bundles that app again, before the preview reloads.
+
+    The preview shows the bundled page (`bundle.html`), never the source: a chat change that turned the theme white edited
+    `src/index.css`, the preview reloaded the bundle made before it, and the screen stayed dark as if nothing had changed. A
+    bundle that cannot be made is said in the chat; it never undoes a change that worked."""
+    from . import web_app
+
+    for kind in web_app.KINDS:
+        source = f"{config.RECORD_DIR}/{kind}/app/"
+        edited = [path for path in changed if path.startswith(source)
+                  and Path(path).name not in {web_app.BUNDLE, web_app.BUILT}
+                  and not any(part in {"node_modules", "dist"} for part in Path(path).parts)]
+        if not edited:
+            continue
+        session = session_for(project)
+        if not web_app.stale(web_app.app_dir(session.workspace, kind)):
+            continue                                           # the agent bundled it itself, after its last edit
+        try:
+            web_app.build_for(session, project, kind, agent=bus.DESIGNER)
+        except RunCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the change stands; what keeps it from showing is told
+            bus.log(project, "WARN", f"The {kind} was changed but could not be bundled again: {str(exc)[:300]}",
+                    agent=bus.DESIGNER)
 
 
 # What the flows' modules use of the state above.

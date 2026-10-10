@@ -470,3 +470,51 @@ class PlanModeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrototypeRebundleTests(unittest.TestCase):
+    """A chat change that edits the prototype's (or the wireframe's) source bundles it again before the preview reloads: the
+    preview shows the bundle, and a theme made white in `src/index.css` used to stay dark on screen."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.session = mock.Mock(workspace=Path(self.temp.name), cancelled=False)
+        self.bundled: list[str] = []
+        self.stale = True
+        from server_modules import web_app
+
+        for patch in (mock.patch.object(changes, "session_for", lambda project: self.session),
+                      mock.patch.object(web_app, "stale", lambda app: self.stale),
+                      mock.patch.object(web_app, "build_for", lambda session, project, kind, agent="": self.bundled.append(kind)),
+                      mock.patch.object(bus, "prototype_changed", lambda project: self.bundled.append("reload"))):
+            self.enterContext(patch)
+
+    def announce(self, *paths):
+        changes._announce("p", {}, {path: "new" for path in paths})
+
+    def test_an_edited_theme_is_bundled_before_the_preview_reloads(self):
+        self.announce(".agentforge/prototype/app/src/index.css")
+        self.assertEqual(self.bundled, ["prototype", "reload"])
+
+    def test_the_wireframe_is_bundled_when_its_source_changed(self):
+        self.announce(".agentforge/wireframe/app/src/pages/home.tsx")
+        self.assertEqual(self.bundled, ["wireframe"])
+
+    def test_nothing_is_bundled_when_the_agent_already_did_or_nothing_in_the_app_changed(self):
+        self.stale = False
+        self.announce(".agentforge/prototype/app/src/index.css")
+        self.assertEqual(self.bundled, ["reload"])
+        self.bundled.clear()
+        self.stale = True
+        self.announce(".agentforge/prototype/app/bundle.html", ".agentforge/prototype/routes.json")
+        self.assertEqual(self.bundled, ["reload"])
+
+    def test_a_bundle_that_cannot_be_made_is_said_and_the_change_stands(self):
+        from server_modules import web_app
+
+        logged: list[str] = []
+        with mock.patch.object(web_app, "build_for", side_effect=web_app.BuildFailed("syntax error")), \
+                mock.patch.object(bus, "log", lambda project, level, text, agent="": logged.append(text)):
+            self.announce(".agentforge/prototype/app/src/index.css")
+        self.assertIn("could not be bundled again: syntax error", logged[0])
