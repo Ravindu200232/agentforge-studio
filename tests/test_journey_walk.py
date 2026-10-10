@@ -249,9 +249,17 @@ class Harness(unittest.TestCase):
             mock.patch.object(live, "finish", lambda project: self.sent.append({"kind": "end"})),
             mock.patch.object(screenshot, "working_browser", return_value=("b", "chrome")),
             mock.patch("server_modules.vision.supports", return_value=True),
+            mock.patch("server_modules.screen_review.next_round", side_effect=self._next_round),
         ):
             patch.start()
             self.addCleanup(patch.stop)
+
+    def _next_round(self, project, session, agent, done, remaining, where, title):
+        """The person's answer to "Run round N?": what the test queued in `self.round_answers`, else No."""
+        self.rounds_asked = getattr(self, "rounds_asked", [])
+        self.rounds_asked.append((done, remaining, where))
+        answers = getattr(self, "round_answers", [])
+        return answers.pop(0) if answers else False
 
     def journeys_file(self, journeys):
         (self.record / "srs" / "user-journeys.json").write_text(json.dumps({"schema": "x", "journeys": journeys}), encoding="utf-8")
@@ -964,6 +972,34 @@ class RunTests(Harness):
         self.assertEqual([a for a in self.asked if a[0] == "journey review"], [])
         self.assertTrue(any(p["problem"].startswith("no link on Home") for p in result["remaining"]))
         self.assertEqual(result["completing"], 1)        # the journey that starts from the wishlist still goes through
+
+    def test_a_journey_still_failing_after_round_one_is_asked_about_and_yes_fixes_only_it_again(self):
+        self.pages["/"] = {"heading": "Home", "elements": [link("Sign in", "/login")]}
+        fixes = []
+
+        def fix(root):
+            fixes.append(len(fixes) + 1)
+            if len(fixes) == 2:                       # the second round's fix is the one that works
+                self.pages["/"] = SHOP["/"]
+
+        self.round_answers = [True]
+        session = self.session(fix=fix)
+        with self.models():
+            result = self.run_test(session)
+        self.assertEqual(len(session.requests), 2)
+        self.assertNotIn("`UJ-002`", session.requests[1])
+        self.assertEqual([(done, where) for done, _left, where in self.rounds_asked], [(1, "1 journey")])
+        self.assertEqual([r["round"] for r in result["rounds"]], [1, 2])
+        self.assertEqual(result["completing"], 2)
+
+    def test_no_after_round_one_leaves_the_journey_reported_as_it_is(self):
+        self.pages["/"] = {"heading": "Home", "elements": [link("Sign in", "/login")]}
+        session = self.session(fix=lambda root: None)
+        with self.models():
+            result = self.run_test(session)
+        self.assertEqual(len(session.requests), 1)
+        self.assertEqual(len(self.rounds_asked), 1)
+        self.assertTrue(result["remaining"])
 
     def test_the_problems_that_matter_are_given_to_the_agent_the_app_is_bundled_and_the_journeys_walked_again(self):
         self.pages["/"] = {"heading": "Home", "elements": [link("Sign in", "/login")]}

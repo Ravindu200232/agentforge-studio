@@ -5,6 +5,7 @@ written out for the agent to fix; what is found is told in the chat under the pi
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
 
 from . import bus, vision
@@ -113,3 +114,43 @@ def run_fix(project: str, session: Any, request: str, model: str, agent: str, ti
 
 def plural(count: int, word: str) -> str:
     return f"{count} {word}{'' if count == 1 else 's'}"
+
+
+# The reviews go round by round: look, fix, look again. The first round runs by itself; every round after it is asked for,
+# Yes or No, in the chat - nothing is asked once nothing is left to fix. This is the most rounds one review can have.
+MAX_ROUNDS = 10
+_YES = {"y", "yes", "yeah", "yep", "ok", "okay", "sure", "go", "continue", "ow", "ou", "owu", "හා", "ඔව්", "ඔව"}
+
+
+def _first_word(text: str | None) -> str:
+    words = re.split(r"[\s,.!?]+", str(text or "").strip().lower())
+    return words[0] if words else ""
+
+
+def next_round(project: str, session: Any, agent: str, done: int, remaining: int, where: str, title: str) -> bool:
+    """After round `done`, with `remaining` problems still on `where`: whether to run round `done + 1`. The run holds still
+    for the answer on a Yes/No card in the chat (typing it works too); "You decide" and No end the review, and so does
+    reaching `MAX_ROUNDS`. Stop ends the run."""
+    from .session import RunCancelled
+
+    if remaining <= 0:
+        return False
+    if done >= MAX_ROUNDS:
+        bus.agent_msg(project, f"{plural(remaining, 'problem')} still on {where} after {done} rounds; the review stops here.",
+                      title=title, kind="narration", agent=agent)
+        return False
+    reply = bus.ask_and_wait(
+        project, "question",
+        f"{title}: round {done} is done and {plural(remaining, 'problem')} still {'shows' if remaining == 1 else 'show'} on "
+        f"{where}. Run round {done + 1} (fix {'it' if remaining == 1 else 'them'} and check again)?",
+        options=[{"id": "1", "label": "Yes"}, {"id": "2", "label": "No"}], agent=agent,
+        cancelled=lambda: bool(getattr(session, "cancelled", False)), quick=True,
+        why="Each round fixes only what is still wrong, then looks at those screens again.",
+        assumption="stop here and list what is left")
+    if reply is None:
+        raise RunCancelled(project)
+    if _first_word(reply) in _YES:
+        return True
+    bus.agent_msg(project, f"Stopped after round {done}: {plural(remaining, 'problem')} left as they are, listed below.",
+                  title=title, kind="narration", agent=agent)
+    return False

@@ -170,38 +170,49 @@ def _review(project: str, session: Any, model: str, rows: list[dict[str, Any]], 
     problems = sum(len(f["defects"]) for f in first)
     unreviewed = [f["name"] for f in first if f.get("error")]
 
+    final = {f["file"]: f for f in first}
     fixed_pages: list[str] = []
     fix_stopped = ""
-    second: list[dict[str, Any]] = []
-    request, count = _fix_request(first, accounts)
-    if count and fix:
+    rounds: list[dict[str, Any]] = []
+    # Round by round: fix what is still wrong, look again. The first round runs by itself; each one after it is asked for.
+    while fix:
+        request, count = _fix_request(list(final.values()), accounts)
+        bad = {f["file"] for f in final.values() if any(d["severity"] in FIX_SEVERITIES for d in f["defects"])}
+        if not count or (rounds and not screen_review.next_round(
+                project, session, bus.DESIGNER, len(rounds), count, screen_review.plural(len(bad), "screen"), "Visual review")):
+            break
         if session.cancelled:
             raise RunCancelled(project)
-        bus.agent_msg(project, f"{count} problem{'s' if count != 1 else ''} worth fixing found on "
-                               f"{len({f['file'] for f in first if any(d['severity'] in FIX_SEVERITIES for d in f['defects'])})} "
-                               "screen(s). Fixing them in the prototype's files.", title="Visual review",
-                      kind="narration", agent=bus.DESIGNER)
+        number = len(rounds) + 1
+        bus.agent_msg(project, (f"Round {number}: " if number > 1 else "")
+                      + f"{count} problem{'s' if count != 1 else ''} worth fixing found on {len(bad)} screen(s). "
+                      "Fixing them in the prototype's files.", title="Visual review", kind="narration", agent=bus.DESIGNER)
         before = _fingerprint(root, rows)
         fix_stopped = screen_review.run_fix(project, session, prompts.load("prototype/visual-fix", defects=request), model,
                                             bus.DESIGNER, "Visual review")
         after = _fingerprint(root, rows)
         shared = before.get(SHARED) != after.get(SHARED)
-        # A changed shared file (the stylesheet, a component) can change every page; otherwise only the pages whose own file changed.
-        again = [r for r in rows if shared or before.get(str(r["file"])) != after.get(str(r["file"]))]
-        fixed_pages = [str(r["file"]) for r in again]
+        own = [r for r in rows if before.get(str(r["file"])) != after.get(str(r["file"]))]
+        # The first round looks again at every page a changed shared file (the stylesheet, a component) can change; a later
+        # round only at the pages it was fixing and the pages whose own file it changed.
+        again = [r for r in rows if (shared and number == 1) or r in own or (str(r["file"]) in bad and (shared or own))]
+        fixed_pages += [str(r["file"]) for r in again if str(r["file"]) not in fixed_pages]
         if again and rebuild:
             rebuild()
-        if again:
-            bus.agent_msg(project, f"Looking again at the {len(again)} screen{'s' if len(again) != 1 else ''} that changed.",
-                          title="Visual review", kind="narration", agent=bus.DESIGNER)
-            second = look(again, photograph(again, "Taking screenshots again"), "Looking at the changed screens")
+        if not again:
+            rounds.append({"round": number, "fixing": count, "looked_again": 0})
+            break
+        bus.agent_msg(project, f"Looking again at the {len(again)} screen{'s' if len(again) != 1 else ''} that changed.",
+                      title="Visual review", kind="narration", agent=bus.DESIGNER)
+        second = look(again, photograph(again, "Taking screenshots again"), "Looking at the changed screens")
+        final.update({f["file"]: f for f in second if not f.get("error")})
+        rounds.append({"round": number, "fixing": count, "looked_again": len(again),
+                       "left": sum(1 for f in final.values() for d in f["defects"] if d["severity"] in FIX_SEVERITIES)})
     bus.progress(project, "Looking at the screens", 100, agent=bus.DESIGNER)
 
-    final = {f["file"]: f for f in first}
-    final.update({f["file"]: f for f in second if not f.get("error")})
     remaining = [(f, d) for f in final.values() for d in f["defects"] if d["severity"] in FIX_SEVERITIES]
     report = {"model": model, "pages": len(rows), "problems_found": problems, "fixed_pages": fixed_pages,
-              "fix_stopped": fix_stopped,
+              "fix_stopped": fix_stopped, "rounds": rounds,
               "remaining": [{"file": f["file"], **d} for f, d in remaining],
               "pages_not_reviewed": unreviewed, "screens_without_picture": [s["file"] + " " + s["viewport"] for s in failed]}
     try:
@@ -214,6 +225,7 @@ def _review(project: str, session: Any, model: str, rows: list[dict[str, Any]], 
                   f"{problems} problem{'s' if problems != 1 else ''} found; nothing was changed, this was a review only." if not fix else
                   f"{problems} problem{'s' if problems != 1 else ''} found"
                   + (f", {len(fixed_pages)} screen{'s' if len(fixed_pages) != 1 else ''} changed to fix them" if fixed_pages else "")
+                  + (f" in {len(rounds)} rounds" if len(rounds) > 1 else "")
                   + (f"; {len(remaining)} still visible after the fix." if remaining else "; none left that matters.")))
     if fix_stopped:
         summary += f" The fix stopped before it was finished ({fix_stopped})."

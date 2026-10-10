@@ -1019,8 +1019,10 @@ function Asked({ ask, onPick }) {
         {options.length > 0 && (
           <div className="mt-2.5 flex flex-wrap gap-1.5">
             {options.map(option => (
-              <button key={option.id} onClick={() => (asksValue ? answerOption(option.label) : onPick(option.label))}
-                      title={option.hint || (asksValue ? 'Answer with this instead of a value' : 'Put this in the box below')}
+              <button key={option.id}
+                      onClick={() => (asksValue || ask.quick ? answerOption(option.label) : onPick(option.label))}
+                      title={option.hint || (asksValue ? 'Answer with this instead of a value'
+                        : ask.quick ? `Answer ${option.label}` : 'Put this in the box below')}
                       className="rounded-xl border border-line2 bg-panel px-2.5 py-1.5 text-left
                                  text-[11.5px] font-semibold text-ink transition-colors
                                  hover:border-accent hover:text-accent">

@@ -861,6 +861,10 @@ def _walk_all(project: str, session: Any, model: str, sees: bool, root: Path, ro
                     journey = jobs.get_nowait()
                 except queue.Empty:
                     return
+                # A step that timed out closes the browser; the next journey gets a new one rather than failing every step
+                # with "the browser has stopped" (it did, for four journeys in a row).
+                if not getattr(driver, "alive", lambda: True)() and not session.cancelled:
+                    driver.start()
                 walked = walk.walk(journey, root / JOURNEY_DIR / journey["id"])
                 with lock:
                     pending.append(judges.submit(finished, journey, walked))
@@ -913,24 +917,33 @@ def _run(project: str, session: Any, model: str, rows: list[dict[str, Any]], acc
     final = {r["journey"]["id"]: r for r in first}
     fixed: list[str] = []
     stopped = ""
-    request, count = _fix_request([(r["journey"], r["problems"]) for r in first])
-    if count and fix:
+    rounds: list[dict[str, Any]] = []
+    # Round by round: fix the journeys that still have problems, walk those again. The first round runs by itself; each one
+    # after it is asked for.
+    while fix:
+        request, count = _fix_request([(r["journey"], r["problems"]) for r in final.values()])
+        again = [r["journey"] for r in final.values() if _worth_fixing(r["problems"])]
+        if not count or (rounds and not screen_review.next_round(
+                project, session, bus.DESIGNER, len(rounds), count, screen_review.plural(len(again), "journey"),
+                "Journey test")):
+            break
         if session.cancelled:
             raise RunCancelled(project)
-        bus.agent_msg(project, f"{count} problem{'s' if count != 1 else ''} worth fixing found in "
-                               f"{sum(1 for r in first if _worth_fixing(r['problems']))} journey(s). Fixing them in the prototype's files.",
-                      title="Journey test", kind="narration", agent=bus.DESIGNER)
+        number = len(rounds) + 1
+        bus.agent_msg(project, (f"Round {number}: " if number > 1 else "")
+                      + f"{count} problem{'s' if count != 1 else ''} worth fixing found in {len(again)} journey(s). "
+                      "Fixing them in the prototype's files.", title="Journey test", kind="narration", agent=bus.DESIGNER)
         stopped = screen_review.run_fix(project, session, prompts.load("prototype/journey-fix", defects=request), model,
                                         bus.DESIGNER, "Journey test")
-        again = [r["journey"] for r in first if _worth_fixing(r["problems"])]
-        fixed = [j["id"] for j in again]
-        if again:
-            if rebuild:
-                rebuild()
-            bus.agent_msg(project, f"Clicking through the {len(again)} journey{'s' if len(again) != 1 else ''} that had problems again.",
-                          title="Journey test", kind="narration", agent=bus.DESIGNER)
-            for r in _walk_all(project, session, model, sees, root, rows, accounts_doc, again, "Clicking through them again"):
-                final[r["journey"]["id"]] = r
+        fixed += [j["id"] for j in again if j["id"] not in fixed]
+        if rebuild:
+            rebuild()
+        bus.agent_msg(project, f"Clicking through the {len(again)} journey{'s' if len(again) != 1 else ''} that had problems again.",
+                      title="Journey test", kind="narration", agent=bus.DESIGNER)
+        for r in _walk_all(project, session, model, sees, root, rows, accounts_doc, again, "Clicking through them again"):
+            final[r["journey"]["id"]] = r
+        rounds.append({"round": number, "fixing": count, "walked_again": len(again),
+                       "left": sum(len(_worth_fixing(r["problems"])) for r in final.values())})
     bus.progress(project, "Clicking through the journeys", 100, agent=bus.DESIGNER)
 
     remaining = [{"journey": jid, **p} for jid, r in final.items() for p in _worth_fixing(r["problems"])]
@@ -938,7 +951,7 @@ def _run(project: str, session: Any, model: str, rows: list[dict[str, Any]], acc
                   if all(s["reached"] for s in r["walked"]["steps"]) and (r["judged"]["completes"] if r["judged"] else True)]
     found = sum(len(r["problems"]) for r in first)
     report = {"model": model, "pictures_looked_at": bool(sees), "journeys": len(journeys), "completing": len(completing),
-              "problems_found": found, "fixed_journeys": fixed, "fix_stopped": stopped, "remaining": remaining,
+              "problems_found": found, "fixed_journeys": fixed, "fix_stopped": stopped, "remaining": remaining, "rounds": rounds,
               "results": [{"id": jid, "name": r["journey"]["name"], "who": r["journey"]["who"],
                            "completes": jid in completing, "summary": (r["judged"] or {}).get("summary", ""),
                            "setup": r["walked"].get("setup"), "judge_error": r["walked"].get("judge_error", ""),

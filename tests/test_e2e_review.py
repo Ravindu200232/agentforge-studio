@@ -84,6 +84,7 @@ class Harness(unittest.TestCase):
             mock.patch.object(bus, "log", lambda *a, **k: None),
             mock.patch.object(config, "setting", lambda name, fallback=None: True if name == "e2e_visual_review" else fallback),
             mock.patch("server_modules.vision.supports", return_value=True),
+            mock.patch("server_modules.screen_review.next_round", side_effect=self._next_round),
         ):
             patch.start()
             self.addCleanup(patch.stop)
@@ -110,6 +111,13 @@ class Harness(unittest.TestCase):
 
         return mock.patch("server_modules.llm.complete_json", side_effect=complete_json)
 
+
+    def _next_round(self, project, session, agent, done, remaining, where, title):
+        """The person's answer to "Run round N?": what the test queued in `self.round_answers`, else No."""
+        self.rounds_asked = getattr(self, "rounds_asked", [])
+        self.rounds_asked.append((done, remaining, where))
+        answers = getattr(self, "round_answers", [])
+        return answers.pop(0) if answers else False
 
 class WhichScreenshotsTests(Harness):
     def test_each_test_gets_one_entry_with_a_picture_per_browser_and_journeys_come_first(self):
@@ -462,3 +470,56 @@ class WiredInTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RoundTests(Harness):
+    """Round by round: the Studio runs only the tests whose screens still had problems, and each round after the first is
+    asked for."""
+
+    def setUp(self):
+        super().setUp()
+        self.standard()
+        self.reruns: list[list[str]] = []
+        self.fixes = [0]
+
+        def rerun(project, session, grep=None, reason="", force=False):
+            self.reruns.append(list(grep or []))
+            self.fixes[0] += 1
+            seed = f"FIXED{self.fixes[0]}"
+            results(self.workspace, [("e2e/journeys.spec.js", JOURNEY, "desktop", "passed", seed + "-d"),
+                                     ("e2e/journeys.spec.js", JOURNEY, "mobile", "passed", seed + "-m")],
+                    name=f"run{self.fixes[0]}.json", folder=".agentforge/qa/runs")
+            import os
+            for path in (self.workspace / ".agentforge/qa/runs").glob("*.json"):
+                stamp = path.stat().st_mtime + 100 * self.fixes[0]
+                os.utime(path, (stamp, stamp))
+            return {"status": "passed"}
+
+        self.enterContext(mock.patch("qa_agent.e2e_run.run", side_effect=rerun))
+
+    def test_the_studio_reruns_only_the_tests_with_problems(self):
+        session = FakeSession(self.workspace)
+        with self.answers({JOURNEY: [{**OK, "looks_ok": False, "defects": [defect()]}, OK], OTHER: OK}):
+            e2e_review.run("p", session)
+        self.assertEqual(self.reruns, [[JOURNEY]])
+        self.assertEqual(getattr(self, "rounds_asked", []), [])        # nothing left: nothing asked
+
+    def test_yes_runs_a_second_round_and_no_further_question_once_nothing_is_left(self):
+        self.round_answers = [True]
+        session = FakeSession(self.workspace)
+        bad = {**OK, "looks_ok": False, "defects": [defect()]}
+        with self.answers({JOURNEY: [bad, bad, OK], OTHER: OK}):
+            result = e2e_review.run("p", session)
+        self.assertEqual(len(session.requests), 2)
+        self.assertEqual(self.reruns, [[JOURNEY], [JOURNEY]])
+        self.assertEqual(self.rounds_asked, [(1, 1, "1 test screen")])
+        self.assertEqual([r["round"] for r in result["rounds"]], [1, 2])
+        self.assertEqual(result["remaining"], [])
+
+    def test_no_leaves_what_is_left_listed(self):
+        session = FakeSession(self.workspace)
+        bad = {**OK, "looks_ok": False, "defects": [defect()]}
+        with self.answers({JOURNEY: [bad, bad], OTHER: OK}):
+            result = e2e_review.run("p", session)
+        self.assertEqual(len(session.requests), 1)
+        self.assertEqual(len(result["remaining"]), 1)

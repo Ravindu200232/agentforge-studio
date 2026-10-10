@@ -102,6 +102,10 @@ class Driver:
                 for waiting in self._waiting.values():
                     waiting.set()
 
+    def alive(self) -> bool:
+        """Whether the browser is still there (a command that timed out closes it)."""
+        return self._process is not None and self._process.poll() is None
+
     def call(self, command: str, seconds: int = SECONDS, **args: Any) -> dict[str, Any]:
         process = self._process
         if process is None or process.poll() is not None:

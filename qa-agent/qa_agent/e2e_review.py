@@ -33,10 +33,14 @@ from . import build_evidence
 PHASE = "qa:review"
 REPORT = ".agentforge/qa/visual-review.json"
 MAX_TESTS = 18
+REVIEW_SECONDS = 300            # the longest the model has to look at the pictures of one test
 # Playwright's projects, and the width each is shown to the model as.
 VIEWPORT_OF = {"desktop": "desktop", "mobile": "mobile"}
 _JOURNEY = re.compile(r"^\s*\[UJ-", re.I)
 _SKIP_SPECS = re.compile(r"a11y|axe|accessib", re.I)
+# An accessibility check written inside a journey file ("Admin Overview is accessible") ends on whatever page it checked,
+# often the sign-in page: its screen is no journey's to judge (twenty of them were taken for broken pages).
+_SKIP_TITLES = re.compile(r"\b(a11y|axe|accessib\w*|@a11y)\b", re.I)
 
 
 def enabled() -> bool:
@@ -53,7 +57,8 @@ def screens(workspace: Path) -> list[dict[str, Any]]:
     for run in sorted(build_evidence._runs_found(workspace), key=lambda r: (str(r.get("at") or ""), r.get("rank", 0))):  # noqa: SLF001
         for test in run.get("tests") or []:
             project = str(test.get("project") or "")
-            if test.get("screenshot") and project in VIEWPORT_OF and not _SKIP_SPECS.search(str(test.get("file") or "")):
+            if (test.get("screenshot") and project in VIEWPORT_OF and not _SKIP_SPECS.search(str(test.get("file") or ""))
+                    and not _SKIP_TITLES.search(str(test.get("title") or ""))):
                 latest[(str(test.get("file") or ""), str(test.get("title") or ""), project)] = test
     groups: dict[tuple[str, str], dict[str, Any]] = {}
     for (file, title, project), test in latest.items():
@@ -93,8 +98,9 @@ def _review_group(project: str, model: str, workspace: Path, group: dict[str, An
         pictures=" and ".join(f"picture {i + 1} is the {name} browser" for i, name in enumerate(widths)) + ".",
         status=" — this test FAILED, so the screen shows where it stopped" if group["status"] == "failed"
         else (" — this test was flaky (it passed only on a retry)" if group["status"] == "flaky" else " — this test passed"))
-    answer = llm.complete_json(screen_review.SYSTEM, request, screen_review.clean, label="visual review", model=model,
-                               images=data, project=project, role=bus.DEVELOPER)
+    # Not longer than REVIEW_SECONDS: a model that stopped answering leaves this test unreviewed, never the review stuck.
+    answer = llm.within(REVIEW_SECONDS, llm.complete_json, screen_review.SYSTEM, request, screen_review.clean,
+                        label="visual review", model=model, images=data, project=project, role=bus.DEVELOPER)
     return {"file": group["file"], "title": group["title"], "name": group["title"], **answer, "thumbs": thumbs,
             "heading": f"### {group['title']} — `{spec}` ({' and '.join(widths)})"}
 
@@ -193,40 +199,60 @@ def _review(project: str, session: Any, model: str, groups: list[dict[str, Any]]
     problems = sum(len(f["defects"]) for f in first)
     unreviewed = [f["name"] for f in first if f.get("error")]
 
-    request, count = screen_review.fix_request(first)
-    second: list[dict[str, Any]] = []
+    final = {(f["file"], f["title"]): f for f in first}
     rechecked: list[str] = []
     not_rerun: list[str] = []
     fix_stopped = ""
-    if count and fix:
+    count = 0
+    rounds: list[dict[str, Any]] = []
+    # Round by round: fix what the screens still show, run only those tests again, look at their new screens. The first round
+    # runs by itself; each one after it is asked for.
+    while fix:
+        request, count_now = screen_review.fix_request(list(final.values()))
+        bad = {(f["file"], f["title"]) for f in final.values()
+               if any(d["severity"] in screen_review.FIX_SEVERITIES for d in f["defects"])}
+        if not count_now or (rounds and not screen_review.next_round(
+                project, session, bus.DEVELOPER, len(rounds), count_now, plural(len(bad), "test screen"),
+                "Screenshot review")):
+            break
         if session.cancelled:
             raise RunCancelled(project)
-        bad = {(f["file"], f["title"]) for f in first if any(d["severity"] in screen_review.FIX_SEVERITIES for d in f["defects"])}
-        bus.agent_msg(project, f"{plural(count, 'problem')} worth fixing found on {plural(len(bad), 'test screen')}. "
-                               "Fixing them in the application, then running the journeys again.",
+        count = count or count_now
+        number = len(rounds) + 1
+        bus.agent_msg(project, (f"Round {number}: " if number > 1 else "")
+                      + f"{plural(count_now, 'problem')} worth fixing found on {plural(len(bad), 'test screen')}. "
+                      "Fixing them in the application, then running those tests again.",
                       title="Screenshot review", kind="narration", agent=bus.DEVELOPER)
-        before = {(g["file"], g["title"]): _digest(workspace, g) for g in groups}
+        shown = {(g["file"], g["title"]): g for g in screens(workspace)}
+        before = {key: _digest(workspace, shown[key]) for key in bad if key in shown}
         fix_stopped = screen_review.run_fix(project, session, prompts.load("testing/visual-fix", defects=request), model,
-                                            bus.DEVELOPER, "Screenshot review")
+                                            bus.DEVELOPER, "Screenshot review") or fix_stopped
         # The agent does not run the tests: the Studio runs only the ones whose screens had problems, for their new pictures.
         from . import e2e_run
         e2e_run.run(project, session, grep=sorted({title for (_file, title) in bad}), reason="screenshot review")
+        if session.cancelled:
+            raise RunCancelled(project)
         now = {(g["file"], g["title"]): g for g in screens(workspace)}
         # Only the tests that had problems, and whose screenshots are new, are looked at again.
         again = [now[key] for key in sorted(bad) if key in now and _digest(workspace, now[key]) != before.get(key)]
-        not_rerun = [title for (_file, title) in sorted(bad) if (_file, title) not in {(g["file"], g["title"]) for g in again}]
-        rechecked = [g["title"] for g in again]
-        if again:
-            bus.agent_msg(project, f"Looking again at {plural(len(again), 'test screen')} that ran again.",
-                          title="Screenshot review", kind="narration", agent=bus.DEVELOPER)
-            second = look(again, "Looking at the new test screenshots")
+        seen_again = {(g["file"], g["title"]) for g in again}
+        not_rerun = [title for (_file, title) in sorted(bad) if (_file, title) not in seen_again]
+        rechecked += [g["title"] for g in again if g["title"] not in rechecked]
+        if not again:
+            rounds.append({"round": number, "fixing": count_now, "looked_again": 0})
+            break
+        bus.agent_msg(project, f"Looking again at {plural(len(again), 'test screen')} that ran again.",
+                      title="Screenshot review", kind="narration", agent=bus.DEVELOPER)
+        second = look(again, "Looking at the new test screenshots")
+        final.update({(f["file"], f["title"]): f for f in second if not f.get("error")})
+        rounds.append({"round": number, "fixing": count_now, "looked_again": len(again),
+                       "left": sum(1 for f in final.values() for d in f["defects"]
+                                   if d["severity"] in screen_review.FIX_SEVERITIES)})
     bus.progress(project, "Looking at the test screenshots", 100, agent=bus.DEVELOPER)
 
-    final = {(f["file"], f["title"]): f for f in first}
-    final.update({(f["file"], f["title"]): f for f in second if not f.get("error")})
     remaining = [(f, d) for f in final.values() for d in f["defects"] if d["severity"] in screen_review.FIX_SEVERITIES]
     report = {"model": model, "tests": len(groups), "problems_found": problems, "rechecked": rechecked,
-              "not_rechecked": not_rerun, "fix_stopped": fix_stopped, "tests_not_reviewed": unreviewed,
+              "not_rechecked": not_rerun, "fix_stopped": fix_stopped, "tests_not_reviewed": unreviewed, "rounds": rounds,
               "remaining": [{"test": f["title"], "file": f["file"], **d} for f, d in remaining]}
     try:
         target = workspace / REPORT

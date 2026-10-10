@@ -16,7 +16,7 @@ for folder in (".", "src", "srs-agent", "prototype-agent", "builder-agent", "qa-
 
 from ollama_terminal import screenshot  # noqa: E402
 from prototype_agent import screens, visual_review  # noqa: E402
-from server_modules import bus, config  # noqa: E402
+from server_modules import bus, config, screen_review  # noqa: E402
 from server_modules.session import RunCancelled  # noqa: E402
 
 ROWS = [{"route": "/", "file": "app/src/pages/home.tsx", "name": "Home", "roles": [], "signed_in": False},
@@ -74,6 +74,7 @@ class Harness(unittest.TestCase):
             mock.patch.object(config, "setting", lambda name, fallback=None: True if name == "prototype_visual_review" else fallback),
             mock.patch("server_modules.vision.supports", return_value=True),
             mock.patch.object(screenshot, "working_browser", return_value=("b", "chrome")),
+            mock.patch("server_modules.screen_review.next_round", side_effect=self._next_round),
         ):
             patch.start()
             self.addCleanup(patch.stop)
@@ -114,6 +115,13 @@ class Harness(unittest.TestCase):
         with mock.patch.object(screens, "capture_all", self.capture), self.answers(answers):
             return visual_review.run("prj_review", session, ROWS, accounts)
 
+
+    def _next_round(self, project, session, agent, done, remaining, where, title):
+        """The person's answer to "Run round N?": what the test queued in `self.round_answers`, else No."""
+        self.rounds_asked = getattr(self, "rounds_asked", [])
+        self.rounds_asked.append((done, remaining, where))
+        answers = getattr(self, "round_answers", [])
+        return answers.pop(0) if answers else False
 
 class SkipTests(Harness):
     def test_a_model_that_cannot_look_at_pictures_skips_the_review_and_says_so_in_the_chat(self):
@@ -402,3 +410,97 @@ class ReadsPicturesTests(Harness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RoundTests(Harness):
+    """After the first round of look, fix, look again, each further round is asked for - and only while problems are left."""
+
+    def still_wrong_then(self, after):
+        counter = [0]
+
+        def fix(root):
+            counter[0] += 1
+            (root / "app/src/pages/orders.tsx").write_text(f"export default () => <h1>Orders {counter[0]}</h1>", encoding="utf-8")
+
+        bad = {**OK, "looks_ok": False, "defects": [defect()]}
+        return FakeSession(self.folder, fix=fix), {"app/src/pages/home.tsx": OK, "app/src/pages/dashboard.tsx": OK,
+                                                   "app/src/pages/orders.tsx": [bad, bad, *after]}
+
+    def test_nothing_is_asked_when_the_first_round_leaves_nothing_to_fix(self):
+        def fix(root):
+            (root / "app/src/pages/orders.tsx").write_text("export default () => <h1>fixed</h1>", encoding="utf-8")
+
+        session = FakeSession(self.folder, fix=fix)
+        self.run_review(session, {"app/src/pages/home.tsx": OK, "app/src/pages/dashboard.tsx": OK,
+                                  "app/src/pages/orders.tsx": [{**OK, "looks_ok": False, "defects": [defect()]}, OK]})
+        self.assertEqual(getattr(self, "rounds_asked", []), [])
+
+    def test_with_problems_left_the_person_is_asked_and_no_ends_the_review(self):
+        session, answers = self.still_wrong_then([OK])
+        result = self.run_review(session, answers)
+        self.assertEqual(self.rounds_asked, [(1, 1, "1 screen")])
+        self.assertEqual(len(session.requests), 1)                      # no second fix
+        self.assertEqual(len(result["remaining"]), 1)
+        self.assertEqual([r["round"] for r in result["rounds"]], [1])
+
+    def test_yes_runs_another_round_on_only_what_is_still_wrong(self):
+        self.round_answers = [True]
+        session, answers = self.still_wrong_then([OK])
+        result = self.run_review(session, answers)
+        self.assertEqual(len(session.requests), 2)
+        self.assertIn("orders.tsx", session.requests[1])
+        self.assertNotIn("home.tsx", session.requests[1])
+        self.assertEqual(result["remaining"], [])
+        self.assertEqual([r["round"] for r in result["rounds"]], [1, 2])
+        self.assertEqual(len(self.rounds_asked), 1)                     # nothing left after round 2: not asked again
+        self.assertEqual([f for f, _ in self.asked].count("app/src/pages/home.tsx"), 1)
+
+
+class NextRoundTests(unittest.TestCase):
+    """The question itself: a Yes/No card the run holds still for."""
+
+    def setUp(self):
+        self.said: list[str] = []
+        self.enterContext(mock.patch.object(bus, "agent_msg", lambda project, text, **kw: self.said.append(text)))
+        self.session = SimpleNamespace(cancelled=False)
+
+    def ask(self, reply, **overrides):
+        args = {"done": 1, "remaining": 3, "where": "2 screens"} | overrides
+        with mock.patch.object(bus, "ask_and_wait", return_value=reply) as asked:
+            answer = screen_review.next_round("p", self.session, "designer", args["done"], args["remaining"], args["where"],
+                                              "Visual review")
+        return answer, asked
+
+    def test_yes_in_any_of_its_forms_runs_the_next_round(self):
+        for reply in ("Yes", "yes please", "ow", "ඔව්", "OK"):
+            self.assertTrue(self.ask(reply)[0], reply)
+
+    def test_no_or_leaving_it_to_the_agent_ends_the_review(self):
+        for reply in ("No", "", "not now"):
+            self.assertFalse(self.ask(reply)[0], reply)
+
+    def test_the_card_is_a_quick_yes_no_question_saying_what_is_left(self):
+        _answer, asked = self.ask("Yes")
+        args, kwargs = asked.call_args
+        self.assertEqual(args[1], "question")
+        self.assertIn("round 1 is done", args[2])
+        self.assertIn("3 problems", args[2])
+        self.assertIn("Run round 2", args[2])
+        self.assertEqual([o["label"] for o in kwargs["options"]], ["Yes", "No"])
+        self.assertTrue(kwargs["quick"])
+
+    def test_nothing_left_is_never_asked(self):
+        answer, asked = self.ask("Yes", remaining=0)
+        self.assertFalse(answer)
+        asked.assert_not_called()
+
+    def test_the_review_stops_at_the_most_rounds_without_asking(self):
+        answer, asked = self.ask("Yes", done=screen_review.MAX_ROUNDS)
+        self.assertFalse(answer)
+        asked.assert_not_called()
+
+    def test_stop_while_waiting_stops_the_run(self):
+        from server_modules.session import RunCancelled
+
+        with self.assertRaises(RunCancelled):
+            self.ask(None)
