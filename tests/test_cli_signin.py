@@ -105,7 +105,8 @@ class WhoIsSignedInTests(unittest.TestCase):
             cli_signin.SIGNINS.start("aws")
 
     def test_a_signed_out_tool_is_signed_out(self):
-        with cli(), self.run_output({}):
+        # The credentials a real sign-in leaves on this computer are not looked at: the test is about the tools' answers.
+        with cli(), self.run_output({}), mock.patch.object(cli_signin, "_first_file", lambda *candidates: None):
             rows = cli_signin.SIGNINS.available(fresh=True)
         self.assertTrue(all(row["installed"] and not row["signed_in"] for row in rows.values()))
 
