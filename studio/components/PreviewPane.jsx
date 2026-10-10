@@ -699,7 +699,9 @@ export default function PreviewPane({ hidden, onBuild }) {
                   )}
                 </div>
               </div>
-            ) : canResume ? (
+            ) : canResume && runtime?.status !== 'running' ? (
+              /* An app that is answering stays on screen: a run that failed after it was built (a deployment that could not be
+                 verified, say) leaves "Resume" in the header, but does not cover a working preview. */
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-panel p-8 text-center" role="status">
                 <div className="grid size-14 place-items-center rounded-2xl border border-accent/20 bg-accent text-ink">
                   <Play className="size-7" />

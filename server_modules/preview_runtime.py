@@ -489,6 +489,40 @@ def wait_settled(project: str, seconds: float = READY_SECONDS + 15,
         time.sleep(0.1)
 
 
+# What a production build writes last; a server that started before it holds the build it started with.
+BUILD_MARKERS = (".next/BUILD_ID", "build/server/index.js")
+
+
+def build_is_newer(root: Path, started_ms: int) -> bool:
+    """Whether a build was written after the preview server started.
+
+    A production Next.js (or Remix) server keeps the build manifest it started with, so after a newer build (the tests
+    build the app again) the pages it serves name chunks and styles that are no longer on disk, and the preview shows an
+    app that never comes alive. The server has to be replaced.
+    """
+    if not started_ms:
+        return False
+    for marker in BUILD_MARKERS:
+        try:
+            if (root / marker).stat().st_mtime * 1000 > started_ms + 1000:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def refresh_if_stale(project: str) -> bool:
+    """After work on the project ends: replace its preview server when a newer build was written under it."""
+    with _lock:
+        current = status(project)
+        saved = _processes.get(project) or _read_metadata(project)
+        stale = (current["status"] == "running" and saved.get("script") not in (None, "dev")
+                 and build_is_newer(config.workspace_for(project), int(current.get("revision") or 0)))
+    if stale:
+        reopen(project)
+    return stale
+
+
 def open_preview(project: str) -> dict:
     global _revision
     root = config.workspace_for(project)
@@ -515,7 +549,8 @@ def open_preview(project: str) -> dict:
             relaunch = saved.get("framework") is not None and saved["framework"] != _framework(package)
             stale = not current_port or \
                 (current["status"] == "running" and not _port_open(current_port)) \
-                or (saved.get("script") and saved["script"] != script) or bool(relaunch)
+                or (saved.get("script") and saved["script"] != script) or bool(relaunch)                 or (current["status"] == "running" and saved.get("script") not in (None, "dev")
+                    and build_is_newer(root, int(current.get("revision") or 0)))
             if not stale:
                 return current
             stop(project)

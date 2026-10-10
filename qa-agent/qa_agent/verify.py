@@ -25,9 +25,12 @@ def report(project: str) -> dict[str, Any]:
     if not isinstance(saved, dict):
         # No Testing run yet — the build's own artifacts are still evidence.
         saved = {}
-    saved.setdefault("project", project)
+    # The id is the project's; the studio matches a report to the project open by it. An agent that writes the report
+    # often puts the app's name there instead, and the results then never show.
+    saved["project"] = project
     from .evidence import collect
     result = collect(session.workspace, saved)
+    result["project"] = project
     result.setdefault("complete", False)
     result.setdefault("provenance", "no verification has run for this project yet")
     return result

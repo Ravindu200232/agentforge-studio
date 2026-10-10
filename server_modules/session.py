@@ -894,6 +894,17 @@ class ProjectSession:
         bus.done(self.project, text, agent=self.role)
         self.save_context()
         self.stage = "idle"
+        self._refresh_preview()
+
+    def _refresh_preview(self) -> None:
+        """A build written while the preview server ran (the tests build the app again) leaves it serving a build that is
+        gone: it is replaced, so what the preview shows is the app as it is now."""
+        try:
+            from . import preview_runtime
+
+            preview_runtime.refresh_if_stale(self.project)
+        except Exception as exc:  # noqa: BLE001 - never a reason to end a finished run
+            bus.log(self.project, "WARN", f"The preview could not be refreshed: {exc}")
 
     def fail(self, text: str) -> None:
         # Cancellation is an expected pause, not a failed build.  The outer
@@ -909,6 +920,7 @@ class ProjectSession:
         bus.failed(self.project, text, agent=self.role)
         self.save_context()
         self.stage = "idle"
+        self._refresh_preview()
 
     def cancel(self) -> None:
         with self._cancel_lock:
