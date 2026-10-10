@@ -151,6 +151,8 @@ class StraightThroughCase(unittest.TestCase):
             mock.patch.object(build, "_finish_run", lambda project, session, result, plan="":
                               self.finished_runs.append((result, plan)) or {"status": "complete"}),
             mock.patch.object(build, "show_preview"),
+            # What the build needs is ready (`test_preflight.py` is about what happens when it is not).
+            mock.patch.object(build.preflight, "missing", return_value=[]),
             mock.patch("srs_agent.document.has_document", return_value=True),
             mock.patch("srs_agent.document.document", return_value={"srs_document": {}}),
             mock.patch("prototype_agent.design.approved_customization", return_value={}),

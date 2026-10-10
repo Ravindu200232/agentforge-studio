@@ -12,6 +12,7 @@ from server_modules.session import Phases, RunCancelled, session_for
 from server_modules.validation import build_report
 
 from . import phases as build_phases
+from . import preflight
 
 BUILD_DIR = "build"
 REPORT = (BUILD_DIR, "report.json")
@@ -407,6 +408,9 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
     session = session_for(project)
     session.begin("build", role=bus.DEVELOPER)
     try:
+        # What the build needs from this computer and the person's accounts, before anything is asked or planned: what is
+        # missing is listed in one card, and the build waits until it is connected (Yes checks again) or is stopped (No).
+        preflight.ensure(project, stack, cancelled=lambda: bool(session.cancelled))
         # The stack's guides are staged first: the model reads them to judge whether anything needs the customer.
         reference_staging.stage(session.workspace, GUIDES_DIR, scaffold.build_guide_files(stack))
         decided = _decide(project, session, stack, direction)

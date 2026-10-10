@@ -29,7 +29,7 @@ GROUPS = {
         "agent", "app_text", "auth_guide", "build", "changes", "chat_media", "cli", "cloud_streaming",
         "compaction_progress", "connection_notice", "database_panel", "failure_echo", "fast_stop", "fresh_context",
         "hidden_start_process", "journey_walk", "llm_tools", "mcp_client", "model_choice", "mongo_check", "mongo_connect",
-        "ollama_cloud", "permissions", "phases", "preview_live", "preview_runtime", "preview_stale_build",
+        "ollama_cloud", "permissions", "phases", "preflight", "preview_live", "preview_runtime", "preview_stale_build",
         "prompt_too_long", "prototype", "pty_process", "run_command", "session_retry", "supabase_connect",
         "thinking_level", "vision", "web_app"]),
     "c3": ("Multi-layer verification of the built application", "Hamna R H F (IT22516916)", [
