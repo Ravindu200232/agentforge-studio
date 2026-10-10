@@ -66,7 +66,8 @@ Check these in the source before uploading; fix in the code when they are wrong:
 ## 3. Link
 
 - New project: `vercel link --yes --project <name> [--team <slug>]`. This creates the project on the
-  account if the name is free, and writes `.vercel/project.json`. Confirm with `vercel projects ls`.
+  account if the name is free, and writes `.vercel/project.json`. Confirm with `vercel projects ls`. If the name
+  or its `<name>.vercel.app` address is taken, add a short suffix of four lowercase letters or digits (`<name>-x7k2`) and say so in the result; the person is not stopped to choose a name.
 - Existing project: `vercel link --yes --project <name-or-id> --team <slug>`.
 - `.vercel/` is never committed.
 - Connecting the Git repository (`vercel git connect`) is optional and only with the customer's
@@ -169,7 +170,7 @@ project, an earlier answer and the pages do not already settle (see `core` secti
 
 1. Which Vercel account or team scope should own the project (`vercel teams ls` shows what the signed-in
    account can reach)?
-2. What is the project called? (It becomes `<name>.vercel.app`; ask again if the name is taken.)
+2. What is the project called? (It becomes `<name>.vercel.app`; a taken name gets a short suffix, see `core`.)
 3. Is this a commercial project? Vercel's free Hobby plan is for personal, non-commercial use; a
    commercial application belongs on a team plan. State what you know, do not decide it for them.
 4. Which region should the functions run in (near the database)?

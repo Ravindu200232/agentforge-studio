@@ -28,8 +28,8 @@ back is recorded and the record is true. Those are kept below; these are the rul
    audits, lint, type checks, coverage or `npm audit`: not before the upload, not after a repair, not on a
    fresh clone. A failing result in the QA report is a risk to name in the plan, not a reason to run it
    again.
-2. **Build once, where it is cheapest.** Vercel, Netlify and AWS ECS build in the provider's cloud: run no
-   build on this computer. AWS EC2 and Azure need an artifact made here: reuse the Studio's own build output
+2. **Build once, where it is cheapest.** Vercel and AWS ECS build in the provider's cloud: run no build on
+   this computer. Netlify's `netlify deploy --build` runs the build on this computer, once, before the upload. AWS EC2 and Azure need an artifact made here: reuse the Studio's own build output
    when it exists and is newer than the newest source file (compare timestamps: `.next/standalone`, `dist/`,
    `build/`), otherwise run the production build once. Install dependencies only when that build needs them
    and `node_modules` is missing.
@@ -124,7 +124,7 @@ Everything published carries the customer's name, not the tool's.
   it from the specification.
 - **The application's name** in the README, the repository description and the host project is the
   name the specification gives it; the repository and host names are short, lowercase and hyphenated
-  from it. If a name is taken, ask; never silently add a suffix.
+  from it. If a name is taken, add a short suffix of four lowercase letters or digits (`<name>-x7k2`) and say so in the result; the person is not stopped to choose a name.
 
 ## 5. The repository, its README and its commits
 

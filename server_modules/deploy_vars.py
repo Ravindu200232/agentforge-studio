@@ -154,12 +154,25 @@ _DATABASE_WORDS = re.compile(r"mongo\w*\W+(?:\w+\W+){0,2}(?:connection|uri|url|s
                              re.IGNORECASE)
 
 
+# What a question is about when it is not the database: a sign-in, a command-line tool, an account, a token, a name. Its
+# "why" often mentions the database as context ("MONGODB_URI set, but the Netlify CLI is not signed in"), and such a question
+# was answered with "the database is provided" - the deployment then failed, unable to say it needed a sign-in.
+_OTHER_SUBJECT = re.compile(r"\b(sign(?:ed|s)?[ -]?(?:in|out)|log(?:ged|s)?[ -]?(?:in|out)|login|authenticat\w*|cli|token|"
+                            r"account|team|site name|subdomain|domain|address is (?:taken|used))\b", re.IGNORECASE)
+
+
 def asks_for_database(question: dict) -> bool:
     """Whether a question asks the customer for the database connection: a MongoDB connection string, an address, a variable
-    that holds one. A question about what goes in the database, or which region to run in, is not one."""
+    that holds one. A question about what goes in the database, or which region to run in, is not one, and nor is a question
+    about a sign-in, a tool or a name that only mentions the database in passing."""
     if _DATABASE_VARIABLE.match(str(question.get("variable") or "").strip().upper()) or str(question.get("check") or "") == "mongodb":
         return True
-    return bool(_DATABASE_WORDS.search(" ".join(str(question.get(key) or "") for key in ("question", "why"))))
+    asked, why = str(question.get("question") or ""), str(question.get("why") or "")
+    if _DATABASE_WORDS.search(asked):
+        return True
+    if _OTHER_SUBJECT.search(asked):
+        return False
+    return bool(_DATABASE_WORDS.search(why))
 
 
 def database_state() -> dict[str, bool]:
@@ -270,6 +283,12 @@ def cluster_answers(uri: str) -> tuple[bool, str]:
             _stages[uri] = "error"
         _checked[uri] = (time.time(), *answer)
         return answer
+
+
+def forget_check(uri: str) -> None:
+    """Ask the cluster again next time instead of using the remembered answer (after the customer said to try again)."""
+    with _check_lock:
+        _checked.pop(uri, None)
 
 
 def refused_login(uri: str) -> bool:

@@ -127,6 +127,11 @@ def _first_word(text: str | None) -> str:
     return words[0] if words else ""
 
 
+def said_yes(reply: str | None) -> bool:
+    """Whether an answer to a Yes/No card is a yes (the button, or typed: "yes", "ok", "ow", "ඔව්")."""
+    return _first_word(reply) in _YES
+
+
 def next_round(project: str, session: Any, agent: str, done: int, remaining: int, where: str, title: str) -> bool:
     """After round `done`, with `remaining` problems still on `where`: whether to run round `done + 1`. The run holds still
     for the answer on a Yes/No card in the chat (typing it works too); "You decide" and No end the review, and so does
@@ -149,7 +154,7 @@ def next_round(project: str, session: Any, agent: str, done: int, remaining: int
         assumption="stop here and list what is left")
     if reply is None:
         raise RunCancelled(project)
-    if _first_word(reply) in _YES:
+    if said_yes(reply):
         return True
     bus.agent_msg(project, f"Stopped after round {done}: {plural(remaining, 'problem')} left as they are, listed below.",
                   title=title, kind="narration", agent=agent)

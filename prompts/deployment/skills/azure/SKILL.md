@@ -37,7 +37,7 @@ checks hold.
   on commands when more than one exists. Do not create a service principal or a secret.
 - Names: the web app name is global (`<app>.azurewebsites.net`), lowercase letters, digits and hyphens.
   Check it is free (`az webapp list --query "[?name=='<name>']"` only covers this subscription; a
-  creation error tells you the name is taken). If it is taken, ask; do not append a suffix silently.
+  creation error tells you the name is taken). If it is taken, add a short suffix of four lowercase letters or digits (`<name>-x7k2`) and say so in the result; the person is not stopped to choose a name.
 
 ## 2. Resources (all tagged `app`, `env`, `managed-by`)
 

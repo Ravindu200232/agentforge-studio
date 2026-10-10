@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from server_modules import (auth_guide, bus, changes, config, deploy_vars, mongo_connect, plugins, prompts, reference_staging,
-                            store, supabase_connect, web_app)
+                            screen_review, store, supabase_connect, web_app)
 from server_modules.qa_report import summary_counts
 from server_modules.session import Phases, RunCancelled, session_for
 from server_modules.validation import build_report
@@ -245,23 +245,29 @@ def _mongodb_ready(project: str, record: dict[str, Any]) -> None:
         project, log=lambda line: bus.agent_msg(project, line, title="MongoDB", kind="narration"))
     if found["status"] in {"ready", "created"}:
         # Said only when the cluster really answers with the saved connection (the same check every command makes): a string
-        # whose password Atlas no longer accepts is told now, not minutes later when the first command fails on it.
-        saved = str(config.setting("deploy_mongodb_uri", "") or "")
-        answers, why = deploy_vars.cluster_answers(saved)
-        if not answers and deploy_vars.refused_login(saved) and mongo_connect.can_repair(saved):
-            # The password Atlas holds for the saved user is not the one saved here (another computer set it again): this
-            # computer gets a database user of its own and a new string, and the build goes on with it.
-            bus.agent_msg(project, "Atlas refused the saved database password, so this computer is being given a database user of "
-                                   "its own on the same cluster.", title="MongoDB", kind="narration")
-            try:
-                mongo_connect.repair_connection(log=lambda line: bus.agent_msg(project, line, title="MongoDB", kind="narration"))
-                saved = str(config.setting("deploy_mongodb_uri", "") or "")
-                answers, why = deploy_vars.cluster_answers(saved)
-            except Exception as exc:  # noqa: BLE001 - a connection that cannot be mended is told, and the build goes on
-                why = f"{why} It could not be fixed automatically: {str(exc)[:200]}"
-        if not answers:
+        # whose password Atlas no longer accepts is mended or told now, not minutes later when the first command fails on it.
+        def say(line: str) -> None:
+            bus.agent_msg(project, line, title="MongoDB", kind="narration")
+
+        answers, why = mongo_connect.verify_or_repair(log=say)
+        while not answers:
+            # The seed, the preview and every journey need the cluster: a build that went on without it failed hours later,
+            # on every journey. So the person is asked, once per look: try again (after resuming the cluster or fixing the
+            # connection in Settings), or stop the build now.
             deploy_vars.tell_unreachable(project, why)
-            return
+            reply = bus.ask_and_wait(
+                project, "question", f"The MongoDB cluster could not be reached: {why} Try again?",
+                options=[{"id": "1", "label": "Yes"}, {"id": "2", "label": "No"}], agent=bus.DEVELOPER,
+                cancelled=lambda: bool(session_for(project).cancelled), quick=True,
+                why="The seed, the preview and the journey tests all run on it. Resume a paused cluster in Atlas, or fix the "
+                    "connection under Settings, Integrations, then answer Yes.",
+                assumption="stop the build")
+            if reply is None:
+                raise RunCancelled(project)
+            if not screen_review.said_yes(reply):
+                raise ValueError(f"The MongoDB cluster could not be reached: {why}")
+            deploy_vars.forget_check(str(config.setting("deploy_mongodb_uri", "") or ""))
+            answers, why = mongo_connect.verify_or_repair(log=say)
         bus.agent_msg(project, f"This project's MongoDB database is `{found['database']}` on the connected Atlas cluster. "
                                "The seed, the preview and the tests all use it; the connection is in the environment of every "
                                "command and is not shown here.", title="MongoDB", kind="narration")

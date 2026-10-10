@@ -227,10 +227,33 @@ class CliAvailabilityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, r"Vercel is not installed.*npm i -g vercel"):
                 deploy._require_cli("vercel")
 
-    def test_an_installed_target_cli_is_not_blocked(self):
+    def test_an_installed_signed_in_target_cli_is_not_blocked(self):
         with mock.patch.object(deploy.cli_signin.SIGNINS, "available",
-                               lambda only="", fresh=False: {"vercel": {"installed": True}}):
+                               lambda only="", fresh=False: {"vercel": {"installed": True, "signed_in": True}}):
             deploy._require_cli("vercel")  # does not raise
+
+    def test_a_signed_out_cli_is_refused_before_planning_unless_a_token_is_saved_for_it(self):
+        with mock.patch.object(deploy.cli_signin.SIGNINS, "available",
+                               lambda only="", fresh=False: {"netlify": {"installed": True, "signed_in": False}}):
+            with mock.patch.object(deploy.cli_signin, "env_tokens", lambda: {}):
+                with self.assertRaisesRegex(ValueError, r"Netlify CLI is not signed in.*Deploy, Accounts"):
+                    deploy._require_cli("netlify")
+            with mock.patch.object(deploy.cli_signin, "env_tokens", lambda: {"VERCEL_TOKEN": "x"}):
+                with self.assertRaises(ValueError):                      # another provider's token does not count
+                    deploy._require_cli("netlify")
+            with mock.patch.object(deploy.cli_signin, "env_tokens", lambda: {"NETLIFY_AUTH_TOKEN": "x"}):
+                deploy._require_cli("netlify")  # the run's commands are given the token
+
+
+class CliTokenTests(unittest.TestCase):
+    """A token saved in the Deploy panel reaches the CLI the agent runs, when that CLI is not signed in by itself."""
+
+    def test_a_saved_token_is_given_only_to_a_cli_that_is_not_signed_in(self):
+        saved = {"vercel_token": "vt", "netlify_token": "nt"}
+        with mock.patch.object(deploy.cli_signin.config, "setting", lambda name, fallback=None: saved.get(name, fallback)):
+            with mock.patch.object(deploy.cli_signin, "_vercel_token", lambda: ""), \
+                    mock.patch.object(deploy.cli_signin, "_netlify_token", lambda: "own-login"):
+                self.assertEqual(deploy.cli_signin.env_tokens(), {"VERCEL_TOKEN": "vt"})
 
 
 class PlanFirstTests(DeployFlowCase):
@@ -732,6 +755,28 @@ class MongoDeploymentTests(DeployFlowCase):
         self.assertIn("the cluster is paused", deploy.run_state(PROJECT)["error"])
         self.assertEqual(self.session.executed, [])
         self.assertEqual([e for e in self.events if e.get("type") == "approval"], [])
+
+    def test_a_cluster_that_does_not_answer_fails_the_deployment_before_anything_is_published(self):
+        self.session.replies = [plan()]
+        result = self.start()
+        self.session.runs = [self.live_run]
+        with mock.patch.object(deploy.mongo_connect, "verify_or_repair", lambda log=None: (False, "The cluster is paused.")):
+            self.approve(result)
+        self.assertEqual(self.session.executed, [])
+        self.assertEqual(deploy.run_state(PROJECT)["state"], "FAILED")
+        self.assertIn("The cluster is paused.", deploy.run_state(PROJECT)["error"])
+
+    def test_a_database_question_answered_by_the_studio_does_not_use_up_the_repair_round(self):
+        self.session.replies = [plan()]
+        result = self.start()
+        self.session.runs = [self.asks_for_the_string, self.live_run, self.live_run]
+        broken = httpx.Response(500, request=httpx.Request("GET", "https://app.example.com"))
+        fine = httpx.Response(200, request=httpx.Request("GET", "https://app.example.com"))
+        with mock.patch.object(deploy.httpx, "get", side_effect=[broken, broken, fine, fine]):
+            self.approve(result)
+        self.assertEqual(len(self.session.executed), 3)                   # the run, its answered question, its one repair
+        self.assertIn("did not hold", self.session.executed[2])
+        self.assertEqual(deploy.run_state(PROJECT)["state"], "LIVE")
 
     def test_a_run_that_asks_for_the_connection_string_is_answered_by_the_studio_and_goes_on(self):
         self.session.replies = [plan()]

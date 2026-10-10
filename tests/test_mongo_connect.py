@@ -764,3 +764,41 @@ class ForAProjectTests(AtlasCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SavedByNameTests(AtlasCase):
+    """A MONGODB_URI the customer saved by name is theirs: a deployment that could start on it is not refused as unconnected."""
+
+    def test_a_string_saved_by_name_is_ready_without_atlas(self):
+        self.signed_in = {}
+        config.save_settings({"deploy_env": {"MONGODB_URI": "mongodb+srv://u:p@c.example.net/shop_prod?retryWrites=true"}})
+        found = mc.ensure_for_project("p")
+        self.assertEqual((found["status"], found["database"]), ("ready", "shop_prod"))
+        self.assertEqual(self.calls, [])                                    # nothing was made on Atlas
+
+    def test_nothing_saved_and_no_account_is_still_not_connected(self):
+        self.signed_in = {}
+        with mock.patch.object(mc, "credentials_saved", lambda: False):
+            self.assertEqual(mc.ensure_for_project("p")["status"], "not_connected")
+
+
+class VerifyOrRepairTests(AtlasCase):
+    """Before a build or a deployment: the saved connection answers, or a refused password the Studio made is mended first."""
+
+    def test_nothing_saved_here_is_nothing_to_check(self):
+        self.assertEqual(mc.verify_or_repair(), (True, ""))
+
+    def test_a_refused_password_is_mended_and_looked_at_again(self):
+        config.save_settings({"deploy_mongodb_uri": "mongodb+srv://agentforge_old:x@c.example.net/?retryWrites=true"})
+        looks = iter([(False, "refused"), (True, "")])
+        with mock.patch("server_modules.deploy_vars.cluster_answers", lambda uri: next(looks)), \
+                mock.patch("server_modules.deploy_vars.refused_login", lambda uri: True), \
+                mock.patch.object(mc, "can_repair", lambda uri="": True), \
+                mock.patch.object(mc, "repair_connection", lambda log=None: {}) as _repair:
+            self.assertEqual(mc.verify_or_repair(), (True, ""))
+
+    def test_what_cannot_be_mended_says_why(self):
+        config.save_settings({"deploy_mongodb_uri": "mongodb+srv://me:x@c.example.net/?retryWrites=true"})
+        with mock.patch("server_modules.deploy_vars.cluster_answers", lambda uri: (False, "The cluster is paused.")), \
+                mock.patch("server_modules.deploy_vars.refused_login", lambda uri: False):
+            self.assertEqual(mc.verify_or_repair(), (False, "The cluster is paused."))

@@ -1,0 +1,48 @@
+# The QA layers in CI for a MongoDB application: unit tests, the build, the end-to-end journeys
+# and npm audit, against a MongoDB container on the runner. Nothing here reaches the project's
+# real cluster: the connection strings below point at that container. (The workflow every
+# stack used to get needed secrets a MongoDB application never has, and failed on every push.)
+name: quality
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:7
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CI: 'true'
+      MONGODB_URI: mongodb://127.0.0.1:27017/app_ci
+      # The unit tests' own database: the test helper only opens one whose name ends in `_test`.
+      TEST_MONGODB_URI: mongodb://127.0.0.1:27017/app_ci_test
+      SESSION_SECRET: ci-only-session-secret-not-used-anywhere-else
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      # The journeys on their own server and a fresh `_e2e` database (scripts/with-server.mjs).
+      - run: node scripts/with-server.mjs -- npx playwright test --project=desktop --grep-invert "@visual|@a11y" --retries=1
+      - run: npm audit --audit-level=high
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-reports
+          path: |
+            playwright-report
+            test-results

@@ -407,6 +407,11 @@ def ensure_for_project(project: str, log=None) -> dict:
     from . import deploy_vars
 
     created = False
+    named = str((config.setting("deploy_env", {}) or {}).get("MONGODB_URI") or "")
+    if named and not str(config.setting("deploy_mongodb_uri", "") or ""):
+        # A connection string the customer saved by name is theirs to use as it is: a deployment may start on it (the start
+        # check counts it), so it must not be refused here as "not connected".
+        return {"status": "ready", "database": urlsplit(named).path.strip("/"), "reason": ""}
     with _provision_lock:
         if not str(config.setting("deploy_mongodb_uri", "") or ""):
             if not credentials_saved() and not cli_account():
@@ -424,6 +429,30 @@ def ensure_for_project(project: str, log=None) -> dict:
                 return {"status": "failed", "database": "", "reason": "Atlas did not give a connection string for the cluster."}
     app, _tests = deploy_vars.build_databases(project)
     return {"status": "created" if created else "ready", "database": urlsplit(app).path.strip("/"), "reason": ""}
+
+
+def verify_or_repair(log=None) -> tuple[bool, str]:
+    """Whether the saved connection really answers (the same check every command makes), and if not why. A password Atlas no
+    longer accepts for a database user the Studio made is mended first (another computer set it again): this computer gets a
+    database user of its own and a new string. Used before a build and before a deployment, so neither finds out half-way.
+    A string saved by name (`MONGODB_URI` in the deployment values) is the customer's own and is not checked here."""
+    from . import deploy_vars
+
+    say = log or (lambda _line: None)
+    saved = str(config.setting("deploy_mongodb_uri", "") or "")
+    if not saved:
+        return True, ""
+    answers, why = deploy_vars.cluster_answers(saved)
+    if not answers and deploy_vars.refused_login(saved) and can_repair(saved):
+        say("Atlas refused the saved database password, so this computer is being given a database user of its own on the same "
+            "cluster.")
+        try:
+            repair_connection(log=say)
+            saved = str(config.setting("deploy_mongodb_uri", "") or "")
+            answers, why = deploy_vars.cluster_answers(saved)
+        except Exception as exc:  # noqa: BLE001 - a connection that cannot be mended is told, with why
+            why = f"{why} It could not be fixed automatically: {str(exc)[:200]}"
+    return answers, why
 
 
 def can_repair(uri: str = "") -> bool:

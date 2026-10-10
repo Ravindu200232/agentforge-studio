@@ -58,6 +58,7 @@ MAX_QUESTIONS = 3
 # How many times a live address that does not hold is handed back to the agent before the run fails. One: a second round
 # of "fix a little, redeploy a little" is the loop a deployment must not have; it fails with the cause instead.
 REPAIR_ROUNDS = 1
+DATABASE_ANSWERS = 2               # how many times a question for the database connection is answered here before it is asked
 PROBE_SECONDS = 25
 # A host that has only just been released may answer the first request slowly or with a gateway error while it wakes up:
 # that is waited out (these many seconds before each further try), not handed to the agent as a failure to repair.
@@ -512,10 +513,16 @@ def _require_cli(target: str) -> None:
     `run_command` call the customer only sees as a cryptic mid-run error."""
     key = SKILLS_FOR[target][0]
     row = cli_signin.SIGNINS.available(only=key, fresh=True).get(key) or {}
+    provider = cli_signin.PROVIDERS[key]
     if not row.get("installed"):
-        provider = cli_signin.PROVIDERS[key]
         raise ValueError(f"{provider.title} is not installed on this machine. "
                          f"Install it with `{row.get('install') or provider.install}` and try again.")
+    # Signed in, or a token saved in the Deploy panel that the run's commands are given (`cli_signin.env_tokens`). Found out
+    # here, not halfway through: a deployment that found its CLI signed out stopped to ask, and could not be carried on.
+    token_name = {"vercel": "VERCEL_TOKEN", "netlify": "NETLIFY_AUTH_TOKEN"}.get(key)
+    if token_name and not row.get("signed_in") and token_name not in cli_signin.env_tokens():
+        raise ValueError(f"The {provider.title} CLI is not signed in on this computer. Sign in to {provider.title} under Deploy, "
+                         "Accounts (or save a token there), then deploy again.")
 
 
 def _require_mongodb(project: str, stack: str) -> None:
@@ -703,6 +710,14 @@ def execute(project: str, change: dict, session: Any, model: str) -> dict[str, A
         if found["status"] in {"failed", "not_connected"}:
             return _settle(project, session, target, failed="The MongoDB database for this deployment is not available: "
                            + (found["reason"] or "no MongoDB is connected (Settings, Integrations)."))
+        # The cluster really answers (a refused password the Studio made is mended first), before anything is published: a
+        # paused cluster or a changed password used to be found by the deployed app, after the release.
+        answers, why = mongo_connect.verify_or_repair(
+            log=lambda line: bus.agent_msg(project, line, title="MongoDB", kind="narration"))
+        if not answers:
+            return _settle(project, session, target, failed="The MongoDB cluster this deployment uses could not be reached: "
+                           + (why or "no answer") + " Resume it in Atlas, or fix the connection under Settings, Integrations, "
+                           "then deploy again.")
     paths = stage_skills(project, target)
     titles = {step["id"]: step["title"] for step in plan.get("steps", [])}
     resumed = ""
@@ -731,11 +746,15 @@ def execute(project: str, change: dict, session: Any, model: str) -> dict[str, A
     progress.start()
     try:
         result = carry(request)
-        for attempt in range(REPAIR_ROUNDS + 1):
+        # The repair rounds count only the repairs of a live address that did not hold. A database question answered here used
+        # to take the one repair round (and a second one ended the run as "could not be verified" without looking at it).
+        repairs = answered = 0
+        while True:
             question = pending_question(project)
             if result["status"] == "blocked" and question:
                 held = deploy_vars.provided(question, always=scaffold.uses_mongodb(stack_of(project)))
-                if held:
+                if held and answered < DATABASE_ANSWERS:
+                    answered += 1
                     # It asked for the database connection, which the studio provides: answered here, and the run goes on.
                     session.write_record(*QUESTION, data={})
                     _record(project, {"state": "STARTING"})
@@ -759,13 +778,13 @@ def execute(project: str, change: dict, session: Any, model: str) -> dict[str, A
             _record(project, {"evidence": [*(run.get("evidence") or []), *evidence]})
             if not failures:
                 return _live(project, session, target, result["text"])
-            if attempt == REPAIR_ROUNDS:
+            if repairs >= REPAIR_ROUNDS:
                 return _settle(project, session, target, failed="The live address did not hold after "
                                f"{REPAIR_ROUNDS} repair round(s): " + "; ".join(failures))
+            repairs += 1
             _record(project, {"state": "REPAIRING"})
             again = request + prompts.load("deployment/verify-failed", failures="\n".join(f"- {row}" for row in failures))
             result = carry(again)
-        return _settle(project, session, target, failed="The deployment could not be verified.")
     except RunCancelled:
         _record(project, {"state": "CANCELLED", "finished_at": time.time()})
         raise

@@ -592,7 +592,12 @@ class DatabaseQuestionTests(SettingsCase):
         for fine in ({"question": "Which region should the application and the cluster both run in?"},
                      {"question": "Should the production database start empty or with the demo data?"},
                      {"question": "What is the admin's first password?", "variable": "ADMIN_PASSWORD"},
-                     {"question": "Which payment provider should checkout use?"}):
+                     {"question": "Which payment provider should checkout use?"},
+                     # found live: a sign-in question whose reason mentions the database was answered "the database is provided"
+                     {"question": "The Netlify CLI is not signed in on this computer. Sign in with netlify login, then say done.",
+                      "why": "Tools proven: netlify-cli 27.10.0, MONGODB_URI set; netlify status says Not logged in."},
+                     {"question": "The site name athenaeum is taken. Which address should the site use?",
+                      "why": "the MongoDB connection string is already set"}):
             self.assertFalse(deploy_vars.asks_for_database(fine), fine)
 
     def test_where_the_connection_stands(self):

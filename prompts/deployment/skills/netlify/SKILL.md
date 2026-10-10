@@ -13,7 +13,8 @@ truth for the installed version.
 
 ## Fast path (about ten minutes)
 
-No local install, test or build: Netlify builds in its own cloud. In this order, in as few calls as possible
+No local install or test. `netlify deploy --build` runs the production build on this computer, once, then uploads it
+(it can take more than ten minutes: give that one command a timeout of up to 1800 seconds). In this order, in as few calls as possible
 (the sections below are the reference for when something differs):
 
 1. `netlify --version` and `netlify status` in one call (the team is the account slug the plan names).
@@ -61,7 +62,7 @@ checks hold.
 ## 3. Create or link the site
 
 - New site: `netlify sites:create --name <site-name> --account-slug <slug>` (creates an empty site
-  and links this directory). If the name is taken, ask; never invent a different one silently.
+  and links this directory). If the name is taken, add a short suffix of four lowercase letters or digits (`<name>-x7k2`) and say so in the result; the person is not stopped to choose a name.
 - Existing site: `netlify link --name <site-name>` or `--id <site-id>`.
 - Never `netlify deploy` without a linked site or `--site`; that would create anonymous deploys.
 
@@ -79,9 +80,9 @@ checks hold.
 
 ## 5. Build and release
 
-- No local gate (`core` section 0): nothing is installed, tested or built on this computer.
-- Release: `netlify deploy --build --prod --site <site-id> --json` (build in Netlify's environment
-  with the site's variables, then publish to production). Read the JSON: `deploy_id`, `deploy_url`,
+- No local gate (`core` section 0): nothing is installed or tested on this computer.
+- Release: `netlify deploy --build --prod --site <site-id> --json` (the build runs on this computer with the
+  site's variables, then the result is published to production; give it a timeout of up to 1800 seconds). Read the JSON: `deploy_id`, `deploy_url`,
   `url` (the production address), `logs`. Use a draft first (`netlify deploy --build`, no `--prod`)
   when the plan says to smoke-test before promoting; a draft URL is `https://<deploy-id>--<site>.netlify.app`.
 - If it fails, read the build log (`netlify deploy` prints it, and the deploy's log URL is in the JSON),
@@ -146,7 +147,7 @@ These are prompts, not a script: write each question yourself for this project a
 project, an earlier answer and the pages do not already settle (see `core` section 12):
 
 1. Which Netlify team (account slug) should own the site (`netlify teams:list`)?
-2. What is the site called? (It becomes `<name>.netlify.app`; ask again if the name is taken.)
+2. What is the site called? (It becomes `<name>.netlify.app`; a taken name gets a short suffix, see `core`.)
 3. Which region should the functions run in (near the database)? The site's function region is a
    setting the CLI can change through `netlify api updateSite`.
 4. Should the GitHub repository be linked for continuous deployment (every push builds and publishes),

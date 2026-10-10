@@ -490,28 +490,34 @@ class MongoDatabaseBuildTests(StraightThroughCase):
         self.assertNotIn("MongoDB cluster not reachable", [row["title"] for row in self.told])
         self.waited.assert_not_called()
 
-    def test_a_string_the_studio_cannot_mend_is_told_not_attempted(self):
+    def test_a_string_the_studio_cannot_mend_is_told_not_attempted_and_no_stops_the_build(self):
         self.refused(repairs=False)
-        build.run(RUN_PROJECT)
+        self.waited.return_value = "No"
+        with self.assertRaisesRegex(ValueError, "could not be reached"):
+            build.run(RUN_PROJECT)
         self.fixed.assert_not_called()
         self.assertIn("MongoDB cluster not reachable", [row["title"] for row in self.told])
+        self.waited.assert_called_once()
+        self.assertIn("Try again?", self.waited.call_args.args[2])
+        self.assertEqual([o["label"] for o in self.waited.call_args.kwargs["options"]], ["Yes", "No"])
 
-    def test_a_repair_that_fails_is_a_line_in_the_chat_and_the_build_goes_on(self):
+    def test_a_repair_that_fails_is_told_with_why_and_the_person_decides(self):
         self.refused()
         self.fixed.side_effect = ValueError("Atlas session expired")
-        self.assertEqual(build.run(RUN_PROJECT), {"status": "complete"})
+        self.waited.return_value = ""                                      # "You decide": the build stops, as the card says
+        with self.assertRaises(ValueError):
+            build.run(RUN_PROJECT)
         text = next(row["text"] for row in self.told if row["title"] == "MongoDB cluster not reachable")
         self.assertIn("could not be fixed automatically: Atlas session expired", text)
-        self.assertEqual(self.session.failed, [])
 
-    def test_a_cluster_that_refuses_the_saved_password_is_told_at_once_not_claimed_as_ready(self):
-        self.cluster = (False, "The cluster answered but refused the username or password.")
+    def test_a_cluster_that_does_not_answer_is_asked_about_and_yes_looks_again(self):
+        looks = iter([(False, "The cluster did not answer from this computer."), (True, "")])
+        self.enterContext(mock.patch.object(build.deploy_vars, "cluster_answers", lambda uri: next(looks)))
+        self.enterContext(mock.patch.object(build.deploy_vars, "refused_login", lambda uri: False))
+        self.waited.return_value = "Yes"
         self.assertEqual(build.run(RUN_PROJECT), {"status": "complete"})
-        self.assertEqual([row["title"] for row in self.told if row["title"].startswith("MongoDB")], ["MongoDB cluster not reachable"])
-        text = next(row["text"] for row in self.told if row["title"] == "MongoDB cluster not reachable")
-        self.assertIn("refused the username or password", text)
-        self.assertNotIn("quicknotes", " ".join(row["text"] for row in self.told).lower())
-        self.waited.assert_not_called()                                         # and still not a question to the customer
+        self.waited.assert_called_once()
+        self.assertIn("`shop_build`", self.said_about_mongodb()[-1])         # and then the database is claimed: it answers
         self.assertEqual(self.session.failed, [])
 
     def test_with_nothing_connected_the_customer_is_told_where_to_connect_it_and_the_build_goes_on(self):
