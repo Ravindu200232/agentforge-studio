@@ -63,15 +63,13 @@ class BackgroundProcessTests(unittest.TestCase):
         import tempfile
         import time
 
-        with tempfile.TemporaryDirectory() as folder:
+        # The process the command leaves behind still has the folder as its working directory when the test ends.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
             root = Path(folder)
             (root / "spawn.py").write_text(
-                "import subprocess, sys
-"
-                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(25)'])
-"
-                "print('spawned the background process')
-", encoding="utf-8")
+                "import subprocess, sys\n"
+                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(25)'])\n"
+                "print('spawned the background process')\n", encoding="utf-8")
             tools = WorkspaceTools(root, client=None, approve=lambda _q: True)
             started = time.monotonic()
             answer = tools.tool_run_command("python spawn.py")

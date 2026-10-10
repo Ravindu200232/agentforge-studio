@@ -30,6 +30,15 @@ MAX_COMMAND_SECONDS = 600
 # is not waited for after this long: the output is only for the model to read, and waiting for the pipe to close would wait for
 # as long as that server runs.
 OUTPUT_GRACE_SECONDS = 5
+# `Start-Process` gives a program its own console, and on Windows that is a window on the person's screen (a terminal tab
+# titled "next-server" that opens for every server an agent starts to test an app). The command runs with no window of its
+# own, so what it starts is started hidden too, unless it says how it wants to be shown (-WindowStyle, -NoNewWindow, -Verb).
+POWERSHELL_HIDE_START = (
+    "function Start-Process { if (-not ($args | Where-Object { $_ -is [string] -and $_ -match "
+    "'^-(w(i(n(d(o(w(s(t(y(l(e)?)?)?)?)?)?)?)?)?)?|nonew\\w*|v(e(r(b)?)?)?)$' })) "
+    "{ Microsoft.PowerShell.Management\\Start-Process @args -WindowStyle Hidden } "
+    "else { Microsoft.PowerShell.Management\\Start-Process @args } }; "
+)
 SERVER_COMMAND_SECONDS = 75
 
 # A CLI that colours its own output (netlify, vercel, npm...) still does so once piped,
@@ -486,7 +495,12 @@ class WorkspaceTools:
         timeout = min(max(int(timeout_seconds), 1), MAX_COMMAND_SECONDS)
         if server_command:
             timeout = min(timeout, SERVER_COMMAND_SECONDS)
-        shell_args = [self.shell, "-NoProfile", "-Command", command] if os.name == "nt" else [self.shell, "-c", command]
+        if os.name != "nt":
+            shell_args = [self.shell, "-c", command]
+        elif "powershell" in Path(self.shell).name.lower() or "pwsh" in Path(self.shell).name.lower():
+            shell_args = [self.shell, "-NoProfile", "-Command", POWERSHELL_HIDE_START + command]
+        else:
+            shell_args = [self.shell, "-NoProfile", "-Command", command]
         before = self.source_guard.snapshot() if self.source_guard else None
         output = ""
         output_parts: list[str] = []
