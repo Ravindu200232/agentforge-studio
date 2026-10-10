@@ -91,6 +91,20 @@ PICTURE_TOKENS = 1500
 MAX_REQUEST_BYTES = 2_400_000
 
 
+PROMPT_TOO_LONG = re.compile(r"prompt is too long:?\s*(\d+)", re.I)
+
+
+def prompt_too_long(exc: BaseException) -> int:
+    """The model's own count of a request it refused for being longer than its window, else 0.
+
+    Ollama answers "The prompt is too long: 1643388, model maximum context length: 1048576". The estimate below
+    (four characters a token) can be far under the real count for text that tokenizes densely, such as mangled
+    characters a project's files carry, so the window can be passed without the history ever being compacted.
+    """
+    found = PROMPT_TOO_LONG.search(str(exc))
+    return int(found.group(1)) if found else 0
+
+
 def _approx_tokens(messages: list[dict]) -> int:
     pictures = sum(len(m.get("images") or []) for m in messages if isinstance(m, dict))
     plain = [{k: v for k, v in m.items() if k != "images"} if isinstance(m, dict) and m.get("images") else m
@@ -181,6 +195,8 @@ class Agent:
         self.last_terminal_signal = ""
         self.memory_summary = ""
         self.last_prompt_tokens = 0
+        # How many real tokens one estimated token turned out to be, once the model has said (see prompt_too_long).
+        self.token_scale = 1.0
         # These come from the provider's completed responses.  They are kept
         # separately from ``context_usage`` (which is an estimate of the
         # conversation window) so the Studio can show an honest per-request
@@ -305,8 +321,8 @@ class Agent:
         return getattr(self, "base_system", SYSTEM) + f"\nWorkspace: {self.tools.root}\n{mode_rule}{extra_effort}{memory}"
 
     def _summarize_history(self) -> None:
-        if not self.context or (max(_approx_tokens(self.messages), self.last_prompt_tokens)
-                                < self.context * 0.88):
+        estimate = int(_approx_tokens(self.messages) * getattr(self, "token_scale", 1.0))
+        if not self.context or (max(estimate, self.last_prompt_tokens) < self.context * 0.88):
             return
         # Keep the current user request. Prefer summarizing complete older turns;
         # if one tool-heavy turn fills the window, summarize its oldest tool cycles.
@@ -436,6 +452,7 @@ class Agent:
         self.last_terminal_signal = ""
         self.messages[0]["content"] = self._system_message()
         self.messages.append({"role": "user", "content": prompt})
+        compacted_for_length = 0
         for step_index in range(self.max_steps):
             self._summarize_history()
             schemas = (TOOL_SCHEMAS if self.mode == "act" else
@@ -464,7 +481,17 @@ class Agent:
             self.announce("[thinking] model is considering the request")
             try:
                 response = self._chat_response(kwargs)
-            except Exception as exc:  # noqa: BLE001 - re-raised unless it's the one case handled
+            except Exception as exc:  # noqa: BLE001 - re-raised unless it's a case handled here
+                counted = prompt_too_long(exc)
+                if counted and self.context and compacted_for_length < 3:
+                    # The model counted the request itself: believe it from now on, compact, and ask again.
+                    compacted_for_length += 1
+                    estimate = max(1, _approx_tokens(self.messages))
+                    self.token_scale = max(getattr(self, "token_scale", 1.0), counted / estimate)
+                    self.last_prompt_tokens = counted
+                    self.announce(f"[context] The model counted {counted:,} tokens, more than its window holds: "
+                                  "compacting the earlier work and asking again.")
+                    continue
                 if tools_unsupported(exc):
                     raise RuntimeError(
                         f"The model '{self.model}' does not support tool calling, which this "
