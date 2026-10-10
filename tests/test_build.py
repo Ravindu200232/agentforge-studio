@@ -605,6 +605,15 @@ class HoldStillForAnswerTests(unittest.TestCase):
         self.assertEqual(out["reply"], "PayPal")
         self.assertEqual((bus.pending_decisions(), bus._waiters), ([], {}))
 
+    def test_a_round_cards_yes_button_releases_the_run_without_the_privacy_filter(self):
+        thread, out = self.start(quick=True)
+        card = self.card()
+        with mock.patch.object(httpd.privacy, "screen", side_effect=httpd.privacy.NotSent("filter unavailable")):
+            result = httpd.decide({"id": card["id"], "decision": "answer", "reply": "A", "via": "option"})
+        thread.join(5)
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(out["reply"], "A")
+
     def test_choosing_to_leave_it_releases_the_run_with_an_empty_answer(self):
         thread, out = self.start()
         httpd.decide({"id": self.card()["id"], "decision": "default"})

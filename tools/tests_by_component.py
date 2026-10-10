@@ -33,7 +33,7 @@ GROUPS = {
         "prompt_too_long", "prototype", "pty_process", "run_command", "session_retry", "supabase_connect",
         "thinking_level", "vision", "web_app"]),
     "c3": ("Multi-layer verification of the built application", "Hamna R H F (IT22516916)", [
-        "browser_inspect", "build_report", "e2e_review", "qa_report", "qa_report_project", "qa_report_provenance",
+        "browser_inspect", "build_report", "e2e_once", "e2e_review", "qa_report", "qa_report_project", "qa_report_provenance",
         "scaffold_qa", "screenshot", "screenshot_tool", "visual_review"]),
     "c4": ("Autonomous multi-target deployment", "Bandara R M M P (IT22249166)", [
         "cli_monitor", "cli_signin", "deploy_accounts_refresh", "deploy_asks_midway", "deploy_flow", "deploy_vars", "stacks"]),

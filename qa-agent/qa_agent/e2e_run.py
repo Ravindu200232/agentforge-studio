@@ -213,7 +213,8 @@ def _build_if_needed(project: str, session: Any, env: dict[str, str], now: str) 
     else the build's result (a failed build means no test run: there is nothing current to test)."""
     workspace = session.workspace
     saved = record(workspace)
-    if saved.get("built_fingerprint") == now and (workspace / ".next" / "BUILD_ID").is_file():
+    built = any((workspace / part).exists() for part in (".next/BUILD_ID", "build/server/index.js", "client/dist/index.html", "dist"))
+    if saved.get("built_fingerprint") == now and built:
         return None
     try:
         scripts = json.loads((workspace / "package.json").read_text(encoding="utf-8")).get("scripts") or {}
@@ -265,8 +266,8 @@ def run(project: str, session: Any, grep: list[str] | None = None, reason: str =
         command = [_node(), RUNNER, "--", "npx", "playwright", "test", *PLAYWRIGHT_ARGS]
         if pattern:
             command += ["--grep", pattern]
-        shown = "node scripts/with-server.mjs -- npx playwright test " + " ".join(PLAYWRIGHT_ARGS[2:]) \
-            + (f' --grep "{pattern}"' if pattern else "")
+        shown = "node scripts/with-server.mjs -- npx playwright test " + " ".join(
+            f'"{arg}"' if " " in arg or "|" in arg else arg for arg in PLAYWRIGHT_ARGS) + (f' --grep "{pattern}"' if pattern else "")
         bus.agent_msg(project, shown, title=f"{phase_title} · up to {RUN_SECONDS // 60} min", kind="command", agent=bus.DEVELOPER)
         started_at = time.time()
         result = _execute(project, session, command, env, RUN_SECONDS, "The end-to-end run")

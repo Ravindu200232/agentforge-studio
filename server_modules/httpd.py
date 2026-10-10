@@ -603,6 +603,9 @@ def decide(ctx: dict) -> Any:
         held = ""
     elif asked.get("kind") == "permission":
         held = ""
+    elif ctx.get("via") == "option" and str(ctx.get("reply") or "") in {
+            str(option.get("label") if isinstance(option, dict) else option) for option in asked.get("options") or []}:
+        held = ""        # one of the card's own options (a round's Yes or No): the Studio wrote it, there is nothing to screen
     else:
         held = secrets_guard.refusal(str(ctx.get("reply") or ctx.get("feedback") or ""))
         if not held:
