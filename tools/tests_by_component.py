@@ -21,21 +21,21 @@ for folder in ("", "src", "srs-agent", "prototype-agent", "builder-agent", "qa-a
         sys.path.insert(0, path)
 
 GROUPS = {
-    "c1": ("Requirements and specification", "Gunasena (IT22078582)", [
+    "c1": ("Requirements interview, specification, diagrams and wireframes", "Gunasena R M K N (IT22078582)", [
         "all_diagram_notation", "class_diagram_standard", "diagram_drawing", "diagram_look", "diagram_renderer",
         "diagram_review_context", "handoff", "interview_skip", "journey_contract", "json_edits", "spec_resume",
         "srs_corpus", "srs_corpus_fetch", "srs_reconcile", "use_case_layout", "wireframe", "wireframe_html"]),
-    "c2": ("Generative core", "Subasinha (IT22098450)", [
+    "c2": ("Generative engine, prototype, app builder, context memory and data layer", "Subasinha P A R B (IT22098450)", [
         "agent", "app_text", "auth_guide", "build", "changes", "chat_media", "cli", "cloud_streaming",
         "compaction_progress", "connection_notice", "database_panel", "failure_echo", "fast_stop", "fresh_context",
         "hidden_start_process", "journey_walk", "llm_tools", "mcp_client", "model_choice", "mongo_check", "mongo_connect",
         "ollama_cloud", "permissions", "phases", "preview_live", "preview_runtime", "preview_stale_build",
         "prompt_too_long", "prototype", "pty_process", "run_command", "session_retry", "supabase_connect",
         "thinking_level", "vision", "web_app"]),
-    "c3": ("Testing", "Hamna (IT22516916)", [
+    "c3": ("Multi-layer verification of the built application", "Hamna R H F (IT22516916)", [
         "browser_inspect", "build_report", "e2e_review", "qa_report", "qa_report_project", "qa_report_provenance",
         "scaffold_qa", "screenshot", "screenshot_tool", "visual_review"]),
-    "c4": ("Deployment", "Bandara (IT22249166)", [
+    "c4": ("Autonomous multi-target deployment", "Bandara R M M P (IT22249166)", [
         "cli_monitor", "cli_signin", "deploy_accounts_refresh", "deploy_asks_midway", "deploy_flow", "deploy_vars", "stacks"]),
     "shared": ("Shared platform and integration", "the whole team", [
         "availability", "desktop_backend", "plugins", "privacy", "reliability", "stage_evidence", "store", "studio",
