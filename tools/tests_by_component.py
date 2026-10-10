@@ -46,12 +46,15 @@ GROUPS = {
 def run(key: str) -> dict:
     title, owner, names = GROUPS[key]
     suite = unittest.TestSuite()
+    counts = {}
     for name in names:
-        suite.addTests(unittest.defaultTestLoader.loadTestsFromName(f"test_{name}"))
+        loaded = unittest.defaultTestLoader.loadTestsFromName(f"test_{name}")
+        counts[f"tests/test_{name}.py"] = loaded.countTestCases()
+        suite.addTests(loaded)
     started = time.time()
     result = unittest.TextTestRunner(stream=io.StringIO(), verbosity=0).run(suite)
     failed = [str(t[0]) for t in result.failures + result.errors]
-    return {"group": key, "component": title, "owner": owner, "modules": [f"tests/test_{n}.py" for n in names],
+    return {"group": key, "component": title, "owner": owner, "modules": [f"tests/test_{n}.py" for n in names], "per_module": counts,
             "tests": result.testsRun, "passed": result.testsRun - len(failed) - len(result.skipped),
             "failed": len(failed), "skipped": len(result.skipped), "seconds": round(time.time() - started, 1),
             "failures": failed[:20]}
