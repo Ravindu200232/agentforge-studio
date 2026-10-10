@@ -217,7 +217,20 @@ async function resetQaDatabase(uri) {
   if (!uri) return
   const { default: mongoose } = await import('mongoose')
   const connection = await mongoose.createConnection(uri, { serverSelectionTimeoutMS: 10_000 }).asPromise()
-  try { await connection.dropDatabase() } finally { await connection.close() }
+  try {
+    try {
+      await connection.dropDatabase()
+    } catch (error) {
+      // A database user that may read and write but not drop a whole database (a common Atlas role) can still drop
+      // each collection, and this run's database is uniquely named: emptying it is the same clean start. Without this
+      // the run could not start at all, and the journeys fell back to the shared development data.
+      if (!(error?.code === 13 || /not (allowed|authorized)|unauthorized/i.test(String(error?.message)))) throw error
+      const collections = await connection.db.listCollections({}, { nameOnly: true }).toArray()
+      for (const { name } of collections) {
+        if (!name.startsWith('system.')) await connection.db.collection(name).drop().catch(() => {})
+      }
+    }
+  } finally { await connection.close() }
 }
 
 async function main() {
