@@ -261,7 +261,9 @@ class Record:
         self.finished.append(text)
 
 
-class AFailedJourneyIsAResultNotAFailedBuildTests(Workspace):
+class BuildFinishCase(Workspace):
+    """`build._finish_run` on a workspace with a journey contract, its store, chat and phases stubbed."""
+
     def setUp(self):
         super().setUp()
         from builder_agent import build
@@ -284,6 +286,8 @@ class AFailedJourneyIsAResultNotAFailedBuildTests(Workspace):
                       mock.patch.object(build.bus, "agent_msg", lambda project, text, **kw: self.said.append({"text": text, **kw}))):
             self.enterContext(patch)
 
+
+class AFailedJourneyIsAResultNotAFailedBuildTests(BuildFinishCase):
     def test_the_build_completes_with_the_failed_journeys_listed_and_a_fix_offered(self):
         self.build._finish_run("p", self.session, {"status": "complete"})
         self.assertEqual(self.updates[0]["status"], "tested-with-failures")
@@ -314,3 +318,28 @@ class AFailedJourneyIsAResultNotAFailedBuildTests(Workspace):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheBuildGivesTheDemoAccountsInTheChatTests(BuildFinishCase):
+    """No page of the built app shows the demo accounts: the chat gives them when the build is done."""
+
+    def test_the_seeded_accounts_are_given_in_the_chat_at_the_end(self):
+        self.session.write_record("prototype", "demo-accounts.json", data={"sign_in": "/login", "accounts": [
+            {"role": "Admin", "email": "admin@example.com", "password": "Demo!2026", "lands_on": "/admin",
+             "can_open": [{"route": "/admin", "name": "Overview"}], "cannot_open": []}]})
+        self.session.write_record("prototype", "routes.json", data={"routes": [{"route": "/login", "name": "Sign in"},
+                                                                               {"route": "/admin", "name": "Overview"}]})
+        self.build._finish_run("p", self.session, {"status": "complete"})
+        given = next(row for row in self.said if row.get("title") == "Demo accounts")
+        self.assertIn("`admin@example.com` / `Demo!2026`", given["text"])
+        self.assertIn("seeded into the built application", given["text"])
+
+    def test_a_product_without_sign_in_gets_no_accounts_message(self):
+        self.build._finish_run("p", self.session, {"status": "complete"})
+        self.assertFalse([row for row in self.said if row.get("title") == "Demo accounts"])
+
+    def test_the_build_is_told_not_to_copy_a_demo_panel_from_the_prototype(self):
+        (self.workspace / ".agentforge" / "prototype").mkdir(parents=True, exist_ok=True)
+        (self.workspace / ".agentforge" / "prototype" / "routes.json").write_text("{}", encoding="utf-8")
+        block = self.build._prototype_context_block(self.workspace)
+        self.assertIn("no page shows the demo accounts", block)

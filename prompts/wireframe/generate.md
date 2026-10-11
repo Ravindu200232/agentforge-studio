@@ -94,6 +94,8 @@ Prefer a focused set of approximately 2–4 strong product references over exces
 Research should inform the layout architecture, not the final visual branding.
 Never copy proprietary content, branding, screenshots, or source code.
 Never include private project details, unpublished SRS text, credentials, or confidential identifiers in external searches.
+
+No page shows demo accounts: the sign-in page has no demo panel, demo buttons, sample emails or passwords, or hints about test accounts. The demo accounts are given to the person in the chat, never on a screen.
 When documentation is needed for a component, consult:
 `https://ui.shadcn.com/docs/components/<component-name>`
 Inspect the applicable Radix-compatible usage and confirm it against the locally installed implementation.

@@ -98,7 +98,8 @@ def _sign_in_text(accounts: list[dict], sign_in: str, rows: list[dict]) -> str:
              "role (the finished application is seeded with the same ones) and `useSession()` from `@/lib/session` signs them in. "
              f"Make the sign-in page, **{page['name']}** (`{sign_in}`), a real one:", "",
              "- a form that calls `signIn(email, password)`, with its error shown under it when it returns null;",
-             "- a clearly labelled demo panel with one button for each account in `accounts` that calls `signInAs(roleKey)`;",
+             "- no page shows the demo accounts: no demo panel or demo buttons, no emails, passwords or hints about them, on the "
+             "sign-in page or anywhere else (the Studio gives them to the person in the chat when the prototype is done);",
              "- after signing in, people land on their own first page (the session opens it); `signOut()` is the Sign out;",
              "- the signed-in navigation and account menu show `user.name` and show only what `user.canOpen` allows; "
              "the signed-out navigation shows Sign in."]

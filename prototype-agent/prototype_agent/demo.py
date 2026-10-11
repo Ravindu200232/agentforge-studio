@@ -146,14 +146,17 @@ def _some(pages: list[dict], skip: str = "", most: int = 6) -> str:
     return ", ".join(names[:most]) + (f" and {len(names) - most} more" if len(names) > most else "")
 
 
-def accounts_message(accounts: list[dict], routes_out: list[dict], sign_in: str) -> str:
-    """What the customer is told when the prototype is finished: how to enter as each role, and how much each role can open."""
+def accounts_message(accounts: list[dict], routes_out: list[dict], sign_in: str, built: bool = False) -> str:
+    """What the customer is told when the prototype (or, `built`, the application) is finished: how to enter as each role, and how
+    much each role can open. The accounts are only ever given here, in the chat: no page of the app shows them."""
     if not accounts:
         return ""
     page = next((r for r in routes_out if r["route"] == sign_in), {})
     names = {r["route"]: r["name"] for r in routes_out}
-    lines = [f"**Demo accounts** — fictitious, made for reviewing the prototype. Sign in on **{page.get('name') or sign_in}** (`{sign_in}`): "
-             f"use the demo buttons, or type these.", ""]
+    made_for = ("seeded into the built application's database, for trying it" if built
+                else "made for reviewing the prototype")
+    lines = [f"**Demo accounts** — fictitious, {made_for}. Sign in on **{page.get('name') or sign_in}** (`{sign_in}`) "
+             f"by typing one of these.", ""]
     for a in accounts:
         opens = [p for p in a["can_open"] if p["route"] != sign_in]
         lines += [f"- **{a['role']}** — `{a['email']}` / `{a['password']}` — lands on **{names.get(a['lands_on'], a['lands_on'])}**",

@@ -89,7 +89,9 @@ def _prototype_context_block(workspace: Path) -> str:
         "reopen that page file. The real app must preserve 100% of its approved "
         "frontend design, exact images, controls, destinations and navigation flow "
         "while connecting real data. Never guess from memory or replace prototype "
-        "imagery."
+        "imagery. One exception: no page shows the demo accounts. A demo panel, demo "
+        "buttons, or demo emails and passwords on the prototype's sign-in page are not "
+        "built; the Studio gives the seeded accounts to the customer in the chat."
     )
 
 
@@ -170,6 +172,23 @@ def journey_failures_message(coverage: dict[str, Any]) -> str:
 FIX_JOURNEYS = "fix the failing journeys"
 
 
+def _demo_accounts_text(session: Any) -> str:
+    """The accounts the build seeded (the prototype's own), as the chat gives them when the build is done: no page of the app shows
+    them, so this is where the customer finds how to sign in as each role. "" when the product has no sign-in."""
+    from prototype_agent import demo
+
+    saved = session.read_record("prototype", "demo-accounts.json", fallback=None)
+    routes = session.read_record("prototype", "routes.json", fallback=None)
+    if not isinstance(saved, dict) or not saved.get("accounts"):
+        return ""
+    rows = (routes or {}).get("routes") if isinstance(routes, dict) else []
+    try:
+        return demo.accounts_message(saved["accounts"], rows if isinstance(rows, list) else [],
+                                     str(saved.get("sign_in") or ""), built=True)
+    except (KeyError, TypeError):
+        return ""
+
+
 def _finish_run(project: str, session: Any, build_result: dict[str, Any], plan: str = "") -> dict[str, Any]:
     # A page of the prototype that was not built fails the build by name, whatever the later phases found.
     build_phases.gate(session)
@@ -204,6 +223,9 @@ def _finish_run(project: str, session: Any, build_result: dict[str, Any], plan: 
                   + (f" {len(gaps)} disclosed gap(s) remain." if gaps else "")
                   + (f" {failed} test failure(s) are recorded." if failed else ""),
                   title="Build and testing complete")
+    accounts_text = _demo_accounts_text(session)
+    if accounts_text:
+        bus.agent_msg(project, accounts_text, title="Demo accounts")
     if journeys_failed:
         bus.agent_msg(project, journey_failures_message(journey_coverage), title="Journeys that failed",
                       actions=[{"label": "Fix the failing journeys", "prompt": FIX_JOURNEYS}])

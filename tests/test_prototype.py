@@ -181,8 +181,16 @@ class DrawingTests(Scratch):
         self.assertIn('export const signInRoute: string = "/login"', demo_ts)
         self.assertIn('"route": "/register"', demo_ts.split("export const signUp")[1])
         request = self.session.tasks[0]
-        self.assertIn("`signInAs(roleKey)`", request)
+        self.assertIn("`signIn(email, password)`", request)
         self.assertIn("`/login`", request)
+
+    def test_no_page_of_the_prototype_shows_the_demo_accounts_they_are_given_in_the_chat(self):
+        self.draw()
+        request = self.session.tasks[0]
+        self.assertNotIn("demo panel with one button", request)
+        self.assertNotIn("`signInAs(roleKey)`", request)
+        self.assertIn("no page shows the demo accounts", request)
+        self.assertIn("in the chat", request)
 
     def test_a_product_without_sign_in_is_told_nothing_about_it(self):
         plain = {"app_summary": {"app_name": "Brochure"}, "public_pages": [{"page_name": "Home", "route": "/"}]}
@@ -399,6 +407,17 @@ class AccountsMessageTests(unittest.TestCase):
 
     def test_there_is_nothing_to_say_without_accounts(self):
         self.assertEqual(demo.accounts_message([], [], ""), "")
+
+    def test_the_message_says_to_type_the_account_never_to_press_a_demo_button(self):
+        rows = [{"route": "/login", "name": "Sign in"}]
+        account = {"role": "Owner", "email": "o@example.com", "password": "Demo!2026", "lands_on": "/login",
+                   "can_open": rows, "cannot_open": []}
+        prototype_text = demo.accounts_message([account], rows, "/login")
+        built_text = demo.accounts_message([account], rows, "/login", built=True)
+        self.assertNotIn("demo buttons", prototype_text + built_text)
+        self.assertIn("by typing one of these", prototype_text)
+        self.assertIn("reviewing the prototype", prototype_text)
+        self.assertIn("seeded into the built application", built_text)
 
 
 class PhotographingTests(unittest.TestCase):
