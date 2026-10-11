@@ -8,7 +8,6 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 for folder in (".", "src", "srs-agent", ".deps/py312"):

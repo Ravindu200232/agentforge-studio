@@ -318,19 +318,6 @@ def _write_user_journeys(session: ProjectSession, project: str, doc: dict) -> di
     return contract
 
 
-def _diagram_review_validator(envelope: Any) -> None:
-    """Keep the cloud reviewer machine-readable before it can request a retry."""
-    review = envelope.get("diagram_review") if isinstance(envelope, dict) else None
-    if not isinstance(review, dict):
-        raise ValueError("diagram review must contain a diagram_review object")
-    if review.get("verdict") not in ("pass", "repair"):
-        raise ValueError("diagram review verdict must be pass or repair")
-    for key in ("findings", "checks"):
-        value = review.get(key)
-        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-            raise ValueError(f"diagram review {key} must be a list of strings")
-
-
 def _workspace_relative(path: Path | str, workspace: Path) -> str:
     """A path a workspace-rooted read-only tool is actually allowed to read."""
     candidate = Path(path)
@@ -347,19 +334,6 @@ def _workspace_relative(path: Path | str, workspace: Path) -> str:
         # basename produces a helpful ordinary "file does not exist" response
         # if a caller accidentally stages context in the wrong workspace.
         return candidate.name
-
-
-def _review_diagram(project: str, workspace: Path, kind: str, source: str,
-                    document_path: Path | str) -> dict[str, Any]:
-    """Compare a rendered source with local web-source evidence using the cloud model."""
-    reviewed = llm.complete_json(
-        system=prompts.load("srs/system"),
-        user=prompts.load("srs/diagram-review", kind=kind, source=source,
-                          document=_workspace_relative(document_path, workspace),
-                          sources=_catalog_reference(kind) or "(catalog unavailable)"),
-        validator=_diagram_review_validator, label="diagram_review",
-        project=project, workspace=workspace)
-    return reviewed["diagram_review"]
 
 
 def _short_text(value: Any, limit: int = 240) -> str:

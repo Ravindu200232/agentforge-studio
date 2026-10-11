@@ -28,7 +28,6 @@ REPORT = "report.json"
 SYSTEM = screen_review.SYSTEM
 MAX_DEFECTS = screen_review.MAX_DEFECTS
 FIX_SEVERITIES = screen_review.FIX_SEVERITIES
-_ORDER = screen_review.ORDER
 _clean = screen_review.clean
 
 

@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 for folder in (".", "src", "srs-agent", "builder-agent", "prototype-agent", "qa-agent", "deploy-agent"):
     sys.path.insert(0, str(ROOT / folder))
 
-from server_modules import config, httpd, vision  # noqa: E402
+from server_modules import httpd, vision  # noqa: E402
 
 
 class VisionCase(unittest.TestCase):

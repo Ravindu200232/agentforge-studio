@@ -177,5 +177,3 @@ def check_document(doc: dict, plan: dict) -> list[str]:
     return gaps
 
 
-def as_instructions(gaps: list[str]) -> str:
-    return "\n".join(f"- {gap}" for gap in gaps)

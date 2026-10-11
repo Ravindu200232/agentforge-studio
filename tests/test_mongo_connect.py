@@ -92,12 +92,6 @@ class StatusTests(AtlasCase):
         self.assertEqual((status["connected"], status["via"]), (True, "service_account"))
         asked.assert_not_called()
 
-    def test_the_build_is_told_an_atlas_account_is_connected_either_way(self):
-        self.assertTrue(mc.account_facts()["atlas_connected"])
-        self.signed_in = {}
-        self.assertFalse(mc.account_facts()["atlas_connected"])
-
-
 class CliClusterTests(AtlasCase):
     def test_refuses_with_nobody_signed_in(self):
         self.signed_in = {}

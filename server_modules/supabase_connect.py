@@ -604,11 +604,6 @@ def account_facts() -> dict:
     return out
 
 
-def linked_projects() -> dict[str, str]:
-    """Which AgentForge project uses each Supabase project this studio made: ref → AgentForge project id."""
-    return {str(row.get("ref")): key for key, row in _read_all().items() if isinstance(row, dict) and row.get("ref")}
-
-
 def make_room(ref: str, action: str, log=None) -> None:
     """Pause or delete one of the account's projects so a new one fits in its organisation.
 

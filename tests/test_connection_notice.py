@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import httpx
 
 ROOT = Path(__file__).resolve().parent.parent
 for folder in (".", "src"):

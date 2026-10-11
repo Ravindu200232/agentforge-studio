@@ -378,17 +378,6 @@ def _ensure_access_list(token: str, group_id: str) -> None:
     }, token=token)
 
 
-def account_facts() -> dict:
-    """What the build may ask about: whether an Atlas account is connected, the cluster this studio already
-    made, and whether a connection string is already saved. Never the string itself."""
-    from . import deploy_vars
-
-    saved = {row["name"] for row in deploy_vars.names()}
-    return {"atlas_connected": credentials_saved() or bool(cli_account()),
-            "studio_cluster": str(config.setting(CLUSTER_NAME_SETTING) or ""),
-            "connection_string_saved": bool(config.setting("deploy_mongodb_uri", "") or "MONGODB_URI" in saved)}
-
-
 _provision_lock = threading.Lock()
 
 

@@ -7,7 +7,6 @@ before it has done anything.
 from __future__ import annotations
 
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock

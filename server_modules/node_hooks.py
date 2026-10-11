@@ -10,7 +10,6 @@ from pathlib import Path
 
 HOOKS = Path(__file__).resolve().with_name("preview_hooks")
 DNS_FALLBACK = HOOKS / "dns-fallback.cjs"
-FRAME_HEADERS = HOOKS / "frame-headers.cjs"
 
 
 def add(env: dict[str, str], *hooks: Path) -> dict[str, str]:

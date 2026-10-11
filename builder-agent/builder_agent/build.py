@@ -34,24 +34,6 @@ def built(project: str) -> bool:
     return bool(report(project))
 
 
-def _recoverably_incomplete(qa_report: Any) -> bool:
-    """A `qa/report.json` missing its `complete` flag that is safe to backfill
-    rather than fail the build over.
-
-    Found live: a run interrupted after the real testing work finished but
-    before that one flag was written left every layer's evidence genuinely
-    passing on disk, yet resuming kept re-deriving "nothing left to do" from
-    that same evidence without ever writing the flag itself - failing this
-    exact check, forever, on every resume. A report that already holds real
-    recorded evidence (a summary, more than a bare placeholder) and was never
-    explicitly marked incomplete by the model itself only needs that one
-    field backfilled, not the whole run failed - `complete: False` set on
-    purpose is left alone; that is a real, honest gap, not this bug.
-    """
-    return (isinstance(qa_report, dict) and qa_report.get("complete") is not False
-           and bool(qa_report.get("summary")) and len(qa_report) > 2)
-
-
 def show_preview(project: str) -> None:
     """The build is done: serve what it left on disk and bring the preview up on it.
 
