@@ -239,7 +239,10 @@ export default function Overview({ srs, onSelectView }) {
             </div>
           </div>
 
-          <div className={`w-full rounded-2xl border p-4 ${openQuestions ? 'border-amber-500/25 bg-amber-500/[.07]' : 'border-emerald-500/25 bg-emerald-500/[.07]'}`}>
+          <div role={openQuestions && onSelectView ? 'button' : undefined} tabIndex={openQuestions && onSelectView ? 0 : undefined}
+               onClick={() => openQuestions && onSelectView?.('decisions')}
+               onKeyDown={e => { if (openQuestions && onSelectView && (e.key === 'Enter' || e.key === ' ')) onSelectView('decisions') }}
+               className={`w-full rounded-2xl border p-4 ${openQuestions ? 'cursor-pointer border-amber-500/25 bg-amber-500/[.07] transition-colors hover:border-amber-500/50' : 'border-emerald-500/25 bg-emerald-500/[.07]'}`}>
             <div className="flex items-center gap-2">
               {openQuestions ? <HelpCircle className="size-4 text-amber-600" /> : <CheckCircle2 className="size-4 text-emerald-600" />}
               <span className="text-[10px] font-bold uppercase tracking-[.14em] text-muted2">Specification status</span>
@@ -248,7 +251,7 @@ export default function Overview({ srs, onSelectView }) {
               {openQuestions ? `${openQuestions} decision${openQuestions === 1 ? '' : 's'} needed` : 'Ready to explore'}
             </p>
             <p className="mt-1 text-[11px] leading-relaxed text-muted">
-              {openQuestions ? 'Open questions are clearly collected in chapter 10.' : 'No unresolved clarification is blocking this specification.'}
+              {openQuestions ? 'Answer them in the Decisions tab: choose an answer or write your own.' : 'No unresolved clarification is blocking this specification.'}
             </p>
           </div>
         </div>

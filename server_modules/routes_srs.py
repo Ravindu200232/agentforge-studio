@@ -191,6 +191,33 @@ def customize(project: str, body: dict) -> Any:
         raise
 
 
+@route("GET", rf"/projects/{P}/decisions")
+def decisions_listing(project: str, _body: dict) -> Any:
+    """The specification's open decisions as questions, and the ones already settled."""
+    from srs_agent import decisions
+
+    return decisions.listing(project)
+
+
+@route("POST", rf"/projects/{P}/decisions")
+def decisions_prepare(project: str, _body: dict) -> Any:
+    """The same, with the questions of any decision that has none yet written first (a model writes them once)."""
+    from srs_agent import decisions
+
+    return decisions.prepare(project)
+
+
+@route("POST", rf"/projects/{P}/decisions/(?P<ident>[A-Za-z0-9_.-]+)")
+def decisions_answer(project: str, body: dict) -> Any:
+    """The customer's answer to one open decision: an option (its index) or their own words."""
+    from srs_agent import decisions
+
+    option = body.get("option")
+    ident = body["_match"].group("ident")
+    return decisions.answer(project, ident, privacy.screen(project, str(body.get("answer") or "")),
+                            option=int(option) if isinstance(option, (int, float)) or str(option).isdigit() else None)
+
+
 @route("POST", rf"/projects/{P}/changes")
 def record_change(project: str, body: dict) -> Any:
     """The audit trail of approved updates, kept beside the specification."""

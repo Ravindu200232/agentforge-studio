@@ -9,6 +9,7 @@ import {
 import { Empty } from '../ui'
 import DiagramMissing from './DiagramMissing'
 import DiagramViewer from './DiagramViewer'
+import Decisions from './Decisions'
 import Overview from './Overview'
 import { UserJourney, Wireframes } from './Wireframes'
 import { cn } from '@/lib/utils'
@@ -1629,6 +1630,7 @@ function Interview({ srs }) {
 export const VIEWS = [
   { id: 'wireframe', label: 'Wireframe', C: Wireframes },
   { id: 'overview', label: 'Overview', C: Overview },
+  { id: 'decisions', label: 'Decisions', C: Decisions },
   { id: 'journey', label: 'User Journey', C: UserJourney },
   { id: 'document', label: 'Document', C: Document },
   { id: 'requirements', label: 'Requirements', C: Requirements },
@@ -1647,6 +1649,10 @@ export function badgeFor(id, srs) {
   const n = (value) => (Array.isArray(value) ? value.length : 0)
   if (id === 'overview') {
     return null
+  }
+  if (id === 'decisions') {
+    const open = list(doc.ambiguities).filter(a => a?.needs_clarification).length
+    return open ? { n: open, bad: true } : null
   }
   if (id === 'requirements' && n(doc.functional_requirements)) {
     return { n: n(doc.functional_requirements), bad: false }
