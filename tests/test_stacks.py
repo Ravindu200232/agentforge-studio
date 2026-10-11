@@ -183,6 +183,13 @@ class RemixMongoTemplateTests(unittest.TestCase):
 class BuildGateTests(StraightThroughCase):
     """`build.run` connects (or creates) the project's Supabase project only for a stack that uses Supabase."""
 
+    def setUp(self):
+        super().setUp()
+        # A MongoDB stack's database is not what these tests are about, and they must never reach a real cluster: with the
+        # Studio's own settings they did, and a cluster that did not answer held the build on its "Try again?" card.
+        self.enterContext(mock.patch.object(build.mongo_connect, "ensure_for_project",
+                                            return_value={"status": "not_connected", "database": "", "reason": ""}))
+
     def build_stack(self, stack: str) -> str:
         self.session.results.append({"status": "complete", "text": "done", "plan": "p"})
         with mock.patch.object(build.store, "require", return_value={"stack": stack, "name": "Shop"}), \
