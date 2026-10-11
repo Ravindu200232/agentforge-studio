@@ -13,10 +13,13 @@ studio/test-results/
 studio/playwright-report/
 .pnpm-store/
 .deps/
+# Python packages a local QA run installed beside the code (thousands of files, never the project's own)
+.qa-python-deps/
 
 # Local AgentForge state and generated customer projects
 .agentforge-server/
 workspaces/
+production-ready/
 supabase/.temp/
 
 # Local environment and runtime logs
