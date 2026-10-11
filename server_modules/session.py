@@ -358,7 +358,7 @@ class RetryingClient:
                 attempt = self._next_attempt(exc, attempt)
 
     def chat(self, **kwargs: Any) -> Any:
-        # The signed-in AgentForge account may make this call (approved, tokens left), and its tokens are counted after it.
+        # The signed-in AgentForge account may make this call (approved, requests left), and it is counted as one request.
         from . import accounts
 
         accounts.check()
@@ -368,7 +368,7 @@ class RetryingClient:
             except Exception:  # noqa: BLE001 - asked again, and judged, by the retrying read below
                 first = None
             if first is not None and not hasattr(first, "__iter__"):
-                accounts.record(first)
+                accounts.record()
                 return first                            # not a stream after all: handed back as it is
             return _counted(self._retried_stream(kwargs, first))
         attempt = 0
@@ -377,7 +377,7 @@ class RetryingClient:
             try:
                 answer = self._interruptible(lambda: self._inner.chat(**kwargs))
                 self._recovered()
-                accounts.record(answer)
+                accounts.record()
                 return answer
             except RunCancelled:
                 raise
@@ -386,15 +386,15 @@ class RetryingClient:
 
 
 def _counted(stream: Any) -> Any:
-    """A streamed reply passed on chunk by chunk; its tokens (in its last chunk) are counted for the account when it ends."""
+    """A streamed reply passed on chunk by chunk; it is counted as one request for the account when its first chunk comes."""
     from . import accounts
 
-    last = None
+    counted = False
     for chunk in stream:
-        last = chunk
+        if not counted:
+            counted = True
+            accounts.record()
         yield chunk
-    if last is not None:
-        accounts.record(last)
 
 
 def extract_json(text: str) -> Any:

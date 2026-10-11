@@ -61,7 +61,7 @@ DEFAULTS: dict[str, Any] = {
     "deploy_env": {},
     "deploy_env_secret": {},        # for each name in deploy_env: whether it was asked for as a secret
     # The AgentForge account signed in here (accounts.py): its token for the admin app, what the admin app last said about it
-    # (status, token limit, tokens used), and the admin app's address when it is not the one in accounts.json.
+    # (status, request limit, requests used), and the admin app's address when it is not the one in accounts.json.
     "account_token": "",
     "account": {},
     "accounts_url": "",

@@ -286,7 +286,7 @@ function handle(m) {
     s.bumpProjects()
     return
   }
-  // The signed-in AgentForge account's tokens, as they are used (Settings shows them live).
+  // The signed-in AgentForge account's requests, as they are used (Settings shows them live).
   if (m.type === 'account_usage') { s.setAccountUsage(m); return }
   if (!m.project) return
   // What the app's tests are doing is watched in the Preview, so the Preview comes up for the

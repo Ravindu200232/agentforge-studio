@@ -1,4 +1,4 @@
-"""AgentForge accounts: sign in with an account the admin approved; every model call counts against its token limit.
+"""AgentForge accounts: sign in with an account the admin approved; every model call is one request against its limit.
 
 With no account service set, nothing changes: the person at the computer is signed in, and nothing is counted or refused.
 """
@@ -29,7 +29,7 @@ class Case(unittest.TestCase):
         self.enterContext(mock.patch.object(bus, "transient", self.events.append))
         self.calls: list[tuple] = []
         self.replies: dict[str, tuple[int, dict]] = {}
-        accounts._pending.update(tokens=0, sent=0, received=0)
+        accounts._pending.update(requests=0)
         accounts._asked_at = 0.0
 
     def serve(self, url="https://admin.example.app"):
@@ -54,8 +54,8 @@ class OffTests(Case):
         self.enterContext(mock.patch.object(accounts, "SERVER_FILE", Path(self.temp.name) / "accounts.json"))
         self.assertFalse(accounts.enabled())
         accounts.check()                                              # never refuses
-        accounts.record({"prompt_eval_count": 10, "eval_count": 5})
-        self.assertEqual(accounts._pending["tokens"], 0)
+        accounts.record()
+        self.assertEqual(accounts._pending["requests"], 0)
         self.assertEqual(httpd.auth_me({})["user"]["id"], "local")
         self.assertEqual(httpd.account_status({}), {"enabled": False})
 
@@ -138,7 +138,7 @@ class LimitTests(Case):
             accounts.current(fresh=True) and accounts.check()
         self.known(used=1000)
         accounts.current(fresh=True)
-        with self.assertRaisesRegex(accounts.NotAllowed, "token limit is used up"):
+        with self.assertRaisesRegex(accounts.NotAllowed, "request limit is used up"):
             accounts.check()
 
     def test_the_admin_is_never_refused_and_sees_the_ollama_balance(self):
@@ -150,36 +150,37 @@ class LimitTests(Case):
         self.assertTrue(status["unlimited"])
         self.assertEqual(status["ollama"]["included"]["balance"], 72.5)
 
-    def test_tokens_counted_but_not_yet_sent_count_against_the_limit(self):
-        self.known(limit=1000, used=990)
+    def test_requests_counted_but_not_yet_sent_count_against_the_limit(self):
+        self.known(limit=1000, used=999)
         accounts.current(fresh=True)
         with mock.patch.object(accounts, "_start_flusher"):
-            accounts.record({"prompt_eval_count": 8, "eval_count": 4})
+            accounts.record()
         with self.assertRaises(accounts.NotAllowed):
             accounts.check()
 
-    def test_each_response_is_counted_shown_live_and_sent_to_the_admin_app(self):
+    def test_each_answered_call_is_one_request_shown_live_and_sent_to_the_admin_app(self):
         self.known(limit=1000, used=100)
         accounts.current(fresh=True)
         with mock.patch.object(accounts, "_start_flusher"):
-            accounts.record({"prompt_eval_count": 30, "eval_count": 20})
+            accounts.record()
+            accounts.record()
         live = self.events[-1]
-        self.assertEqual((live["used"], live["remaining"]), (150, 850))
-        self.replies["/api/accounts/usage"] = (200, {"account": self.approved(used=150)})
+        self.assertEqual((live["used"], live["remaining"]), (102, 898))
+        self.replies["/api/accounts/usage"] = (200, {"account": self.approved(used=102)})
         self.assertFalse(accounts.flush())
         sent = next(c for c in self.calls if c[1] == "/api/accounts/usage")
-        self.assertEqual(sent[2], {"tokens": 50, "sent": 30, "received": 20})
+        self.assertEqual(sent[2], {"requests": 2})
         self.assertEqual(sent[3], "tok")
-        self.assertEqual(config.setting(accounts.CACHE)["used"], 150)
+        self.assertEqual(config.setting(accounts.CACHE)["used"], 102)
 
-    def test_tokens_that_could_not_be_sent_are_kept_for_the_next_send(self):
+    def test_requests_that_could_not_be_sent_are_kept_for_the_next_send(self):
         self.known()
         accounts.current(fresh=True)
         with mock.patch.object(accounts, "_start_flusher"):
-            accounts.record({"prompt_eval_count": 10, "eval_count": 5})
+            accounts.record()
         self.replies["/api/accounts/usage"] = ConnectionError("offline")
         self.assertTrue(accounts.flush())
-        self.assertEqual(accounts._pending["tokens"], 15)
+        self.assertEqual(accounts._pending["requests"], 1)
 
 
 class EveryModelCallTests(Case):
@@ -192,20 +193,20 @@ class EveryModelCallTests(Case):
                 session.RetryingClient(inner).chat(model="m", messages=[])
         inner.chat.assert_not_called()
 
-    def test_a_reply_and_a_streamed_reply_are_both_counted(self):
-        reply = {"message": {"content": "hi"}, "prompt_eval_count": 12, "eval_count": 3}
-        chunks = [{"message": {"content": "h"}}, {"message": {"content": "i"}, "done": True, "prompt_eval_count": 7, "eval_count": 2}]
+    def test_a_reply_and_a_streamed_reply_are_one_request_each(self):
+        reply = {"message": {"content": "hi"}}
+        chunks = [{"message": {"content": "h"}}, {"message": {"content": "i"}}, {"message": {"content": "!"}, "done": True}]
         inner = SimpleNamespace(chat=lambda **kw: iter(chunks) if kw.get("stream") else reply)
         counted: list = []
-        with mock.patch.object(accounts, "check"), mock.patch.object(accounts, "record", counted.append):
+        with mock.patch.object(accounts, "check"), mock.patch.object(accounts, "record", lambda: counted.append(1)):
             client = session.RetryingClient(inner)
             client.chat(model="m", messages=[])
-            list(client.chat(model="m", messages=[], stream=True))
-        self.assertEqual(counted, [reply, chunks[-1]])
-
-    def test_usage_is_read_the_way_each_provider_names_it(self):
-        self.assertEqual(accounts.usage_of({"prompt_eval_count": 5, "eval_count": 2}), (5, 2))
-        self.assertEqual(accounts.usage_of(SimpleNamespace(usage=SimpleNamespace(prompt_tokens=4, completion_tokens=1))), (4, 1))
+            self.assertEqual(counted, [1])
+            stream = client.chat(model="m", messages=[], stream=True)
+            next(stream)                                              # counted when the model starts answering
+            self.assertEqual(counted, [1, 1])
+            list(stream)
+        self.assertEqual(counted, [1, 1])
 
 
 if __name__ == "__main__":

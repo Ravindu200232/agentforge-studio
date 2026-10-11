@@ -148,7 +148,7 @@ def auth_out(_ctx: dict) -> Any:
 
 @route("GET", r"/account")
 def account_status(_ctx: dict) -> Any:
-    """The signed-in account's tokens for Settings: its limit, what is used and what is left (live updates arrive as
+    """The signed-in account's requests for Settings: its limit, what is used and what is left (live updates arrive as
     `account_usage` events)."""
     return accounts.status(fresh=True)
 

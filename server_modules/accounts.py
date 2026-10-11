@@ -1,16 +1,17 @@
-"""AgentForge accounts: a person signs in with an account the admin approved, and every model call counts against the token
-limit the admin gave it.
+"""AgentForge accounts: a person signs in with an account the admin approved, and every model call is one request against the
+request limit the admin gave it.
 
 The accounts live in the admin app (a separate project, `C:\\agentforge-admin`, deployed with its own MongoDB). Its address
 ships with AgentForge in `accounts.json` (or `AGENTFORGE_ACCOUNTS_URL`); with none, accounts are off and AgentForge works as it
 always did, signed in as the person at this computer. Accounts apply in the Studio's own backend, which turns them on at start
 (`switch_on`, from server.py); the code used on its own (the tests, a script) is never asked to sign in.
 
-- Creating an account sends it to the admin for approval; signing in works once it is approved, and keeps the account's token.
+- Creating an account sends it to the admin for approval; signing in works once it is approved, and keeps the account's sign-in token.
 - Every model call (`session.RetryingClient.chat`) asks `check()` first: a person who is not signed in, whose account is not
-  approved, or whose tokens are used up gets a plain answer instead of the call. A run already going finishes its current call.
-- After each call its tokens are counted (`record`): the count here goes up at once and is shown live (`account_usage`
-  events), and the tokens are sent to the admin app a few at a time, which answers with the limit and what is used.
+  approved, or whose requests are used up gets a plain answer instead of the call. A run already going finishes its current call.
+- Each call that the model answers is one request (`record`): the count here goes up at once and is shown live
+  (`account_usage` events), and the requests are sent to the admin app a few at a time, which answers with the limit and what
+  is used.
 """
 from __future__ import annotations
 
@@ -28,18 +29,18 @@ SERVER_FILE = Path(__file__).with_name("accounts.json")
 TOKEN = "account_token"
 CACHE = "account"
 FRESH_SECONDS = 15           # how long what the admin app said about the account is believed before asking again
-FLUSH_SECONDS = 2            # how often counted tokens are sent
+FLUSH_SECONDS = 2            # how often counted requests are sent
 TIMEOUT = httpx.Timeout(15.0, connect=8.0)
 
 _lock = threading.Lock()
 _on = False                  # set by the Studio's backend at start
-_pending = {"tokens": 0, "sent": 0, "received": 0}
+_pending = {"requests": 0}
 _asked_at = 0.0
 _flusher: threading.Thread | None = None
 
 
 class NotAllowed(RuntimeError):
-    """A model call the account may not make: not signed in, not approved, or out of tokens."""
+    """A model call the account may not make: not signed in, not approved, or out of requests."""
 
 
 def server_url() -> str:
@@ -55,7 +56,7 @@ def server_url() -> str:
 
 
 def switch_on() -> None:
-    """The Studio's backend is starting: with an address set, people sign in from now on and their tokens are counted."""
+    """The Studio's backend is starting: with an address set, people sign in from now on and their requests are counted."""
     global _on
     _on = True
 
@@ -149,7 +150,7 @@ def current(fresh: bool = False) -> dict[str, Any]:
 
 
 def status(fresh: bool = False) -> dict[str, Any]:
-    """For the studio: whether accounts are on, who is signed in, and their tokens."""
+    """For the studio: whether accounts are on, who is signed in, and their requests."""
     if not enabled():
         return {"enabled": False}
     row = current(fresh)
@@ -169,35 +170,18 @@ def check() -> None:
     if row.get("unlimited"):
         return                                               # the admin uses the Ollama account in full
     with _lock:
-        waiting = _pending["tokens"]
+        waiting = _pending["requests"]
     if int(row.get("limit") or 0) - int(row.get("used") or 0) - waiting <= 0:
-        raise NotAllowed("Your token limit is used up. Ask the admin for more tokens.")
+        raise NotAllowed("Your request limit is used up. Ask the admin for more requests.")
 
 
-def usage_of(response: Any) -> tuple[int, int]:
-    """The tokens one model response used, as the provider counted them: (sent, received)."""
-    def number(*names: str) -> int:
-        for container in (response, getattr(response, "usage", None)):
-            for name in names:
-                value = container.get(name) if isinstance(container, dict) else getattr(container, name, None)
-                if isinstance(value, (int, float)) and value > 0:
-                    return int(value)
-        return 0
-    return number("prompt_eval_count", "prompt_tokens", "input_tokens"), number("eval_count", "completion_tokens", "output_tokens")
-
-
-def record(response: Any) -> None:
-    """Count one model response's tokens: at once here (shown live), and soon at the admin app."""
+def record() -> None:
+    """Count one request the model answered: at once here (shown live), and soon at the admin app."""
     if not enabled() or not config.setting(TOKEN, ""):
         return
-    sent, received = usage_of(response)
-    if not sent and not received:
-        return
     with _lock:
-        _pending["tokens"] += sent + received
-        _pending["sent"] += sent
-        _pending["received"] += received
-        waiting = _pending["tokens"]
+        _pending["requests"] += 1
+        waiting = _pending["requests"]
     cached = dict(config.setting(CACHE, {}) or {})
     if cached:
         bus.transient({"type": "account_usage", **cached, "used": int(cached.get("used") or 0) + waiting,
@@ -222,10 +206,10 @@ def _flush_loop() -> None:
 
 
 def flush() -> bool:
-    """Send the counted tokens to the admin app. Returns whether there is still something to send (a failed send is kept)."""
+    """Send the counted requests to the admin app. Returns whether there is still something to send (a failed send is kept)."""
     with _lock:
         batch = dict(_pending)
-        if not batch["tokens"]:
+        if not batch["requests"]:
             return False
         for key in _pending:
             _pending[key] = 0
