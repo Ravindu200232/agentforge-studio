@@ -385,6 +385,7 @@ function AccountTokens() {
 
   if (!account?.enabled || !account?.signed_in) return null
   const shown = live && live.status !== 'signed_out' ? { ...account, ...live } : account
+  if (shown.unlimited) return <AdminTokens shown={shown} />
   const limit = Number(shown.limit) || 0
   const used = Number(shown.used) || 0
   const left = Math.max(0, limit - used)
@@ -405,6 +406,34 @@ function AccountTokens() {
       <p className="mt-1.5 text-[11px] text-muted">
         {used.toLocaleString()} used{left <= 0 ? ' — the limit is used up: ask the admin for more tokens.' : ''}
       </p>
+    </div>
+  )
+}
+
+/** The admin's own AgentForge: never limited; the Ollama account's balance as ollama.com reports it, and what was used here. */
+function AdminTokens({ shown }) {
+  const included = shown.ollama?.included
+  const usedShare = included?.allowance ? Math.min(100, Math.round(((included.allowance - included.balance) / included.allowance) * 100)) : 0
+  return (
+    <div className="rounded-2xl border border-line bg-panel px-4 py-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-[13px] font-semibold text-ink">Your tokens</h3>
+        <span className="text-[11px] text-muted2">{shown.email} · admin</span>
+      </div>
+      <p className="mt-2 font-display text-[22px] font-black text-ink">Unlimited</p>
+      {included ? (
+        <>
+          <p className="mt-1 text-[12px] text-muted">
+            Ollama account: ${Number(included.balance).toFixed(2)} left of ${Number(included.allowance).toFixed(2)} this period
+          </p>
+          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-panel2">
+            <div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${usedShare}%` }} />
+          </div>
+        </>
+      ) : shown.ollama?.error ? (
+        <p className="mt-1 text-[11.5px] text-muted">Ollama account: {shown.ollama.error}</p>
+      ) : null}
+      <p className="mt-1.5 text-[11px] text-muted">{Number(shown.used || 0).toLocaleString()} tokens used here</p>
     </div>
   )
 }

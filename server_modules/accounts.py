@@ -3,7 +3,8 @@ limit the admin gave it.
 
 The accounts live in the admin app (a separate project, `C:\\agentforge-admin`, deployed with its own MongoDB). Its address
 ships with AgentForge in `accounts.json` (or `AGENTFORGE_ACCOUNTS_URL`); with none, accounts are off and AgentForge works as it
-always did, signed in as the person at this computer.
+always did, signed in as the person at this computer. Accounts apply in the Studio's own backend, which turns them on at start
+(`switch_on`, from server.py); the code used on its own (the tests, a script) is never asked to sign in.
 
 - Creating an account sends it to the admin for approval; signing in works once it is approved, and keeps the account's token.
 - Every model call (`session.RetryingClient.chat`) asks `check()` first: a person who is not signed in, whose account is not
@@ -31,6 +32,7 @@ FLUSH_SECONDS = 2            # how often counted tokens are sent
 TIMEOUT = httpx.Timeout(15.0, connect=8.0)
 
 _lock = threading.Lock()
+_on = False                  # set by the Studio's backend at start
 _pending = {"tokens": 0, "sent": 0, "received": 0}
 _asked_at = 0.0
 _flusher: threading.Thread | None = None
@@ -52,8 +54,14 @@ def server_url() -> str:
     return url.rstrip("/")
 
 
+def switch_on() -> None:
+    """The Studio's backend is starting: with an address set, people sign in from now on and their tokens are counted."""
+    global _on
+    _on = True
+
+
 def enabled() -> bool:
-    return bool(server_url())
+    return _on and bool(server_url())
 
 
 def _call(method: str, path: str, body: dict[str, Any] | None = None, token: str = "") -> tuple[int, dict[str, Any]]:
@@ -72,6 +80,9 @@ def _call(method: str, path: str, body: dict[str, Any] | None = None, token: str
 def _remember(account: dict[str, Any]) -> dict[str, Any]:
     global _asked_at
     row = {key: account.get(key) for key in ("id", "email", "name", "username", "status", "limit", "used")}
+    row["unlimited"] = bool(account.get("unlimited"))         # the admin: never limited
+    if isinstance(account.get("ollama"), dict):
+        row["ollama"] = account["ollama"]                    # the admin is told the Ollama account's balance
     row["remaining"] = max(0, int(account.get("limit") or 0) - int(account.get("used") or 0))
     config.save_settings({CACHE: row})
     _asked_at = time.time()
@@ -111,8 +122,11 @@ def user_of(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def status_of(row: dict[str, Any]) -> dict[str, Any]:
-    return {"status": row.get("status") or "", "limit": int(row.get("limit") or 0), "used": int(row.get("used") or 0),
-            "remaining": max(0, int(row.get("limit") or 0) - int(row.get("used") or 0))}
+    out = {"status": row.get("status") or "", "limit": int(row.get("limit") or 0), "used": int(row.get("used") or 0),
+           "remaining": max(0, int(row.get("limit") or 0) - int(row.get("used") or 0)), "unlimited": bool(row.get("unlimited"))}
+    if isinstance(row.get("ollama"), dict):
+        out["ollama"] = row["ollama"]
+    return out
 
 
 def current(fresh: bool = False) -> dict[str, Any]:
@@ -152,6 +166,8 @@ def check() -> None:
         raise NotAllowed("Sign in to AgentForge to use the AI.")
     if row.get("status") != "approved":
         raise NotAllowed("Your AgentForge account is waiting for the admin's approval.")
+    if row.get("unlimited"):
+        return                                               # the admin uses the Ollama account in full
     with _lock:
         waiting = _pending["tokens"]
     if int(row.get("limit") or 0) - int(row.get("used") or 0) - waiting <= 0:

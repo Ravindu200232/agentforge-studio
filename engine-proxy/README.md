@@ -11,7 +11,8 @@ AgentForge app  --(app token)-->  this Worker  --(ollama.com key)-->  ollama.com
 - Every copy of the app sends `APP_TOKEN`. The app keeps the same value in `server_modules/engine.json`.
   - The token ships with the app, so it only keeps out callers who do not have the app.
   - Each address is also rate limited (`wrangler.toml`).
-- Only the calls the app makes are passed through: chat, model details and list, web search and web fetch.
+- Only the calls the app makes are passed through: chat, model details and list, web search and web fetch, and the
+  account balance (`GET /api/balance`), which the AgentForge admin app shows.
 
 ## Set up (once)
 

@@ -34,6 +34,7 @@ class Case(unittest.TestCase):
 
     def serve(self, url="https://admin.example.app"):
         self.enterContext(mock.patch.dict("os.environ", {"AGENTFORGE_ACCOUNTS_URL": url}))
+        self.enterContext(mock.patch.object(accounts, "_on", True))
 
         def call(method, path, body=None, token=""):
             self.calls.append((method, path, body, token))
@@ -50,12 +51,20 @@ class Case(unittest.TestCase):
 class OffTests(Case):
     def test_without_an_account_service_the_person_here_is_signed_in_and_nothing_is_counted(self):
         self.enterContext(mock.patch.dict("os.environ", {"AGENTFORGE_ACCOUNTS_URL": ""}))
+        self.enterContext(mock.patch.object(accounts, "SERVER_FILE", Path(self.temp.name) / "accounts.json"))
         self.assertFalse(accounts.enabled())
         accounts.check()                                              # never refuses
         accounts.record({"prompt_eval_count": 10, "eval_count": 5})
         self.assertEqual(accounts._pending["tokens"], 0)
         self.assertEqual(httpd.auth_me({})["user"]["id"], "local")
         self.assertEqual(httpd.account_status({}), {"enabled": False})
+
+    def test_an_address_alone_asks_nothing_of_code_run_outside_the_studios_backend(self):
+        self.enterContext(mock.patch.dict("os.environ", {"AGENTFORGE_ACCOUNTS_URL": "https://admin.example.app"}))
+        self.assertFalse(accounts.enabled())                          # the tests, a script
+        accounts.check()
+        with mock.patch.object(accounts, "_on", True):                # server.py has started
+            self.assertTrue(accounts.enabled())
 
 
 class SigningInTests(Case):
@@ -80,7 +89,8 @@ class SigningInTests(Case):
         self.replies["/api/accounts/login"] = (200, {"token": "tok", "account": self.approved()})
         said = httpd.auth_login({"login": "nimal@example.com", "password": "x"})
         self.assertTrue(said["ok"])
-        self.assertEqual(said["user"]["account"], {"status": "approved", "limit": 1000, "used": 100, "remaining": 900})
+        self.assertEqual(said["user"]["account"], {"status": "approved", "limit": 1000, "used": 100, "remaining": 900,
+                                                   "unlimited": False})
         self.assertEqual(config.setting(accounts.TOKEN), "tok")
         self.assertEqual(self.events[-1]["type"], "account_usage")
 
@@ -130,6 +140,15 @@ class LimitTests(Case):
         accounts.current(fresh=True)
         with self.assertRaisesRegex(accounts.NotAllowed, "token limit is used up"):
             accounts.check()
+
+    def test_the_admin_is_never_refused_and_sees_the_ollama_balance(self):
+        self.known(id="admin", unlimited=True, limit=0, used=5_000_000,
+                   ollama={"included": {"balance": 72.5, "allowance": 100}})
+        row = accounts.current(fresh=True)
+        accounts.check()                                              # no limit, whatever is used
+        status = accounts.status_of(row)
+        self.assertTrue(status["unlimited"])
+        self.assertEqual(status["ollama"]["included"]["balance"], 72.5)
 
     def test_tokens_counted_but_not_yet_sent_count_against_the_limit(self):
         self.known(limit=1000, used=990)

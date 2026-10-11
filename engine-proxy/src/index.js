@@ -20,6 +20,9 @@ const ALLOWED = new Set([
   'GET /api/version',
   'POST /api/web_search',
   'POST /api/web_fetch',
+  // The account's remaining credits (https://docs.ollama.com/api/balance), for the AgentForge admin app's balance bar:
+  // read with the key that stays here, so the admin app never holds it.
+  'GET /api/balance',
 ])
 
 // Request and response headers passed through; everything else (cookies, the app token itself) stays here.

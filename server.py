@@ -31,12 +31,13 @@ _deps = ROOT / ".deps"
 if _deps.is_dir() and str(_deps) not in sys.path:
     sys.path.insert(0, str(_deps))
 
-from server_modules import config, httpd, privacy, runs, wsd  # noqa: E402
+from server_modules import accounts, config, httpd, privacy, runs, wsd  # noqa: E402
 
 
 def main() -> int:
     config.STATE.mkdir(parents=True, exist_ok=True)
     config.WORKSPACES.mkdir(parents=True, exist_ok=True)
+    accounts.switch_on()                    # with an accounts address set (accounts.json), people sign in here
 
     if config.TRANSPORT == "stdio":
         from server_modules import stdio_bridge
