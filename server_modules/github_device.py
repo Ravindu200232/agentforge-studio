@@ -17,7 +17,7 @@ from __future__ import annotations
 import secrets
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import httpx
 
@@ -41,7 +41,6 @@ class DeviceFlow:
     client_id: str
     interval: int = 5
     expires_at: float = 0.0
-    created_at: float = field(default_factory=time.time)
 
 
 class GithubDeviceFlows:

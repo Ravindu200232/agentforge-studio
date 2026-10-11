@@ -191,7 +191,6 @@ class Agent:
         self.on_summarize = on_summarize
         self.tool_call_count = 0
         self.parallel_write_limit = 1
-        self.last_ask_tool_calls = 0
         self.last_terminal_signal = ""
         self.memory_summary = ""
         self.last_prompt_tokens = 0
@@ -449,7 +448,6 @@ class Agent:
         return ""
 
     def ask(self, prompt: str) -> str:
-        self.last_ask_tool_calls = 0
         self.last_terminal_signal = ""
         self.messages[0]["content"] = self._system_message()
         self.messages.append({"role": "user", "content": prompt})
@@ -530,7 +528,6 @@ class Agent:
                 name = call.function.name
                 args = call.function.arguments or {}
                 self.tool_call_count += 1
-                self.last_ask_tool_calls += 1
                 shown = {key: (f"<{len(value)} characters>" if key in {"content", "old", "new"}
                                and isinstance(value, str) else value)
                          for key, value in args.items()}

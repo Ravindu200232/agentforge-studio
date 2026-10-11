@@ -15,7 +15,6 @@ from . import prompts, reference_staging
 PROMPT = "shared/authentication"
 FOLDER = ".agentforge/auth"
 NAME = "AUTHENTICATION.md"
-PATH = f"{FOLDER}/{NAME}"
 
 
 def needed(doc: Any) -> bool:

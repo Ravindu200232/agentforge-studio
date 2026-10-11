@@ -42,7 +42,7 @@ class CompactAndAskAgainTests(unittest.TestCase):
         agent.model, agent.mode, agent.mcp, agent.think, agent.options = "m", "act", None, None, None
         agent.context, agent.max_steps = 1_048_576, 6
         agent.messages = [{"role": "system", "content": "sys"}]
-        agent.last_ask_tool_calls, agent.last_terminal_signal = 0, ""
+        agent.last_terminal_signal = ""
         agent.last_prompt_tokens, agent.prompt_tokens, agent.completion_tokens = 0, 0, 0
         agent.token_scale = 1.0
         agent.said, agent.compactions, agent.asked = [], [], 0
