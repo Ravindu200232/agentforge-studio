@@ -4,8 +4,8 @@ import { useState } from 'react'
 import { X, Mail, Lock, User, ArrowLeft, Loader2, AlertCircle } from 'lucide-react'
 import { useAuthStore } from '@/lib/auth'
 
-export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 'methods' }) {
-  const { login, signup, loading, error, clearError } = useAuthStore()
+export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 'methods', required = false }) {
+  const { login, signup, loading, error, notice, clearError } = useAuthStore()
 
   // screen: 'methods' | 'email'
   const [screen, setScreen] = useState(initialScreen)
@@ -58,6 +58,8 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
       if (res.ok) {
         onSuccess?.(res.user)
         handleClose()
+      } else if (res.pending) {
+        setMode('signin')                       // created: it is signed in to once the admin has approved it
       }
     }
   }
@@ -78,14 +80,14 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
         role="dialog"
         aria-modal="true"
       >
-        {/* Close Button */}
-        <button
+        {/* Close Button: not while signing in is required */}
+        {!required && <button
           onClick={handleClose}
           className="absolute right-5 top-5 flex size-8 items-center justify-center rounded-xl text-muted hover:bg-raised hover:text-ink transition-colors"
           aria-label="Close"
         >
           <X className="size-4" />
-        </button>
+        </button>}
 
         {/* Brand Logo */}
         <div className="flex flex-col items-center justify-center pt-2">
@@ -98,6 +100,13 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
             </span>
           </div>
         </div>
+
+        {notice && !activeError && (
+          <div className="mt-4 flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-[12.5px] text-amber-800">
+            <AlertCircle className="size-4 shrink-0" />
+            <span>{notice}</span>
+          </div>
+        )}
 
         {/* Error Alert */}
         {activeError && (

@@ -38,7 +38,7 @@ GROUPS = {
     "c4": ("Autonomous multi-target deployment", "Bandara R M M P (IT22249166)", [
         "cli_monitor", "cli_signin", "deploy_accounts_refresh", "deploy_asks_midway", "deploy_flow", "deploy_vars", "stacks"]),
     "shared": ("Shared platform and integration", "the whole team", [
-        "availability", "desktop_backend", "plugins", "privacy", "reliability", "stage_evidence", "store", "studio",
+        "accounts", "availability", "desktop_backend", "plugins", "privacy", "reliability", "stage_evidence", "store", "studio",
         "versions", "wsd_slow_client"]),
 }
 

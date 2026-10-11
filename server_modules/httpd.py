@@ -31,7 +31,7 @@ from qa_agent import verify as qa
 from srs_agent import document as srs_document
 from srs_agent import wireframe as wireframer
 
-from . import bus, changes, cli_monitor, cli_signin, config, connection, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, permissions, preview_runtime, privacy, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, web_app, workspace_picker
+from . import accounts, bus, changes, cli_monitor, cli_signin, config, connection, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, permissions, preview_runtime, privacy, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, web_app, workspace_picker
 from . import database_rows as database_rows_module
 from .session import session_for
 
@@ -101,13 +101,38 @@ def health(_ctx: dict) -> Any:
 
 @route("GET", r"/auth/me")
 def auth_me(_ctx: dict) -> Any:
-    """This runs on one person's machine, against their own Ollama."""
-    return {"ok": True, "user": LOCAL_USER, "token": "local"}
+    """Who is signed in. With AgentForge accounts on (accounts.py), the account the admin approved; without, the person at
+    this computer, against their own Ollama."""
+    if not accounts.enabled():
+        return {"ok": True, "user": LOCAL_USER, "token": "local"}
+    row = accounts.current(fresh=True)
+    if row and row.get("status") == "approved":
+        return {"ok": True, "user": accounts.user_of(row), "token": "account", "required": True}
+    return {"ok": False, "required": True, "pending": bool(row) and row.get("status") == "pending"}
 
 
 @route("POST", r"/auth/login")
+def auth_login(ctx: dict) -> Any:
+    if not accounts.enabled():
+        return auth_local(ctx)
+    try:
+        return accounts.login(str(ctx.get("login") or ctx.get("email") or "").strip(), str(ctx.get("password") or ""))
+    except ConnectionError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 @route("POST", r"/auth/signup")
-def auth_in(ctx: dict) -> Any:
+def auth_signup(ctx: dict) -> Any:
+    if not accounts.enabled():
+        return auth_local(ctx)
+    try:
+        return accounts.signup(str(ctx.get("username") or "").strip(), str(ctx.get("email") or "").strip(),
+                               str(ctx.get("password") or ""), str(ctx.get("name") or "").strip())
+    except ConnectionError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def auth_local(ctx: dict) -> Any:
     name = str(ctx.get("name") or ctx.get("username") or "").strip()
     user = {**LOCAL_USER, **({"name": name} if name else {}),
             **({"email": ctx["email"]} if ctx.get("email") else {})}
@@ -116,7 +141,16 @@ def auth_in(ctx: dict) -> Any:
 
 @route("POST", r"/auth/logout")
 def auth_out(_ctx: dict) -> Any:
+    if accounts.enabled():
+        accounts.logout()
     return {"ok": True}
+
+
+@route("GET", r"/account")
+def account_status(_ctx: dict) -> Any:
+    """The signed-in account's tokens for Settings: its limit, what is used and what is left (live updates arrive as
+    `account_usage` events)."""
+    return accounts.status(fresh=True)
 
 
 # =========================================================================

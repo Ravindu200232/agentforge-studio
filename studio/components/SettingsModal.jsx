@@ -198,6 +198,7 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
             {/* ── GENERAL ── */}
             {activeTab === 'general' && !isAdmin && (
               <div className="space-y-4 max-w-[700px]">
+                <AccountTokens />
                 <p className="rounded-2xl border border-line bg-panel px-4 py-3 text-[12px] text-muted">
                   AgentForge's own database is shared by everyone on this
                   machine, so only its admin changes it. Your GitHub, AWS, Vercel
@@ -212,6 +213,7 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
 
             {activeTab === 'general' && isAdmin && (
               <div className="space-y-5 max-w-[700px]">
+                <AccountTokens />
                 <div className="grid gap-4 sm:grid-cols-2">
                   <label className="block">
                     <span className="mb-1.5 block text-[11.5px] font-semibold text-muted">MongoDB URI</span>
@@ -366,6 +368,44 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
         </main>
       </div>
     </Modal>
+  )
+}
+
+/** The signed-in AgentForge account's tokens: the limit the admin gave, what is used and what is left, going down live as the
+ * AI works (`account_usage` events). Nothing is shown when AgentForge accounts are off. */
+function AccountTokens() {
+  const [account, setAccount] = useState(null)
+  const live = useStore(s => s.accountUsage)
+
+  useEffect(() => {
+    let alive = true
+    api.account().then(a => { if (alive) setAccount(a) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+
+  if (!account?.enabled || !account?.signed_in) return null
+  const shown = live && live.status !== 'signed_out' ? { ...account, ...live } : account
+  const limit = Number(shown.limit) || 0
+  const used = Number(shown.used) || 0
+  const left = Math.max(0, limit - used)
+  const share = limit ? Math.min(100, Math.round((used / limit) * 100)) : 100
+  const low = !limit || left / limit < 0.1
+  return (
+    <div className="rounded-2xl border border-line bg-panel px-4 py-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-[13px] font-semibold text-ink">Your tokens</h3>
+        <span className="text-[11px] text-muted2">{shown.email}</span>
+      </div>
+      <p className={`mt-2 font-display text-[22px] font-black tabular-nums ${low ? 'text-bad' : 'text-ink'}`}>
+        {left.toLocaleString()} <span className="text-[12px] font-semibold text-muted">left of {limit.toLocaleString()}</span>
+      </p>
+      <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-panel2">
+        <div className={`h-full rounded-full transition-all duration-500 ${low ? 'bg-bad' : 'bg-accent'}`} style={{ width: `${share}%` }} />
+      </div>
+      <p className="mt-1.5 text-[11px] text-muted">
+        {used.toLocaleString()} used{left <= 0 ? ' — the limit is used up: ask the admin for more tokens.' : ''}
+      </p>
+    </div>
   )
 }
 

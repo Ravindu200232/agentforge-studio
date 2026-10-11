@@ -10,6 +10,10 @@ export const useAuthStore = create((set, get) => ({
   token: '',
   loading: true,
   error: '',
+  // With AgentForge accounts on, signing in is needed before anything else (`required`); `notice` is a message that is not an
+  // error, such as "waiting for the admin's approval".
+  required: false,
+  notice: '',
 
   init: async () => {
     const token = getAuthToken()
@@ -18,11 +22,13 @@ export const useAuthStore = create((set, get) => ({
       // Even with no token kept here, the session cookie may still sign them
       // in - that is what the frames, the pictures and the socket travel on.
       const res = await api.auth.me()
+      const required = Boolean(res?.required)
       if (res?.ok && res?.user) {
-        set({ user: res.user, loading: false })
+        set({ user: res.user, loading: false, required })
       } else {
         setAuthToken('')
-        set({ user: null, token: '', loading: false })
+        set({ user: null, token: '', loading: false, required,
+              notice: res?.pending ? "Your account is waiting for the admin's approval." : '' })
       }
     } catch {
       setAuthToken('')
@@ -34,6 +40,10 @@ export const useAuthStore = create((set, get) => ({
     set({ loading: true, error: '' })
     try {
       const res = await api.auth.login({ login, password })
+      if (res?.pending) {
+        set({ loading: false, error: '', notice: res.error })
+        return { ok: false, pending: true }
+      }
       if (res?.ok && res?.token) {
         setAuthToken(res.token)
         set({ user: res.user, token: res.token, loading: false, error: '' })
@@ -54,6 +64,10 @@ export const useAuthStore = create((set, get) => ({
     set({ loading: true, error: '' })
     try {
       const res = await api.auth.signup({ username, email, password, name })
+      if (res?.pending) {
+        set({ loading: false, error: '', notice: res.error })
+        return { ok: false, pending: true }
+      }
       if (res?.ok && res?.token) {
         setAuthToken(res.token)
         set({ user: res.user, token: res.token, loading: false, error: '' })
@@ -81,7 +95,7 @@ export const useAuthStore = create((set, get) => ({
     }
   },
 
-  clearError: () => set({ error: '' }),
+  clearError: () => set({ error: '', notice: '' }),
 }))
 
 // A session that ends on the server - it expired, or it was ended from

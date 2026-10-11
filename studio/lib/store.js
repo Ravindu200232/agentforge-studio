@@ -59,6 +59,9 @@ const RESUMABLE_SRS_PHASES = new Set(['planning', 'interview', 'plan', 'review',
 
 export const useStore = create((set, get) => ({
   accountEpoch: 0,
+  // The signed-in AgentForge account's token limit, used and left, as the backend reports them (`account_usage` events).
+  accountUsage: null,
+  setAccountUsage: (usage) => set({ accountUsage: usage }),
   projectSessions: {},
   projectViews: {},
   buildAvailability: {},

@@ -151,7 +151,7 @@ export default function Studio() {
     if (busy) setMobileView('chat')
   }, [busy])
 
-  const { user, init: initAuth, logout } = useAuthStore()
+  const { user, init: initAuth, logout, required: signInRequired, loading: authLoading } = useAuthStore()
   const [authModalOpen, setAuthModalOpen] = useState(false)
   const [authInitialScreen, setAuthInitialScreen] = useState('methods')
   // A fresh modal every time it opens: its screen is only read when it mounts,
@@ -193,6 +193,11 @@ export default function Studio() {
   useEffect(() => {
     initAuth()
   }, [])
+
+  // With AgentForge accounts on, nothing is used before signing in: the sign-in opens by itself and stays open.
+  useEffect(() => {
+    if (!authLoading && signInRequired && !user && !authModalOpen) openAuth('email')
+  }, [authLoading, signInRequired, user, authModalOpen])
 
   // A session that ends - signed out here, expired, or ended from somewhere
   // else - lands on the sign-in page rather than an empty studio.
@@ -588,7 +593,8 @@ export default function Studio() {
         key={authKey}
         isOpen={authModalOpen}
         initialScreen={authInitialScreen}
-        onClose={() => setAuthModalOpen(false)}
+        required={signInRequired && !user}
+        onClose={() => { if (!(signInRequired && !user)) setAuthModalOpen(false) }}
         onSuccess={() => {
           setAuthModalOpen(false)
           refreshProjects()
