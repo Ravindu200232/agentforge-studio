@@ -12,9 +12,9 @@ import { useStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
 
 export const MODES = [
-  { id: 'auto', label: 'Auto', hint: 'The agent handles permission decisions: it edits and runs the usual commands, and asks about anything unusual' },
+  { id: 'auto', label: 'Auto', hint: 'The agent edits and runs its commands on its own, and asks only before something risky' },
   { id: 'manual', label: 'Manual', hint: 'Always ask before making changes' },
-  { id: 'accept_edits', label: 'Accept edits', hint: 'Automatically accept all file edits' },
+  { id: 'accept_edits', label: 'Accept edits', hint: 'File edits and the usual web commands (npm, node, git…) go ahead; other commands are asked' },
 ]
 const BYPASS = { id: 'bypass', label: 'Bypass permissions', hint: 'Nothing is asked and nothing is refused' }
 

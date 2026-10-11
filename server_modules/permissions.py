@@ -2,10 +2,11 @@
 
 A project is in one mode, picked beside the chat input and beside the first input of a new project:
 
-    auto           the agent edits files and runs the usual build/test/deploy commands on its own; anything unusual (a program
-                   that is not one of those, a risky command) is asked about in the chat instead of being refused
+    auto           the agent edits files and runs its commands on its own; only a risky command (sudo, a download piped into
+                   a shell, Invoke-Expression, Start-Process, a credential sent out) is asked about in the chat
     manual         every edit and every command is asked about first
-    accept_edits   edits go ahead; commands are asked about, except the ones that only look at things
+    accept_edits   edits and the usual web-development commands (npm, node, git, next, vercel...) go ahead; any other
+                   command is asked about
     bypass         nothing is asked and nothing is refused; it has to be turned on in the mode menu first
 
 Planning is not a mode: a change typed into a project that has a specification is planned first and carried out once the plan
@@ -113,15 +114,25 @@ def _keys(action: dict[str, Any]) -> set[str]:
 
 
 def needs_asking(mode: str, action: dict[str, Any], granted: set[str]) -> bool:
-    """Whether the person is asked about this action in this mode."""
+    """Whether the person is asked about this action in this mode.
+
+    auto           nothing is asked but a risky command (`level` "danger": sudo, a download piped into a shell, Invoke-Expression,
+                   Start-Process, a credential file sent out, a drive formatted)
+    accept_edits   edits and the usual web-development commands (npm, node, git, next, vercel... - `level` "") go ahead; a
+                   command outside them (`level` "unusual") is asked, and so is a risky one
+    manual         every edit and every command is asked"""
     if mode == "bypass":
         return False
-    danger = action.get("level") == "danger"
+    level = str(action.get("level") or "")
+    danger = level == "danger"
     if action.get("kind") == "edit":
         asked = mode == "manual"
-    else:
-        command = str(action.get("command") or "")
-        asked = bool(action.get("level")) or mode == "manual" or (mode == "accept_edits" and not tools.read_only(command))
+    elif mode == "manual":
+        asked = True
+    elif mode == "accept_edits":
+        asked = bool(level) and not tools.read_only(str(action.get("command") or ""))
+    else:                                                                    # auto
+        asked = danger
     if asked and not danger and _keys(action) <= granted:
         asked = False
     return asked

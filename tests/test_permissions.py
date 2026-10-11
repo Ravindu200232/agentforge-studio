@@ -138,21 +138,33 @@ class AskingTests(Fixture):
     def asked(self, mode, action, granted=()):
         return permissions.needs_asking(mode, action, set(granted))
 
-    def test_auto_goes_ahead_with_the_usual_and_asks_about_the_unusual(self):
+    def test_auto_goes_ahead_with_everything_and_asks_only_about_a_risky_command(self):
         self.assertFalse(self.asked("auto", self.edit()))
         self.assertFalse(self.asked("auto", self.command("npm run build")))
-        self.assertTrue(self.asked("auto", self.command("terraform apply")))
+        self.assertFalse(self.asked("auto", self.command("terraform apply")))           # unusual, not risky: it goes ahead
         self.assertTrue(self.asked("auto", self.command("sudo ls")))
+        self.assertTrue(self.asked("auto", self.command("Start-Process node server.js")))
+
+    def test_the_powershell_the_agent_writes_is_never_taken_for_an_unusual_program(self):
+        for line in ('Set-Location "src"; "--- pages:"; Get-ChildItem -Recurse -File pages',
+                     'foreach ($f in @("a.tsx","b.tsx")) { Get-Content $f | Measure-Object -Line }',
+                     '$ok = $true; # check the routes; [IO.File]::ReadAllText("routes.ts")',
+                     'echo SHELL=$0; uname -a 2>/dev/null; node --version'):
+            self.assertEqual(self.command(line)["level"], "", line)
+            self.assertFalse(self.asked("accept_edits", self.command(line)), line)
 
     def test_manual_asks_about_everything(self):
         self.assertTrue(self.asked("manual", self.edit()))
         self.assertTrue(self.asked("manual", self.command("ls")))
         self.assertTrue(self.asked("manual", self.command("npm test")))
 
-    def test_accept_edits_lets_edits_through_and_asks_about_commands_except_reading(self):
+    def test_accept_edits_lets_edits_and_the_usual_web_commands_through_and_asks_about_the_rest(self):
         self.assertFalse(self.asked("accept_edits", self.edit()))
         self.assertFalse(self.asked("accept_edits", self.command("git status")))
-        self.assertTrue(self.asked("accept_edits", self.command("npm install")))
+        self.assertFalse(self.asked("accept_edits", self.command("npm install")))
+        self.assertFalse(self.asked("accept_edits", self.command("npx next build && node scripts/seed.mjs")))
+        self.assertTrue(self.asked("accept_edits", self.command("terraform apply")))
+        self.assertTrue(self.asked("accept_edits", self.command("sudo ls")))
 
     def test_bypass_asks_about_nothing_not_even_a_risky_command(self):
         self.assertFalse(self.asked("bypass", self.command("sudo rm -rf /")))
@@ -163,7 +175,7 @@ class AskingTests(Fixture):
         self.assertTrue(self.asked("manual", self.command("npm test"), {"cmd:node"}))
         self.assertFalse(self.asked("manual", self.command("npm test"), {"cmd:npm"}))
         self.assertTrue(self.asked("manual", self.command("npm i && node x.js"), {"cmd:npm"}))      # every program of it
-        self.assertFalse(self.asked("auto", self.command("terraform apply"), {"cmd:terraform"}))
+        self.assertFalse(self.asked("accept_edits", self.command("terraform apply"), {"cmd:terraform"}))
         self.assertTrue(self.asked("auto", self.command("sudo ls"), {"cmd:sudo", "edits"}))
 
 
@@ -183,7 +195,7 @@ class GateTests(Fixture):
             self.assertEqual(self.gate()(self.command("npm test")), "")
 
     def test_the_question_is_a_permission_card_with_the_command_and_why(self):
-        self.mode("auto")
+        self.mode("accept_edits")
         with self.answered("allow") as ask:
             self.assertEqual(self.gate()(self.command("terraform apply")), "")
         args, kwargs = ask.call_args

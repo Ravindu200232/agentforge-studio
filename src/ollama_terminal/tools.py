@@ -90,7 +90,24 @@ _ALLOWED_PROGRAMS = {
     "curl", "wget", "grep", "findstr", "find", "sleep",
     "which", "where", "test", "true", "false", "exit", "set", "export",
     "sh", "bash", "cmd", "powershell", "pwsh",
+    # The stack's own command-line tools, and the everyday ones that look at files, text and the machine.
+    "next", "vite", "tsx", "ts-node", "eslint", "prettier", "jest", "bun", "deno", "remix", "lhci", "supabase", "atlas",
+    "mongoimport", "mongoexport", "mongodump", "mongorestore", "jq",
+    "head", "tail", "wc", "sort", "uniq", "cut", "tr", "xargs", "sed", "awk", "diff", "env", "date", "timeout", "basename",
+    "dirname", "realpath", "du", "df", "file", "stat", "tee", "tree", "uname", "hostname", "whoami", "clear", "cls",
+    "tar", "unzip", "zip", "robocopy", "xcopy", "md", "rd", "ren", "tasklist", "netstat", "nslookup", "ping", "chcp",
+    # PowerShell's short names for the cmdlets it allows by shape anyway.
+    "gci", "gc", "sls", "ni", "ri", "mi", "ci", "select", "sort", "measure", "group", "ft", "fl", "write", "%", "?",
 }
+# PowerShell is a language, not only a list of programs: a line of it starts with a variable (`$ok = $true`), a printed string
+# (`"--- pages:"`), a comment, a keyword (`foreach (...) {`), a type (`[IO.File]::ReadAllText(...)`) or a brace. None of those is
+# a program to vet - taking them for one asked the person about almost every command the agent wrote, in Auto too.
+_POWERSHELL_KEYWORDS = {"foreach", "for", "if", "else", "elseif", "while", "do", "until", "switch", "try", "catch", "finally",
+                        "function", "filter", "param", "return", "break", "continue", "begin", "process", "end", "throw",
+                        "trap", "default", "in"}
+_NOT_A_PROGRAM = re.compile(r"""^[$"'#@\[{}]|^\d|^\W+$""")
+# The cmdlets that run code or another process are risky wherever they stand in a line, not only at its start.
+_RISKY_ANYWHERE = re.compile(r"\b(invoke-command|invoke-item|start-process|add-type)\b")
 # PowerShell's own Verb-Noun cmdlets (Set-Content, Copy-Item, Get-ChildItem,
 # ...) are allowed generically by that naming shape rather than enumerated —
 # except this explicit set, which can run arbitrary code or another process.
@@ -195,9 +212,13 @@ def command_check(command: str) -> tuple[str, str, str]:
     for pattern, message in _DENY_PATTERNS:
         if pattern.search(lowered):
             return "danger", message, ""
+    risky = _RISKY_ANYWHERE.search(lowered)
+    if risky:
+        return "danger", f"'{risky.group(1)}' runs code or another program", risky.group(1)
     for segment in _split_top_level(command):
         program = _segment_program(segment)
-        if not program or program in _ALLOWED_PROGRAMS:
+        if (not program or program in _ALLOWED_PROGRAMS or program in _POWERSHELL_KEYWORDS
+                or _NOT_A_PROGRAM.match(program) or _NOT_A_PROGRAM.match(segment.strip())):
             continue
         if program in _DANGEROUS_CMDLETS:
             return "danger", f"'{program}' is not allowed", program
