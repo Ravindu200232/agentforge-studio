@@ -172,6 +172,8 @@ def engine(saved: dict[str, Any] | None = None) -> str:
     has_key = bool(str(saved.get("ollama_api_key") or "").strip())
     if chosen == "local":
         return "local"
+    if chosen == "built-in" and built_in_engine():
+        return "built-in"
     if chosen == "cloud" and has_key:
         return "cloud"
     if built_in_engine():

@@ -3,6 +3,8 @@
 import { useState } from 'react'
 import { X, Mail, Lock, User, ArrowLeft, Loader2, AlertCircle } from 'lucide-react'
 import { useAuthStore } from '@/lib/auth'
+import { api } from '@/lib/api'
+import { useStore } from '@/lib/store'
 
 export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 'methods', required = false }) {
   const { login, signup, loading, error, notice, clearError } = useAuthStore()
@@ -58,8 +60,6 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
       if (res.ok) {
         onSuccess?.(res.user)
         handleClose()
-      } else if (res.pending) {
-        setMode('signin')                       // created: it is signed in to once the admin has approved it
       }
     }
   }
@@ -69,6 +69,22 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
     setLocalError('')
     setMode(next)
     setScreen('email')
+  }
+
+  async function useLocal() {
+    setLocalError('')
+    try {
+      await api.saveSettings({ engine: 'local' })
+      const catalog = await api.models()
+      const picked = catalog.local_models?.[0]?.id || catalog.local?.[0]
+      if (picked) {
+        useStore.setState(state => ({ models: { ...state.models, planner: picked, design: picked,
+          builder: picked, agent: picked, qa: picked, srs: picked, deploy: picked } }))
+        await api.saveSettings({ model: picked })
+      }
+      await useAuthStore.getState().init()
+      handleClose()
+    } catch (error) { setLocalError(error.message || 'Could not switch to local Ollama') }
   }
 
   const activeError = localError || error
@@ -145,12 +161,6 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
               </button>
             </div>
 
-            <p className="mt-6 text-[11px] text-muted/70">
-              By signing in, you accept the{' '}
-              <a href="#" className="text-ink underline hover:text-ink">Terms of Service</a>{' '}
-              and acknowledge our{' '}
-              <a href="#" className="text-ink underline hover:text-ink">Privacy Policy</a>.
-            </p>
           </div>
         )}
 
@@ -290,14 +300,12 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
               )}
             </div>
 
-            <p className="mt-5 text-center text-[11px] text-muted/70">
-              By signing in, you accept the{' '}
-              <a href="#" className="text-ink underline hover:text-ink">Terms of Service</a>{' '}
-              and acknowledge our{' '}
-              <a href="#" className="text-ink underline hover:text-ink">Privacy Policy</a>.
-            </p>
           </div>
         )}
+        <button type="button" onClick={useLocal}
+          className="mt-4 w-full rounded-xl border border-line px-3 py-2 text-[12px] font-medium text-muted hover:text-ink">
+          Use local Ollama without cloud credit
+        </button>
       </div>
     </div>
   )

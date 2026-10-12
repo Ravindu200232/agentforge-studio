@@ -103,7 +103,7 @@ def health(_ctx: dict) -> Any:
 def auth_me(_ctx: dict) -> Any:
     """Who is signed in. With AgentForge accounts on (accounts.py), the account the admin approved; without, the person at
     this computer, against their own Ollama."""
-    if not accounts.enabled():
+    if not accounts.enabled() or config.engine() == "local":
         return {"ok": True, "user": LOCAL_USER, "token": "local"}
     row = accounts.current(fresh=True)
     if row and row.get("status") == "approved":
@@ -113,7 +113,7 @@ def auth_me(_ctx: dict) -> Any:
 
 @route("POST", r"/auth/login")
 def auth_login(ctx: dict) -> Any:
-    if not accounts.enabled():
+    if not accounts.enabled() or config.engine() == "local":
         return auth_local(ctx)
     try:
         return accounts.login(str(ctx.get("login") or ctx.get("email") or "").strip(), str(ctx.get("password") or ""))
@@ -123,7 +123,7 @@ def auth_login(ctx: dict) -> Any:
 
 @route("POST", r"/auth/signup")
 def auth_signup(ctx: dict) -> Any:
-    if not accounts.enabled():
+    if not accounts.enabled() or config.engine() == "local":
         return auth_local(ctx)
     try:
         return accounts.signup(str(ctx.get("username") or "").strip(), str(ctx.get("email") or "").strip(),
@@ -151,6 +151,11 @@ def account_status(_ctx: dict) -> Any:
     """The signed-in account's requests for Settings: its limit, what is used and what is left (live updates arrive as
     `account_usage` events)."""
     return accounts.status(fresh=True)
+
+
+@route("POST", r"/account/checkout")
+def account_checkout(_ctx: dict) -> Any:
+    return accounts.checkout()
 
 
 # =========================================================================
@@ -298,6 +303,10 @@ def _merge_mcp_servers(incoming: Any, previous: Any) -> list[dict[str, Any]]:
 @route("POST", r"/settings")
 def write_settings(ctx: dict) -> Any:
     patch = {k: v for k, v in ctx.items() if not k.startswith("_") and k != "deploy_env"}
+    if "ollama_host" in patch:
+        address = urlparse(str(patch["ollama_host"]).strip())
+        if address.scheme != "http" or address.hostname not in {"localhost", "127.0.0.1", "::1"} or not address.port:
+            raise ValueError("Local Ollama address must be http://localhost:PORT or 127.0.0.1:PORT")
     if patch.get("ollama_api_key") == "****":
         patch.pop("ollama_api_key")
     if "deploy_mongodb_uri" in patch:
@@ -310,8 +319,8 @@ def write_settings(ctx: dict) -> Any:
     for alias in ("agent_model", "planner_model", "builder_model", "design_model"):
         if patch.get(alias):
             patch["model"] = patch[alias]
-    if "engine" in patch and str(patch["engine"] or "").lower() not in ("", "cloud", "local"):
-        raise ValueError("engine is cloud, local, or empty to choose itself")
+    if "engine" in patch and str(patch["engine"] or "").lower() not in ("", "built-in", "cloud", "local"):
+        raise ValueError("engine is built-in, cloud, local, or empty to choose itself")
     # `cloud` is never saved: config.settings() derives it from the key and `engine` every time it is read.
     patch.pop("cloud", None)
     config.save_settings(patch)

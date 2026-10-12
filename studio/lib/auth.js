@@ -10,8 +10,7 @@ export const useAuthStore = create((set, get) => ({
   token: '',
   loading: true,
   error: '',
-  // With AgentForge accounts on, signing in is needed before anything else (`required`); `notice` is a message that is not an
-  // error, such as "waiting for the admin's approval".
+  // With AgentForge cloud accounts on, signing in is needed before cloud use.
   required: false,
   notice: '',
 
@@ -28,7 +27,7 @@ export const useAuthStore = create((set, get) => ({
       } else {
         setAuthToken('')
         set({ user: null, token: '', loading: false, required,
-              notice: res?.pending ? "Your account is waiting for the admin's approval." : '' })
+              notice: '' })
       }
     } catch {
       setAuthToken('')
@@ -40,10 +39,6 @@ export const useAuthStore = create((set, get) => ({
     set({ loading: true, error: '' })
     try {
       const res = await api.auth.login({ login, password })
-      if (res?.pending) {
-        set({ loading: false, error: '', notice: res.error })
-        return { ok: false, pending: true }
-      }
       if (res?.ok && res?.token) {
         setAuthToken(res.token)
         set({ user: res.user, token: res.token, loading: false, error: '' })
@@ -64,10 +59,6 @@ export const useAuthStore = create((set, get) => ({
     set({ loading: true, error: '' })
     try {
       const res = await api.auth.signup({ username, email, password, name })
-      if (res?.pending) {
-        set({ loading: false, error: '', notice: res.error })
-        return { ok: false, pending: true }
-      }
       if (res?.ok && res?.token) {
         setAuthToken(res.token)
         set({ user: res.user, token: res.token, loading: false, error: '' })

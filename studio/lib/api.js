@@ -131,6 +131,7 @@ export const api = {
   // Which models can look at pictures: { capabilities: { id: { vision } }, pending } (filled in as Ollama answers).
   modelCapabilities: () => req('/models/capabilities'),
   settings: () => req('/settings'),
+  accountCheckout: () => post('/account/checkout', {}),
   account: () => req('/account'),
   saveSettings: (s) => post('/settings', s),
   mcpProbe: (server) => post('/mcp/probe', server),

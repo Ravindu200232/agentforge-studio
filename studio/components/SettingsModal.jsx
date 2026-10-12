@@ -37,8 +37,10 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
   const [activeTab, setActiveTab] = useState(initialTab === 'integrations' ? 'github' : initialTab || 'general')
   const folderRef = useRef(null)
 
-  // Real server settings — loaded via api.settings(). The AI engine is built into AgentForge: nothing to set here.
+  // Real server settings, including the model engine on this computer.
   const [mongo, setMongo] = useState('')
+  const [engineChoice, setEngineChoice] = useState('built-in')
+  const [ollamaHost, setOllamaHost] = useState('http://localhost:11434')
   const [meta, setMeta] = useState(null)
   const [saving, setSaving] = useState(false)
   const [note, setNote] = useState('loading…')
@@ -50,6 +52,8 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
       .then(d => {
         if (!alive) return
         setMeta(d)
+        setEngineChoice(d.engine === 'local' ? 'local' : 'built-in')
+        setOllamaHost(d.ollama_host || 'http://localhost:11434')
         setNote('ready')
         setTone('ok')
       })
@@ -63,12 +67,38 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
     setTone('muted')
     const body = {}
     if (mongo.trim()) body.mongodb_uri = mongo.trim() === '-' ? '' : mongo.trim()
+    body.engine = engineChoice === 'local' ? 'local' : 'built-in'
+    if (engineChoice === 'local') body.ollama_host = ollamaHost.trim() || 'http://localhost:11434'
     try {
       const d = await api.saveSettings(body)
       setMeta(d)
+      if (engineChoice === 'local') {
+        const catalog = await api.models()
+        const picked = (catalog.local_models || [])[0]?.id || catalog.local?.[0]
+        if (picked) {
+          useStore.setState(state => ({ models: { ...state.models, planner: picked, design: picked,
+            builder: picked, agent: picked, qa: picked, srs: picked, deploy: picked } }))
+          await api.saveSettings({ model: picked })
+          setNote(`Local Ollama connected · ${picked}`)
+        } else {
+          setNote('Local mode saved. Start Ollama and pull a model to connect.')
+        }
+      } else {
+        const catalog = await api.models()
+        const cloud = catalog.cloud || []
+        const current = useStore.getState().models.builder
+        const picked = cloud.find(row => row.id === current)?.id
+          || cloud.find(row => row.id === 'gpt-oss:120b-cloud')?.id || cloud[0]?.id
+        if (picked) {
+          useStore.setState(state => ({ models: { ...state.models, planner: picked, design: picked,
+            builder: picked, agent: picked, qa: picked, srs: picked, deploy: picked } }))
+          await api.saveSettings({ model: picked })
+        }
+        setNote(picked ? `Cloud connected · ${picked}` : 'Cloud mode saved. Models will appear when the engine is available.')
+      }
       setMongo('')
-      setNote('saved')
       setTone('ok')
+      await useAuthStore.getState().init()
       onSaved?.()
     } catch (e) {
       setNote('save failed — ' + e.message)
@@ -199,6 +229,12 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
             {activeTab === 'general' && !isAdmin && (
               <div className="space-y-4 max-w-[700px]">
                 <AccountRequests />
+                <EngineChoice value={engineChoice} onChange={setEngineChoice} host={ollamaHost} onHost={setOllamaHost} />
+                <button type="button" disabled={saving} onClick={save}
+                  className="rounded-xl bg-accent px-4 py-2 text-[12px] font-semibold text-ink disabled:opacity-50">
+                  {saving ? 'Connecting…' : 'Save AI connection'}
+                </button>
+                <p className="text-[11px] text-muted">{note}</p>
                 <p className="rounded-2xl border border-line bg-panel px-4 py-3 text-[12px] text-muted">
                   AgentForge's own database is shared by everyone on this
                   machine, so only its admin changes it. Your GitHub, AWS, Vercel
@@ -214,6 +250,7 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
             {activeTab === 'general' && isAdmin && (
               <div className="space-y-5 max-w-[700px]">
                 <AccountRequests />
+                <EngineChoice value={engineChoice} onChange={setEngineChoice} host={ollamaHost} onHost={setOllamaHost} />
                 <div className="grid gap-4 sm:grid-cols-2">
                   <label className="block">
                     <span className="mb-1.5 block text-[11.5px] font-semibold text-muted">MongoDB URI</span>
@@ -373,8 +410,21 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
 
 /** The signed-in AgentForge account's requests (one per AI call): the limit the admin gave, what is used and what is left,
  * going down live as the AI works (`account_usage` events). Nothing is shown when AgentForge accounts are off. */
+function EngineChoice({ value, onChange, host, onHost }) {
+  return <div className="rounded-2xl border border-line bg-panel px-4 py-4 space-y-3">
+    <h3 className="text-[13px] font-semibold text-ink">AI connection</h3>
+    <label className="flex gap-2 text-[12px]"><input type="radio" name="ai-engine" checked={value === 'built-in'} onChange={() => onChange('built-in')} /> AgentForge Cloud · uses account credit</label>
+    <label className="flex gap-2 text-[12px]"><input type="radio" name="ai-engine" checked={value === 'local'} onChange={() => onChange('local')} /> Local Ollama · uses your computer, no cloud credit</label>
+    {value === 'local' && <label className="block text-[11px] text-muted">Ollama address
+      <input value={host} onChange={e => onHost(e.target.value)} placeholder="http://localhost:11434"
+        className="mt-1 block w-full rounded-xl border border-line bg-panel2 px-3 py-2 text-[12px] text-ink" />
+    </label>}
+  </div>
+}
+
 function AccountRequests() {
   const [account, setAccount] = useState(null)
+  const [purchaseError, setPurchaseError] = useState('')
   const live = useStore(s => s.accountUsage)
 
   useEffect(() => {
@@ -386,26 +436,41 @@ function AccountRequests() {
   if (!account?.enabled || !account?.signed_in) return null
   const shown = live && live.status !== 'signed_out' ? { ...account, ...live } : account
   if (shown.unlimited) return <AdminRequests shown={shown} />
-  const limit = Number(shown.limit) || 0
-  const used = Number(shown.used) || 0
-  const left = Math.max(0, limit - used)
+  const limit = Number(shown.limitUsd) || 0
+  const used = Number(shown.usedUsd) || 0
+  const left = Math.max(0, Number(shown.remainingUsd) || 0)
   const share = limit ? Math.min(100, Math.round((used / limit) * 100)) : 100
   const low = !limit || left / limit < 0.1
   return (
     <div className="rounded-2xl border border-line bg-panel px-4 py-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="text-[13px] font-semibold text-ink">Your requests</h3>
+        <h3 className="text-[13px] font-semibold text-ink">Cloud credit · {shown.plan === 'paid' ? 'Paid weekly' : 'Free once'}</h3>
         <span className="text-[11px] text-muted2">{shown.email}</span>
       </div>
       <p className={`mt-2 font-display text-[22px] font-black tabular-nums ${low ? 'text-bad' : 'text-ink'}`}>
-        {left.toLocaleString()} <span className="text-[12px] font-semibold text-muted">left of {limit.toLocaleString()}</span>
+        ${left.toFixed(2)} <span className="text-[12px] font-semibold text-muted">left of ${limit.toFixed(2)}</span>
       </p>
       <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-panel2">
         <div className={`h-full rounded-full transition-all duration-500 ${low ? 'bg-bad' : 'bg-accent'}`} style={{ width: `${share}%` }} />
       </div>
       <p className="mt-1.5 text-[11px] text-muted">
-        {used.toLocaleString()} used · one per AI call{left <= 0 ? ' — the limit is used up: ask the admin for more requests.' : ''}
+        ${used.toFixed(2)} used · local Ollama does not spend this credit
       </p>
+      {shown.weekResetsAt && <p className="text-[11px] text-muted">Resets {new Date(shown.weekResetsAt).toLocaleString()}</p>}
+      {shown.plan !== 'paid' && <button type="button" disabled={!shown.checkoutAvailable}
+        className="mt-3 rounded-xl bg-accent px-3 py-2 text-[12px] font-semibold text-ink disabled:opacity-50"
+        onClick={async () => {
+          setPurchaseError('')
+          try {
+            const result = await api.accountCheckout()
+            if (!result.ok || !result.url) throw new Error(result.error || 'Checkout unavailable')
+            window.open(result.url, '_blank', 'noopener,noreferrer')
+          } catch (error) { setPurchaseError(error.message) }
+        }}>
+        Buy ${Number(shown.weeklyPriceUsd || 21).toFixed(2)}/week · weekly cloud credit
+      </button>}
+      {!shown.checkoutAvailable && shown.plan !== 'paid' && <p className="mt-1 text-[11px] text-muted">Checkout is being set up by the admin.</p>}
+      {purchaseError && <p className="mt-1 text-[11px] text-bad">{purchaseError}</p>}
     </div>
   )
 }
@@ -417,7 +482,7 @@ function AdminRequests({ shown }) {
   return (
     <div className="rounded-2xl border border-line bg-panel px-4 py-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="text-[13px] font-semibold text-ink">Your requests</h3>
+        <h3 className="text-[13px] font-semibold text-ink">Cloud account</h3>
         <span className="text-[11px] text-muted2">{shown.email} · admin</span>
       </div>
       <p className="mt-2 font-display text-[22px] font-black text-ink">Unlimited</p>
@@ -433,7 +498,7 @@ function AdminRequests({ shown }) {
       ) : shown.ollama?.error ? (
         <p className="mt-1 text-[11.5px] text-muted">Ollama account: {shown.ollama.error}</p>
       ) : null}
-      <p className="mt-1.5 text-[11px] text-muted">{Number(shown.used || 0).toLocaleString()} requests made here</p>
+      <p className="mt-1.5 text-[11px] text-muted">Admin access is unlimited</p>
     </div>
   )
 }

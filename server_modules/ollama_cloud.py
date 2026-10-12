@@ -120,12 +120,15 @@ class _Names:
                                     json=WebFetchRequest(url=url).model_dump(exclude_none=True))
 
 
-def client(key: str, host: str = HOST) -> Any:
+def client(key: str, host: str = HOST, account_token: str = "") -> Any:
     """An ollama.com client for `key` (at `host`, the built-in engine, the app's token), taking either naming."""
     if not key:
         raise ValueError("Add your ollama.com API key in Settings first.")
     remote_names(host=host, token=key if host != HOST else "")   # fills the list `remote_name` matches against
-    return _Names(ollama.Client(host=host, headers={"Authorization": f"Bearer {key}"}, timeout=connection.model_timeout()), host)
+    headers = {"Authorization": f"Bearer {key}"}
+    if account_token:
+        headers["x-agentforge-account"] = account_token
+    return _Names(ollama.Client(host=host, headers=headers, timeout=connection.model_timeout()), host)
 
 
 def for_engine(saved: dict[str, Any]) -> Any:
@@ -133,7 +136,8 @@ def for_engine(saved: dict[str, Any]) -> Any:
     ollama.com with the saved key."""
     if config.engine(saved) == "built-in":
         built_in = config.built_in_engine()
-        return client(built_in["token"], host=built_in["url"])
+        return client(built_in["token"], host=built_in["url"],
+                      account_token=str(saved.get("account_token") or ""))
     return client(str(saved.get("ollama_api_key") or ""))
 
 

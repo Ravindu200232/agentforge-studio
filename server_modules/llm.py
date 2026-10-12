@@ -168,7 +168,7 @@ def _hold_for_person() -> bool:
 def client() -> Any:
     """One Ollama client per thread, so parallel lanes do not share a socket."""
     saved = config.settings()
-    key = (config.engine(saved), saved.get("ollama_host"), saved.get("ollama_api_key"))
+    key = (config.engine(saved), saved.get("ollama_host"), saved.get("ollama_api_key"), saved.get("account_token"))
     if getattr(_local, "key", None) != key or getattr(_local, "client", None) is None:
         if saved.get("cloud"):
             from . import ollama_cloud

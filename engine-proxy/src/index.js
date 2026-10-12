@@ -28,6 +28,76 @@ const ALLOWED = new Set([
 // Request and response headers passed through; everything else (cookies, the app token itself) stays here.
 const FORWARD = ['content-type', 'accept', 'user-agent']
 
+// Standard per-million-token rates from https://ollama.com/pricing (2026-10-12).
+// Unknown models fail closed until their published rate is added. Cached input is
+// charged at the regular input rate, a conservative upper bound for the credit ledger.
+const PRICE = {
+  'deepseek-v4.1-flash': [0.30, 1.20], 'deepseek-v4-pro': [1.32, 3.96],
+  gemma4: [0.14, 0.40], 'glm-5.3': [1.40, 4.40], 'glm-5.3-flash': [0.15, 0.50],
+  'glm-5.2': [1.40, 4.40], 'gpt-oss:120b': [0.15, 0.60], 'gpt-oss:20b': [0.07, 0.30],
+  'kimi-k3': [3.00, 15.00], 'kimi-k2.7-code': [0.95, 4.00], 'kimi-k2.6': [0.95, 4.00],
+  'minimax-m3': [0.60, 2.40], 'minimax-m2.7': [0.30, 1.20],
+  'mistral-large-4': [0.68, 2.09], 'mistral-large-3': [0.50, 1.50],
+  'nemotron-3-nano': [0.06, 0.24], 'nemotron-3-super': [0.015, 0.60],
+  'nemotron-3-ultra': [0.10, 3.00],
+}
+
+function priceFor(model) {
+  const name = String(model || '').replace(/:cloud$|-cloud$/, '')
+  const rate = PRICE[name] || PRICE[name.split(':')[0]]
+  if (!rate) return null
+  const now = new Date()
+  const peak = now.getUTCDay() >= 1 && now.getUTCDay() <= 5 && now.getUTCHours() >= 12 && now.getUTCHours() < 18
+  return !peak && (name === 'deepseek-v4.1-flash' || name === 'deepseek-v4-pro')
+    ? rate.map(value => value / 2) : rate
+}
+
+async function meter(env, path, accountToken, payload) {
+  if (!env.ACCOUNTS_URL || !env.ENGINE_METER_SECRET) throw new Error('Cloud metering is not configured')
+  const response = await fetch(`${env.ACCOUNTS_URL.replace(/\/$/, '')}/api/accounts/${path}`, {
+    method: 'POST', headers: { 'content-type': 'application/json',
+      'x-agentforge-meter-secret': env.ENGINE_METER_SECRET,
+      ...(accountToken ? { authorization: `Bearer ${accountToken}` } : {}) },
+    body: JSON.stringify(payload),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw Object.assign(new Error(data.error || 'Cloud credit service is unavailable'), { status: response.status })
+  return data
+}
+
+function usageOf(reply, payloadSize, outputSize) {
+  const usage = reply?.usage || reply || {}
+  const prompt = Number(usage.prompt_eval_count ?? usage.prompt_tokens ?? usage.input_tokens)
+  const output = Number(usage.eval_count ?? usage.completion_tokens ?? usage.output_tokens)
+  const exact = Number.isFinite(prompt) && Number.isFinite(output)
+  return { inputTokens: exact ? Math.max(0, prompt) : Math.ceil(payloadSize / 4),
+    outputTokens: exact ? Math.max(0, output) : Math.ceil(outputSize / 4), estimated: !exact }
+}
+
+async function recordStream(stream, env, reservation, model, rate, payloadSize) {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let buffer = '', final = null, bytes = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      bytes += value.byteLength
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      for (const line of lines) {
+        try { const row = JSON.parse(line); if (row.done || row.usage) final = row } catch {}
+      }
+    }
+    if (buffer.trim()) { try { final = JSON.parse(buffer) } catch {} }
+  } finally {
+    const tokens = usageOf(final, payloadSize, bytes)
+    const costMicros = Math.ceil(tokens.inputTokens * rate[0] + tokens.outputTokens * rate[1])
+    await meter(env, 'settle', '', { reservation, model, costMicros, ...tokens }).catch(() => {})
+  }
+}
+
 function answer(status, error) {
   return new Response(JSON.stringify({ error }), { status, headers: { 'content-type': 'application/json' } })
 }
@@ -221,18 +291,33 @@ async function signIn(request, env, url, [handler, needsToken]) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url)
     const route = `${request.method} ${url.pathname}`
     if (SIGN_IN[route]) return signIn(request, env, url, SIGN_IN[route])
     if (!ALLOWED.has(route)) return answer(404, 'not found')
 
     const auth = request.headers.get('authorization') || ''
-    if (!sameToken(auth.replace(/^Bearer\s+/i, ''), env.APP_TOKEN || '')) return answer(401, 'unauthorized')
+    const needed = route === 'GET /api/balance' ? env.ENGINE_METER_SECRET : env.APP_TOKEN
+    if (!sameToken(auth.replace(/^Bearer\s+/i, ''), needed || '')) return answer(401, 'unauthorized')
     if (!env.OLLAMA_API_KEY) return answer(503, 'the engine has no key yet')
 
     const limited = await tooMany(request, env)
     if (limited) return limited
+
+    const modelCall = route === 'POST /api/chat' || route === 'POST /api/generate'
+    let reservation = null, model = '', rate = null, requestBody = null
+    if (modelCall) {
+      const accountToken = request.headers.get('x-agentforge-account') || ''
+      if (!accountToken) return answer(401, 'Sign in to AgentForge to use cloud models.')
+      requestBody = await request.arrayBuffer()
+      try { model = JSON.parse(new TextDecoder().decode(requestBody)).model || '' }
+      catch { return answer(400, 'Invalid model request.') }
+      rate = priceFor(model)
+      if (!rate) return answer(400, 'This cloud model has no published USD rate yet.')
+      try { reservation = (await meter(env, 'authorize', accountToken, {})).reservation }
+      catch (error) { return answer(error.status || 503, error.message) }
+    }
 
     const headers = new Headers()
     for (const name of FORWARD) {
@@ -241,17 +326,31 @@ export default {
     }
     headers.set('authorization', `Bearer ${env.OLLAMA_API_KEY}`)
 
-    const upstream = await fetch(UPSTREAM + url.pathname + url.search, {
-      method: request.method,
-      headers,
-      body: request.method === 'GET' ? undefined : await request.arrayBuffer(),
-    })
+    let upstream
+    try {
+      upstream = await fetch(UPSTREAM + url.pathname + url.search, {
+        method: request.method, headers,
+        body: request.method === 'GET' ? undefined : requestBody || await request.arrayBuffer(),
+      })
+    } catch {
+      if (reservation) ctx.waitUntil(meter(env, 'settle', '', { reservation, model, costMicros: 0 }).catch(() => {}))
+      return answer(502, 'The cloud model could not be reached.')
+    }
+
+    if (reservation && !upstream.ok) {
+      ctx.waitUntil(meter(env, 'settle', '', { reservation, model, costMicros: 0 }).catch(() => {}))
+    }
 
     // Streamed straight back: a chat answer arrives token by token, as it would from ollama.com.
     const out = new Headers()
     for (const name of ['content-type', 'retry-after']) {
       const value = upstream.headers.get(name)
       if (value) out.set(name, value)
+    }
+    if (reservation && upstream.ok && upstream.body) {
+      const [toClient, toMeter] = upstream.body.tee()
+      ctx.waitUntil(recordStream(toMeter, env, reservation, model, rate, requestBody.byteLength))
+      return new Response(toClient, { status: upstream.status, headers: out })
     }
     return new Response(upstream.body, { status: upstream.status, headers: out })
   },
