@@ -2,7 +2,7 @@
 <!-- AgentForgeSetup.exe installs for the current user only, so it never asks for administrator rights. Without
      this, Windows guesses that an exe named "...Setup" needs them and shows a UAC prompt. -->
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity version="1.0.0.0" name="AgentForge.Setup"/>
+  <assemblyIdentity version="1.1.0.0" name="AgentForge.Setup"/>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
