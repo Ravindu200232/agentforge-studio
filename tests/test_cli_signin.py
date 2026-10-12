@@ -71,9 +71,11 @@ class WhatTheToolsPrintTests(unittest.TestCase):
 
     def test_a_tool_that_opens_no_browser_is_not_told_it_did(self):
         self.assertTrue(cli_signin.PROVIDERS["aws"].opens_browser)
-        for key in ("github", "vercel", "netlify", "azure", "supabase"):
+        self.assertTrue(cli_signin.PROVIDERS["supabase"].opens_browser)
+        for key in ("github", "vercel", "netlify", "azure"):
             self.assertFalse(cli_signin.PROVIDERS[key].opens_browser, key)
         self.assertFalse(cli_signin.PROVIDERS["aws"].shows_code)          # a link to approve, no code to type
+        self.assertFalse(cli_signin.PROVIDERS["supabase"].shows_code)
 
 
 class WhoIsSignedInTests(unittest.TestCase):
@@ -238,7 +240,9 @@ class LoginFlowTests(unittest.TestCase):
             orgs = subprocess.CompletedProcess([], 0, '[{"id":"org-1","name":"Acme"}]', "")
             with mock.patch.object(cli_signin, "_run", return_value=orgs):
                 done = cli_signin.SIGNINS.poll(started["flow_id"])
-        self.assertEqual(spawn.call_args.args[0], ["/bin/supabase", "login", "--no-browser"])
+        self.assertEqual(spawn.call_args.args[0], ["/bin/supabase", "login", "--agent", "no"])
+        self.assertTrue(cli_signin.PROVIDERS["supabase"].opens_browser)
+        self.assertFalse(cli_signin.PROVIDERS["supabase"].shows_code)
         self.assertEqual(process.typed, ["\r"])
         self.assertEqual(pending["verification_uri"],
                          "https://supabase.com/dashboard/cli/login?session_id=temporary")

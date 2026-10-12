@@ -347,9 +347,11 @@ def _supabase_identity(tool: str) -> dict | None:
 
 
 def _supabase_login(tool: str, options: dict, identity: dict | None) -> list:
-    # `--no-browser` makes the URL observable by the Studio instead of asking a child process to
-    # launch it. The command still performs Supabase's official browser OAuth flow.
-    return [tool, "login", "--no-browser"]
+    # Supabase CLI 2.120 added agent detection. AgentForge is correctly recognised as an agent, but
+    # that switches the CLI to JSON output where its interactive OAuth prompt is rejected with a
+    # NonInteractiveError. Force the normal terminal UI instead. The provider's pseudo-terminal
+    # answers the initial Enter prompt and the CLI opens the official browser flow itself.
+    return [tool, "login", "--agent", "no"]
 
 
 def _supabase_read(tool: str, options: dict) -> dict:
@@ -450,7 +452,7 @@ PROVIDERS: dict[str, Provider] = {
     "supabase": Provider("supabase", "Supabase", "supabase",
                          "brew install supabase/tap/supabase  (Windows: scoop install supabase)",
                          _supabase_identity, _supabase_login, _supabase_read,
-                         needs_terminal=True,
+                         needs_terminal=True, opens_browser=True, shows_code=False,
                          answers=((re.compile(r"(Press Enter to open browser[^.]*)", re.I), "\r"),),
                          finished=re.compile(r"You are now logged in|Finished supabase login|Happy coding", re.I)),
     # `--noBrowser`: the studio shows the code and the link itself. The first menu is "Select authentication type";
