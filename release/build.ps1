@@ -33,8 +33,7 @@ $out = Join-Path $release 'out'
 $cache = Join-Path $release 'cache'
 $version = (Get-Content (Join-Path $root 'desktop\package.json') -Raw | ConvertFrom-Json).version
 if (-not $Repo) {
-    $remote = (git -C $root remote get-url origin).Trim()
-    $Repo = ($remote -replace '^.*github\.com[:/]', '' -replace '\.git$', '')
+    $Repo = 'Ravindu200232/agentforge-releases'
 }
 $PythonVersion = '3.12.10'
 $StudioModules = @{ 'puppeteer' = '25.12.0'; 'marked' = '4.3.0'; '@mermaid-js/mermaid-cli' = '11.17.0' }
