@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "purpose": "Curated, source-linked notation evidence for AgentForge SRS diagrams. This file records facts and visual observations; it does not copy third-party images.",
+  "image_policy": "Follow linked source images to learn notation and layout. Do not reproduce their artwork, branding, colours, or example domain content.",
+  "kinds": {
+    "activity": {
+      "sources": [{"title": "Sparx Systems — UML Activity Diagram", "url": "https://sparxsystems.org/resources/tutorials/uml2/activity-diagram.html"}, {"title": "UML Diagrams — Activity notation reference", "url": "https://www.uml-diagrams.org/activity-diagrams-reference.html"}],
+      "accepted_notation": ["filled initial node", "bullseye activity-final node", "rounded action", "diamond decision/merge", "bar fork/join"],
+      "visual_observation": "The reference figures distinguish control nodes from actions; decisions and merges share a diamond, while parallel split/join use a bar."
+    },
+    "bpmn": {
+      "sources": [{"title": "OMG BPMN 2.0 specification", "url": "https://www.omg.org/spec/BPMN/2.0/PDF/"}, {"title": "SAP BPMN 2.0 descriptive notation", "url": "https://help.sap.com/docs/EAD_CLOUD/c50a2057f35a4731838910588f247f4a/c819c2b86e1b10148f21b7f958207590.html"}],
+      "accepted_notation": ["single-line start event", "double-line end event", "rounded task", "diamond gateway", "pool/lane", "solid sequence flow", "dashed message flow only between pools"],
+      "visual_observation": "Pool and lane containers make responsibility visible; events, tasks and gateways remain visually distinct."
+    },
+    "class_object": {
+      "sources": [{"title": "Visual Paradigm — UML Class Diagram Tutorial", "url": "https://www.visual-paradigm.com/guide/uml-unified-modeling-language/uml-class-diagram-tutorial/"}, {"title": "Mermaid class-diagram syntax", "url": "https://mermaid.js.org/syntax/classDiagram"}],
+      "accepted_notation": ["class name / attribute / operation compartments", "visibility + - # ~", "attribute and return types after colon", "generalization hollow triangle", "aggregation open diamond", "composition filled diamond", "dependency dashed arrow", "exact multiplicity"],
+      "visual_observation": "The tutorial images separate class and object values, show member compartments, and use connector end symbols rather than colour to convey relationship meaning."
+    },
+    "component": {
+      "sources": [{"title": "Visual Paradigm — Component Diagram Tutorial", "url": "https://online.visual-paradigm.com/diagrams/tutorials/component-diagram-tutorial/"}, {"title": "TU Delft — UML Component Diagrams", "url": "https://cese01.ewi.tudelft.nl/software-systems/part-2/tutorials/uml/component.html"}],
+      "accepted_notation": ["«component»", "provided lollipop interface", "required socket interface", "dashed dependency"],
+      "visual_observation": "Components and their interfaces are separate visual concepts: supplied services use a lollipop and required services use a socket."
+    },
+    "deployment": {
+      "sources": [{"title": "Microsoft — Create a UML Deployment Diagram", "url": "https://support.microsoft.com/en-us/visio/create-a-uml-deployment-diagram"}, {"title": "Sparx Systems — Deployment Diagram", "url": "https://sparxsystems.com/resources/tutorials/uml2/deployment-diagram.html"}],
+      "accepted_notation": ["node/device or execution environment", "«artifact» contained inside node", "communication path between nodes"],
+      "visual_observation": "Reference figures place artifacts inside their deployment node; containment conveys where software runs."
+    },
+    "dfd": {
+      "sources": [{"title": "GOV.UK — Data Flow Diagram standards", "url": "https://www.gov.uk/government/publications/accessing-ukhsa-protected-data/approval-standards-and-guidelines-data-flow-diagram"}],
+      "accepted_notation": ["rectangle external entity", "circle process in Yourdon/DeMarco", "parallel-line data store in Yourdon/DeMarco", "labelled data-flow arrow"],
+      "visual_observation": "A DFD uses different shapes for entity, process and store; arrows describe named data, not control actions."
+    },
+    "erd": {
+      "sources": [{"title": "Mermaid — Entity Relationship Diagrams", "url": "https://mermaid.js.org/syntax/entityRelationshipDiagram"}],
+      "accepted_notation": ["entity attribute block", "PK and FK attributes", "Crow's Foot cardinality/optionality endpoints", "relationship label"],
+      "visual_observation": "Entity boxes retain field detail while Crow's Foot endpoint marks, not arrow direction, communicate cardinality."
+    },
+    "sequence": {
+      "sources": [{"title": "Mermaid — Sequence Diagrams", "url": "https://mermaid.js.org/syntax/sequenceDiagram.html"}, {"title": "Sparx Systems — Sequence Diagram", "url": "https://sparxsystems.org/resources/tutorials/uml2/sequence-diagram.html"}],
+      "accepted_notation": ["actor/participant lifeline", "solid synchronous call", "dashed return", "activation", "alt / opt / loop / par fragment"],
+      "visual_observation": "Time reads top-to-bottom; activation rectangles align with a participant's lifeline and returns are visibly dashed."
+    },
+    "state_machine": {
+      "sources": [{"title": "UML Diagrams — State Machine Notation", "url": "https://www.uml-diagrams.org/state-machine-diagrams.html"}],
+      "accepted_notation": ["initial pseudostate", "final state", "triggered transition", "guard", "choice", "composite state", "fork/join"],
+      "visual_observation": "States are stable conditions; arrows are labelled events/triggers, with pseudostates visually separate from ordinary states."
+    },
+    "system_context": {
+      "sources": [{"title": "System Context Diagram overview", "url": "https://en.wikipedia.org/wiki/System_context_diagram"}],
+      "accepted_notation": ["one central system boundary", "external actors and systems outside the boundary", "labelled interaction"],
+      "visual_observation": "The system is central and opaque; surrounding entities indicate environment, not internal implementation."
+    },
+    "use_case": {
+      "sources": [{"title": "Visual Paradigm — Use Case Diagram Notation", "url": "https://www.visual-paradigm.com/guide/uml-unified-modeling-language/what-is-use-case-diagram/"}, {"title": "Mermaid — Use Case Diagrams", "url": "https://mermaid.js.org/syntax/usecase.html"}],
+      "accepted_notation": ["stick-figure actor", "ellipse use case", "system boundary", "plain actor association", "«include»", "«extend»"],
+      "visual_observation": "Actors remain outside the system boundary, goals are ellipses inside it, and include/extend are labelled dashed dependencies."
+    }
+  }
+}

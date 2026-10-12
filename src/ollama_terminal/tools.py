@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
+import shlex
 from pathlib import Path
 import queue
+import signal
 import subprocess
 import threading
 import time
@@ -13,13 +17,294 @@ from typing import Any, Callable
 
 import httpx
 
+from . import screenshot as screenshots
+from .browser_inspect import inspect_local_page
 from .guard import SourceGuard
+from .mcp_client import MCPManager
 
 
 MAX_OUTPUT = 24_000
 MAX_READ = 32_000
 MAX_COMMAND_SECONDS = 600
+# A command that has finished but left a background process holding its output open (a server started with `Start-Process`, say)
+# is not waited for after this long: the output is only for the model to read, and waiting for the pipe to close would wait for
+# as long as that server runs.
+OUTPUT_GRACE_SECONDS = 5
+# `Start-Process` gives a program its own console, and on Windows that is a window on the person's screen (a terminal tab
+# titled "next-server" that opens for every server an agent starts to test an app). The command runs with no window of its
+# own, so what it starts is started hidden too, unless it says how it wants to be shown (-WindowStyle, -NoNewWindow, -Verb).
+POWERSHELL_HIDE_START = (
+    "function Start-Process { if (-not ($args | Where-Object { $_ -is [string] -and $_ -match "
+    "'^-(w(i(n(d(o(w(s(t(y(l(e)?)?)?)?)?)?)?)?)?)?|nonew\\w*|v(e(r(b)?)?)?)$' })) "
+    "{ Microsoft.PowerShell.Management\\Start-Process @args -WindowStyle Hidden } "
+    "else { Microsoft.PowerShell.Management\\Start-Process @args } }; "
+)
 SERVER_COMMAND_SECONDS = 75
+# A deployment's release (`netlify deploy --build`, `vercel deploy --prod`) builds the app and uploads it, which on this
+# computer took longer than ten minutes: killed at the usual limit, it left a half-made deploy and stale build output behind.
+RELEASE_COMMAND_SECONDS = 1800
+# A command that starts the app's server: the program at the start of the command (or of one of its parts), never the
+# same words inside a string the command only reads or prints.
+_SERVER_COMMAND = re.compile(
+    r"(?:^|[;&|(/]\s*|\b(?:npx|pnpm|yarn|bunx|exec)\s+)(?:next\s+(?:dev|start)\b|npm\s+(?:run\s+)?(?:dev|start)\b|start\s+/b\b)",
+    re.I)
+_RELEASE_COMMAND = re.compile(r"(?:^|[;&|(]\s*|\bnpx\s+)(?:netlify\s+deploy\b|vercel\b(?=[^;&|]*(?:\bdeploy\b|--prod\b|\bbuild\b))"
+                              r"|npm\s+run\s+build\b|next\s+build\b)", re.I)
+# A run of the whole end-to-end suite. The Studio runs it itself, once (`qa_agent/e2e_run.py`); an agent runs one journey's
+# spec file, or a --grep of a few, while it writes or fixes them.
+_E2E_SUITE = re.compile(r"\b(?:qa:e2e|test:e2e|playwright\s+test)\b", re.I)
+_E2E_NARROWED = re.compile(r"\.spec\.[cm]?[jt]sx?\b|\.test\.[cm]?[jt]sx?\b|(?:^|\s)(?:--grep|-g)(?:[\s=]|$)|--last-failed\b|--list\b"
+                           r"|(?:^|\s)e2e/[\w./-]+", re.I)
+E2E_SUITE_REFUSED = ("The Studio runs the whole end-to-end suite itself, once, after this work (and again only when the person "
+                     "asks), so it is not run from here. Run one journey's spec file instead, for example: "
+                     "node scripts/with-server.mjs -- npx playwright test e2e/journeys/UJ-001.spec.js --project=desktop")
+
+
+def server_command(command: str) -> bool:
+    """Whether `command` starts the app's server (a development or production server that never exits by itself)."""
+    return bool(_SERVER_COMMAND.search(command))
+
+
+def whole_e2e_suite(command: str) -> bool:
+    """Whether `command` runs the whole end-to-end suite rather than one spec file or a --grep of a few tests."""
+    return bool(_E2E_SUITE.search(command)) and not _E2E_NARROWED.search(command)
+
+# A CLI that colours its own output (netlify, vercel, npm...) still does so once piped,
+# leaving raw escape codes ("[32m...[39m") in what both the model and the chat card see.
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+# What a web-app build/test/deploy stage legitimately runs. Not a security
+# sandbox on its own (a shell string can still be obfuscated past a prefix
+# check) — this is a defense-in-depth floor against a command that is simply
+# not one of these things: an accidental `rm -rf`, a project's own compromised
+# script, or a prompt-injected instruction from a file the model read.
+_ALLOWED_PROGRAMS = {
+    "npm", "npx", "node", "yarn", "pnpm", "corepack",
+    "git", "gh",
+    "python", "python3", "pip", "pip3",
+    "tsc", "vitest", "playwright", "prisma", "mongosh",
+    "vercel", "netlify", "aws", "az",
+    "mkdir", "rmdir", "rm", "del", "mv", "move", "cp", "copy", "touch",
+    "cat", "type", "echo", "printf", "cd", "pwd", "dir", "ls", "chmod",
+    "curl", "wget", "grep", "findstr", "find", "sleep",
+    "which", "where", "test", "true", "false", "exit", "set", "export",
+    "sh", "bash", "cmd", "powershell", "pwsh",
+    # The stack's own command-line tools, and the everyday ones that look at files, text and the machine.
+    "next", "vite", "tsx", "ts-node", "eslint", "prettier", "jest", "bun", "deno", "remix", "lhci", "supabase", "atlas",
+    "mongoimport", "mongoexport", "mongodump", "mongorestore", "jq",
+    "head", "tail", "wc", "sort", "uniq", "cut", "tr", "xargs", "sed", "awk", "diff", "env", "date", "timeout", "basename",
+    "dirname", "realpath", "du", "df", "file", "stat", "tee", "tree", "uname", "hostname", "whoami", "clear", "cls",
+    "tar", "unzip", "zip", "robocopy", "xcopy", "md", "rd", "ren", "tasklist", "netstat", "nslookup", "ping", "chcp",
+    # PowerShell's short names for the cmdlets it allows by shape anyway.
+    "gci", "gc", "sls", "ni", "ri", "mi", "ci", "select", "sort", "measure", "group", "ft", "fl", "write", "%", "?",
+}
+# PowerShell is a language, not only a list of programs: a line of it starts with a variable (`$ok = $true`), a printed string
+# (`"--- pages:"`), a comment, a keyword (`foreach (...) {`), a type (`[IO.File]::ReadAllText(...)`) or a brace. None of those is
+# a program to vet - taking them for one asked the person about almost every command the agent wrote, in Auto too.
+_POWERSHELL_KEYWORDS = {"foreach", "for", "if", "else", "elseif", "while", "do", "until", "switch", "try", "catch", "finally",
+                        "function", "filter", "param", "return", "break", "continue", "begin", "process", "end", "throw",
+                        "trap", "default", "in"}
+_NOT_A_PROGRAM = re.compile(r"""^[$"'#@\[{}]|^\d|^\W+$""")
+# The cmdlets that run code or another process are risky wherever they stand in a line, not only at its start.
+_RISKY_ANYWHERE = re.compile(r"\b(invoke-command|invoke-item|start-process|add-type)\b")
+# PowerShell's own Verb-Noun cmdlets (Set-Content, Copy-Item, Get-ChildItem,
+# ...) are allowed generically by that naming shape rather than enumerated —
+# except this explicit set, which can run arbitrary code or another process.
+_DANGEROUS_CMDLETS = {"invoke-expression", "invoke-command", "invoke-item",
+                      "start-process", "new-object", "add-type"}
+_CMDLET_SHAPE = re.compile(r"^[a-z]+-[a-z]+$")
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_DENY_PATTERNS = (
+    (re.compile(r"\bsudo\b|\bsu\s+-"), "sudo/su is not allowed"),
+    (re.compile(r"\b(curl|wget|invoke-webrequest|iwr)\b[^|;&\n]*\|\s*"
+               r"(sh|bash|zsh|powershell|pwsh|cmd)\b"),
+     "piping a download straight into a shell is not allowed"),
+    (re.compile(r"\biex\b|invoke-expression"), "Invoke-Expression is not allowed"),
+    (re.compile(r"\brm\s+-rf\s+(/(?:\s|$)|~(?:\s|$)|\*\s*$)"),
+     "recursive delete of the filesystem root/home is not allowed"),
+    (re.compile(r"\bformat\s+[a-z]:"), "formatting a drive is not allowed"),
+    (re.compile(r"(id_rsa|\.ssh/|\.aws[/\\]credentials|\.netrc)\b"
+               r"[^\n]*\b(curl|wget|nc\s|ftp\s)"),
+     "reading a credential file into a network command is not allowed"),
+)
+
+
+def _split_top_level(command: str) -> list[str]:
+    """`command` split on `&&`/`||`/`;`/`|`-style separators, but never inside a quoted string.
+
+    Found live: `node -p "const r=JSON.parse(...); r.complete"` was cut in two at the JS
+    statement's own semicolon (perfectly ordinary inside a one-liner passed to `node -p`/`python
+    -c`), leaving `r.complete"` to be checked as if it were its own command — which it plainly is
+    not one of. A shell separator inside quotes is not a separator; only a quote-aware split can
+    tell the difference between the two.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    quote = ""  # "" outside any quote, else the quote character currently open
+    i, length = 0, len(command)
+    while i < length:
+        ch = command[i]
+        if quote:
+            current.append(ch)
+            if ch == "\\" and quote == '"' and i + 1 < length:
+                i += 1
+                current.append(command[i])  # an escaped char inside "..." never closes the quote
+            elif ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            current.append(ch)
+            i += 1
+            continue
+        if command[i:i + 2] in ("&&", "||"):
+            segments.append("".join(current))
+            current = []
+            i += 2
+            continue
+        if ch in ";\n":
+            segments.append("".join(current))
+            current = []
+            i += 1
+            continue
+        if ch == "|":  # a lone pipe: a real `||` was already consumed by the check above
+            segments.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    segments.append("".join(current))
+    return segments
+
+
+def _segment_program(segment: str) -> str:
+    """The leading executable of one `&&`/`||`/`;`/`|`-separated shell segment."""
+    segment = segment.strip().lstrip("(")
+    if not segment:
+        return ""
+    try:
+        tokens = shlex.split(segment, posix=(os.name != "nt"))
+    except ValueError:
+        tokens = segment.split()
+    idx = 0
+    while idx < len(tokens) and _ENV_ASSIGNMENT.match(tokens[idx]):
+        idx += 1
+    if idx >= len(tokens):
+        return ""
+    name = Path(tokens[idx]).name.lower()
+    for suffix in (".exe", ".cmd", ".ps1", ".sh", ".bat"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return name
+
+
+def command_check(command: str) -> tuple[str, str, str]:
+    """How `command` sits with what a build/test/deploy stage runs: (level, why, program).
+
+    `level` is "" when it is one of the usual commands; "unusual" when a program in it is not (`program` names it); "danger" when
+    it can wreck the computer or send a credential out. A host that asks the person (the studio's permission modes) asks about
+    both; one that does not (the terminal agent) refuses both."""
+    lowered = command.lower()
+    for pattern, message in _DENY_PATTERNS:
+        if pattern.search(lowered):
+            return "danger", message, ""
+    risky = _RISKY_ANYWHERE.search(lowered)
+    if risky:
+        return "danger", f"'{risky.group(1)}' runs code or another program", risky.group(1)
+    for segment in _split_top_level(command):
+        program = _segment_program(segment)
+        if (not program or program in _ALLOWED_PROGRAMS or program in _POWERSHELL_KEYWORDS
+                or _NOT_A_PROGRAM.match(program) or _NOT_A_PROGRAM.match(segment.strip())):
+            continue
+        if program in _DANGEROUS_CMDLETS:
+            return "danger", f"'{program}' is not allowed", program
+        if _CMDLET_SHAPE.match(program):
+            continue  # an unlisted PowerShell Verb-Noun cmdlet — allowed by shape
+        return ("unusual",
+                f"'{program}' is not one of the commands a build/test/deploy "
+                f"stage runs (npm/git/node/python/vercel/... and their usual "
+                f"companions) — use one of those instead", program)
+    return "", "", ""
+
+
+def _command_problem(command: str) -> str | None:
+    """Why `command` is blocked, or `None` when it is fine to run."""
+    level, why, _program = command_check(command)
+    return why if level else None
+
+
+def command_programs(command: str) -> list[str]:
+    """The program of every part of a command line (`npm i && node x.js` is `npm`, `node`)."""
+    return [program for program in (_segment_program(part) for part in _split_top_level(command)) if program]
+
+
+# What looks at things and changes nothing: the commands that need no question even when the person asked to be asked about commands.
+READ_ONLY_PROGRAMS = {"ls", "dir", "cat", "type", "echo", "pwd", "cd", "head", "tail", "wc", "grep", "rg", "which", "where",
+                      "get-childitem", "get-content", "select-string", "get-location", "test", "true", "false"}
+READ_ONLY_GIT = {"status", "diff", "log", "show", "branch", "rev-parse", "remote", "ls-files"}
+
+
+def read_only(command: str) -> bool:
+    """Whether every part of `command` only looks at things."""
+    parts = _split_top_level(command)
+    if not parts:
+        return False
+    for part in parts:
+        program = _segment_program(part)
+        if program == "git":
+            words = part.split()
+            sub = next((w for w in words[1:] if not w.startswith("-")), "")
+            if sub not in READ_ONLY_GIT:
+                return False
+        elif program not in READ_ONLY_PROGRAMS:
+            return False
+    return True
+
+
+def tools_unsupported(exc: Exception) -> bool:
+    """True for an Ollama error whose message says the model can't take tools.
+
+    Duck-typed on the exception's shape rather than `isinstance(exc,
+    ollama.ResponseError)`, so this file does not need to import `ollama`
+    just for this one check, and callers in either package (this one, or
+    `server_modules`, which already depends on it) can use it the same way.
+    """
+    return (type(exc).__name__ == "ResponseError"
+            and getattr(exc, "status_code", None) == 400
+            and "tool" in str(getattr(exc, "error", "") or exc).lower())
+
+
+def describe_call(name: str, args: dict[str, Any]) -> str:
+    """A short human label for a tool call, e.g. `read_file(srs/spec.md)`.
+
+    Used only for logging a *failed* call to the studio's activity feed —
+    the success path already has its own per-tool phrasing ("Listed X",
+    "Read X (N lines)", ...). Without this, a WARN line for a failure was
+    just the bare exception text ("Tool error: Not a directory") with no
+    way to tell which call produced it, even though the model recovers on
+    its own next turn.
+    """
+    if name in ("list_files", "write_file", "replace_text"):
+        return f"{name}({args.get('path') or '.'})"
+    if name == "read_file":
+        return f"read_file({args.get('path') or ''})"
+    if name == "search_text":
+        return f'search_text("{args.get("query") or ""}", {args.get("path") or "."})'
+    if name == "run_command":
+        return f"run_command({str(args.get('command') or '')[:80]})"
+    if name == "web_search":
+        return f'web_search("{args.get("query") or ""}")'
+    if name == "web_fetch":
+        return f"web_fetch({args.get('url') or ''})"
+    if name == "browser_inspect":
+        return f"browser_inspect({args.get('url') or 'managed preview'}, {args.get('viewport') or 'desktop'})"
+    if name == "screenshot":
+        return f"screenshot({args.get('target') or 'managed preview'}, {args.get('viewport') or 'desktop'})"
+    return f"{name}({', '.join(f'{k}={v!r}' for k, v in args.items())})"
 
 
 def _schema(name: str, description: str, properties: dict, required: list[str]) -> dict:
@@ -44,20 +329,40 @@ TOOL_SCHEMAS = [
             {"query": {"type": "string"}, "max_results": {"type": "integer"}}, ["query"]),
     _schema("web_fetch", "Fetch a web page through Ollama. Local Ollama needs no API key.",
             {"url": {"type": "string"}}, ["url"]),
+    _schema("browser_inspect", "Open one local running app page in a real browser. Returns rendered text, layout/accessibility findings (including elements that overflow the viewport) and saves a screenshot for UI review. Use desktop and mobile before declaring a UI complete; it never clicks, types, signs in or navigates away from the local preview.",
+            {"url": {"type": "string", "description": "Optional http://127.0.0.1 or http://localhost preview URL. Studio agents default to their managed preview."},
+             "viewport": {"type": "string", "enum": ["desktop", "mobile"], "description": "desktop (1440px) or mobile (390px)"}}, []),
+    _schema("screenshot", "Take a silent screenshot of one page and, when your model can look at pictures, see it: a page of the prototype (its file name such as dashboard.html, or its route such as /dashboard), an HTML file in the workspace, or a local preview URL (http://localhost...). Use it to judge how a page really looks - layout, spacing, overlap, clipped or unreadable text, contrast, broken images, the mobile layout - instead of guessing from the code, and check desktop and mobile. It never clicks, types or leaves the page; a signed-in prototype page is shown signed in as a demo role that can open it. A model that cannot look at pictures only gets the file saved: use browser_inspect for layout facts instead.",
+            {"target": {"type": "string", "description": "A prototype page (dashboard.html or /dashboard), an HTML file in the workspace, or a local preview URL. Empty: the managed preview."},
+             "viewport": {"type": "string", "enum": ["desktop", "mobile"], "description": "desktop (1440px wide) or mobile (390px wide)"},
+             "role": {"type": "string", "description": "Optional: the demo role or email to show a signed-in prototype page as."}}, []),
 ]
 
 
 class WorkspaceTools:
     def __init__(self, root: Path, client: Any, approve: Callable[[str], bool], shell: str | None = None,
                  web_host: str = "http://localhost:11434", use_local_web: bool = True,
-                 protected_app_root: Path | None = None):
+                 protected_app_root: Path | None = None, mcp: MCPManager | None = None):
         self.root = root.resolve()
         self.client = client
         self.approve = approve
         self.shell = shell or ("powershell" if os.name == "nt" else "/bin/sh")
         self.web_host = web_host.rstrip("/")
         self.use_local_web = use_local_web
-        self.source_guard = SourceGuard(protected_app_root) if protected_app_root else None
+        # Only a workspace inside the app can reach the app's own source by a relative path; a project
+        # folder elsewhere (C:\Projects\shop) cannot, and guarding it only risks undoing the app's own updates.
+        self.source_guard = (SourceGuard(protected_app_root)
+                             if protected_app_root and self.root.is_relative_to(Path(protected_app_root).resolve())
+                             else None)
+        self.mcp = mcp
+        # A host that asks the person before an edit or a command (the studio's permission modes) sets this: it is given what the
+        # agent wants to do ({"kind": "edit" | "command", ...}) and returns "" to go ahead, else what to tell the model. Without
+        # it `approve` is asked, and a command that is not a usual one is refused.
+        self.permission: Callable[[dict[str, Any]], str] | None = None
+        # Pictures the screenshot tool took, until the agent has shown them to the model (once), and whether this
+        # model can look at pictures at all (the studio sets it from what Ollama says of the model).
+        self._pictures: list[tuple[str, bytes]] = []
+        self.sees_pictures: Callable[[], bool] = lambda: False
 
     def _local_web_request(self, endpoint: str, payload: dict[str, Any]) -> str:
         response = httpx.post(f"{self.web_host}/api/experimental/{endpoint}",
@@ -73,10 +378,37 @@ class WorkspaceTools:
 
     def execute(self, name: str, args: dict[str, Any]) -> str:
         try:
-            method = getattr(self, f"tool_{name}", None)
-            if method is None or name not in {s["function"]["name"] for s in TOOL_SCHEMAS}:
-                raise ValueError(f"Unknown tool: {name}")
-            return str(method(**args))[:MAX_OUTPUT]
+            def invoke() -> str:
+                if self.mcp is not None and self.mcp.is_mcp_tool(name):
+                    return self.mcp.call(name, args)[:MAX_OUTPUT]
+                method = getattr(self, f"tool_{name}", None)
+                if method is None or name not in {s["function"]["name"] for s in TOOL_SCHEMAS}:
+                    raise ValueError(f"Unknown tool: {name}")
+                return str(method(**args))[:MAX_OUTPUT]
+
+            stop_requested = getattr(self, "stop_requested", None)
+            if not callable(stop_requested):
+                return invoke()
+            if stop_requested():
+                raise InterruptedError("the run was stopped")
+            done = threading.Event()
+            answer: dict[str, Any] = {}
+
+            def worker() -> None:
+                try:
+                    answer["value"] = invoke()
+                except Exception as exc:  # noqa: BLE001 - re-raised on the calling agent thread
+                    answer["error"] = exc
+                finally:
+                    done.set()
+
+            threading.Thread(target=worker, name=f"tool:{name}", daemon=True).start()
+            while not done.wait(0.05):
+                if stop_requested():
+                    raise InterruptedError("the run was stopped")
+            if "error" in answer:
+                raise answer["error"]
+            return str(answer.get("value") or "")[:MAX_OUTPUT]
         except Exception as exc:
             return f"Tool error: {exc}"
 
@@ -97,23 +429,35 @@ class WorkspaceTools:
 
     def tool_list_files(self, path: str = ".") -> str:
         directory = self._path(path)
+        if not directory.exists():
+            parent = directory.parent
+            nearby = (", ".join(sorted(p.name for p in parent.iterdir()))[:300]
+                      if parent.is_dir() else "")
+            raise ValueError(f"{path!r} does not exist" +
+                             (f" - {parent.relative_to(self.root) or '.'} has: {nearby}" if nearby else ""))
         if not directory.is_dir():
-            raise ValueError("Not a directory")
+            raise ValueError(f"{path!r} is a file, not a directory - use read_file instead")
         entries = sorted(directory.iterdir(), key=lambda p: p.name.lower())[:200]
         return "\n".join(("dir  " if p.is_dir() else "file ") + str(p.relative_to(self.root)) for p in entries)
 
     def tool_read_file(self, path: str, start_line: int = 1, end_line: int = 0) -> str:
-        if start_line < 1 or end_line < 0 or (end_line and end_line < start_line):
-            raise ValueError("Invalid line range")
+        if start_line < 1:
+            raise ValueError(f"start_line must be 1 or more, got {start_line}")
+        if end_line < 0:
+            raise ValueError(f"end_line must be 0 (meaning \"to the end\") or a positive line number, got {end_line}")
+        if end_line and end_line < start_line:
+            raise ValueError(f"end_line ({end_line}) must be >= start_line ({start_line})")
         file = self._path(path)
         if not file.is_file():
-            raise ValueError("Not a file")
+            raise ValueError(f"{path!r} is not a file" + (" (it's a directory - use list_files)" if file.is_dir() else " - it does not exist"))
         if file.stat().st_size > 2_000_000:
             raise ValueError("File is too large (2 MB limit)")
         raw = file.read_bytes()
         encoding = ("utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else
                     "utf-8-sig" if raw.startswith(b"\xef\xbb\xbf") else "utf-8")
         lines = raw.decode(encoding).splitlines()
+        if start_line > len(lines):
+            raise ValueError(f"start_line ({start_line}) is past the end of the file, which has {len(lines)} lines")
         selected = lines[start_line - 1:end_line or None]
         return "\n".join(f"{i}: {line}" for i, line in enumerate(selected, start_line))[:MAX_READ]
 
@@ -140,10 +484,19 @@ class WorkspaceTools:
                 continue
         return "\n".join(hits) or "No matches"
 
+    def _permitted(self, action: dict[str, Any], question: str) -> str:
+        """"" when the action may go ahead, else what to tell the model."""
+        if self.permission is None:
+            return "" if self.approve(question) else "Denied by user"
+        return self.permission(action) or ""
+
     def tool_write_file(self, path: str, content: str) -> str:
         file = self._path(path)
-        if not self.approve(f"Write {file} ({len(content)} characters)?"):
-            return "Denied by user"
+        denied = self._permitted({"kind": "edit", "file": file.relative_to(self.root).as_posix(),
+                                  "detail": f"{len(content)} characters", "write": True},
+                                 f"Write {file} ({len(content)} characters)?")
+        if denied:
+            return denied
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_text(content, encoding="utf-8")
         return f"Wrote {file.relative_to(self.root)}"
@@ -155,48 +508,71 @@ class WorkspaceTools:
         content = file.read_text(encoding="utf-8")
         if content.count(old) != 1:
             raise ValueError(f"Expected exactly one match; found {content.count(old)}")
-        if not self.approve(f"Edit {file} (replace {len(old)} characters)?"):
-            return "Denied by user"
+        denied = self._permitted({"kind": "edit", "file": file.relative_to(self.root).as_posix(),
+                                  "detail": f"replace {len(old)} characters", "write": False},
+                                 f"Edit {file} (replace {len(old)} characters)?")
+        if denied:
+            return denied
         file.write_text(content.replace(old, new, 1), encoding="utf-8")
         return f"Edited {file.relative_to(self.root)}"
 
     def tool_run_command(self, command: str, timeout_seconds: int = 600) -> str:
         if not command.strip():
             raise ValueError("Empty command")
+        level, why, program = command_check(command)
+        if level and self.permission is None:
+            raise ValueError(f"Command blocked: {why}")
         # A generated app may own one or more Node processes. Killing every
         # `node.exe` also kills the Studio, unrelated previews and the build
         # itself. Commands must target a known PID when cleanup is needed.
         if ("taskkill" in command.lower() and "/im" in command.lower()
                 and "node.exe" in command.lower()) or "stop-process -name node" in command.lower():
             raise ValueError("Do not terminate every node.exe process. Target a known child PID instead.")
-        server_command = any(token in command.lower() for token in
-                             ("next dev", "next start", "npm run dev", "npm run start", "start /b"))
+        starts_server = server_command(command)
         # The Studio has one managed preview process and takes care of its
         # port, environment and lifecycle.  Letting an agent run a server in a
         # foreground terminal always looks successful ("Ready in 439ms") but
         # never exits, consuming the build turn until it times out.
-        if server_command and getattr(self, "managed_preview", False):
+        if starts_server and getattr(self, "managed_preview", False):
             raise ValueError("Do not run a development or production server from the agent. "
                              "The Studio starts the managed preview automatically after the build.")
-        if not self.approve(f"Run in {self.root}: {command} ?"):
-            return "Denied by user"
-        timeout = min(max(int(timeout_seconds), 1), MAX_COMMAND_SECONDS)
-        if server_command:
+        if getattr(self, "studio_runs_e2e", False) and whole_e2e_suite(command):
+            raise ValueError(E2E_SUITE_REFUSED)
+        denied = self._permitted({"kind": "command", "command": command, "level": level, "why": why, "program": program},
+                                 f"Run in {self.root}: {command} ?")
+        if denied:
+            return denied
+        ceiling = RELEASE_COMMAND_SECONDS if getattr(self, "deploying", False) and _RELEASE_COMMAND.search(command) \
+            else MAX_COMMAND_SECONDS
+        timeout = min(max(int(timeout_seconds), 1), ceiling)
+        if starts_server:
             timeout = min(timeout, SERVER_COMMAND_SECONDS)
-        shell_args = [self.shell, "-NoProfile", "-Command", command] if os.name == "nt" else [self.shell, "-c", command]
+        if os.name != "nt":
+            shell_args = [self.shell, "-c", command]
+        elif "powershell" in Path(self.shell).name.lower() or "pwsh" in Path(self.shell).name.lower():
+            shell_args = [self.shell, "-NoProfile", "-Command", POWERSHELL_HIDE_START + command]
+        else:
+            shell_args = [self.shell, "-NoProfile", "-Command", command]
         before = self.source_guard.snapshot() if self.source_guard else None
         output = ""
         output_parts: list[str] = []
         process: subprocess.Popen | None = None
         timed_out = False
+        stopped_at = 0.0
         exit_code = 1
+        # The host can ask a running command to stop (the Stop button): it is checked while the command runs,
+        # so Stop does not wait for a build or a test run to finish on its own.
+        stop_requested = getattr(self, "stop_requested", None)
 
         def append(text: str) -> None:
             if not text:
                 return
+            clean = _ANSI.sub("", text.replace("\r", ""))
+            if not clean:
+                return
             used = sum(len(part) for part in output_parts)
             if used < MAX_OUTPUT:
-                output_parts.append(text[:MAX_OUTPUT - used])
+                output_parts.append(clean[:MAX_OUTPUT - used])
 
         def stop_tree(child: subprocess.Popen) -> None:
             if child.poll() is not None:
@@ -206,17 +582,31 @@ class WorkspaceTools:
                                capture_output=True, check=False,
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             else:
-                child.terminate()
+                # The command runs in its own process group, so the shell's children (npm, node, a test
+                # runner) stop with it instead of holding the output open after the shell is gone.
+                try:
+                    os.killpg(child.pid, signal.SIGTERM)
+                except OSError:
+                    child.terminate()
                 try:
                     child.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    child.kill()
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except OSError:
+                        child.kill()
 
         try:
             process = subprocess.Popen(shell_args, cwd=self.root, stdout=subprocess.PIPE,
                                        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                       text=True, errors="replace",
+                                       # A child's stdout is UTF-8 (npm/Next.js/Node all emit it once
+                                       # piped, not a TTY) regardless of the Windows console's own active
+                                       # code page. `text=True` without this decoded with that code page
+                                       # instead - every box-drawing/checkmark character npm and Next.js
+                                       # print came out as mojibake ("â–²" for "▲", "Æ’" for "ƒ").
+                                       text=True, encoding="utf-8", errors="replace",
                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                                       start_new_session=os.name != "nt",
                                        env=getattr(self, "command_env", None))
             self.command_started(command, timeout)
             lines: queue.Queue[str | None] = queue.Queue()
@@ -231,7 +621,16 @@ class WorkspaceTools:
             started = time.monotonic()
             heartbeat = 0
             reader_done = False
+            exited_at = 0.0
             while process.poll() is None or not reader_done:
+                if stopped_at and process.poll() is not None and time.monotonic() - stopped_at > 2:
+                    break  # stopped: a grandchild still holding the output open is not waited for
+                if process.poll() is not None:
+                    exited_at = exited_at or time.monotonic()
+                    if not reader_done and time.monotonic() - exited_at > OUTPUT_GRACE_SECONDS:
+                        append("(The command has finished, but a process it started in the background still holds its output "
+                               "open, so nothing more is read from it.)\n")
+                        break
                 try:
                     line = lines.get(timeout=0.25)
                     if line is None:
@@ -241,6 +640,11 @@ class WorkspaceTools:
                         self.command_output(line)
                 except queue.Empty:
                     pass
+                if (not stopped_at and callable(stop_requested) and stop_requested()
+                        and process.poll() is None):
+                    stopped_at = time.monotonic()
+                    stop_tree(process)
+                    append("Stopped: the run was stopped, and this command's process tree with it.\n")
                 elapsed = int(time.monotonic() - started)
                 if elapsed >= timeout and process.poll() is None:
                     timed_out = True
@@ -252,12 +656,21 @@ class WorkspaceTools:
             exit_code = process.wait()
             self.command_finished(command, exit_code, timed_out)
             output = f"exit_code={exit_code}\n" + "".join(output_parts)
+        except BaseException:
+            # Interrupted while it ran (Ctrl+C in the terminal): its own process group would outlive us.
+            if process is not None:
+                stop_tree(process)
+            raise
         finally:
             if self.source_guard and before is not None:
                 changed = self.source_guard.restore(before)
                 if changed:
                     output = (output + "\nProtected CLI source changes were reverted: " +
                               ", ".join(changed))[:MAX_OUTPUT]
+                elif self.source_guard.left_alone:
+                    output = (output + "\nThe app's own repository moved to a new commit while this command ran "
+                              "(a pull or checkout), so its changed files were left as they are: " +
+                              ", ".join(self.source_guard.left_alone[:20]))[:MAX_OUTPUT]
         return output[:MAX_OUTPUT]
 
     def tool_web_search(self, query: str, max_results: int = 3) -> str:
@@ -274,3 +687,54 @@ class WorkspaceTools:
             return self._local_web_request("web_fetch", {"url": url})
         response = self.client.web_fetch(url=url)
         return json.dumps(response.model_dump(), ensure_ascii=False)[:MAX_OUTPUT]
+
+    def take_images(self) -> list[tuple[str, bytes]]:
+        """The pictures the last tool calls took for the model to look at, as (label, PNG bytes); each is handed out once."""
+        pictures, self._pictures = self._pictures, []
+        return pictures
+
+    def _take_picture(self, target: str, viewport: str, role: str, out: Path) -> Path:
+        """Photograph `target` into `out`: a local preview URL, or an HTML file in the workspace. (The studio also knows the
+        prototype's pages, by file name and by route.)"""
+        stop_requested = getattr(self, "stop_requested", None)
+        cancelled = stop_requested if callable(stop_requested) else None
+        if target.lower().startswith("http"):
+            return (screenshots.shoot(screenshots.local_url(target), out, viewport, cancelled=cancelled)
+                    if cancelled else screenshots.shoot(screenshots.local_url(target), out, viewport))
+        page = self._path(target)
+        if page.suffix.lower() not in {".html", ".htm"} or not page.is_file():
+            raise ValueError(f"{target} is not an HTML file in the workspace, a prototype page or a local preview URL")
+        return (screenshots.shoot(page, out, viewport, cancelled=cancelled)
+                if cancelled else screenshots.shoot(page, out, viewport))
+
+    def tool_screenshot(self, target: str = "", viewport: str = "desktop", role: str = "") -> str:
+        """A silent screenshot, kept under .agentforge/qa/shots and, for a model that can look at pictures, shown to it."""
+        choice = str(viewport or "desktop").strip().lower()
+        if choice not in screenshots.VIEWPORTS:
+            raise ValueError("viewport must be desktop or mobile")
+        target = str(target or "").strip() or getattr(self, "browser_url", lambda: "")()
+        if not target:
+            raise ValueError("Say which page to photograph: a prototype page, an HTML file, or a local preview URL.")
+        digest = hashlib.sha256(f"{target}|{choice}|{role}".encode("utf-8")).hexdigest()[:12]
+        relative = Path(".agentforge") / "qa" / "shots" / f"screenshot-{choice}-{digest}.png"
+        out = self._take_picture(target, choice, str(role or "").strip(), self.root / relative)
+        seen = bool(self.sees_pictures())
+        if seen:
+            self._pictures.append((f"{target} ({choice})", out.read_bytes()))
+        return json.dumps({
+            "saved": relative.as_posix(), "target": target, "viewport": choice, "shown_to_you": seen,
+            "note": ("The screenshot is attached to the next message: look at it." if seen else
+                     "This model cannot look at pictures, so the screenshot was only saved for the person; "
+                     "use browser_inspect for the page's layout facts."),
+        }, ensure_ascii=False)
+
+    def tool_browser_inspect(self, url: str = "", viewport: str = "desktop") -> str:
+        """Render a local preview without interacting with it or the outside web."""
+        default_url = getattr(self, "browser_url", lambda: "")()
+        if not url and not default_url:
+            raise ValueError("No managed local preview is running. Start the Studio preview and try again.")
+        stop_requested = getattr(self, "stop_requested", None)
+        result = (inspect_local_page(self.root, url or default_url, viewport, cancelled=stop_requested)
+                  if callable(stop_requested)
+                  else inspect_local_page(self.root, url or default_url, viewport))
+        return json.dumps(result, ensure_ascii=False)

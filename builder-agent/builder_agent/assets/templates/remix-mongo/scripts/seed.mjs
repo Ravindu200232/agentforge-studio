@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import { existsSync, readFileSync } from 'node:fs';
 
+// Read MONGODB_URI from process.env or local env files
 let mongoUri = process.env.MONGODB_URI;
 if (!mongoUri) {
   for (const file of ['.env.local', '.env']) {

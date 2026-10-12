@@ -37,7 +37,12 @@ export function createApp(config) {
 
   // Readiness is about this process. It must not report the whole system
   // healthy, because a 200 here says nothing about the services behind it.
-  app.get('/ready', (req, res) => res.json({ ok: true, clientBuilt: existsSync(clientDist) }));
+  // `/health` is the same check under the name every package in this stack
+  // uses (each service has its own `/health`), so one container healthcheck
+  // command works for the gateway and for every service alike.
+  const ready = (req, res) => res.json({ ok: true, clientBuilt: existsSync(clientDist) });
+  app.get('/ready', ready);
+  app.get('/health', ready);
 
   app.use('/api/products', proxyTo(config.services.catalog));
 

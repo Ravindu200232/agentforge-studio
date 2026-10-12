@@ -9,6 +9,24 @@ Read this page together with the page for the chosen AWS target (`aws-ec2` or `a
 `core/SKILL.md`. It holds what both AWS targets share. Everything is done with the `aws` command line
 tool the customer signed in to; `aws <service> <command> help` is the truth for the installed version.
 
+## Fast path (shared by both AWS targets)
+
+AWS spends most of its time creating things, so the work is arranged around the waits:
+
+- One profile and region on every command (section 1) and `aws sts get-caller-identity` once.
+- **One stack that holds everything**, the CloudFront distribution included, made in a single call. Never a second
+  update just to add HTTPS afterwards. Write the template once from the target page's list, validate it once and
+  run it; do not redesign it between attempts. A redeploy updates the stack that exists.
+- Start the stack with `aws cloudformation create-stack` (it returns at once) and, while it creates, do the local
+  work (build the artifact, zip the source, write the secrets); then `aws cloudformation wait
+  stack-create-complete`.
+- The wait budget is fifteen minutes for the stack and CloudFront together, checked once a minute. A distribution
+  still deploying at the end of it is reported as the open item with its domain name, not waited on forever.
+- The proof is the smoke proof (`core` section 10) through the CloudFront address. The origin's own checks (target
+  health, SSM) are for a request that failed, not for every deployment.
+- The cheapest and fastest default is EC2; recommend ECS only for a stack that needs containers
+  (`mern-microservices`) or when the customer asks for it.
+
 ## 1. Identity, profile, region
 
 - `aws --version`. The machine facts in the plan name the profile the customer signed in with; put
@@ -94,10 +112,10 @@ The plan states which and asks when the customer has to change their database's 
 
 ## 8. Proving it live
 
-Follow `core` section 10 against the HTTPS address (CloudFront or the customer's domain), and also
-check the origin's own health route through the platform (target group health, or the instance's
-local health request through SSM). A response served by the CDN's cache is not proof of the origin:
-call a dynamic route with a cache-busting query string.
+Run the smoke proof of `core` section 10 against the HTTPS address (CloudFront or the customer's domain). A
+response served by the CDN's cache is not proof of the origin: call the dynamic read with a cache-busting
+query string. The origin's own checks (target group health, the instance's health request through SSM) are for
+a request that failed.
 
 ## 9. Domain
 
@@ -126,6 +144,8 @@ times each one's pool), and put a cost alert on the account (`aws budgets create
 asked for one.
 
 ## 11. Questions to ask the customer
+
+Take these as defaults, not as questions: `core` section 12 caps a whole deployment at three questions, so most of what follows is a choice to state in the plan, not to ask.
 
 These are prompts, not a script: write each question yourself for this project and ask only what the
 project, an earlier answer and the pages do not already settle (see `core` section 12), together with the

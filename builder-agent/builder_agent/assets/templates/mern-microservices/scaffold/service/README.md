@@ -9,7 +9,9 @@ Copy this whole directory to `packages/<name>` to add a service, then:
    line in `packages/gateway/src/app.js`.
 
 `scripts/dev-all.mjs` finds the new service on its own — it looks for
-`packages/*/src/server.js` and needs no edit.
+`packages/*/src/server.js` and needs no edit. Neither does the root `Dockerfile`: build this service's
+own image with `docker build --build-arg SERVICE=packages/<name> .` (done in the cloud by the
+deployment flow, never locally) to run it on its own instance.
 
 This directory is not a workspace and is never installed or run. That is why
 the two files above carry a `.tpl` suffix: without it npm would try to install

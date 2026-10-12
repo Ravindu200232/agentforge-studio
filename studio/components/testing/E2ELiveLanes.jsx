@@ -19,7 +19,7 @@ function tone(state, ok) {
   if (state === 'step' || state === 'step_done' || state === 'journey_start') {
     return 'border-blue-500/30 bg-blue-500/5 shadow-blue-500/5'
   }
-  return 'border-black/10 bg-[#F2F0EF]/80'
+  return 'border-black/10 bg-panel/80'
 }
 
 function label(state) {

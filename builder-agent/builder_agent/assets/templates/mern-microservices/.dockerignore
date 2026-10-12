@@ -1,0 +1,14 @@
+.agentforge
+.git
+.github
+node_modules
+client/dist
+test-results
+playwright-report
+.lighthouseci
+__screenshots__
+coverage
+.env
+.env.*
+!.env.example
+*.log

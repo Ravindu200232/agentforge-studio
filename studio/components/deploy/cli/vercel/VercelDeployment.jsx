@@ -1,7 +1,7 @@
 'use client'
 
 import { Rocket } from 'lucide-react'
-import { View, Card, Facts, Flow, Table, Chips, Link, duration, tone } from '../parts'
+import { View, Card, Facts, Flow, Table, Link, duration, tone } from '../parts'
 
 /** One deployment in full: its journey from queued to live, the machine that built it, and where it is served. */
 export default function VercelDeployment({ project, item }) {

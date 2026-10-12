@@ -11,6 +11,24 @@ code (server-rendered pages, API routes, middleware) as functions. A site has a 
 Follow `core/SKILL.md` for the rules that apply to every target. `netlify <command> --help` is the
 truth for the installed version.
 
+## Fast path (about ten minutes)
+
+No local install or test. `netlify deploy --build` runs the production build on this computer, once, then uploads it
+(it can take more than ten minutes: give that one command a timeout of up to 1800 seconds). In this order, in as few calls as possible
+(the sections below are the reference for when something differs):
+
+1. `netlify --version` and `netlify status` in one call (the team is the account slug the plan names).
+2. Reuse a linked site (`.netlify/state.json`); otherwise `netlify sites:create --name <site> --account-slug <slug>`.
+   Write `netlify.toml` (section 2) only when it is missing.
+3. Every variable in one go: a dotenv file outside the project, `netlify env:import <file> --site <site-id>`, the
+   file deleted, then `netlify env:set <NAME> --secret --context production` for each secret (section 4).
+4. `netlify deploy --build --prod --site <site-id> --json`; read `url`, `deploy_id` and `logs` from the JSON. No
+   draft deploy first.
+5. The smoke proof (`core` section 10) against `url`, record (section 9), finish.
+
+Skip: draft deploys, deploy previews and branch deploys, forms, identity, a domain, reading function logs while the
+checks hold.
+
 ## 1. Identity and account
 
 - `netlify --version`, `netlify status` (who is signed in, which team, whether a site is linked),
@@ -44,7 +62,7 @@ truth for the installed version.
 ## 3. Create or link the site
 
 - New site: `netlify sites:create --name <site-name> --account-slug <slug>` (creates an empty site
-  and links this directory). If the name is taken, ask; never invent a different one silently.
+  and links this directory). If the name is taken, add a short suffix of four lowercase letters or digits (`<name>-x7k2`) and say so in the result; the person is not stopped to choose a name.
 - Existing site: `netlify link --name <site-name>` or `--id <site-id>`.
 - Never `netlify deploy` without a linked site or `--site`; that would create anonymous deploys.
 
@@ -62,9 +80,9 @@ truth for the installed version.
 
 ## 5. Build and release
 
-- Local gate first (`core` section 7).
-- Release: `netlify deploy --build --prod --site <site-id> --json` (build in Netlify's environment
-  with the site's variables, then publish to production). Read the JSON: `deploy_id`, `deploy_url`,
+- No local gate (`core` section 0): nothing is installed or tested on this computer.
+- Release: `netlify deploy --build --prod --site <site-id> --json` (the build runs on this computer with the
+  site's variables, then the result is published to production; give it a timeout of up to 1800 seconds). Read the JSON: `deploy_id`, `deploy_url`,
   `url` (the production address), `logs`. Use a draft first (`netlify deploy --build`, no `--prod`)
   when the plan says to smoke-test before promoting; a draft URL is `https://<deploy-id>--<site>.netlify.app`.
 - If it fails, read the build log (`netlify deploy` prints it, and the deploy's log URL is in the JSON),
@@ -80,8 +98,8 @@ truth for the installed version.
 
 ## 7. Prove it live
 
-Run `core` section 10 against the production address: every route, the health route, a sign-in and a
-write/read-back through the real database, a refused request, and the function logs for errors.
+Run the smoke proof of `core` section 10 against the production address: six read-only requests at most,
+one of them a read of real data through the running application. The function logs only when one fails.
 
 ## 8. Roll back and remove
 
@@ -123,11 +141,13 @@ the data, and move to the plan whose quota is short (the customer's decision, wi
 
 ## 12. Questions to ask the customer
 
+Take these as defaults, not as questions: `core` section 12 caps a whole deployment at three questions, so most of what follows is a choice to state in the plan, not to ask.
+
 These are prompts, not a script: write each question yourself for this project and ask only what the
 project, an earlier answer and the pages do not already settle (see `core` section 12):
 
 1. Which Netlify team (account slug) should own the site (`netlify teams:list`)?
-2. What is the site called? (It becomes `<name>.netlify.app`; ask again if the name is taken.)
+2. What is the site called? (It becomes `<name>.netlify.app`; a taken name gets a short suffix, see `core`.)
 3. Which region should the functions run in (near the database)? The site's function region is a
    setting the CLI can change through `netlify api updateSite`.
 4. Should the GitHub repository be linked for continuous deployment (every push builds and publishes),

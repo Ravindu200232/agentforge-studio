@@ -90,23 +90,6 @@
       ]
     },
     {
-      "id": "supabase",
-      "name": "Supabase",
-      "group": "Pictures and files",
-      "icon": "supabase.svg",
-      "site": "https://supabase.com/dashboard/project/_/settings/api",
-      "what": "A storage bucket with public URLs. The same project can hold a database.",
-      "skill": "image-uploads",
-      "_no_signin": "Deliberate. `supabase login` hands back an account access token, which is not what this plugin needs: the fields are the project URL, its service_role key and a bucket name, and getting those from the CLI is login, then projects list, then api-keys for whichever ref the person picks. A four-step flow with a choice in the middle is not the one-command-one-credential shape vercel and netlify have, so it is its own piece of work rather than a line in this file.",
-      "modes": [
-        {
-          "choice": "supabase",
-          "label": "Storage bucket",
-          "hint": "Create the bucket first — the app will not."
-        }
-      ]
-    },
-    {
       "id": "cloudinary",
       "name": "Cloudinary",
       "group": "Pictures and files",

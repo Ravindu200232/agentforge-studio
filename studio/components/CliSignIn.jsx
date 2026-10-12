@@ -1,0 +1,222 @@
+'use client'
+
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Check, ExternalLink, Loader2 } from 'lucide-react'
+import { api } from '@/lib/api'
+import { Button, Input } from './ui'
+
+/**
+ * Signs in to a provider through its own command line tool (`cli_signin.py`: `gh`, `vercel`,
+ * `netlify`, `az`, `aws`, `supabase`, `atlas`), the same shape for every one of them. Interactive tools
+ * run in a pseudo-terminal, so their official browser sign-in works inside the desktop app too.
+ *
+ * Says whether the tool is installed (and how to install it if not), who it is already signed in as
+ * (which can be used as it is, with no browser), and otherwise runs its login: the code to type and
+ * the link to open appear here, and the sign-in finishes on its own once approved in the browser.
+ */
+export default function CliSignIn({ provider, onDone, region = '', label = '', add = false }) {
+  const [tool, setTool] = useState(undefined)        // undefined: asking; null: could not ask
+  const [state, setState] = useState(null)           // the running sign-in: { flow_id, title }
+  const [seen, setSeen] = useState(null)             // { code, uri } printed while it waits
+  const [busy, setBusy] = useState('')
+  const [err, setErr] = useState('')
+  const [copied, setCopied] = useState(false)
+  const [notice, setNotice] = useState('')         // what the server says about what it kept
+  const [answer, setAnswer] = useState('')
+  const [sending, setSending] = useState(false)
+  const stop = useRef(false)
+  const opened = useRef('')
+
+  const look = useCallback((fresh = false) => api.cliSigninAvailable(provider, fresh)
+    .then(d => setTool(d?.providers?.[provider] || null))
+    .catch(() => setTool(null)), [provider])
+
+  useEffect(() => { stop.current = false; look(); return () => { stop.current = true } }, [look])
+
+  async function finished(answer) {
+    setState(null); setSeen(null); setBusy(''); setAnswer(''); setNotice(answer?.note || '')
+    await look(true)
+    onDone?.(answer)
+  }
+
+  async function signIn() {
+    setBusy('login'); setErr(''); setSeen(null); setAnswer(''); stop.current = false; opened.current = ''
+    let started
+    try {
+      started = await api.cliSigninStart(provider, region, add)
+      setState(started)
+      if (started.verification_uri) setSeen({ code: '', uri: started.verification_uri })
+      const deadline = Date.now() + 10 * 60 * 1000
+      while (!stop.current && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 2000))
+        const answer = await api.cliSigninPoll(started.flow_id)
+        if (answer.status === 'ready') return finished(answer)
+        if (answer.user_code || answer.verification_uri || answer.prompt) {
+          setSeen(previous => ({
+            code: answer.user_code || previous?.code || '',
+            uri: answer.verification_uri || previous?.uri || '',
+            prompt: answer.prompt || '',
+          }))
+          // The tool opens its own browser tab for some providers; for the others it is opened here, once.
+          if (answer.verification_uri && !answer.opens_browser && opened.current !== answer.verification_uri) {
+            opened.current = answer.verification_uri
+            window.open(answer.verification_uri, '_blank', 'noopener,noreferrer')
+          }
+        }
+      }
+      if (!stop.current) setErr('That sign-in did not finish in time. Start it again.')
+    } catch (e) {
+      if (!stop.current) setErr(e.message)
+    }
+    if (started?.flow_id) { try { await api.cliSigninCancel(started.flow_id) } catch { } }
+    setState(null); setSeen(null); setBusy(''); setAnswer('')
+  }
+
+  async function submitAnswer(event) {
+    event.preventDefault()
+    if (!state?.flow_id || !answer.trim() || sending) return
+    setSending(true); setErr('')
+    try {
+      await api.cliSigninInput(state.flow_id, answer.trim())
+      setAnswer('')
+      setSeen(previous => previous ? { ...previous, prompt: '' } : previous)
+    } catch (e) { setErr(e.message) } finally { setSending(false) }
+  }
+
+  async function useExisting() {
+    setBusy('existing'); setErr('')
+    try {
+      await finished(await api.cliSigninUseExisting(provider, region))
+    } catch (e) { setErr(e.message); setBusy('') }
+  }
+
+  async function cancel() {
+    stop.current = true
+    if (state?.flow_id) { try { await api.cliSigninCancel(state.flow_id) } catch { } }
+    setBusy(''); setState(null); setSeen(null); setAnswer('')
+  }
+
+  async function copyInstall() {
+    try {
+      await navigator.clipboard.writeText(String(tool.install).split('  (')[0])
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch { }
+  }
+
+  if (tool === undefined) {
+    return <p className="flex items-center gap-1.5 text-[10.5px] text-muted2"><Loader2 className="size-3 animate-spin" /> Looking for the command line tool…</p>
+  }
+  if (tool === null) {
+    return <p className="text-[10.5px] text-muted2">Could not ask the server about the command line tool.</p>
+  }
+
+  const title = tool.title
+  if (!tool.installed) {
+    return (
+      <div className="rounded-2xl bg-bg/60 p-4">
+        <p className="text-[11px] text-muted">
+          The {title} command line tool is not installed on this computer. Install it, then check again — signing in
+          then takes one click.
+        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <code className="rounded-md bg-black/20 px-2 py-1 font-mono text-[11px] text-ink">{tool.install}</code>
+          <Button size="sm" variant="soft" onClick={copyInstall}>{copied ? <Check className="size-3" /> : null}{copied ? 'Copied' : 'Copy'}</Button>
+          <Button size="sm" onClick={() => { setTool(undefined); look(true) }}>Check again</Button>
+        </div>
+      </div>
+    )
+  }
+
+  const who = tool.identity?.account
+  const missing = tool.identity?.missing_scopes || []
+  const running = busy === 'login'
+  const usable = tool.signed_in && missing.length === 0
+  const flowCard = seen && (
+    <div className="rounded-2xl bg-bg/60 p-4">
+      {seen.code ? (
+        <>
+          <p className="text-[11px] text-muted">Enter this code in the browser, then leave this open — it finishes on its own.</p>
+          <p className="my-1.5 font-mono text-[18px] font-bold tracking-[0.3em] text-ink">{seen.code}</p>
+        </>
+      ) : (
+        <p className="text-[11px] text-muted">
+          {tool.opens_browser ? 'A browser tab opened — approve the sign-in there.' : 'Open the link and approve the sign-in.'}
+        </p>
+      )}
+      {seen.uri && (
+        <a className="inline-flex items-center gap-1 break-all text-[11px] text-accent hover:underline" target="_blank"
+           rel="noreferrer" href={seen.uri}>
+          {seen.code ? seen.uri : 'Open the sign-in page'} <ExternalLink className="size-2.5 shrink-0" />
+        </a>
+      )}
+      {seen.prompt === 'verification_code' && (
+        <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={submitAnswer}>
+          <Input className="min-w-48 flex-1" value={answer} onChange={event => setAnswer(event.target.value)}
+                 placeholder="Paste the Supabase verification code" autoComplete="one-time-code" autoFocus />
+          <Button type="submit" size="sm" variant="primary" disabled={!answer.trim() || sending}>
+            {sending && <Loader2 className="size-3 animate-spin" />} Continue
+          </Button>
+        </form>
+      )}
+      {add && (
+        <p className="mt-1.5 text-[10.5px] leading-snug text-muted2">
+          Already signed in to another {title} account in your browser? Sign out of it there first, or open this link in
+          a private window, so the new account is the one you approve.
+        </p>
+      )}
+      <p className="mt-2 flex items-center gap-1.5 text-[10.5px] text-muted2"><Loader2 className="size-3 animate-spin" />
+        {seen.prompt === 'verification_code' ? 'Waiting for the verification code…' : 'Waiting for you to approve it…'}
+      </p>
+    </div>
+  )
+
+  // Signing in as a further account: the one signed in stays signed in, so this is only the button and the code.
+  if (add) {
+    return (
+      <div className="space-y-2">
+        {flowCard}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="soft" disabled={Boolean(busy)} onClick={signIn}>
+            {running && <Loader2 className="size-3 animate-spin" />} Add another account
+          </Button>
+          {running && <Button size="sm" variant="soft" onClick={cancel}>Cancel</Button>}
+        </div>
+        {err && <p className="text-[10.5px] text-deep">{err}</p>}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted">
+        <Check className="size-3 text-ok" />
+        {label || `${title} command line tool`} found
+        {tool.signed_in && <> · signed in as <b className="text-ink">{who}</b></>}
+        {tool.identity?.subscription && <> · {tool.identity.subscription}</>}
+      </p>
+      {missing.length > 0 && (
+        <p className="rounded-xl bg-warn-tint px-3 py-2 text-[10.5px] text-ink">
+          This sign-in lacks the <b>{missing.join(', ')}</b> permission the deployment needs to push its workflows.
+          Add it below; the browser asks you to approve it once.
+        </p>
+      )}
+      {flowCard}
+      <div className="flex flex-wrap items-center gap-2">
+        {usable && !running && (
+          <Button size="sm" variant="primary" disabled={Boolean(busy)} onClick={useExisting}>
+            {busy === 'existing' && <Loader2 className="size-3 animate-spin" />} Use this account
+          </Button>
+        )}
+        <Button size="sm" variant={usable ? 'soft' : 'primary'} disabled={Boolean(busy)} onClick={signIn}>
+          {running && <Loader2 className="size-3 animate-spin" />}
+          {missing.length > 0 ? 'Add the permission' : tool.signed_in ? 'Sign in again' : `Sign in with ${title} CLI`}
+        </Button>
+        {running && <Button size="sm" variant="soft" onClick={cancel}>Cancel</Button>}
+        {!running && <Button size="sm" variant="ghost" onClick={() => { setTool(undefined); look(true) }}>Recheck</Button>}
+      </div>
+      {notice && <p className="rounded-xl bg-tint px-3 py-2 text-[10.5px] leading-relaxed text-deep">{notice}</p>}
+      {err && <p className="text-[10.5px] text-deep">{err}</p>}
+    </div>
+  )
+}

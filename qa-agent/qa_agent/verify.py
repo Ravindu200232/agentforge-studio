@@ -7,17 +7,37 @@ partial screen, not an empty one.
 """
 from __future__ import annotations
 
+import json
+import re
 import time
 import threading
 from typing import Any
 
-from server_modules import bus, prompts, store
-from server_modules.session import ProjectSession, session_for
+from server_modules import bus, config, prompts, reference_staging, store
+from server_modules.qa_report import summary_counts
+from server_modules.session import ProjectSession, RunCancelled, session_for
 
 QA_DIR = "qa"
 REPORT = (QA_DIR, "report.json")
 
-LAYERS = ("build", "runtime", "unit", "contracts", "journeys", "accessibility", "load")
+
+def provenance_text(value: Any) -> str:
+    """How the results were produced, as the sentence the pages show.
+
+    The agent that writes the report sometimes records it as an object (the method and the runner files); a page that
+    shows it as it is cannot draw an object, and the whole testing view fails.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        method = str(value.get("method") or "").strip()
+        files = value.get("runner_files")
+        listed = ", ".join(str(item) for item in files) if isinstance(files, list) else ""
+        text = " ".join(part for part in (method, f"Runner files: {listed}." if listed else "") if part)
+        return text or json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return " ".join(str(item) for item in value if item)
+    return str(value) if value else ""
 
 
 def report(project: str) -> dict[str, Any]:
@@ -26,11 +46,14 @@ def report(project: str) -> dict[str, Any]:
     if not isinstance(saved, dict):
         # No Testing run yet — the build's own artifacts are still evidence.
         saved = {}
-    saved.setdefault("project", project)
+    # The id is the project's; the studio matches a report to the project open by it. An agent that writes the report
+    # often puts the app's name there instead, and the results then never show.
+    saved["project"] = project
     from .evidence import collect
     result = collect(session.workspace, saved)
+    result["project"] = project
     result.setdefault("complete", False)
-    result.setdefault("provenance", "no verification has run for this project yet")
+    result["provenance"] = provenance_text(result.get("provenance")) or "no verification has run for this project yet"
     return result
 
 
@@ -38,13 +61,25 @@ def _publish(session: ProjectSession, project: str, previous_rows: int) -> int:
     """Turn whatever the agent has written so far into studio test events."""
     current = report(project)
     # Rows derived from the build's own record are not live test results.
-    rows = [r for r in (current.get("timeline") or []) if not r.get("derived")]
+    # This file is updated live by an agent. Ignore a partial/malformed row
+    # until it becomes a complete object instead of taking down the watcher.
+    rows = [r for r in (current.get("timeline") or [])
+            if isinstance(r, dict) and not r.get("derived")]
     for row in rows[previous_rows:]:
         bus.test_result(project,
                         status=str(row.get("status") or "run"),
                         msg=str(row.get("msg") or row.get("stage") or "check"),
                         detail=str(row.get("detail") or ""))
     return len(rows)
+
+
+_RERUN = re.compile(r"\b(re-?run|run|test|check)\b.{0,40}\b(journeys?|e2e|end-to-end)\b.{0,30}\b(again|anew|fresh)\b"
+                    r"|\bre-?run\b.{0,30}\b(journeys?|e2e|end-to-end)\b", re.I | re.S)
+
+
+def rerun_asked(direction: str) -> bool:
+    """Whether the person asked for the end-to-end journeys to run again even though the app has not changed."""
+    return bool(_RERUN.search(str(direction or "")))
 
 
 def run(project: str, direction: str = "") -> dict[str, Any]:
@@ -56,9 +91,18 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
 
     session = session_for(project)
     session.begin("test", role=bus.DEVELOPER)
+    # Runner outputs have fixed filenames. Keep their previous state before a
+    # new test run can replace it, including a run started after a chat repair.
+    from .evidence import archive_results
+    archive_results(session.workspace, "Before this Testing run", "before-test-run")
     bus.test_start(project)
+    # The optional browser_inspect tool reads this managed preview page by page;
+    # it never owns a second server or sends data outside the local machine.
+    from server_modules import preview_runtime
+    preview = preview_runtime.open_preview(project)
+    if preview.get("status") not in {"starting", "running"}:
+        bus.log(project, "WARN", f"Local preview is unavailable for browser inspection: {preview.get('detail') or 'unknown reason'}")
     started = time.time()
-    seen = 0
     published = [0]
     stop_feed = threading.Event()
 
@@ -72,27 +116,57 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
     try:
         bus.phase(project, "qa:verify", "Verifying the application",
                   detail="Build, runtime, units, routes, journeys, accessibility and load.")
-        from builder_agent.scaffold import guide_context
-        stack = str(store.require(project).get("stack") or "nextjs-mongo")
-        request = prompts.load("testing/run", project=project)
-        request += "\n\n## Selected scaffold and test guides\n\n" + guide_context(stack)
+        from builder_agent.scaffold import guide_files
+        stack = str(store.require(project).get("stack") or "nextjs-supabase")
+        from server_modules.validation import build_report
+        request = prompts.load("testing/run", project=project,
+                               report_template=build_report.stage_template(session.workspace))
+        guide_paths = reference_staging.stage(session.workspace, f"{config.RECORD_DIR}/{QA_DIR}/guides",
+                                              guide_files(stack))
+        request += ("\n\n## Selected scaffold and test guides\n\nRead these yourself before planning:\n"
+                   + reference_staging.as_bullets(guide_paths))
         if direction.strip():
             request += f"\n\n## What the customer asked you to check\n\n{direction.strip()}"
+        # The end-to-end journeys are the Studio's to run (`e2e_run.py`), once: reused while the app is what they last ran on,
+        # run again only when the person asks for it.
+        from . import e2e_run
+        rerun = rerun_asked(direction)
+        request += "\n\n" + prompts.load(
+            "testing/journeys-reused" if e2e_run.current(session.workspace) and not rerun else "testing/journeys-studio").strip()
 
         # The plan already runs and records every requested layer. A second
         # agent audit repeats expensive builds/browser runs without adding UI
         # evidence, so finish from the runner-owned JSON instead.
-        result = session.run_task(request, audit=False)
+        # The journeys' screenshots are copied as the tests take them: the next test run empties Playwright's output folder.
+        from .screen_keeper import Keeper
+        with Keeper(session.workspace):
+            result = session.run_task(request, audit=False)
         stop_feed.set()
         watcher.join(timeout=2)
-        seen = _publish(session, project, published[0])
+        _publish(session, project, published[0])
 
+        # The journeys, run by the Studio: not again when this exact app already ran them, unless the person asked.
+        with Keeper(session.workspace):
+            ran = e2e_run.run(project, session, reason="test", force=rerun)
+        if session.cancelled:
+            raise RunCancelled(project)
+        # A model that can look at pictures looks at the screenshots of a run that really happened (a reused one was looked
+        # at when it ran), round by round, asking before each round after the first.
+        from . import e2e_review
+        if ran.get("status") in {"passed", "failed"}:
+            e2e_review.run(project, session)
+        if session.cancelled:
+            raise RunCancelled(project)
+
+        builder.settled_qa_report(project, session)
         final = report(project)
-        if not final.get("complete"):
-            raise ValueError("testing ended without a complete QA report")
-        summary = final.get("summary") or {}
-        failed = int(summary.get("fail") or 0)
-        store.update(project, status="tested" if not failed else "tested-with-failures")
+        journey_coverage = (((final.get("report") or {}).get("e2e") or {})
+                            .get("journeyCoverage") or {})
+        # Journeys that fail are a result of this run, never a reason to fail it or to run it again by itself.
+        journeys_failed = bool(journey_coverage.get("required")) and journey_coverage.get("status") != "passed"
+        summary = summary_counts(final)
+        failed = summary["fail"]
+        store.update(project, status="tested" if not failed and not journeys_failed else "tested-with-failures")
         store.advance(project, "test")
         bus.phase(project, "qa:verify", "Verifying the application",
                   status="complete" if not failed else "failed")
@@ -110,41 +184,26 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
             f".agentforge/qa/report.json."
             + ("" if not failed else " The failures are recorded there and are "
                "the first thing to repair."))
+        if journeys_failed:
+            bus.agent_msg(project, builder.journey_failures_message(journey_coverage), title="Journeys that failed",
+                          actions=[{"label": "Fix the failing journeys", "prompt": builder.FIX_JOURNEYS}])
         session.finish(result.get("text", "") or "Verification complete.")
+        archive_results(session.workspace, "Testing run completed", "testing-run")
         return final
+    except RunCancelled:
+        stop_feed.set()
+        watcher.join(timeout=2)
+        archive_results(session.workspace, "Testing run cancelled", "testing-run")
+        bus.test_done(project)
+        session.stage = "idle"
+        session.save_context()
+        raise
     except Exception as exc:  # noqa: BLE001
         stop_feed.set()
         watcher.join(timeout=2)
         _publish(session, project, published[0])
+        archive_results(session.workspace, "Testing run stopped with an error", "testing-run")
         bus.test_done(project)
-        session.fail(str(exc))
-        raise
-
-
-def repair(project: str, request: str = "") -> dict[str, Any]:
-    """Fix what the last run found, and prove the fix."""
-    current = report(project)
-    open_bugs = [b for b in (current.get("bugs") or []) if b.get("status") != "fixed"]
-    if not open_bugs and not request.strip():
-        return current
-
-    session = session_for(project)
-    session.begin("test-repair", role=bus.DEVELOPER)
-    try:
-        listed = "\n".join(
-            f"- [{b.get('severity', 'medium')}] {b.get('where', '')}: {b.get('what', '')}"
-            for b in open_bugs) or "(none recorded)"
-        task = (f"Repair what verification found, then prove each repair by "
-                f"re-running the check that caught it.\n\n## Open findings\n\n{listed}")
-        if request.strip():
-            task += f"\n\n## What the customer asked for\n\n{request.strip()}"
-        task += ("\n\nUpdate `.agentforge/qa/report.json` as you go: move each repaired "
-                 "finding into `resolvedBugs` and record the round in `repairs`.")
-
-        session.run_task(task, audit=False)
-        session.finish("Repairs applied.")
-        return report(project)
-    except Exception as exc:  # noqa: BLE001
         session.fail(str(exc))
         raise
 
@@ -156,9 +215,3 @@ def screenshot(project: str, path: str) -> tuple[bytes, str]:
         raise FileNotFoundError(path)
     kind = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
     return target.read_bytes(), kind.get(target.suffix.lower(), "application/octet-stream")
-
-
-def status() -> dict[str, Any]:
-    """Whether this machine can verify at all — what the studio asks on load."""
-    return {"available": True, "engine": "ollama-terminal",
-            "layers": list(LAYERS)}

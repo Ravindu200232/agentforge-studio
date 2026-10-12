@@ -38,14 +38,15 @@ def new_id() -> str:
     return f"prj_{uuid.uuid4().hex[:16]}"
 
 
-def create(idea: str, language: str = "", stack: str = "") -> dict:
+def create(idea: str, language: str = "", stack: str = "", workspace_path: str = "") -> dict:
     saved = config.settings()
+    selected_workspace = config.validate_workspace_choice(workspace_path) if workspace_path else None
     record = {
         "id": new_id(),
         "name": "",
         "idea": idea,
         "language": language or saved.get("language") or "English",
-        "stack": stack or saved.get("stack") or "nextjs-mongo",
+        "stack": stack or saved.get("stack") or "nextjs-supabase",
         "stage": "interview",
         "status": "planning",
         "created_at": time.time(),
@@ -54,12 +55,14 @@ def create(idea: str, language: str = "", stack: str = "") -> dict:
         "prototype_only": False,
         "build_available": False,
         "kept": False,
+        **({"workspace_path": str(selected_workspace)} if selected_workspace else {}),
     }
     record["name"] = record["id"]
     with _lock:
         data = _read()
         data[record["id"]] = record
         _write(data)
+    config.scaffold_workspace(record["id"])
     return record
 
 
@@ -127,6 +130,7 @@ def listing() -> list[dict]:
         "title": row.get("name") or row["id"],
         "idea": row.get("idea", "")[:300],
         "stage": row.get("stage", "interview"),
+        "stack": row.get("stack", ""),
         "status": row.get("status", "planning"),
         "created_at": row.get("created_at", 0),
         "updated_at": row.get("updated_at", 0),

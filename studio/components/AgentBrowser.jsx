@@ -94,9 +94,9 @@ export default function AgentBrowser() {
 
   return (
     <div className="absolute inset-0 z-[20] flex flex-col shadow-2xl"
-         style={{ background: bare ? (shot.bg || '#ffffff') : '#F2F0EF' }}>
+         style={{ background: bare ? (shot.bg || '#ffffff') : 'var(--bg2)' }}>
       {!bare && (
-        <div className="flex shrink-0 items-center gap-2 bg-[#F2F0EF] px-3 py-2 border-b border-black/10">
+        <div className="flex shrink-0 items-center gap-2 bg-panel px-3 py-2 border-b border-black/10">
           {['#ff5f57', '#febc2e', '#28c840'].map(colour => (
             <span key={colour} className="size-2.5 rounded-full"
                   style={{ background: colour }} />

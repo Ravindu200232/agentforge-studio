@@ -22,12 +22,12 @@ export default defineConfig({
     },
   },
   test: {
-    // jsdom is for components. Server code (loaders, actions, Mongo, auth, `jose`, `bcrypt`)
-    // must run in Node: under jsdom, `jose` rejects its keys ("payload must be an instance of
-    // Uint8Array"). Start such a file with `// @vitest-environment node`.
+    // jsdom is for components. Server code (loaders, actions, Mongo, auth, `jose`, `bcrypt`) must run
+    // in Node: under jsdom, `jose` rejects its keys ("payload must be an instance of Uint8Array")
+    // because jsdom has its own `Uint8Array`. Start such a file with `// @vitest-environment node`.
     environment: 'jsdom',
-    // The suites share one test database. In parallel, one file's `clearCollections()` deletes
-    // the rows another file is asserting on, and the failure looks like a product bug.
+    // The suites share one test database. In parallel, one file's `clearCollections()` deletes the
+    // rows another file is asserting on, and the failure looks like a product bug.
     fileParallelism: false,
     globals: true,
     // `test/helpers/fetch.js` stubs `fetch` for a test; the real one comes back after each test.

@@ -22,6 +22,11 @@ export function Button({ variant = 'ghost', size = 'md', className, ...rest }) {
           ghost: 'border border-transparent text-muted hover:bg-ink/[.06] hover:text-ink',
           accent: 'border border-transparent bg-accent text-ink hover:bg-accent',
           subtle: 'border border-line bg-panel text-ink hover:bg-raised shadow-sm',
+          // A filled, borderless secondary button: the quiet one beside a primary action.
+          soft: 'border border-transparent bg-ink/[.07] text-ink hover:bg-ink/[.12]',
+          // The main action of a form: a dark fill, no outline. (`solid` is turned into a white outlined box by
+          // globals.css, which is right elsewhere and wrong for a form with no borders.)
+          primary: 'border border-transparent bg-ink text-bg hover:bg-ink/85',
         }[variant],
         className)}
       {...rest} />
@@ -34,10 +39,10 @@ export function Tag({ tone = 'mute', className, children }) {
     <span className={cn(
       'inline-flex items-center rounded-full px-2.5 py-[2px]',
       'text-[10.5px] font-bold uppercase tracking-[.06em]',
-      { mute: 'bg-panel2 text-muted', ok: 'bg-black/5 text-ink',
-        bad: 'bg-rose-500/15 text-rose-400', warn: 'bg-amber-500/15 text-amber-400',
-        accent: 'bg-accent text-ink',
-        solid: 'bg-accent text-ink shadow-sm' }[tone],
+      { mute: 'bg-panel2 text-muted', ok: 'border border-ok/35 bg-transparent text-ok',
+        bad: 'border border-bad/35 bg-transparent text-bad', warn: 'border border-warn/35 bg-transparent text-warn',
+        accent: 'border border-accent/35 bg-transparent text-deep',
+        solid: 'border border-accent/35 bg-transparent text-deep' }[tone],
       className)}>
       {children}
     </span>
@@ -49,9 +54,9 @@ export function Badge({ tone = 'mute', className, children }) {
   return (
     <span className={cn(
       'inline-flex items-center rounded-full font-mono text-[10.5px] px-2 py-0.5 font-semibold',
-      { mute: 'bg-panel2 text-muted2', ok: 'bg-black/5 text-ink',
-        bad: 'bg-rose-500/15 text-rose-400', warn: 'bg-amber-500/15 text-amber-400',
-        accent: 'bg-accent text-ink shadow-sm' }[tone],
+      { mute: 'bg-panel2 text-muted2', ok: 'border border-ok/35 bg-transparent text-ok',
+        bad: 'border border-bad/35 bg-transparent text-bad', warn: 'border border-warn/35 bg-transparent text-warn',
+        accent: 'border border-accent/35 bg-transparent text-deep' }[tone],
       className)}>
       {children}
     </span>
@@ -66,32 +71,6 @@ export function SectionLabel({ children, right, className }) {
       <span>{children}</span>
       {right}
     </div>
-  )
-}
-
-/** Segmented choice control. */
-export function Seg({ block, className, children }) {
-  return (
-    // Space between the options, not a rule.
-    <div className={cn('flex gap-1',
-      block ? 'w-full rounded-xl bg-panel2 p-1' : 'w-fit rounded-xl border border-line bg-panel2 p-1', className)}>
-      {children}
-    </div>
-  )
-}
-
-export function SegOpt({ on, block, className, children, ...rest }) {
-  return (
-    <button {...rest}
-      className={cn('inline-flex items-center gap-1.5 font-display font-extrabold',
-        'transition-colors disabled:pointer-events-none disabled:opacity-45',
-        block ? 'flex-1 justify-start py-[7px] pl-3 pr-2 text-[11px]'
-              : 'px-[11px] py-[6px] text-[12px]',
-        on ? 'rounded-lg bg-white text-ink shadow-sm dark:bg-black/10'
-           : 'text-label hover:bg-ink/[.07] hover:text-ink',
-        className)}>
-      {children}
-    </button>
   )
 }
 
@@ -231,7 +210,3 @@ export const TH = ({ className, children }) => (
 export const TD = ({ className, children }) => (
   <td className={cn('px-3 py-2.5 align-middle', className)}>{children}</td>
 )
-
-export function ThemeToggle() {
-  return null
-}

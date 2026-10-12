@@ -44,6 +44,7 @@ export default function ChangePlan({ turn }) {
   const [open, setOpen] = useState(waiting)
   const [why, setWhy] = useState(-1)          // which stage's reason is showing
   const [opened, setOpened] = useState(() => new Set())   // which steps show their detail
+  const [excluded, setExcluded] = useState(() => new Set())   // affected stages unticked for this run
 
   const impact = Array.isArray(plan.impact) ? plan.impact : []
   const steps = Array.isArray(plan.steps) ? plan.steps : []
@@ -75,6 +76,11 @@ export default function ChangePlan({ turn }) {
     return next
   })
   const allOpen = steps.length > 0 && opened.size === steps.length
+  const toggleExcluded = stage => setExcluded(current => {
+    const next = new Set(current)
+    if (next.has(stage)) next.delete(stage); else next.add(stage)
+    return next
+  })
 
   const Icon = live ? Loader2 : status === 'done' ? CheckCircle2 : status === 'failed' ? CircleAlert
     : status === 'cancelled' || status === 'superseded' ? Ban : ListChecks
@@ -119,18 +125,40 @@ export default function ChangePlan({ turn }) {
             <section>
               <h4 className="mb-1.5 text-[10px] font-semibold uppercase tracking-[.14em] text-muted2">What it touches</h4>
               <div className="flex flex-wrap gap-1.5">
-                {impact.map((row, i) => (
-                  <button key={i} type="button" onClick={() => setWhy(why === i ? -1 : i)} aria-pressed={why === i}
-                          title={row.why || ''}
-                          className={cn('inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors',
-                            row.affected ? 'border-accent/40 bg-accent text-ink hover:bg-accent'
-                              : 'border-line bg-black/[.03] text-muted2 hover:text-ink dark:bg-black/[.04]',
+                {impact.map((row, i) => {
+                  // Deploy plans reuse this same card but `_execute_flow` does not
+                  // consult `excluded_stages` — only the chat-typed change path does.
+                  const excludable = row.affected && waiting && !deploying
+                  const isExcluded = row.affected && excluded.has(row.stage)
+                  return (
+                    <span key={i}
+                          className={cn('inline-flex items-center gap-1 rounded-full border pl-1 pr-2.5 py-1 text-[11px] font-semibold transition-colors',
+                            isExcluded ? 'border-line bg-black/[.03] text-muted2 line-through decoration-muted2/70'
+                              : row.affected ? 'border-accent/40 bg-accent text-ink'
+                                : 'border-line bg-black/[.03] text-muted2',
                             why === i && 'ring-1 ring-accent/50')}>
-                    {row.affected ? <Check className="size-2.5" /> : <X className="size-2.5" />}
-                    {row.stage}
-                  </button>
-                ))}
+                      {excludable && (
+                        <button type="button" onClick={() => toggleExcluded(row.stage)}
+                                title={isExcluded ? 'Include this stage in this run' : 'Exclude this stage from this run'}
+                                className={cn('grid size-3.5 shrink-0 place-items-center rounded-full border transition-colors',
+                                  isExcluded ? 'border-muted2/50' : 'border-ink/40 bg-ink/10')}>
+                          {!isExcluded && <Check className="size-2.5" />}
+                        </button>
+                      )}
+                      <button type="button" onClick={() => setWhy(why === i ? -1 : i)} aria-pressed={why === i}
+                              title={row.why || ''} className="inline-flex items-center gap-1">
+                        {!row.affected && <X className="size-2.5" />}
+                        {row.stage}
+                      </button>
+                    </span>
+                  )
+                })}
               </div>
+              {excluded.size > 0 && (
+                <p className="mt-1.5 text-[10.5px] leading-relaxed text-muted2">
+                  Excluded from this run: {Array.from(excluded).join(', ')} — their steps will not be carried out.
+                </p>
+              )}
               {why >= 0 && impact[why] && (
                 <p className="mt-2 rounded-xl bg-black/[.03] px-3 py-2 text-[11.5px] leading-relaxed text-muted dark:bg-black/[.04]">
                   <span className="font-semibold text-ink">{impact[why].stage}: </span>
@@ -154,15 +182,18 @@ export default function ChangePlan({ turn }) {
                   const shown = opened.has(i)
                   const commands = Array.isArray(step.commands) ? step.commands : []
                   const hasMore = Boolean(step.detail) || commands.length > 0 || (Array.isArray(step.files) && step.files.length > 0)
+                  const stepExcluded = excluded.has(step.stage)
                   return (
-                    <li key={i} className="rounded-xl border border-transparent transition-colors hover:border-line/70">
+                    <li key={i} className={cn('rounded-xl border border-transparent transition-colors hover:border-line/70',
+                      stepExcluded && 'opacity-50')}>
                       <button type="button" disabled={!hasMore} onClick={() => toggleStep(i)} aria-expanded={shown}
                               className="flex w-full items-start gap-2.5 rounded-xl px-1.5 py-1.5 text-left">
                         <span className="mt-px grid size-5 shrink-0 place-items-center rounded-full bg-accent font-mono text-[10px] font-bold text-ink">{i + 1}</span>
                         <span className="min-w-0 flex-1">
-                          <span className="block text-[12.5px] font-medium leading-snug text-ink">{step.title}</span>
+                          <span className={cn('block text-[12.5px] font-medium leading-snug text-ink', stepExcluded && 'line-through')}>{step.title}</span>
                           <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted2">
                             {step.stage && <span className="font-semibold">{step.stage}</span>}
+                            {stepExcluded && <span className="font-semibold text-muted2">excluded from this run</span>}
                             {Array.isArray(step.files) && step.files.length > 0 && (
                               <span>{step.files.length} file{step.files.length === 1 ? '' : 's'}</span>
                             )}
@@ -240,7 +271,8 @@ export default function ChangePlan({ turn }) {
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
-              <button type="button" disabled={Boolean(sending)} onClick={() => decide('approve')}
+              <button type="button" disabled={Boolean(sending)}
+                      onClick={() => decide('approve', { excluded_stages: Array.from(excluded) })}
                       className="inline-flex h-8 items-center gap-1.5 rounded-xl bg-accent px-3.5 text-[12px] font-semibold text-ink shadow-sm transition-colors hover:bg-press disabled:opacity-50">
                 {sending === 'approve' ? <Loader2 className="size-3 animate-spin" /> : <Play className="size-3" />} {deploying ? 'Approve and deploy' : 'Approve and carry it out'}
               </button>

@@ -113,12 +113,15 @@ function Fold({ head, right, children }) {
 function Gaps({ gaps }) {
   if (!gaps.length) return null
   return <Section title="Not proven — recorded gaps"
-                  hint="Things the build could not or did not verify, with the reason it gave. None of these is counted as a pass.">
+                  hint="Things the build could not or did not verify, with the reason it gave and what you answered when it asked. None of these is counted as a pass.">
     <div className="grid gap-2.5 md:grid-cols-2">
       {gaps.map((g, i) => <div key={i} className="rounded-none border border-amber-500/25 bg-amber-500/5 p-3.5">
         <div className="flex flex-wrap items-center gap-2"><Tag tone={/known|out_of_scope/.test(g.status) ? 'mute' : 'warn'}>{String(g.status || 'gap').replace(/_/g, ' ')}</Tag>
           <b className="text-[12px] text-ink">{g.item}</b></div>
         <p className="mt-1.5 text-[11.5px] leading-relaxed text-muted">{g.reason}</p>
+        {g.asked && <p className="mt-2 border-t border-amber-500/20 pt-2 text-[11.5px] leading-relaxed text-muted">
+          <span className="font-semibold text-ink">Asked:</span> {g.asked}
+          {g.answer && <><br /><span className="font-semibold text-ink">Answer:</span> {g.answer}</>}</p>}
       </div>)}
     </div>
   </Section>

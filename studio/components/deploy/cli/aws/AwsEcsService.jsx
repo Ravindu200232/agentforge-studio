@@ -1,7 +1,7 @@
 'use client'
 
 import { Layers } from 'lucide-react'
-import { View, Card, Facts, Flow, Stats, Table, tone } from '../parts'
+import { View, Card, Facts, Flow, Stats, tone } from '../parts'
 
 /** The ECS service: what it wants to run, what runs, and how the last release rolled out. */
 export default function AwsEcsService({ project, item }) {

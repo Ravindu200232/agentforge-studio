@@ -1,0 +1,5 @@
+## shadcn/ui
+
+The approved prototype is built with shadcn/ui, so the real application's interface is built with it as well: the same components, which is what keeps the two identical.
+
+Read `{{shadcn}}/SKILL.md` and the files in its `rules/` before planning, and compose every screen the way they say. Unlike the prototype's author, you can run commands: use the shadcn CLI as the skill describes, with the application's own package runner. If the application has no `components.json`, run `npx shadcn@latest init` once, for its framework, and give it the prototype's theme (`src/index.css` and the Tailwind config under `.agentforge/prototype/app`) so the colours, the radius and the fonts are the prototype's. Add each component the prototype's pages use with `npx shadcn@latest add <names>` (the prototype's `src/components/ui` lists them). Keep them in the application's own `components/ui`, and build the application's shared components (page header, data table, empty state, form sections) on them once. When you are unsure how a component is used, fetch its page on ui.shadcn.com (`/docs/components/<name>`). Do not write a replacement for a component shadcn/ui has.

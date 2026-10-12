@@ -1,10 +1,7 @@
 
-import { useStore, KEYS } from './store'
+import { useStore } from './store'
 import { api, API, HTTP_FALLBACK, getAuthToken } from './api'
 import { refreshQaReport } from './qa-results'
-
-
-const STEP_ALIAS = { plan: 'build', generate: 'build' }
 
 // What each outgoing message is, in the terms the overlay presents.
 const WORK_KIND = {
@@ -21,31 +18,6 @@ let lastEdit = null
 
 // Send periodic heartbeat pings to keep WebSocket connections alive through proxies and tunnels.
 const HEARTBEAT_MS = 25000
-
-let streamPending = ''
-let streamTimer = null
-let e2eVersion = 0
-
-function flushStream() {
-  if (!streamPending) return
-  const chunk = streamPending
-  streamPending = ''
-  streamTimer = null
-  useStore.setState(st => ({ liveBuf: st.liveBuf + chunk }))
-}
-
-function queueStream(token) {
-  streamPending += token || ''
-  if (streamTimer) return
-  streamTimer = setTimeout(flushStream, 32)
-}
-
-function resetStreamQueue() {
-  if (streamTimer) clearTimeout(streamTimer)
-  streamTimer = null
-  streamPending = ''
-}
-
 
 /** Resend the last edit with an answer or instruction. */
 export function answerQuestion(prompt) {
@@ -64,7 +36,7 @@ export function answerAsk(reply) {
   const ask = useStore.getState().ask
   if (!ask) return false
   useStore.getState().setAsk(null)
-  api.decide({ id: ask.id, decision: 'answer', reply })
+  api.decide({ id: ask.id, project: ask.project, decision: 'answer', reply })
      .catch(e => useStore.getState().addLog('WARN', `Could not send that answer — ${e.message}`))
   return true
 }
@@ -77,7 +49,7 @@ export function answerAsk(reply) {
 export async function answerValue(value) {
   const ask = useStore.getState().ask
   if (!ask) return { ok: false, detail: 'That question is no longer waiting.' }
-  const result = await api.decide({ id: ask.id, decision: 'answer', reply: value })
+  const result = await api.decide({ id: ask.id, project: ask.project, decision: 'answer', reply: value })
   if (result?.ok === false) return result
   useStore.getState().setAsk(null)
   useStore.getState().pushChat({ role: 'user', text: `Saved ${ask.variable}.`, at: Date.now() })
@@ -90,7 +62,7 @@ export async function answerOption(label) {
   if (!ask) return false
   useStore.getState().setAsk(null)
   useStore.getState().pushChat({ role: 'user', text: label, at: Date.now() })
-  api.decide({ id: ask.id, decision: 'answer', reply: label, via: 'option' })
+  api.decide({ id: ask.id, project: ask.project, decision: 'answer', reply: label, via: 'option' })
      .catch(e => useStore.getState().addLog('WARN', `Could not send that answer — ${e.message}`))
   return true
 }
@@ -100,9 +72,22 @@ export function declineAsk() {
   const ask = useStore.getState().ask
   if (!ask) return false
   useStore.getState().setAsk(null)
-  api.decide({ id: ask.id, decision: 'default' })
+  api.decide({ id: ask.id, project: ask.project, decision: 'default' })
      .catch(e => useStore.getState().addLog('WARN', `Could not send that — ${e.message}`))
   return true
+}
+
+/**
+ * The answer to a permission card: `allow`, `always` (and do not ask again this session) or `deny` (with a note for the agent).
+ * The card goes at once; the run it holds still goes on when the server has the answer.
+ */
+export function answerPermission(card, verdict, note = '') {
+  const store = useStore.getState()
+  store.applyProjectEvent({ type: 'approval_resolved', project: card.project, agent: card.agent, id: card.id })
+  const reply = verdict === 'deny' && note.trim() ? `deny:${note.trim()}` : verdict
+  api.decide({ id: card.id, project: card.project, decision: 'answer', reply })
+     .then(result => { if (result?.ok === false) store.addLog('WARN', result.detail || 'That request is no longer waiting.') })
+     .catch(e => store.addLog('WARN', `Could not send that answer — ${e.message}`))
 }
 
 /** Sends feedback to request a revision for the current wireframe drawing. */
@@ -127,6 +112,7 @@ function route(question) {
   const store = useStore.getState()
   if (question?.kind === 'prototype') store.setDrawing(question)
   else if (question?.kind === 'question') store.setAsk(question)
+  else if (question?.kind === 'permission') store.applyProjectEvent({ ...question, type: 'approval' })
   else if (question?.kind === 'plan') {
     api.decide({ id: question.id, decision: 'accept' }).catch(() => {})
   }
@@ -136,17 +122,47 @@ function route(question) {
 async function recoverPendingDecision() {
   try {
     const { pending } = await api.decisions()
-    const question = (pending || [])[0]
     const store = useStore.getState()
+    // Every permission card still waiting comes back; of the other questions, one at a time.
+    for (const card of (pending || []).filter(row => row.kind === 'permission' && row.project === store.project)) route(card)
+    const question = (pending || []).find(row => row.kind !== 'permission')
     if (question && question.project === store.project && (!question.agent || question.agent === store.agentRole) && !store.approval && !store.ask && !store.drawing) route(question)
   } catch {
     // An older backend has no such endpoint; the announcement is all there is.
   }
 }
 
+/** The desktop app's own channel to its backend (desktop/preload.js), when the studio runs inside it. */
+const desktop = () => (typeof window !== 'undefined' ? window.agentforgeDesktop : null) || null
+let desktopOff = null
+
+/** In the desktop app there is no socket and no port: the backend's events arrive over the app itself. */
+function connectDesktop(bridge) {
+  desktopOff?.()
+  const offEvent = bridge.onEvent(handle)
+  const offStatus = bridge.onStatus?.(status => {
+    if (status === 'ready') {
+      useStore.getState().setStatus('live', 'ready')
+      const project = useStore.getState().project
+      if (project) api.workflow(project).then(snapshot => useStore.getState().restoreProject(snapshot)).catch(() => {})
+      recoverPendingDecision()
+    } else {
+      useStore.getState().setStatus('disconnected', status === 'restarting' ? 'restarting the engine…' : String(status))
+    }
+  })
+  desktopOff = () => { offEvent?.(); offStatus?.() }
+  useStore.getState().setStatus('live', 'ready')
+  const project = useStore.getState().project
+  if (project) api.workflow(project).then(snapshot => useStore.getState().restoreProject(snapshot)).catch(() => {})
+  recoverPendingDecision()
+  window.__studioFeed = handle
+  return disconnect
+}
 
 export function connect() {
   if (typeof window === 'undefined') return
+  const bridge = desktop()
+  if (bridge) return connectDesktop(bridge)
   const s = useStore.getState()
 
   // Close whatever is already open FIRST.
@@ -164,7 +180,7 @@ export function connect() {
 
   try {
     sock = new WebSocket(wsUrl())
-  } catch (e) {
+  } catch {
     s.setStatus('disconnected', 'no socket')
     return
   }
@@ -211,6 +227,8 @@ export function connect() {
 }
 
 export function disconnect() {
+  desktopOff?.()
+  desktopOff = null
   clearTimeout(retry)
   clearInterval(heartbeat)
   retry = heartbeat = null
@@ -219,20 +237,7 @@ export function disconnect() {
     sock.close()
     sock = null
   }
-  flushStream()
-  resetStreamQueue()
 }
-
-/** Persists accumulated chat messages and execution logs to the server. */
-function keepStream(project) {
-  const s = useStore.getState()
-  const name = project || s.project
-  if (!name) return
-  api.saveStream(name, s.logs, s.chat).catch(() => {
-    // An older backend keeps no stream; the session still has it in memory.
-  })
-}
-
 
 export function send(obj) {
   const current = useStore.getState()
@@ -247,6 +252,10 @@ export function send(obj) {
   if (obj && obj.prompt !== undefined) {
     lastEdit = obj
     useStore.setState({ question: null })
+  }
+  if (desktop()) {
+    desktop().send(obj)
+    return
   }
   if (sock && sock.readyState === 1) {
     sock.send(JSON.stringify(obj))
@@ -267,18 +276,6 @@ export function send(obj) {
   })
 }
 
-/** The Preview was already brought up for the run that is streaming its browser now. */
-let liveShown = false
-
-/** Determines whether an incoming WebSocket message belongs to the currently active project. */
-function meantForMe(m) {
-  const mine = useStore.getState().project
-  if (!m?.project || !mine) return true
-  if (m.type === 'project' || m.type === 'done' || m.type === 'cancelled') return true
-  return m.project === mine
-}
-
-
 function handle(m) {
   const s = useStore.getState()
   // Contracts: approval?.id === m.id | browser_frame
@@ -289,6 +286,8 @@ function handle(m) {
     s.bumpProjects()
     return
   }
+  // The signed-in AgentForge account's requests, as they are used (Settings shows them live).
+  if (m.type === 'account_usage') { s.setAccountUsage(m); return }
   if (!m.project) return
   // What the app's tests are doing is watched in the Preview, so the Preview comes up for the
   // first picture of a run (once: someone who then goes elsewhere is left there), and for a
@@ -300,10 +299,6 @@ function handle(m) {
     }
     return
   }
-  if (m.type === 'browser_frame' && m.frame && m.project === s.project && !liveShown && !s.drawing) {
-    liveShown = true
-  }
-  if (m.type === 'e2e_done' || m.type === 'done' || m.type === 'error' || m.type === 'cancelled') liveShown = false
   // A live picture arrives ten times a second: it goes straight to the screen, not through the
   // session reducer (which copies the chat and the logs for every event). The pointer arrives on
   // its own and is kept across pictures.

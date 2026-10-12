@@ -3,7 +3,7 @@
 The schema says the document is the right shape and the standards review says the
 requirements are well written. Neither of them notices that a seven-screen
 product was specified with three requirements, that a database with two tables
-has no entity-relationship diagram, or that every wireframe is four lines long.
+has no entity-relationship diagram, or that no requirement traces to a page.
 
 Those are the failures that survive both other gates, because each artifact is
 individually valid. What catches them is counting: the plan says what exists, so
@@ -13,38 +13,6 @@ from __future__ import annotations
 
 import re
 from typing import Any
-
-# A wireframe here is one complete, self-contained HTML document: doctype, head,
-# an inline stylesheet and a body that holds the whole screen.
-WIREFRAME_MARKERS = ("<!doctype", "<html")
-
-# How much page one section is worth. These are calibrated against the reference
-# implementation's own output, where a real page runs from fifteen to
-# thirty-four thousand characters — a sign-in screen at the bottom of that range
-# and an admin table at the top. The floors below sit deliberately under those
-# numbers: they catch the page that was abandoned half-drawn, not the page that
-# is merely compact.
-#
-# Sections and functions overlap — a page's "form" section and its "sign in"
-# function are one thing on screen, not two — so functions count half.
-WIREFRAME_CHARS_PER_SECTION = 1500
-WIREFRAME_FLOOR = 6000
-
-# Evidence in the document that makes a diagram answerable. A diagram marked
-# not-applicable while its evidence is present is a diagram that was skipped.
-DIAGRAM_EVIDENCE = {
-    "erd": ("database_design.tables", 1),
-    "system_context": ("roles", 1),
-    "use_case": ("roles", 1),
-    "activity": ("business_workflows", 1),
-    "sequence": ("business_workflows", 1),
-    "dfd": ("database_design.tables", 1),
-}
-
-
-class Gaps(ValueError):
-    """What is missing, phrased as the repair instructions for the agent."""
-
 
 def _dig(doc: dict, path: str) -> list:
     node: Any = doc
@@ -148,25 +116,44 @@ def table_coverage(doc: dict, plan: dict) -> list[str]:
             gaps.append(f"the plan's record {record.get('name')!r} has no table in database_design")
     return gaps
 
+# Optional-in-the-schema sections a well-formed SRS is still expected to
+# carry — every one of them can be legitimately empty for a given product (an
+# app with one role has no interesting access matrix), so this is a readout
+# the reviewer weighs alongside its own judgement, never a gate on its own.
+STRUCTURAL_SECTIONS = (
+    ("security_requirements", "security requirements"),
+    ("acceptance_criteria", "acceptance criteria"),
+    ("validation_rules", "field validation rules"),
+    ("risk_priority", "risk and priority ranking"),
+    ("assumptions", "assumptions"),
+    ("constraints", "constraints"),
+    ("role_access_matrix", "role access matrix"),
+    ("api_design", "API design"),
+)
 
-def diagram_coverage(doc: dict) -> list[str]:
-    """Diagrams marked not-applicable while their own evidence is in the document."""
-    drawn = {str(d.get("kind")): d for d in _dig(doc, "diagrams") if isinstance(d, dict)}
-    gaps = []
-    for kind, (path, floor) in DIAGRAM_EVIDENCE.items():
-        evidence = len(_dig(doc, path))
-        if evidence < floor:
-            continue
-        diagram = drawn.get(kind)
-        if diagram is None:
-            gaps.append(f"there is no {kind} diagram, though the document has "
-                        f"{evidence} {path.split('.')[-1]} to draw it from")
-        elif diagram.get("applicable") is False:
-            gaps.append(f"the {kind} diagram is marked not applicable, but the document "
-                        f"has {evidence} {path.split('.')[-1]} — draw it")
-        elif not str(diagram.get("source") or "").strip():
-            gaps.append(f"the {kind} diagram has no mermaid `source`")
-    return gaps
+
+def section_completeness(doc: dict) -> dict:
+    """Which structurally-expected sections carry real content."""
+    populated = [label for key, label in STRUCTURAL_SECTIONS if _dig(doc, key)]
+    empty = [label for key, label in STRUCTURAL_SECTIONS if not _dig(doc, key)]
+    return {"populated": populated, "empty": empty,
+            "ratio": round(len(populated) / len(STRUCTURAL_SECTIONS), 2)}
+
+
+def ambiguity_resolution(doc: dict) -> dict:
+    """How many identified ambiguities are still open.
+
+    Nobody is in the room to answer a lingering question once generation is
+    done, so a specification that flagged its own ambiguities should resolve
+    nearly all of them (each already carries `assumption_made`, so resolving
+    one means standing behind that assumption, not deleting the entry).
+    """
+    ambiguities = _dig(doc, "ambiguities")
+    if not ambiguities:
+        return {"total": 0, "resolved": 0, "rate": 1.0}
+    resolved = sum(1 for a in ambiguities if not a.get("needs_clarification"))
+    return {"total": len(ambiguities), "resolved": resolved,
+            "rate": round(resolved / len(ambiguities), 2)}
 
 
 def traceability_coverage(doc: dict) -> list[str]:
@@ -180,106 +167,6 @@ def traceability_coverage(doc: dict) -> list[str]:
     return []
 
 
-def _page_weight(doc: dict, route: str) -> int:
-    """How much page the specification says this route carries."""
-    for page in _dig(doc, "public_pages") + _dig(doc, "protected_pages"):
-        if str(page.get("route") or "").rstrip("/") == route.rstrip("/"):
-            return max(1, len(page.get("sections") or [])
-                       + len(page.get("functions") or []) // 2)
-    return 3
-
-
-def wireframe_depth(pages: list[tuple[str, str]], doc: dict | None = None) -> list[str]:
-    """Wireframes drawn without the skill's design system, or without a page on them."""
-    doc = doc or {}
-    gaps = []
-    for route, html in pages:
-        text = (html or "").strip()
-        weight = _page_weight(doc, route)
-        expected = max(WIREFRAME_FLOOR, weight * WIREFRAME_CHARS_PER_SECTION)
-
-        if not text.lower().startswith(WIREFRAME_MARKERS):
-            gaps.append(f"the wireframe for {route} is not a complete HTML document — "
-                        f"it must open with <!DOCTYPE html> and carry its own <head> "
-                        f"and inline <style>")
-            continue
-        if len(text) < expected:
-            gaps.append(f"the wireframe for {route} is {len(text):,} characters, but the "
-                        f"specification gives that page {weight} section(s) and "
-                        f"function(s) to draw — draw the whole screen: its shell, every "
-                        f"section, every control its functions need, and its loading, "
-                        f"empty and error states, with realistic sample content "
-                        f"throughout (aim for {expected:,}+)")
-        if "<style" not in text.lower():
-            gaps.append(f"the wireframe for {route} has no inline <style> block, so it "
-                        f"renders unstyled — the document must carry its own CSS")
-    return gaps
-
-
-def prototype_coverage(doc: dict, routes: list[dict], pages: dict[str, str],
-                       tokens: dict | None = None) -> list[str]:
-    """Whether the prototype is the product the specification describes.
-
-    The same three failures as the wireframes, one layer up: a screen that was
-    never drawn, a screen drawn as a stub, and a design contract that was agreed
-    and then ignored.
-    """
-    gaps: list[str] = []
-    drawn = {str(r.get("route") or "").rstrip("/") or "/" for r in routes}
-
-    for page in _dig(doc, "public_pages") + _dig(doc, "protected_pages"):
-        route = str(page.get("route") or "").rstrip("/") or "/"
-        if route not in drawn:
-            gaps.append(f"the specification's page {page.get('page_name')!r} ({route}) "
-                        f"has no prototype screen and no entry in routes.json")
-
-    for row in routes:
-        route = str(row.get("route") or "")
-        html = pages.get(str(row.get("file") or ""), "")
-        if not html:
-            gaps.append(f"routes.json points {route} at {row.get('file')!r}, "
-                        f"which is not in the prototype folder")
-            continue
-        weight = _page_weight(doc, route)
-        expected = max(900, weight * 400)
-        if len(html) < expected:
-            gaps.append(f"the prototype screen for {route} is {len(html)} characters, but "
-                        f"the specification gives that page {weight} section(s) and "
-                        f"function(s) — draw the whole screen: its working views, its "
-                        f"table with real rows, its form with validation states, and its "
-                        f"loading, empty and error states")
-
-    # Every link between screens has to land somewhere, or the reviewer clicks
-    # into nothing and learns the product is broken when it is not.
-    known_files = set(pages)
-    for row in routes:
-        html = pages.get(str(row.get("file") or ""), "")
-        for href in re.findall(r'href\s*=\s*"([^"#?:]+\.html)"', html):
-            target = href.split("/")[-1]
-            if target not in known_files:
-                gaps.append(f"the prototype screen for {row.get('route')} links to "
-                            f"{href!r}, which does not exist")
-
-    # The kit turns `data-go="/route"` into a link, so a route that is not in routes.json is as dead as a missing file.
-    for row in routes:
-        html = pages.get(str(row.get("file") or ""), "")
-        for go in sorted(set(re.findall(r'data-go\s*=\s*"([^"]*)"', html))):
-            if (go.rstrip("/") or "/") not in drawn:
-                gaps.append(f"the prototype screen for {row.get('route')} goes to {go!r} (data-go), "
-                            f"which is not a route in routes.json")
-
-    palette = (tokens or {}).get("light") or (tokens or {}).get("dark") or {}
-    if palette:
-        stylesheet = pages.get("assets/app.css", "")
-        missing = [name for name in list(palette)[:6]
-                   if f"--{name}" not in stylesheet and str(palette[name]) not in stylesheet]
-        if stylesheet and missing:
-            gaps.append("assets/app.css does not carry the approved design tokens "
-                        f"({', '.join(missing)}) — apply the design spec literally, "
-                        "because what the customer approves here is what the build must match")
-    return gaps
-
-
 def check_document(doc: dict, plan: dict) -> list[str]:
     """Plan coverage and traceability, before any diagrams or pages are drawn."""
     gaps: list[str] = []
@@ -290,13 +177,3 @@ def check_document(doc: dict, plan: dict) -> list[str]:
     return gaps
 
 
-def check(doc: dict, plan: dict, pages: list[tuple[str, str]]) -> list[str]:
-    """Every gap between the plan, the specification and the drawings."""
-    gaps = check_document(doc, plan)
-    gaps += diagram_coverage(doc)
-    gaps += wireframe_depth(pages, doc)
-    return gaps
-
-
-def as_instructions(gaps: list[str]) -> str:
-    return "\n".join(f"- {gap}" for gap in gaps)

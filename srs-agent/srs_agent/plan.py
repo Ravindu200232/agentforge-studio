@@ -151,7 +151,7 @@ def draft(project: str, revision: str = "", answers: dict[str, str] | None = Non
     merged = llm.complete_json(
         system=prompts.load("plan/system")
         + (f"\n\n## What this project already knows\n\n{memory}" if memory else ""),
-        user=prompt, validator=check, label="plan")
+        user=prompt, validator=check, label="plan", project=project)
 
     data["versions"] = (data.get("versions") or []) + [{
         "version": data.get("version", 0) + 1,
@@ -200,10 +200,6 @@ def approve(project: str) -> dict[str, Any]:
 def approved_plan(project: str) -> dict[str, Any]:
     data = state(session_for(project))
     return data.get("plan") or {}
-
-
-def is_approved(project: str) -> bool:
-    return bool(state(session_for(project)).get("approved"))
 
 
 def markdown(project: str) -> str:

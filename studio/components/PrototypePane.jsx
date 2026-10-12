@@ -1,23 +1,21 @@
 'use client'
 
-/** HTML Prototype viewer with element selection, pencil annotations, and interactive Figma positioning tools. */
+/** The prototype: a bundled React app framed on its own address, with a page list, element selection and pencil annotations. */
 
 import { useAgentPreview } from '@/lib/agent-preview'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Monitor, Tablet, Smartphone, MousePointerClick, Pencil, RotateCw,
-  ExternalLink, Globe, Layers, Eraser, Undo2, ChevronLeft, ChevronRight,
-  Sparkles, Rocket, FlaskConical, Loader2, SlidersHorizontal,
-  Move, ArrowUpDown, AlignLeft, AlignCenter, AlignRight, Maximize2,
-  Copy, Trash2, Type, ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
-  RotateCcw as UndoIcon, Save, Check,
+  ExternalLink, Layers, Eraser, Undo2, ChevronLeft, ChevronRight, Rocket, Loader2, Route, ScanEye, Type,
 } from 'lucide-react'
 import { useStore } from '@/lib/store'
-import { api, API } from '@/lib/api'
+import { api } from '@/lib/api'
 import { watchFrame } from '@/lib/console-log'
-import { attachPicker, pickedFrom, pickLabel, frameDoc } from '@/lib/picker'
-import VisualInspector from './VisualInspector'
+import { attachPicker, elementsUnderStrokes, pickedFrom, pickLabel } from '@/lib/picker'
 import { Tip } from './ui'
+import AppTextEdit from './AppTextEdit'
+import AgentBrowser from './AgentBrowser'
+import LiveE2EOverlay from './LiveE2EOverlay'
 import { cn } from '@/lib/utils'
 
 const VIEWPORTS = [
@@ -29,22 +27,14 @@ const VIEWPORTS = [
 const MIN_INK = 3
 let seq = 0
 
-function currentPath(frame) {
+/** The screen the app in the frame is on: its address hash (`#/orders` is `/orders`). */
+function currentRoute(frame) {
   try {
-    const loc = frame?.contentWindow?.location
-    if (!loc) return 'index.html'
-    const name = (loc.pathname || '').split('/').filter(Boolean).pop() || 'index.html'
-    const cleanName = name.endsWith('.html') ? name : 'index.html'
-    const search = loc.search || ''
-    const hash = loc.hash || ''
-    return cleanName + search + hash
+    const hash = frame?.contentWindow?.location?.hash || ''
+    return hash.replace(/^#/, '').split('?')[0] || '/'
   } catch {
-    return 'index.html'
+    return '/'
   }
-}
-
-function baseFileName(path) {
-  return (path || '').split('?')[0].split('#')[0] || 'index.html'
 }
 
 export default function PrototypePane({ project, hidden, onBuild, generating = false, generationStatus = '', canResumePrototype = false }) {
@@ -53,92 +43,75 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
   const detachRef = useRef(null)
   const strokesRef = useRef([])
   const drawingRef = useRef(false)
-  const lastFileRef = useRef('index.html')
+  const lastRouteRef = useRef('/')
 
   const [vp, setVp] = useState('desktop')
   const [pickOn, setPickOn] = useState(false)
   const [pencilOn, setPencilOn] = useState(false)
-  const [visualEditOn, setVisualEditOn] = useState(false)
-  const [inspectedElement, setInspectedElement] = useState(null)
-  const [inspectedDoc, setInspectedDoc] = useState(null)
-  const visualDetachRef = useRef(null)
-  const [currentFile, setCurrentFile] = useState('index.html')
-  const [protoReady, setProtoReady] = useState(false)
-  const [iframeLoading, setIframeLoading] = useState(true)
+  const [textOn, setTextOn] = useState(false)
+  const [loadedTick, setLoadedTick] = useState(0)
+  const [route, setRoute] = useState('/')
+  const [pages, setPages] = useState([])
+  const [status, setStatus] = useState({ built: false, version: 0 })
 
-  // Figma-like Move & Position Tool states
-  const [figmaMoveOn, setFigmaMoveOn] = useState(false)
-  const [figmaPicked, setFigmaPicked] = useState('')
-  const [figmaMetrics, setFigmaMetrics] = useState(null)
-  const [figmaDragMode, setFigmaDragMode] = useState('free')
-  const [figmaDirty, setFigmaDirty] = useState(false)
-  const [savingProto, setSavingProto] = useState(false)
-  const [saveProtoSuccess, setSaveProtoSuccess] = useState(false)
-  const [figmaTyping, setFigmaTyping] = useState(false)
-  const protoEditorRef = useRef(null)
-
-  const trail = useRef(['index.html'])
+  const trail = useRef(['/'])
   const at = useRef(0)
   const jumping = useRef(false)
   const [nav, setNav] = useState({ back: false, forward: false })
 
   const { addLog, busy, workflowStatus, prototypeStamp, progress, drawing, setDrawing,
     selection, addSelection, patchSelection, clearSelection, undo, setUndo } = useAgentPreview(project, 'designer')
-  const prototypeArtifactStamp = useStore(s => s.prototypeArtifactStamp[project] || 0)
   const buildAllowed = useStore(s => Boolean(s.buildAvailability[project]))
   const statusText = useStore(s => s.statusText)
+  // The journeys being clicked through in a real browser: shown live over the prototype, like a build's tests.
+  const liveFrame = useStore(s => s.browserFrame)
+  const liveStep = useStore(s => s.e2eLive)
+  const walking = Boolean(liveFrame?.frame || liveStep)
   const isBusy = busy || generating
-  const resumePrototype = canResumePrototype && !protoReady && !isBusy
+  // A prototype stopped part of the way is still resumable until the backend marks the complete one buildable.
+  const resumePrototype = canResumePrototype && !isBusy
   const actionEnabled = buildAllowed || resumePrototype
 
-  const prototypeUrl = `${API}/prototype/${encodeURIComponent(project || '')}/${currentFile}`
+  const protoReady = status.built
   const width = VIEWPORTS.find(x => x.id === vp)?.w
+  // The frame loads the bundle once for each version of it; moving between screens only changes the hash.
+  const src = useMemo(() => (project && protoReady ? api.webUrl(project, 'prototype', lastRouteRef.current, status.version) : ''),
+    [project, protoReady, status.version])
+  const openUrl = project ? api.webUrl(project, 'prototype', route, status.version) : ''
 
-  const checkPrototypeReady = useCallback(async () => {
-    if (!project) return false
+  const checkReady = useCallback(async () => {
+    if (!project) return
     try {
-      const base = baseFileName(currentFile)
-      const map = await fetch(`${API}/prototype/${encodeURIComponent(project)}/routes.json?check=${Date.now()}`)
-      if (!map.ok) { setProtoReady(false); return false }
-      const url = `${API}/prototype/${encodeURIComponent(project)}/${base || 'index.html'}?check=${Date.now()}`
-      const res = await fetch(url)
-      if (res.ok) {
-        const text = await res.text()
-        if (text.includes('Generating HTML Prototype') || text.includes('no index.html in this drawing')) {
-          setProtoReady(false)
-          return false
-        }
-        setProtoReady(true)
-        setIframeLoading(false)
-        return true
-      }
-      setProtoReady(false)
-      return false
+      const answer = await api.webStatus(project, 'prototype')
+      setStatus(old => (old.built === Boolean(answer?.built) && old.version === (answer?.version || 0)
+        ? old : { built: Boolean(answer?.built), version: answer?.version || 0 }))
     } catch {
-      setProtoReady(false)
-      return false
+      setStatus(old => (old.built ? { built: false, version: 0 } : old))
     }
-  }, [project, currentFile])
+  }, [project])
 
-  // Check on open and on completed file events; never poll an absent idle drawing.
   useEffect(() => {
-    const timer = setTimeout(() => { checkPrototypeReady() }, 200)
+    if (!project) return
+    api.wireframes(project).then(answer => setPages(answer?.pages || [])).catch(() => {})
+  }, [project, status.version])
+
+  // Check on open and whenever the agent reports a change; poll while it is working.
+  useEffect(() => {
+    const timer = setTimeout(checkReady, 200)
     return () => clearTimeout(timer)
-  }, [project, isBusy, prototypeStamp, prototypeArtifactStamp, checkPrototypeReady])
+  }, [project, isBusy, prototypeStamp, checkReady])
 
   useEffect(() => {
     if (!generating) return
-    const timer = setInterval(checkPrototypeReady, 2000)
+    const timer = setInterval(checkReady, 2500)
     return () => clearInterval(timer)
-  }, [generating, checkPrototypeReady])
+  }, [generating, checkReady])
 
-  const syncPath = useCallback(() => {
-    const here = currentPath(frameRef.current)
-    if (!here) return
-    if (lastFileRef.current === here) return
-    lastFileRef.current = here
-    setCurrentFile(here)
-
+  const syncRoute = useCallback(() => {
+    const here = currentRoute(frameRef.current)
+    if (lastRouteRef.current === here) return
+    lastRouteRef.current = here
+    setRoute(here)
     if (jumping.current) {
       jumping.current = false
     } else if (trail.current[at.current] !== here) {
@@ -148,51 +121,38 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     setNav({ back: at.current > 0, forward: at.current < trail.current.length - 1 })
   }, [])
 
+  useEffect(() => {
+    const id = setInterval(syncRoute, 400)
+    return () => clearInterval(id)
+  }, [syncRoute])
+
+  function go(next) {
+    const f = frameRef.current
+    if (!f || !next) return
+    try { f.contentWindow.location.hash = '#' + next } catch { f.src = api.webUrl(project, 'prototype', next, status.version) }
+    syncRoute()
+  }
+
   function step(by) {
     const f = frameRef.current
     const next = at.current + by
     if (!f || next < 0 || next >= trail.current.length) return
     at.current = next
     jumping.current = true
-    const targetFile = trail.current[next]
-    lastFileRef.current = targetFile
-    setCurrentFile(targetFile)
-    f.src = `${API}/prototype/${encodeURIComponent(project || '')}/${targetFile}`
+    go(trail.current[next])
     setNav({ back: next > 0, forward: next < trail.current.length - 1 })
   }
 
   function reload() {
-    const f = frameRef.current
-    if (f) {
-      const page = currentPath(f)
-      setIframeLoading(true)
-      checkPrototypeReady()
-      const sep = page.includes('?') ? '&' : '?'
-      f.src = `${API}/prototype/${encodeURIComponent(project || '')}/${page}${sep}t=${Date.now()}`
-    }
+    checkReady()
+    try { frameRef.current?.contentWindow?.location.reload() } catch { /* not loaded */ }
   }
-
-  const lastArtifactRefresh = useRef(0)
-  useEffect(() => {
-    if (!prototypeArtifactStamp || prototypeArtifactStamp === lastArtifactRefresh.current) return
-    lastArtifactRefresh.current = prototypeArtifactStamp
-    const f = frameRef.current
-    if (!f) return
-    const page = currentPath(f) || currentFile || 'index.html'
-    setIframeLoading(true)
-    checkPrototypeReady()
-    const sep = page.includes('?') ? '&' : '?'
-    f.src = `${API}/prototype/${encodeURIComponent(project || '')}/${page}${sep}t=${prototypeArtifactStamp}`
-  }, [prototypeArtifactStamp, project, currentFile, checkPrototypeReady])
 
   const prevBusyRef = useRef(busy)
   useEffect(() => {
-    if (prevBusyRef.current && !busy) {
-      checkPrototypeReady()
-      reload()
-    }
+    if (prevBusyRef.current && !busy) checkReady()
     prevBusyRef.current = busy
-  }, [busy])
+  }, [busy, checkReady])
 
   const viewportOf = useCallback(() => {
     const f = frameRef.current
@@ -217,8 +177,8 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     if (!frameRef.current) return
     detachRef.current = attachPicker(frameRef.current, (el) => {
       const info = pickedFrom(frameRef.current, el, vp)
-      const pageFile = currentPath(frameRef.current)
-      const shotRoute = `${API}/prototype/${encodeURIComponent(project)}/${pageFile}`
+      const here = currentRoute(frameRef.current)
+      const shotRoute = api.webUrl(project, 'prototype', here)
       attachShot(
         {
           key: `sel-${++seq}`,
@@ -245,121 +205,18 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     return () => { detachRef.current?.(); detachRef.current = null }
   }, [pickOn, attach])
 
-  const attachVisualInspector = useCallback(() => {
-    visualDetachRef.current?.()
-    visualDetachRef.current = null
-    const f = frameRef.current
-    if (!f) return
-    const d = frameDoc(f)
-    if (!d) return
-
-    const STYLE_ID = '__vf_style'
-    if (!d.getElementById(STYLE_ID)) {
-      const st = d.createElement('style')
-      st.id = STYLE_ID
-      st.textContent = `
-        .__vf_hi {
-          outline: 2px dashed #10b981 !important;
-          outline-offset: -2px !important;
-          cursor: pointer !important;
-        }
-        .__vf_selected {
-          outline: 2px solid #10b981 !important;
-          outline-offset: -1px !important;
-        }
-      `
-      d.head.appendChild(st)
-    }
-
-    const hover = (e) => {
-      if (e.target && e.target.classList) {
-        e.target.classList.add('__vf_hi')
-      }
-    }
-    const leave = (e) => {
-      if (e.target && e.target.classList) {
-        e.target.classList.remove('__vf_hi')
-      }
-    }
-    const click = (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      e.stopImmediatePropagation()
-      const prev = d.querySelector('.__vf_selected')
-      if (prev) prev.classList.remove('__vf_selected')
-      if (e.target && e.target.classList) {
-        e.target.classList.add('__vf_selected')
-      }
-      setInspectedElement(e.target)
-      setInspectedDoc(d)
-    }
-
-    d.addEventListener('mouseover', hover, true)
-    d.addEventListener('mouseout', leave, true)
-    d.addEventListener('click', click, true)
-
-    visualDetachRef.current = () => {
-      d.removeEventListener('mouseover', hover, true)
-      d.removeEventListener('mouseout', leave, true)
-      d.removeEventListener('click', click, true)
-      const hi = d.querySelectorAll('.__vf_hi, .__vf_selected')
-      hi.forEach(el => el.classList.remove('__vf_hi', '__vf_selected'))
-      const st = d.getElementById(STYLE_ID)
-      if (st) st.remove()
-    }
-  }, [])
-
-  useEffect(() => {
-    if (visualEditOn) attachVisualInspector()
-    else {
-      visualDetachRef.current?.()
-      visualDetachRef.current = null
-      setInspectedElement(null)
-      setInspectedDoc(null)
-    }
-    return () => {
-      visualDetachRef.current?.()
-      visualDetachRef.current = null
-    }
-  }, [visualEditOn, attachVisualInspector])
-
-  const attachFigmaEditor = useCallback(() => {
-    protoEditorRef.current?.detach?.()
-    protoEditorRef.current = null
-    const f = frameRef.current
-    if (!f) return
-    import('@/lib/wireframe-html-editor').then(({ attachEditor }) => {
-      protoEditorRef.current = attachEditor(f, {
-        onSelect: setFigmaPicked,
-        onDirty: setFigmaDirty,
-        onMetrics: setFigmaMetrics,
-      })
-      if (protoEditorRef.current) {
-        protoEditorRef.current.setDragMode(figmaDragMode)
-      }
-    })
-  }, [figmaDragMode])
-
   useEffect(() => {
     const f = frameRef.current
     if (!f) return
     const onLoad = () => {
       watchFrame(f, project, 'designer')
-      syncPath()
-      setInspectedElement(null)
-      setInspectedDoc(null)
+      setLoadedTick(n => n + 1)
+      syncRoute()
       if (pickOn) attach()
-      if (visualEditOn) attachVisualInspector()
-      if (figmaMoveOn) attachFigmaEditor()
     }
     f.addEventListener('load', onLoad)
     return () => f.removeEventListener('load', onLoad)
-  }, [pickOn, attach, visualEditOn, attachVisualInspector, figmaMoveOn, attachFigmaEditor, syncPath])
-
-  useEffect(() => {
-    const id = setInterval(syncPath, 500)
-    return () => clearInterval(id)
-  }, [syncPath])
+  }, [pickOn, attach, syncRoute, project, src])
 
   const syncCanvas = useCallback(() => {
     const f = frameRef.current, c = canvasRef.current
@@ -430,16 +287,17 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
       drawingRef.current = false
       const strokes = strokesRef.current
       if (strokes.reduce((a, s) => a + s.length, 0) < MIN_INK) return clearStrokes()
-      const pageFile = currentPath(frameRef.current)
-      const shotRoute = `${API}/prototype/${encodeURIComponent(project)}/${pageFile}`
+      const here = currentRoute(frameRef.current)
+      const shotRoute = api.webUrl(project, 'prototype', here)
       attachShot(
         {
           key: `sel-${++seq}`,
           kind: 'drawing',
           strokes,
+          marked: elementsUnderStrokes(frameRef.current, strokes, vp),
           route: shotRoute,
           state: 'shooting',
-          label: `Drawing on ${pageFile}`,
+          label: `Drawing on ${here}`,
         },
         { route: shotRoute, viewport: viewportOf(), strokes }
       )
@@ -457,115 +315,33 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
       window.removeEventListener('pointerup', up)
       window.removeEventListener('resize', onResize)
     }
-  }, [pencilOn, point, syncCanvas, clearStrokes, attachShot, viewportOf, project])
-
-  useEffect(() => () => { protoEditorRef.current?.detach?.() }, [])
-
-  function toggleFigmaMove() {
-    if (!project) return addLog('WARN', 'Open a project first')
-    if (!figmaMoveOn) {
-      setPickOn(false)
-      setPencilOn(false)
-      setVisualEditOn(false)
-      setInspectedElement(null)
-      attachFigmaEditor()
-    } else {
-      protoEditorRef.current?.detach?.()
-      protoEditorRef.current = null
-      setFigmaPicked('')
-      setFigmaMetrics(null)
-      setFigmaDirty(false)
-    }
-    setFigmaMoveOn(v => !v)
-  }
-
-  const setProtoMode = mode => {
-    setFigmaDragMode(mode)
-    protoEditorRef.current?.setDragMode?.(mode)
-  }
-
-  async function savePrototypeFigma() {
-    if (!protoEditorRef.current || !project) return
-    setSavingProto(true)
-    setSaveProtoSuccess(false)
-    try {
-      if (figmaTyping) {
-        protoEditorRef.current.editText(false)
-        setFigmaTyping(false)
-      }
-      const base = baseFileName(currentFile)
-      const serializedHtml = protoEditorRef.current.serialize()
-      await api.saveFile(
-        project,
-        `.agentforge/prototype/${base || 'index.html'}`,
-        serializedHtml,
-        `Figma layout edit in ${base || 'index.html'}`
-      )
-      protoEditorRef.current.saved()
-      setFigmaDirty(false)
-      setSaveProtoSuccess(true)
-      addLog?.('SUCCESS', `Saved ${base || 'index.html'} directly to prototype HTML`)
-      setTimeout(() => setSaveProtoSuccess(false), 3000)
-    } catch (err) {
-      addLog?.('WARN', `Could not save prototype: ${err.message}`)
-    } finally {
-      setSavingProto(false)
-    }
-  }
-
-  const protoAct = (name, ...args) => () => {
-    protoEditorRef.current?.[name]?.(...args)
-    if (name === 'undo') {
-      setFigmaDirty(false)
-      setFigmaPicked('')
-      setFigmaMetrics(null)
-    }
-  }
+  }, [pencilOn, point, syncCanvas, clearStrokes, attachShot, viewportOf, project, vp])
 
   function togglePick() {
     if (!project) return addLog('WARN', 'Open a project first')
-    if (!pickOn) {
-      setPencilOn(false)
-      setVisualEditOn(false)
-      setInspectedElement(null)
-      if (figmaMoveOn) {
-        protoEditorRef.current?.detach?.()
-        protoEditorRef.current = null
-        setFigmaMoveOn(false)
-      }
-    }
+    if (!pickOn) { setPencilOn(false); setTextOn(false) }
     setPickOn(v => !v)
   }
 
   function togglePencil() {
     if (!project) return addLog('WARN', 'Open a project first')
-    if (!pencilOn) {
-      setPickOn(false)
-      setVisualEditOn(false)
-      setInspectedElement(null)
-      if (figmaMoveOn) {
-        protoEditorRef.current?.detach?.()
-        protoEditorRef.current = null
-        setFigmaMoveOn(false)
-      }
-    }
+    if (!pencilOn) { setPickOn(false); setTextOn(false) }
     setPencilOn(v => { if (v) clearStrokes(); return !v })
   }
 
-  function toggleVisualEdit() {
+  // The T tool: click words on the prototype and retype them.
+  function toggleText() {
     if (!project) return addLog('WARN', 'Open a project first')
-    if (!visualEditOn) {
-      setPickOn(false)
-      setPencilOn(false)
-      if (figmaMoveOn) {
-        protoEditorRef.current?.detach?.()
-        protoEditorRef.current = null
-        setFigmaMoveOn(false)
-      }
-    } else {
-      setInspectedElement(null)
-    }
-    setVisualEditOn(v => !v)
+    if (!textOn) { setPickOn(false); setPencilOn(false) }
+    setTextOn(v => !v)
+  }
+
+  // Words that are not written in one place of the source are asked of the agent instead.
+  function askToChange({ old, value }) {
+    addLog('INFO', `Asking the agent to change “${old}” to “${value}”…`)
+    api.editPrototype(project, `Change the text "${old}" to "${value}" on the ${lastRouteRef.current} page.`)
+      .then(() => checkReady())
+      .catch(error => addLog('WARN', `The text could not be changed: ${error.message}`))
   }
 
   async function undoLast() {
@@ -577,6 +353,18 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
       reload()
     } catch (e) {
       addLog('WARN', 'Undo failed: ' + e.message)
+    }
+  }
+
+  // Photograph every screen and have a model that can look at pictures say what is wrong; fix it. Or click through the journeys
+  // in a real browser, watch it, and fix what cannot be done by clicking or looks wrong.
+  async function look(what) {
+    try {
+      await api.reviewScreens(project, what, true)
+      addLog('INFO', what === 'journeys' ? 'Clicking through the prototype\u2019s journeys in a real browser\u2026'
+                                         : 'Taking a screenshot of every screen and looking at it\u2026')
+    } catch (error) {
+      addLog('WARN', `The prototype could not be checked: ${error.message}`)
     }
   }
 
@@ -601,15 +389,16 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     }
   }
 
-  // Reload when project changes or when drawing becomes active
+  // A different project starts on its home page.
   useEffect(() => {
-    if (frameRef.current && project) {
-      const firstPage = drawing?.pages?.[0]?.file || 'index.html'
-      setCurrentFile(firstPage)
-      lastFileRef.current = firstPage
-      frameRef.current.src = `${API}/prototype/${encodeURIComponent(project)}/${firstPage}`
-    }
-  }, [project, drawing?.id])
+    lastRouteRef.current = '/'
+    trail.current = ['/']
+    at.current = 0
+    setRoute('/')
+    setTextOn(false)
+    setNav({ back: false, forward: false })
+    setStatus({ built: false, version: 0 })
+  }, [project])
 
   return (
     <div className={cn('flex min-h-0 flex-1 flex-col bg-transparent', hidden && 'hidden')}>
@@ -630,12 +419,20 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
           </Cell>
         </div>
 
-        {/* Prototype tag & current file */}
+        {/* The prototype, and the screen it is on: pick another from the list. */}
         <div className="flex min-w-0 flex-1 items-center gap-2 rounded-[14px] bg-black/[.035] px-4 py-2 text-[12px] text-muted ring-1 ring-black/[.045] dark:bg-black/[.045] dark:ring-white/[.06]">
           <Layers className="size-3.5 shrink-0 text-purple-500" />
-          <span className="truncate font-mono text-[11.5px] text-ink font-medium">
-            {project} / {currentFile}
-          </span>
+          <span className="truncate font-mono text-[11.5px] text-ink font-medium">{project} /</span>
+          {pages.length > 0 && protoReady ? (
+            <select value={pages.some(p => p.route === route) ? route : ''} onChange={event => go(event.target.value)}
+                    aria-label="Screen"
+                    className="min-w-0 flex-1 truncate bg-transparent font-mono text-[11.5px] font-medium text-ink outline-none">
+              {!pages.some(p => p.route === route) && <option value="">{route}</option>}
+              {pages.map(page => <option key={page.route} value={page.route}>{page.route} — {page.page_name}</option>)}
+            </select>
+          ) : (
+            <span className="truncate font-mono text-[11.5px] text-ink font-medium">{route}</span>
+          )}
         </div>
 
         {/* Action: Build app from prototype */}
@@ -650,8 +447,21 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
           </button>
         )}
 
+        {project && protoReady && (
+          <div className="flex items-center gap-1 rounded-full border border-line/80 bg-panel/80 p-1 shadow-sm">
+            <Cell tip="Take a screenshot of every screen and fix what looks wrong" disabled={isBusy || walking}
+                  onClick={() => look('prototype')} className="rounded-full px-3">
+              <ScanEye className="size-3.5" />
+            </Cell>
+            <Cell tip="Click through the journeys in a real browser, live, and fix what cannot be done" disabled={isBusy || walking}
+                  onClick={() => look('journeys')} className="rounded-full px-3">
+              {walking ? <Loader2 className="size-3.5 animate-spin" /> : <Route className="size-3.5" />}
+            </Cell>
+          </div>
+        )}
+
         <a
-          href={prototypeUrl}
+          href={openUrl}
           target="_blank"
           rel="noreferrer"
           title="Open prototype in full browser window"
@@ -680,6 +490,10 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
                 side="left" on={pencilOn} onClick={togglePencil} className="rounded-full">
             <Pencil className="size-3.5" />
           </Cell>
+          <Cell tip="Click words on the prototype and retype them"
+                side="left" on={textOn} onClick={toggleText} className="rounded-full">
+            <Type className="size-3.5" />
+          </Cell>
           <Cell tip={selection.length
                        ? `Clear ${selection.length} attachment${selection.length === 1 ? '' : 's'}`
                        : 'Nothing attached yet'}
@@ -693,180 +507,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
             <Undo2 className="size-3.5" />
           </Cell>
         </div>
-
-        {/* Visual Quick Inspector (Zero-LLM Direct Editor) */}
-        <div className="flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/[.08] p-1 shadow-sm">
-          <Cell tip="Visual Inspector: click any element to live-edit text, colors, layout & move without LLM"
-                side="left" on={visualEditOn} onClick={toggleVisualEdit} className={cn("rounded-full", visualEditOn && "!bg-emerald-600 !text-ink shadow-sm")}>
-            <SlidersHorizontal className={cn("size-3.5", visualEditOn ? "text-ink" : "text-ink")} />
-          </Cell>
-        </div>
-
-        {/* Figma Move & Position Tool (Zero-LLM Direct Canvas Positioning) */}
-        <div className="flex items-center gap-1 rounded-full border border-[#BFB9FF]/40 bg-[#BFB9FF] p-1 shadow-sm">
-          <Cell
-            tip="Figma Move Tool: Drag elements with cursor, resize handles, nudge with arrows, position like Figma"
-            side="left"
-            on={figmaMoveOn}
-            onClick={toggleFigmaMove}
-            disabled={!protoReady || isBusy}
-            className={cn("rounded-full", figmaMoveOn && "!bg-[#BFB9FF] !text-ink shadow-sm")}
-          >
-            <Move className={cn("size-3.5", figmaMoveOn ? "text-ink" : "text-[#BFB9FF]")} />
-          </Cell>
-        </div>
       </div>
-
-      {/* Figma Design & Position Toolbar */}
-      {figmaMoveOn && (
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-black/10 bg-[#F2F0EF]/95 px-3.5 py-2 select-none z-30 shadow-md backdrop-blur-md">
-          {/* Mode Switcher: Move (Free Drag) vs Flow (Reorder) */}
-          <div className="flex items-center rounded-lg bg-black/40 p-0.5 border border-black/10">
-            <button
-              type="button"
-              onClick={() => setProtoMode('free')}
-              title="Move Tool (V): Drag with cursor to freely position anywhere"
-              className={cn('flex items-center gap-1 rounded-md px-2 py-1 text-[10.5px] font-medium transition cursor-pointer',
-                figmaDragMode === 'free' ? 'bg-[#BFB9FF] text-ink font-semibold shadow-sm' : 'text-muted hover:text-ink')}
-            >
-              <Move className="size-3" />
-              <span>Move</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setProtoMode('flow')}
-              title="Reorder Tool: Drag with cursor to drop between elements"
-              className={cn('flex items-center gap-1 rounded-md px-2 py-1 text-[10.5px] font-medium transition cursor-pointer',
-                figmaDragMode === 'flow' ? 'bg-[#BFB9FF] text-ink font-semibold shadow-sm' : 'text-muted hover:text-ink')}
-            >
-              <ArrowUpDown className="size-3" />
-              <span>Reorder</span>
-            </button>
-          </div>
-
-          <span className="mx-1 h-4 w-px bg-black/10" />
-
-          {figmaPicked ? (
-            <>
-              {/* Selected Tag & Dimensions */}
-              <span className="flex items-center gap-1 rounded-md bg-black/[.07] px-2 py-1 font-mono text-[10.5px] text-ink border border-black/10">
-                <span className="text-[#BFB9FF] font-semibold">&lt;{figmaPicked}&gt;</span>
-                {figmaMetrics && (
-                  <span className="text-muted2 text-[10px] ml-1">
-                    {figmaMetrics.w}×{figmaMetrics.h}px
-                  </span>
-                )}
-              </span>
-
-              {/* Position Steppers (X, Y) */}
-              <div className="flex items-center gap-1 rounded-md bg-black/30 px-1.5 py-0.5 border border-black/10 font-mono text-[10px]">
-                <span className="text-muted2 uppercase font-semibold text-[9.5px]">X:</span>
-                <button type="button" onClick={() => protoEditorRef.current?.nudge?.(-5, 0)} className="px-1 text-muted hover:text-ink hover:bg-black/10 rounded">-</button>
-                <span className="text-ink font-medium min-w-[28px] text-center">{figmaMetrics?.x ?? 0}px</span>
-                <button type="button" onClick={() => protoEditorRef.current?.nudge?.(5, 0)} className="px-1 text-muted hover:text-ink hover:bg-black/10 rounded">+</button>
-              </div>
-
-              <div className="flex items-center gap-1 rounded-md bg-black/30 px-1.5 py-0.5 border border-black/10 font-mono text-[10px]">
-                <span className="text-muted2 uppercase font-semibold text-[9.5px]">Y:</span>
-                <button type="button" onClick={() => protoEditorRef.current?.nudge?.(0, -5)} className="px-1 text-muted hover:text-ink hover:bg-black/10 rounded">-</button>
-                <span className="text-ink font-medium min-w-[28px] text-center">{figmaMetrics?.y ?? 0}px</span>
-                <button type="button" onClick={() => protoEditorRef.current?.nudge?.(0, 5)} className="px-1 text-muted hover:text-ink hover:bg-black/10 rounded">+</button>
-              </div>
-
-              {figmaMetrics?.hasOffset && (
-                <button
-                  type="button"
-                  onClick={() => protoEditorRef.current?.resetPos?.()}
-                  title="Reset Position to 0,0"
-                  className="rounded-md bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 px-1.5 py-1 text-[10px] font-medium transition cursor-pointer"
-                >
-                  Reset Pos
-                </button>
-              )}
-
-              {/* Nudge D-Pad */}
-              <div className="flex items-center rounded-md bg-black/[.05] p-0.5 border border-black/10">
-                <button type="button" onClick={() => protoEditorRef.current?.nudge?.(-1, 0)} title="Nudge Left (1px)" className="p-1 hover:bg-black/10 rounded text-muted hover:text-ink">
-                  <ArrowLeft className="size-2.5" />
-                </button>
-                <button type="button" onClick={() => protoEditorRef.current?.nudge?.(0, -1)} title="Nudge Up (1px)" className="p-1 hover:bg-black/10 rounded text-muted hover:text-ink">
-                  <ArrowUp className="size-2.5" />
-                </button>
-                <button type="button" onClick={() => protoEditorRef.current?.nudge?.(0, 1)} title="Nudge Down (1px)" className="p-1 hover:bg-black/10 rounded text-muted hover:text-ink">
-                  <ArrowDown className="size-2.5" />
-                </button>
-                <button type="button" onClick={() => protoEditorRef.current?.nudge?.(1, 0)} title="Nudge Right (1px)" className="p-1 hover:bg-black/10 rounded text-muted hover:text-ink">
-                  <ArrowRight className="size-2.5" />
-                </button>
-              </div>
-
-              <span className="mx-1 h-4 w-px bg-black/10" />
-
-              {/* Alignments */}
-              <button type="button" onClick={protoAct('align', 'left')} title="Align Left" className="p-1 hover:bg-black/10 rounded text-ink hover:text-ink cursor-pointer"><AlignLeft className="size-3" /></button>
-              <button type="button" onClick={protoAct('align', 'center')} title="Align Centre" className="p-1 hover:bg-black/10 rounded text-ink hover:text-ink cursor-pointer"><AlignCenter className="size-3" /></button>
-              <button type="button" onClick={protoAct('align', 'right')} title="Align Right" className="p-1 hover:bg-black/10 rounded text-ink hover:text-ink cursor-pointer"><AlignRight className="size-3" /></button>
-              <button type="button" onClick={protoAct('align', 'full')} title="Full Width" className="p-1 hover:bg-black/10 rounded text-ink hover:text-ink cursor-pointer"><Maximize2 className="size-3" /></button>
-
-              <span className="mx-1 h-4 w-px bg-black/10" />
-
-              {/* Hierarchy */}
-              <button type="button" onClick={protoAct('parent')} title="Select Parent Container" className="px-1.5 py-1 text-[10px] hover:bg-black/10 rounded text-ink hover:text-ink font-medium cursor-pointer">Parent</button>
-              <button type="button" onClick={protoAct('move', -1)} title="Move Up in DOM" className="p-1 hover:bg-black/10 rounded text-ink hover:text-ink text-[11px] font-medium cursor-pointer">↑</button>
-              <button type="button" onClick={protoAct('move', 1)} title="Move Down in DOM" className="p-1 hover:bg-black/10 rounded text-ink hover:text-ink text-[11px] font-medium cursor-pointer">↓</button>
-
-              {/* Size */}
-              <button type="button" onClick={protoAct('wider', -10)} title="Narrower (-10%)" className="px-1.5 py-1 text-[10px] hover:bg-black/10 rounded text-ink hover:text-ink font-medium cursor-pointer">-10%</button>
-              <button type="button" onClick={protoAct('wider', 10)} title="Wider (+10%)" className="px-1.5 py-1 text-[10px] hover:bg-black/10 rounded text-ink hover:text-ink font-medium cursor-pointer">+10%</button>
-
-              <span className="mx-1 h-4 w-px bg-black/10" />
-
-              {/* Actions */}
-              <button type="button" onClick={protoAct('duplicate')} title="Duplicate Element" className="p-1 hover:bg-black/10 rounded text-ink hover:text-ink cursor-pointer"><Copy className="size-3" /></button>
-              <button type="button" onClick={protoAct('remove')} title="Delete Element" className="p-1 hover:bg-black/10 rounded text-rose-300 hover:text-rose-200 cursor-pointer"><Trash2 className="size-3" /></button>
-              <button type="button" onClick={() => { protoEditorRef.current?.editText(!figmaTyping); setFigmaTyping(!figmaTyping) }} title="Edit Text Directly" className={cn("inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10.5px] font-medium transition cursor-pointer", figmaTyping ? "bg-emerald-600 text-ink" : "bg-black/[.06] text-ink hover:bg-black/[.12]")}>
-                <Type className="size-3" />
-                <span>{figmaTyping ? 'Done typing' : 'Text'}</span>
-              </button>
-            </>
-          ) : (
-            <span className="flex items-center gap-1.5 font-mono text-[11px] text-muted2">
-              <Move className="size-3 text-[#BFB9FF]" />
-              <span>Click or drag any element to position freely with cursor · Drag corner handles to resize · Arrow keys to nudge</span>
-            </span>
-          )}
-
-          <span className="flex-1" />
-
-          {/* Save Button */}
-          {figmaDirty && (
-            <button
-              type="button"
-              onClick={savePrototypeFigma}
-              disabled={savingProto}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-ink shadow-sm hover:bg-emerald-500 disabled:opacity-50 transition cursor-pointer"
-            >
-              {savingProto ? <><Loader2 className="size-3 animate-spin" /> Saving…</> : <><Save className="size-3" /> Save to HTML</>}
-            </button>
-          )}
-
-          {saveProtoSuccess && (
-            <span className="flex items-center gap-1 font-mono text-[11px] text-ink">
-              <Check className="size-3" /> Saved!
-            </span>
-          )}
-
-          <button
-            type="button"
-            onClick={protoAct('undo')}
-            title="Undo last change (Ctrl+Z)"
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition cursor-pointer bg-black/[.06] text-ink hover:bg-black/[.12] hover:text-ink"
-          >
-            <UndoIcon className="size-3" />
-            <span>Undo</span>
-          </button>
-        </div>
-      )}
 
       {/* Frame Container */}
       <div className="relative min-h-0 flex-1 overflow-hidden bg-canvas">
@@ -875,52 +516,34 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
                 style={{ pointerEvents: pencilOn ? 'auto' : 'none',
                          cursor: pencilOn ? 'crosshair' : 'default' }} />
 
-        {(pickOn || pencilOn) && (
+        {(pickOn || pencilOn || textOn) && (
           <p className="pointer-events-none absolute inset-x-0 bottom-7 z-[9] mx-auto w-fit rounded-full bg-ink/85 px-3.5 py-1.5 text-[11px] font-medium text-ink shadow-lg">
             {pencilOn ? 'Draw around what you mean — it attaches to the chat'
-                      : 'Click anything on the prototype — it attaches to the chat'}
+              : textOn ? 'Click any words on the prototype, then type the new ones'
+              : 'Click anything on the prototype — it attaches to the chat'}
           </p>
         )}
-
-        {visualEditOn && !inspectedElement && (
-          <p className="pointer-events-none absolute inset-x-0 bottom-7 z-[9] mx-auto w-fit rounded-full bg-emerald-700/90 px-3.5 py-1.5 text-[11px] font-medium text-ink shadow-lg backdrop-blur-md">
-            Visual Inspector active: click any element to live-edit text, colors, layout and move without LLM
-          </p>
-        )}
-
-        {visualEditOn && inspectedElement && inspectedDoc && (
-          <VisualInspector
-            element={inspectedElement}
-            doc={inspectedDoc}
-            project={project}
-            currentFile={baseFileName(currentFile)}
-            onClose={() => {
-              const prev = inspectedDoc?.querySelector('.__vf_selected')
-              if (prev) prev.classList.remove('__vf_selected')
-              setInspectedElement(null)
-            }}
-            onLog={(lvl, msg) => addLog(lvl, msg)}
-          />
-        )}
-
+        <AppTextEdit frameRef={frameRef} active={textOn} loaded={loadedTick} project={project} kind="prototype"
+          onSaved={() => checkReady()} onAskAi={askToChange} />
 
         <div className="relative flex min-h-0 h-full w-full items-start justify-center overflow-hidden bg-[#F2F0EF]">
           <div
             className={cn("relative h-full w-full max-w-full overflow-hidden bg-[#F2F0EF]", width && "border-x border-black/10 shadow-2xl")}
             style={{ width: width ? width + 'px' : '100%' }}
           >
-            <iframe
-              ref={frameRef}
-              title="prototype-preview"
-              src={prototypeUrl}
-              onLoad={() => {
-                checkPrototypeReady()
-              }}
-              className={cn(
-                "absolute inset-0 block h-full w-full border-0 bg-white transition-opacity duration-300",
-                !protoReady ? "opacity-0 pointer-events-none" : "opacity-100"
-              )}
-            />
+            {src && (
+              <iframe
+                ref={frameRef}
+                key={src}
+                title="prototype-preview"
+                src={src}
+                className="absolute inset-0 block h-full w-full border-0 bg-white"
+              />
+            )}
+
+            {/* The journeys being clicked through, live: the browser's picture and pointer, and the step it is on. */}
+            <AgentBrowser />
+            {liveStep && <LiveE2EOverlay event={liveStep} />}
 
             {!protoReady && (
               <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#F2F0EF] p-6 text-center select-none">
@@ -929,18 +552,15 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
                   <div className="h-full w-full bg-accent animate-pulse" />
                 </div>
 
-                <div className="relative mb-5 grid size-16 place-items-center rounded-none border border-accent/25 bg-accent shadow-[0_0_35px_rgba(191, 185, 255,0.2)]">
-                  <FlaskConical className="size-7 text-ink animate-pulse" />
-                  <Loader2 className="absolute size-10 animate-spin text-ink/40" />
-                </div>
+                <Loader2 className="mb-5 size-10 animate-spin text-accent" />
 
                 <h3 className="font-display text-[16px] font-bold tracking-tight text-ink">
-                  {isBusy ? 'Generating HTML Prototype…' : 'No prototype is ready yet'}
+                  {isBusy ? 'Making the prototype…' : 'No prototype is ready yet'}
                 </h3>
                 <p className="mt-1.5 max-w-sm text-center text-[12px] text-muted leading-relaxed">
                   {isBusy
-                    ? 'The AI agent is crafting interactive wireframes, layouts, and responsive components.'
-                    : 'Connecting to prototype canvas and mounting UI assets.'}
+                    ? 'The AI agent is reading the wireframes and writing a high-fidelity, animated React app, then bundling it and looking at every screen.'
+                    : 'Approve the wireframes and the design, and the prototype is made from them.'}
                 </p>
 
                 {resumePrototype && (
@@ -957,10 +577,10 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
                   <span className="size-2 rounded-full bg-accent animate-ping" />
                   <span className="truncate max-w-[280px]">
                     {generating
-                      ? (generationStatus || 'Planning and drawing prototype pages…')
+                      ? (generationStatus || 'Making the prototype from the wireframes…')
                       : (resumePrototype && ['paused', 'failed'].includes(workflowStatus)
                         ? 'Generation was interrupted. Continue from the saved checkpoint.'
-                        : (statusText || (typeof progress === 'string' ? progress : '') || (isBusy ? 'Designing pages…' : `${project || 'project'} / ${currentFile}`)))}
+                        : (statusText || (typeof progress === 'string' ? progress : '') || (isBusy ? 'Designing pages…' : `${project || 'project'} / ${route}`)))}
                   </span>
                 </div>
               </div>

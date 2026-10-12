@@ -45,6 +45,11 @@ describe('gateway routing', () => {
     expect(response.body.ok).toBe(true);
     expect(Object.keys(response.body)).not.toContain('services');
   });
+
+  it('answers the same readiness at /health, the path every package in this stack uses', async () => {
+    const response = await request(createApp(config)).get('/health').expect(200);
+    expect(response.body.ok).toBe(true);
+  });
 });
 
 describe('gateway response headers', () => {

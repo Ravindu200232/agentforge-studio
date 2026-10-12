@@ -4,39 +4,52 @@
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ArrowDown, Check, CheckCircle2, ChevronDown, ChevronRight, CircleAlert, CircleCheck, Clock, Copy, ExternalLink, Eye, FileCode2, FlaskConical, ListChecks, Loader2,
-  MessageCircleQuestion, MessageSquare, MousePointerClick, Palette, Paperclip, Pencil, Plug, Search,
+  ArrowDown, Check, CheckCircle2, ChevronDown, ChevronRight, CircleAlert, CircleCheck, Clock, Copy, ExternalLink, FileCode2, FlaskConical, ListChecks, Loader2,
+  MessageCircleQuestion, MessageSquare, MousePointerClick, Palette, Paperclip, Pencil, Plug, RefreshCw, Search,
   Send, SkipForward, Sparkles,
-  Square, Terminal, Wrench, X,
+  Square, Terminal, Wifi, WifiOff, Wrench, X,
 } from 'lucide-react'
 
-import { api } from '@/lib/api'
+import { API, api } from '@/lib/api'
 import { chatTurns } from '@/lib/chat'
 import { chatDisplayBlocks, cleanChatProse } from '@/lib/chat-display'
 import { consoleReport, forgetConsole } from '@/lib/console-log'
 import { computeLineDiff } from '@/lib/diff'
+import { modelLabel } from '@/lib/models'
 import { useStore } from '@/lib/store'
+import { useVisionModels } from '@/lib/vision'
 import { useEditAttachments } from '@/lib/use-edit-attachments'
 import { answerAsk, answerOption, answerQuestion, answerValue, declineAsk, reviseDrawing, send } from '@/lib/ws'
 import { cn } from '@/lib/utils'
 import ChangePlan from './ChangePlan'
 import EditAttach from './EditAttach'
+import PermissionCard from './PermissionCard'
+import PermissionMode from './PermissionMode'
 import PluginAccounts from './PluginAccounts'
-import { Modal } from './ui'
+import VisionBadge from './VisionBadge'
+import { Dropdown, Modal } from './ui'
 
 const ICONS = {
   read: Search, plan: Search, write: FileCode2, build: FileCode2,
   test: FlaskConical, run: Terminal, fix: Wrench, design: Palette,
   verify: CircleCheck, done: CircleCheck, warn: CircleAlert,
-  setup: Sparkles, note: Sparkles,
+  setup: Sparkles, note: Sparkles, effort: Sparkles,
 }
 
-const KIND_TONE = {
-  warn: 'bg-warn-tint text-warn',
-  done: 'bg-ok-tint text-ok',
+// How much reasoning and tool lookup one model call used — Ollama has no
+// native "effort" concept, so this is a rough four-level read, low to ultra.
+const EFFORT_TONE = {
+  low: 'bg-black/[.06] text-muted dark:bg-black/[.08]',
+  medium: 'bg-accent/60 text-ink',
+  high: 'bg-accent text-ink',
+  ultra: 'bg-accent text-ink',
 }
 
-export default function AgentChat({ projectTitle = '' }) {
+// Start at the current part of a long conversation. Earlier turns remain
+// available from the top of the stream; they are never removed from history.
+const TURN_PAGE_SIZE = 240
+
+export default function AgentChat({ projectTitle = '', readOnly = false, className = '' }) {
   const logs = useStore(s => s.logs)
   const chat = useStore(s => s.chat)
   const busy = useStore(s => s.busy)
@@ -52,11 +65,15 @@ export default function AgentChat({ projectTitle = '' }) {
     return candidates.sort((a, b) => (b.at || 0) - (a.at || 0))[0] || null
   })
   const agentState = useStore(s => s.agentState)
+  const agentDetail = useStore(s => s.agentDetail)
   const reasoning = useStore(s => s.reasoning)
+  const connection = useStore(s => s.connection)
+  const runStartedAt = useStore(s => s.runStartedAt)
   const pushChat = useStore(s => s.pushChat)
   const selection = useStore(s => s.selection)
   const removeSelection = useStore(s => s.removeSelection)
   const clearSelection = useStore(s => s.clearSelection)
+  const permissions = useStore(s => s.permissions)
 
   // Collapsing gives the whole width back to the work when someone wants it.
   const [open, setOpen] = useState(true)
@@ -70,6 +87,7 @@ export default function AgentChat({ projectTitle = '' }) {
   const scrollRef = useRef(null)
   const userScrolledUp = useRef(false)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
+  const [visibleTurnCount, setVisibleTurnCount] = useState(TURN_PAGE_SIZE)
 
   // Designer and Developer are tool permissions, not separate conversations.
   // Merge their persisted UI projections while the backend shares the exact
@@ -77,8 +95,8 @@ export default function AgentChat({ projectTitle = '' }) {
   const lifecycleStream = useMemo(() => {
     const own = projectSessions[project] || {}
     const sessions = ['designer', 'developer'].map(role => role === agentRole
-      ? { logs, chat }
-      : (own[role] || { logs: [], chat: [] }))
+      ? { logs, chat, busy, runStartedAt }
+      : (own[role] || { logs: [], chat: [], busy: false, runStartedAt: 0 }))
     const unique = (rows, fields) => {
       const seen = new Set()
       return rows.filter(row => {
@@ -95,8 +113,9 @@ export default function AgentChat({ projectTitle = '' }) {
       // it rendered every persisted plan/message twice after a reload.
       chat: unique(sessions.flatMap(session => session.chat || []), ['at', 'text', 'title', 'kind']),
       busy: busy || ['designer', 'developer'].some(role => role !== agentRole && own[role]?.busy),
+      startedAt: Math.max(0, ...sessions.map(session => Number(session.runStartedAt) || 0)),
     }
-  }, [projectSessions, project, agentRole, logs, chat, busy])
+  }, [projectSessions, project, agentRole, logs, chat, busy, runStartedAt])
   const turns = useMemo(() => {
     const ordinary = chatTurns(lifecycleStream.logs, lifecycleStream.chat)
     // The "Checking this stage now…" cards are gone: the files and actions in
@@ -107,8 +126,16 @@ export default function AgentChat({ projectTitle = '' }) {
       // plan pasted into the conversation (including older persisted events).
       .filter(turn => turn.role !== 'stage' && turn.kind !== 'plan')
       .sort((a, b) => (a.at || 0) - (b.at || 0))
-      .slice(-220)
   }, [lifecycleStream, lifecycle])
+  const firstVisibleTurn = Math.max(0, turns.length - visibleTurnCount)
+  const visibleTurns = turns.slice(firstVisibleTurn)
+  const hiddenTurnCount = firstVisibleTurn
+
+  // Switching projects starts at that project's newest activity, with older
+  // messages one click away rather than erased or mixed with another project.
+  useEffect(() => {
+    setVisibleTurnCount(TURN_PAGE_SIZE)
+  }, [project])
   // A plan is on screen and waiting: whatever is typed now is about that plan.
   const planWaiting = turns.some(turn => turn.role === 'change' && turn.status === 'proposed')
   const waiting = useStore(s => s.queue)
@@ -176,8 +203,10 @@ export default function AgentChat({ projectTitle = '' }) {
   useEffect(() => {
     if (lifecycleStream.busy || !project) return
     const next = useStore.getState().takeQueued(project, agentRole) // takeQueued(project)
-    if (next) fire(next.payload, next.body, next.shown, next.shots)
+    if (next) fire(next.payload, next.body)
   }, [lifecycleStream.busy, project])
+
+  const stopRun = useStopRun(lifecycleStream.busy)
 
   async function submit() {
     const typed = text.trim()
@@ -230,11 +259,13 @@ export default function AgentChat({ projectTitle = '' }) {
       project, route, agent: agentRole,
       model: (agentRole === 'designer' ? useStore.getState().models.design : useStore.getState().models.builder) || useStore.getState().models.agent,
       think: useStore.getState().think,
+      thinking_level: useStore.getState().thinkingLevel,
       qa_model: useStore.getState().models.qa || '',
       console: consoleReport(),
     }
     if (selection.length) {
-      payload.elements = selection.filter(s => s.kind === 'element').map(s => s.info)
+      // The things pointed at, and what each drawing was around: the agent is told about them in words.
+      payload.elements = selection.flatMap(s => (s.kind === 'element' ? [s.info] : s.marked || []))
       payload.shots = selection.filter(s => s.shot)
         .map(s => ({ kind: s.kind, image: s.shot, label: s.label }))
     }
@@ -243,7 +274,7 @@ export default function AgentChat({ projectTitle = '' }) {
     if (lifecycleStream.busy) {
       queueUp(payload, full, typed, shots)
     } else {
-      fire(payload, full, typed, shots)
+      fire(payload, full)
     }
     setReading(false)
   }
@@ -260,7 +291,7 @@ export default function AgentChat({ projectTitle = '' }) {
   }
 
   /** Say it, and it goes: sends typed prompts and attachments directly to the agent. */
-  function fire(payload, body, shown, shots = []) {
+  function fire(payload, body) {
     const s = useStore.getState()
     // The server journals and echoes the message, including queued requests.
     send({ ...payload, prompt: body })
@@ -284,26 +315,21 @@ export default function AgentChat({ projectTitle = '' }) {
   }
 
   return (
-    <aside className="flex w-[100%] lg:w-[var(--chat-w,460px)] max-w-full shrink-0 flex-col overflow-hidden border-r border-line/60 bg-panel/80">
-      <header className="shrink-0 border-b border-line/60 px-3.5 py-3">
+    <aside className={cn('flex w-[100%] lg:w-[var(--chat-w,500px)] max-w-full shrink-0 flex-col overflow-hidden border-r border-line/60 bg-panel', className)}>
+      <header className="shrink-0 border-b border-line/60 px-4 py-3">
         <div className="flex items-center gap-2">
-          <span className="grid size-7 place-items-center rounded-xl bg-accent text-ink">
-            <MessageSquare className="size-3.5" />
-          </span>
           <div className="min-w-0">
-            <p className="text-[12.5px] font-semibold leading-none text-ink">{projectTitle || 'Lifecycle Engine'}</p>
-            <p className="mt-1 truncate text-[10px] text-muted2">
-              {project ? 'Project conversation · one context' : 'no project open'}
+            <p className="truncate text-[12px] font-semibold leading-none text-ink">{projectTitle || 'Project chat'}</p>
+            <p className="mt-1 text-[10px] text-muted2">
+              {readOnly ? 'Interview conversation — it continues through every stage.'
+                : lifecycleStream.busy ? 'Working on your request' : project ? 'Ready for the next request' : 'Open a project to begin'}
             </p>
           </div>
           <span className="flex-1" />
           {lifecycleStream.busy && (
-            <>
-              <span className="flex items-center gap-1.5 rounded-full bg-accent px-2 py-0.5 text-[10px] font-semibold text-ink">
-                <Loader2 className="size-2.5 animate-spin" /> working
-              </span>
-              <CancelRun />
-            </>
+            <span className="flex items-center gap-1 text-[10px] font-medium text-muted">
+              <Loader2 className="size-3 animate-spin" /> working
+            </span>
           )}
           <button onClick={() => setOpen(false)} title="Hide the agent"
                   className="grid size-7 place-items-center rounded-lg text-muted transition-colors hover:bg-black/[.05] hover:text-ink dark:hover:bg-black/[.06]">
@@ -312,17 +338,27 @@ export default function AgentChat({ projectTitle = '' }) {
         </div>
       </header>
 
-      <div ref={scrollRef} onScroll={handleScroll} className="relative min-h-0 flex-1 overflow-y-auto px-3.5 py-3">
-        <div className="space-y-3">
+      <div ref={scrollRef} onScroll={handleScroll} className="relative min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <div className="space-y-2">
+          {hiddenTurnCount > 0 && (
+            <button
+              onClick={() => setVisibleTurnCount(count => Math.min(turns.length, count + TURN_PAGE_SIZE))}
+              className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-[11px] font-medium text-muted transition-colors hover:border-accent hover:text-ink"
+            >
+              Show {Math.min(TURN_PAGE_SIZE, hiddenTurnCount)} older messages · {hiddenTurnCount} saved
+            </button>
+          )}
           {/* The last row is the one happening now, so it is the one that
               spins; the rows behind it have already happened. */}
-          {turns.map((turn, i) => (
-            <Turn key={turn.id || `${turn.at}-${i}`} turn={turn}
-                  live={lifecycleStream.busy && i === turns.length - 1} />
+          {visibleTurns.map(turn => (
+            <Turn key={turn.id || `${turn.at}-${turn.role}-${turn.title || turn.text || ''}`} turn={turn}
+                  live={lifecycleStream.busy && turn.id === turns.at(-1)?.id} />
           ))}
-          {lifecycleStream.busy && (reasoning || /plan|draft|revis/i.test(agentState)) && !ask &&
-            <Thinking reasoning={reasoning} state={agentState} />}
+          {lifecycleStream.busy && connection && !ask && <ConnectionNotice connection={connection} project={project} />}
+          {lifecycleStream.busy && !connection && (reasoning || Boolean(agentState)) && !ask && !(permissions || []).length &&
+            <Thinking reasoning={reasoning} state={agentState} detail={agentDetail} />}
           {ask && <Asked ask={ask} onPick={said => { setText(said); box.current?.focus() }} />}
+          {(permissions || []).map(card => <PermissionCard key={card.id} card={card} />)}
           {queued.map(item => (
             <Queued key={item.id} item={item}
                     onDrop={() => useStore.getState().dropQueued(item.id)} />
@@ -344,13 +380,18 @@ export default function AgentChat({ projectTitle = '' }) {
         )}
       </div>
 
-      <footer className="shrink-0 border-t border-line px-3.5 py-3">
+      {lifecycleStream.busy && (
+        <LiveTurnMeter stats={stats} startedAt={lifecycleStream.startedAt}
+                       reasoning={reasoning} state={agentState} />
+      )}
+
+      {!readOnly && <footer className="shrink-0 border-t border-line bg-panel px-3 py-3">
         <Attached items={selection} onRemove={removeSelection} />
-        <div className="rounded-2xl border border-line bg-panel2/70 p-2.5 focus-within:border-accent/50 focus-within:bg-panel shadow-sm transition-all">
+        <div className="rounded-xl border border-line bg-white p-2 shadow-sm transition-all focus-within:border-line2">
           <textarea
             ref={box}
             aria-label="Continue this project"
-            value={text} rows={2}
+            value={text} rows={1}
             disabled={!project || reading}
             placeholder={ask
               ? 'Answer it here, or say it in your own words…'
@@ -361,42 +402,197 @@ export default function AgentChat({ projectTitle = '' }) {
               : lifecycleStream.busy ? 'Say what is next — it goes when this finishes'
               : selection.length
                 ? 'Say what should change about it…'
-              : project ? 'How can AgentForge help you today? (or /command)'
+              : project ? 'Plan, search, build anything…'
                         : 'Open a project first'}
             onChange={e => setText(e.target.value)}
             onKeyDown={e => {
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit() }
+              if (e.key === 'Escape' && lifecycleStream.busy) { e.preventDefault(); stopRun.stop() }
             }}
-            className="w-full resize-none bg-transparent px-2 py-1 text-[13px] leading-relaxed text-ink outline-none placeholder:text-muted2 disabled:opacity-45" />
-          <div className="mt-1 flex items-center justify-between border-t border-line/40 pt-1.5 px-1">
+            className="min-h-8 w-full resize-none bg-transparent px-1.5 py-1 text-[12.5px] leading-relaxed text-ink outline-none placeholder:text-muted2 disabled:opacity-45" />
+          <div className="mt-1 flex items-center justify-between px-0.5">
             {project ? (
               <span className="flex min-w-0 items-center gap-1">
                 <EditAttach attach={attach} project={project}
                         onSpoken={said => setText((text ? text.trimEnd() + ' ' : '') + said)} disabled={reading} />
                 <PluginPicker project={project} />
-                <span
-                  title={selection.length
-                    ? 'Element-specific edits are scoped to the selected artifact.'
-                    : 'Every request is planned first: you read the plan and approve it before anything changes.'}
-                  className={cn('ml-1 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold transition-colors',
-                    !selection.length ? 'bg-accent text-ink' : 'text-muted2')}>
-                  <ListChecks className="size-3" />
-                  {selection.length ? 'Direct element edit' : 'Plan first'}
-                </span>
+                <PermissionMode project={project} className="ml-1" />
+                {selection.length > 0 && (
+                  <span
+                    title="Element-specific edits are scoped to the selected artifact."
+                    className="ml-1 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold text-muted2">
+                    <ListChecks className="size-3" />
+                    Direct element edit
+                  </span>
+                )}
               </span>
             ) : <span />}
-            <button onClick={submit}
-                    disabled={!project || reading || !text.trim()}
-                    title={lifecycleStream.busy ? 'Queue this (Enter)' : 'Send (Enter)'}
-                    className="grid size-8 shrink-0 place-items-center rounded-xl bg-accent text-ink shadow-sm transition-all hover:bg-press disabled:opacity-30">
-              {reading ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
-            </button>
+            <div className="flex shrink-0 items-center gap-1">
+              <ChatModelControls project={project} agentRole={agentRole} busy={lifecycleStream.busy} />
+              <ContextUsage stats={stats} />
+              {(!lifecycleStream.busy || text.trim()) && (
+                <button onClick={submit}
+                        disabled={!project || reading || !text.trim()}
+                        title={lifecycleStream.busy ? 'Queue this (Enter)' : 'Send (Enter)'}
+                        className="grid size-7 place-items-center rounded-full bg-raised text-muted shadow-sm transition-all hover:bg-accent hover:text-ink disabled:opacity-30">
+                  {reading ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+                </button>
+              )}
+              {lifecycleStream.busy && (
+                <button onClick={stopRun.stop} disabled={stopRun.stopping}
+                        title={stopRun.stopping ? 'Stopping…' : 'Stop (Esc)'} aria-label="Stop"
+                        className="grid size-7 place-items-center rounded-full bg-ink text-panel shadow-sm transition-all hover:opacity-85 disabled:opacity-60">
+                  {stopRun.stopping ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-2.5 fill-current" />}
+                </button>
+              )}
+              <span role="status" aria-live="polite" className="sr-only">{stopRun.stopping ? 'Stop requested' : ''}</span>
+            </div>
           </div>
         </div>
-      </footer>
+      </footer>}
 
-      <StatusLine stats={stats} />
     </aside>
+  )
+}
+
+/**
+ * The conversation owns its history; a model is only the engine used for the
+ * next turn. Keeping this next to the stream makes that distinction visible
+ * instead of burying it in global Settings.
+ */
+function ChatModelControls({ project, agentRole, busy }) {
+  const models = useStore(s => s.models)
+  const thinkingLevel = useStore(s => s.thinkingLevel)
+  const setRoleModel = useStore(s => s.setRoleModel)
+  const setThinkingLevel = useStore(s => s.setThinkingLevel)
+  const addLog = useStore(s => s.addLog)
+  const [catalog, setCatalog] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [open, setOpen] = useState(false)
+  const seeing = useVisionModels(open)
+
+  const role = agentRole === 'designer' ? 'design' : 'builder'
+  const current = models[role] || models.agent || ''
+  const groups = [
+    ['On this machine', catalog?.local_models || []],
+    ['Cloud', catalog?.cloud || []],
+  ]
+  const inCatalog = groups.some(([, rows]) => rows.some(row => (row.id || row) === current))
+  const selected = groups.flatMap(([, rows]) => rows).find(row => (row.id || row) === current)
+  const selectedLabel = modelLabel(selected || { id: current }) || current || 'Choose model'
+  const effort = {
+    low: 'Low', high: 'High', xhigh: 'Extra',
+  }[thinkingLevel] || 'High'
+
+  useEffect(() => {
+    let alive = true
+    api.models().then(result => { if (alive) setCatalog(result || {}) })
+      .catch(() => { if (alive) setCatalog({}) })
+    return () => { alive = false }
+  }, [])
+
+  async function save(nextModel, nextLevel) {
+    setSaving(true)
+    try {
+      await api.saveSettings({ agent_model: nextModel, thinking_level: nextLevel })
+    } catch (error) {
+      addLog('WARN', `Could not save the chat model preference — ${error.message}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function chooseModel(next) {
+    if (!next || next === current) return
+    setRoleModel(role, next)
+    save(next, thinkingLevel)
+  }
+
+  function chooseEffort(level) {
+    if (level === thinkingLevel) return
+    setThinkingLevel(level)
+    save(current, level)
+  }
+
+  return (
+    <div className="relative min-w-0">
+      <button type="button" disabled={!project}
+              onClick={() => setOpen(value => !value)}
+              aria-haspopup="dialog" aria-expanded={open}
+              title="Choose the model and reasoning effort for the next turn"
+              className="flex max-w-[174px] items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-medium text-muted2 transition-colors hover:bg-panel2 hover:text-ink disabled:opacity-45">
+        <span className="truncate text-ink">{selectedLabel}</span>
+        <span className="shrink-0 text-muted2">{effort}</span>
+        {saving || busy
+          ? <Loader2 className="size-3 shrink-0 animate-spin text-deep" />
+          : <ChevronDown className={cn('size-3 shrink-0 transition-transform', open && 'rotate-180')} />}
+      </button>
+
+      <Dropdown open={open} onClose={() => setOpen(false)}
+                className="bottom-full right-0 mb-2 w-[296px] p-2">
+        <div role="dialog" aria-label="Model and reasoning settings">
+          <p className="px-2 pb-1 text-[10px] font-semibold text-muted2">Select model</p>
+          <div className="max-h-52 space-y-1 overflow-y-auto pr-1">
+            {current && !inCatalog && (
+              <button type="button" onClick={() => chooseModel(current)}
+                      className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-[11px] text-ink hover:bg-panel2">
+                <span className="truncate">{current}</span><span className="text-[9px] text-muted2">Current</span>
+              </button>
+            )}
+            {groups.map(([name, rows]) => rows.length > 0 && (
+              <section key={name} className="pb-1">
+                <p className="px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-muted2">{name}</p>
+                {rows.map(row => {
+                  const id = row.id || row
+                  const picked = id === current
+                  return (
+                    <button key={id} type="button" onClick={() => chooseModel(id)} disabled={saving}
+                            aria-pressed={picked}
+                            className={cn('flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] transition-colors disabled:opacity-45',
+                              picked ? 'bg-accent/55 text-ink' : 'text-ink hover:bg-panel2')}>
+                      <span className="min-w-0 flex-1 truncate">{modelLabel(row) || id}</span>
+                      {seeing.vision.has(id) && <VisionBadge />}
+                      {picked && <Check className="size-3 shrink-0" />}
+                    </button>
+                  )
+                })}
+              </section>
+            ))}
+            {!catalog && <p className="px-2 py-3 text-[10px] text-muted2">Reading available models…</p>}
+            {catalog && seeing.vision.size > 0 && (
+              <p className="px-2 py-1.5 text-[9.5px] leading-snug text-muted2">
+                A model marked <b>vision</b> can look at pictures, so the Studio can have it check the prototype's screens by looking at them. Other models skip that check.
+              </p>
+            )}
+            {catalog && !groups.some(([, rows]) => rows.length) && <p className="px-2 py-3 text-[10px] text-muted2">No models are available yet.</p>}
+          </div>
+
+          <div className="mt-2 border-t border-line pt-2">
+            <p className="px-2 pb-1 text-[10px] font-semibold text-muted2">Reasoning effort</p>
+            <div aria-label="Reasoning effort" className="grid grid-cols-3 rounded-xl bg-panel2 p-1">
+              {[
+                ['low', 'Low'], ['high', 'High'], ['xhigh', 'Extra high'],
+              ].map(([id, label]) => (
+                <button key={id} type="button" disabled={saving} onClick={() => chooseEffort(id)}
+                        title={id === 'xhigh'
+                          ? 'Reasons and performs a separate final verification pass. Applies to the next turn.'
+                          : `${label} effort. Applies to the next turn without clearing this project history.`}
+                        aria-pressed={thinkingLevel === id}
+                        className={cn('rounded-lg px-1 py-1.5 text-[10px] font-semibold transition-colors disabled:opacity-45',
+                          thinkingLevel === id ? 'bg-panel text-ink shadow-sm' : 'text-muted2 hover:text-ink')}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p aria-live="polite" className="px-2 pb-0.5 pt-2 text-[9.5px] text-muted2">
+            {saving ? 'Saving preference…' : busy
+              ? 'Applies to the next turn; this run keeps its current model.'
+              : 'Changes keep this project’s conversation and memory.'}
+          </p>
+        </div>
+      </Dropdown>
+    </div>
   )
 }
 
@@ -451,7 +647,8 @@ function Attached({ items, onRemove }) {
         const Icon = item.kind === 'drawing' ? Pencil : MousePointerClick
         return (
           <span key={item.key} title={item.label}
-                className="group relative flex max-w-[190px] items-center gap-1.5 rounded-lg border border-line/80 bg-panel2/70 py-1 pl-1 pr-1.5">
+                aria-label={`Attached ${item.kind === 'drawing' ? 'drawing' : 'element'}: ${item.label}`}
+                className="group relative grid size-8 place-items-center rounded-lg border border-line/80 bg-panel2/70">
             <span className="grid size-8 shrink-0 place-items-center overflow-hidden rounded-md bg-white ring-1 ring-line/70 dark:bg-black/10">
               {item.state === 'shooting'
                 ? <Loader2 className="size-3 animate-spin text-accent" />
@@ -459,18 +656,11 @@ function Attached({ items, onRemove }) {
                   ? <img src={item.shot} alt="" className="size-full object-cover object-top" />
                   : <Icon className="size-3 text-muted2" />}
             </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-[10.5px] font-medium text-ink">
-                {item.kind === 'drawing' ? 'Drawing' : shortLabel(item.label)}
-              </span>
-              <span className="block truncate font-mono text-[9px] text-muted2">
-                {item.route || '/'}
-              </span>
-            </span>
             <button onClick={() => onRemove(item.key)}
+                    aria-label="Remove this from the message"
                     title="Remove this from the message"
-                    className="shrink-0 text-muted2 transition-colors hover:text-bad">
-              <X className="size-3" />
+                    className="absolute -right-1 -top-1 hidden size-3.5 place-items-center rounded-full border border-line bg-panel text-muted2 transition-colors hover:text-bad group-hover:grid focus:grid">
+              <X className="size-2" />
             </button>
           </span>
         )
@@ -479,83 +669,82 @@ function Attached({ items, onRemove }) {
   )
 }
 
-/** `<button> Add to basket   /plants` -> `<button> Add to basket`. */
-function shortLabel(label) {
-  const text = String(label || '').split(/\s{2,}/)[0].trim()
-  return text.length > 34 ? text.slice(0, 33) + '…' : text || 'Element'
-}
-
-/** Prompts confirmation and halts the current active agent run. */
-function CancelRun() {
-  const [asking, setAsking] = useState(false)
-  const [sending, setSending] = useState(false)
+/** Stop, as in Claude: the send button's place while the agent works, one press (or Esc) and it stops - no
+ * confirmation. The run ends at once on the server; the button spins until the studio sees it has. */
+function useStopRun(busy) {
+  const [stopping, setStopping] = useState(false)
   const addLog = useStore(s => s.addLog)
 
+  useEffect(() => { if (!busy) setStopping(false) }, [busy])
+
   async function stop() {
-    setSending(true)
+    if (stopping) return
+    setStopping(true)
     try {
       const current = useStore.getState()
-      await api.cancelBuild(current.project, current.agentRole)
+      const result = await api.cancelBuild(current.project, current.agentRole)
+      if (result?.status === 'stopping') {
+        addLog('INFO', 'Stop requested — ending the current step now.')
+      } else {
+        setStopping(false)
+        addLog('INFO', result?.detail || 'No active run to stop.')
+      }
     } catch (e) {
+      setStopping(false)
       addLog('WARN', `could not cancel — ${e.message}`)
-      setSending(false)
-      setAsking(false)
     }
   }
 
-  if (!asking) return (
-    <button onClick={() => setAsking(true)} title="Stop this run"
-            className="grid size-7 place-items-center rounded-lg text-muted transition-colors hover:bg-bad/10 hover:text-bad">
-      <Square className="size-3" />
-    </button>
-  )
-
-  return (
-    <span className="flex items-center gap-1">
-      <button onClick={stop} disabled={sending}
-              className="inline-flex items-center gap-1 rounded-full bg-bad px-2 py-0.5 text-[10px] font-semibold text-ink disabled:opacity-60">
-        {sending ? <Loader2 className="size-2.5 animate-spin" /> : <Square className="size-2.5" />}
-        {sending ? 'Stopping' : 'Stop'}
-      </button>
-      <button onClick={() => setAsking(false)} disabled={sending}
-              className="rounded-full px-1.5 py-0.5 text-[10px] text-muted hover:text-ink">
-        Keep going
-      </button>
-    </span>
-  )
+  return { stop, stopping }
 }
 
-/** Footer status bar displaying context window usage and cumulative run metrics. */
-function StatusLine({ stats }) {
+/** The tiny ring beside the model opens the detailed context meter without
+ * taking a permanent footer row away from the conversation. */
+function ContextUsage({ stats }) {
+  const [open, setOpen] = useState(false)
   if (!stats) return null
+  const focused = stats.context_scope === 'focused'
   const percent = Math.max(0, Math.min(100, Number(stats.percent) || 0))
   const spent = (Number(stats.sent) || 0) + (Number(stats.received) || 0)
+  const remaining = Math.max(0, (Number(stats.limit) || 0) - (Number(stats.tokens) || 0))
   return (
-    <div className="shrink-0 border-t border-line/60 bg-panel2/50 px-3.5 py-2">
-      <div className="flex items-center gap-2">
-        <span className="font-mono text-[9.5px] text-muted2">context</span>
-        <span className="h-[5px] min-w-0 flex-1 overflow-hidden rounded-full bg-line">
-          <span className={cn('block h-full rounded-full transition-[width] duration-500',
-            percent >= 90 ? 'bg-bad' : percent >= 70 ? 'bg-warn' : 'bg-accent')}
-                style={{ width: `${percent}%` }} />
-        </span>
-        <span className="font-mono text-[9.5px] tabular-nums text-muted">
-          {compact(stats.tokens)}/{compact(stats.limit)}
-        </span>
-      </div>
-      {/* The model is chosen in Settings and is the same for every run, so
-          naming it on every line of every chat said nothing that changed. */}
-      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[9.5px] text-muted2">
-        {stats.requests > 0 && <span title="requests to the model">{stats.requests} req</span>}
-        {spent > 0 && (
-          <span title="tokens sent / received across the run">
-            {compact(stats.sent)}↑ {compact(stats.received)}↓
-          </span>
-        )}
-        {stats.iterations > 0 && <span title="loop steps">{stats.iterations} steps</span>}
-        {stats.tools > 0 && <span title="tool calls">{stats.tools} tools</span>}
-        {stats.files > 0 && <span title="files written">{stats.files} files</span>}
-      </div>
+    <div className="relative">
+      <button type="button" onClick={() => setOpen(value => !value)} aria-label={`Context usage ${Math.round(percent)}%`}
+              aria-haspopup="dialog" aria-expanded={open} title={`Context usage: ${Math.round(percent)}%`}
+              className="grid size-6 place-items-center rounded-full text-deep transition-colors hover:bg-panel2">
+        <svg viewBox="0 0 20 20" className="size-4 -rotate-90" aria-hidden="true">
+          <circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" strokeOpacity=".18" strokeWidth="2" />
+          <circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                  pathLength="100" strokeDasharray={`${Math.max(4, percent)} 100`} />
+        </svg>
+      </button>
+      <Dropdown open={open} onClose={() => setOpen(false)} className="bottom-full right-0 mb-2 w-[344px] p-3 context-window-card">
+        <div role="dialog" aria-label="Context-window usage">
+          <div className="flex items-center justify-between gap-3 text-[12px]">
+            <span className="context-window-title font-medium">{focused ? 'Largest model context so far' : 'Context window'}</span>
+            <span className="context-window-value font-mono tabular-nums">
+              {stats.limit ? `${compact(stats.tokens)} / ${compact(stats.limit)} (${Math.round(percent)}%)`
+                : `${compact(stats.tokens)} tokens`}
+            </span>
+          </div>
+          {stats.limit ? <>
+            <div className="context-window-track mt-2 h-1 overflow-hidden rounded-full">
+              <span className="context-window-progress block h-full rounded-full transition-[width] duration-500"
+                    style={{ width: `${percent}%` }} />
+            </div>
+            <p className="mt-2 text-[11px] text-muted">{focused
+              ? 'The biggest single request this project’s interview, SRS and wireframes have sent so far. Each of those steps rebuilds its context from the saved project files, so nothing is lost between them.'
+              : `${compact(remaining)} remains before older detail is compacted automatically.`}</p>
+          </> : <p className="mt-2 text-[11px] text-muted">The provider reported usage but not its context-window capacity.</p>}
+          <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 border-t border-line pt-3 font-mono text-[10px] text-muted2">
+            {stats.requests > 0 && <span>{stats.requests} requests</span>}
+            {spent > 0 && <span>{compact(stats.sent)}↑ {compact(stats.received)}↓</span>}
+            {stats.iterations > 0 && <span>{stats.iterations} steps</span>}
+            {stats.tools > 0 && <span>{stats.tools} tools</span>}
+            {stats.files > 0 && <span>{stats.files} files</span>}
+          </div>
+        </div>
+      </Dropdown>
     </div>
   )
 }
@@ -563,6 +752,43 @@ function StatusLine({ stats }) {
 function compact(n) {
   const value = Number(n) || 0
   return value >= 1000 ? `${Math.round(value / 100) / 10}k` : String(value)
+}
+
+/**
+ * A request-level status line. Time ticks locally, while the token total comes
+ * only from the provider's completed-response accounting in the event stream.
+ * That means a slow model never gets a fabricated "typing" token animation.
+ */
+function LiveTurnMeter({ stats, startedAt = 0, reasoning = false, state = '' }) {
+  const [now, setNow] = useState(() => Date.now())
+  const started = Number(stats?.turn_started_at) || Number(startedAt) || now
+  useEffect(() => {
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [started])
+
+  const elapsed = Math.max(0, Math.floor((now - started) / 1000))
+  const generated = Math.max(0, Number(stats?.turn_tokens) || 0)
+  const thinking = reasoning || state === 'thinking' || /plan|draft|revis/i.test(state)
+  return (
+    <div aria-live="polite" aria-label={`${thinking ? 'Thinking' : 'Working'} for ${elapsed} seconds; ${generated} generated tokens`}
+         className="flex shrink-0 items-center gap-1.5 border-t border-line/60 bg-panel px-4 py-2 font-mono text-[10px] tabular-nums text-muted2">
+      <Loader2 className="size-3 animate-spin text-accent" />
+      <span className="font-sans font-medium text-muted">{thinking ? 'Thinking' : 'Working'}</span>
+      <span aria-hidden="true">·</span>
+      <span>{formatRunTime(elapsed)}</span>
+      <span aria-hidden="true">·</span>
+      <span title="Exact generated-token total reported by the model for this request.">
+        {compact(generated)} {generated === 1 ? 'token' : 'tokens'}
+      </span>
+    </div>
+  )
+}
+
+function formatRunTime(seconds) {
+  if (seconds < 60) return `${seconds}s`
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`
 }
 
 /** The design the customiser chose, as the swatches it actually picked. */
@@ -605,33 +831,118 @@ const Row = ({ label, value }) => (
 )
 
 /** Animated indicator showing when the agent is reasoning or working between tool calls. */
-function Thinking({ reasoning = false, state = '' }) {
+function Thinking({ reasoning = false, state = '', detail = '' }) {
   const labels = {
+    compacting: 'Compacting earlier work into memory',
+    thinking: 'Thinking',
     planning: 'Reviewing requirements and choosing what to inspect',
     'drafting the plan': 'Drafting the product scope',
     'revising the plan': 'Revising the product scope',
+    building: 'Writing the next files',
     read_file: 'Reading a project file',
     list_files: 'Reviewing the project structure',
     search_text: 'Searching the project context',
     web_search: 'Researching supporting context',
     web_fetch: 'Reading a supporting source',
+    write_file: 'Writing the next file',
+    replace_text: 'Editing a file',
+    run_command: 'Running a command',
+    browser_inspect: 'Checking the page in a browser',
   }
   const label = labels[state] || (reasoning ? 'Analysing project context' : 'Working')
+  // A model writing a whole page sends nothing until the page is done. A clock
+  // that keeps counting is what tells a long write apart from a stuck one.
+  const [seconds, setSeconds] = useState(0)
+  useEffect(() => {
+    setSeconds(0)
+    const timer = setInterval(() => setSeconds(value => value + 1), 1000)
+    return () => clearInterval(timer)
+  }, [state])
+  // Compacting says how far along it is: `12/35` parts summarized, then `merging 35`.
+  const part = state === 'compacting' ? String(detail).match(/^(\d+)\/(\d+)$/) : null
+  const merging = state === 'compacting' && /^merging/.test(String(detail))
+  const done = part ? Number(part[1]) : 0
+  const total = part ? Number(part[2]) : 0
+  const step = part ? ` · ${done} of ${total} parts done` : merging ? ' · merging the parts' : ''
   return (
-    <div className="flex items-center gap-2.5 py-0.5">
-      <span className="grid size-6 shrink-0 place-items-center rounded-full bg-accent text-ink">
-        <Sparkles className="size-3 animate-pulse" />
-      </span>
-      <span className="text-[12px] font-medium text-muted">
-        {label}
-      </span>
-      <span className="flex gap-1" aria-hidden="true">
-        {[0, 1, 2].map(i => (
-          <span key={i}
-                className="size-1 animate-bounce rounded-full bg-accent"
-                style={{ animationDelay: `${i * 140}ms`, animationDuration: '900ms' }} />
-        ))}
-      </span>
+    <div className="py-1 text-muted">
+      <div className="flex items-center gap-2">
+        <Loader2 className="size-3 shrink-0 animate-spin" />
+        <span className="text-[12px]">
+          {label}{step}{seconds >= 3 ? ` · ${seconds}s` : ''}
+        </span>
+        <span className="flex gap-1" aria-hidden="true">
+          {[0, 1, 2].map(i => (
+            <span key={i}
+                  className="size-1 animate-bounce rounded-full bg-accent"
+                  style={{ animationDelay: `${i * 140}ms`, animationDuration: '900ms' }} />
+          ))}
+        </span>
+      </div>
+      {(part || merging) && (
+        <div className="ml-5 mt-1.5 flex max-w-[320px] items-center gap-2" title="The conversation grew past the model's window: older work is being summarized so the run can carry on">
+          <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-black/[.07]">
+            <span className="block h-full rounded-full bg-accent transition-[width] duration-500"
+                  style={{ width: `${merging ? 100 : total ? Math.round((done / total) * 100) : 0}%` }} />
+          </span>
+          <span className="font-mono text-[10.5px] text-muted2">{merging ? 'merging' : `${done}/${total}`}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The model service is not answering. While the run asks again by itself this counts down to the next try, with a button to
+ * ask at once; once it has asked as many times as it will, the run holds still here - nothing is lost - and the same button
+ * continues it from this very request.
+ */
+function ConnectionNotice({ connection, project }) {
+  const [mark, setMark] = useState(() => Date.now())
+  const [now, setNow] = useState(() => Date.now())
+  const [pressed, setPressed] = useState(false)
+  useEffect(() => { setMark(Date.now()); setPressed(false) }, [connection.at, connection.state])
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 500)
+    return () => clearInterval(timer)
+  }, [])
+  const waiting = connection.state === 'waiting'
+  const left = Math.min(connection.pause, Math.max(0, Math.ceil((mark + connection.pause * 1000 - now) / 1000)))
+  const press = async () => {
+    if (pressed) return
+    setPressed(true)
+    try {
+      await api.connectionRetry(project)
+    } catch (e) {
+      setPressed(false)
+      useStore.getState().addLog('WARN', `Could not ask again — ${e.message}`)
+    }
+  }
+  return (
+    <div role="alert" className="my-2 rounded-xl border border-warn/35 bg-warn-tint/50 px-3.5 py-3 shadow-sm">
+      <div className="flex items-start gap-2.5">
+        <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-warn/15 text-warn">
+          <WifiOff className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[12.5px] font-semibold text-ink">
+            {waiting ? 'Disconnected from the model service' : 'The connection to the model service was interrupted'}
+          </p>
+          {connection.detail && (
+            <p className="mt-0.5 break-words font-mono text-[10.5px] text-muted2">{connection.detail}</p>
+          )}
+          <p className="mt-1 text-[11px] leading-relaxed text-muted">
+            {waiting
+              ? `It was asked ${connection.of} times and still does not answer. The run is paused at this request and nothing is lost — press Try again to continue from here, or Stop.`
+              : `Try ${connection.failed} of ${connection.of} failed${connection.pause ? ` · asking again in ${left}s` : ''}`}
+          </p>
+          <button type="button" onClick={press} disabled={pressed}
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-ink px-3 py-1.5 text-[11.5px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60">
+            <RefreshCw className={cn('size-3', pressed && 'animate-spin')} />
+            {pressed ? 'Asking…' : waiting ? 'Try again' : 'Try again now'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -695,7 +1006,7 @@ function Asked({ ask, onPick }) {
       <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-full bg-accent text-ink">
         <MessageCircleQuestion className="size-3" />
       </span>
-      <div className="min-w-0 flex-1 rounded-2xl rounded-tl-sm border border-accent/30 bg-accent px-3.5 py-3">
+      <div className="min-w-0 flex-1 rounded-2xl rounded-tl-sm border border-line bg-white px-3.5 py-3 shadow-sm">
         <p className="mb-1 text-[10px] font-semibold uppercase tracking-[.12em] text-muted2">
           Waiting for you
         </p>
@@ -708,8 +1019,10 @@ function Asked({ ask, onPick }) {
         {options.length > 0 && (
           <div className="mt-2.5 flex flex-wrap gap-1.5">
             {options.map(option => (
-              <button key={option.id} onClick={() => (asksValue ? answerOption(option.label) : onPick(option.label))}
-                      title={option.hint || (asksValue ? 'Answer with this instead of a value' : 'Put this in the box below')}
+              <button key={option.id}
+                      onClick={() => (asksValue || ask.quick ? answerOption(option.label) : onPick(option.label))}
+                      title={option.hint || (asksValue ? 'Answer with this instead of a value'
+                        : ask.quick ? `Answer ${option.label}` : 'Put this in the box below')}
                       className="rounded-xl border border-line2 bg-panel px-2.5 py-1.5 text-left
                                  text-[11.5px] font-semibold text-ink transition-colors
                                  hover:border-accent hover:text-accent">
@@ -831,16 +1144,8 @@ function FileActionCard({ turn, live }) {
   const openInEditor = (e) => {
     e.stopPropagation()
     useStore.getState().setView('code')
-    if (filePath) useStore.getState().selectFile(filePath)
+    if (filePath) useStore.getState().setActiveFile(filePath)
   }
-
-  const iconBg = isRead
-    ? 'bg-[#FFAB00] text-ink'
-    : isPatch
-      ? 'bg-[#1877F2] text-ink'
-      : 'bg-[#BFB9FF] text-ink'
-
-  const IconComponent = isRead ? Eye : Pencil
 
   const badgeText = isRead
     ? 'read'
@@ -849,42 +1154,39 @@ function FileActionCard({ turn, live }) {
       : (turn.inProgress ? (turn.action || 'writing') : (turn.action || 'created'))
 
   const badgeStyle = isRead
-    ? 'bg-[#FFAB00] text-ink border-[#FFAB00]/30'
+    ? 'bg-transparent text-warn border-warn/30'
     : isPatch
-      ? 'bg-[#1877F2] text-ink border-[#1877F2]/30'
-      : 'bg-[#BFB9FF] text-ink border-[#BFB9FF]/30'
+      ? 'bg-transparent text-info border-info/30'
+      : 'bg-transparent text-deep border-accent/30'
 
   return (
-    <div className="my-1.5 overflow-hidden rounded-2xl border border-line bg-panel2/60 shadow-sm transition-all hover:border-accent/40">
+    <div className="my-2 overflow-hidden rounded-xl border border-line bg-panel shadow-sm transition-all hover:border-line2">
       <div onClick={() => setExpanded(prev => !prev)}
            title={expanded ? 'Click to collapse' : 'Click to inspect code'}
-           className="flex items-center justify-between gap-3 p-3 cursor-pointer select-none hover:bg-panel transition-colors">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className={cn('grid size-9 shrink-0 place-items-center rounded-xl transition-transform', iconBg)}>
-            <IconComponent className="size-4" />
-          </div>
+           className="flex items-center justify-between gap-3 px-3 py-2 cursor-pointer select-none hover:bg-panel2/50 transition-colors">
+        <div className="flex items-center gap-2 min-w-0">
+          <FileCode2 className="size-3.5 shrink-0 text-muted2" />
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <p className="truncate font-semibold text-ink text-[13px]">{fileName}</p>
-              <span className={cn('rounded px-1.5 py-0.5 text-[9px] font-mono border uppercase tracking-wide', badgeStyle)}>
+              <p className="truncate font-mono font-medium text-ink text-[11.5px]">{filePath || fileName}</p>
+              <span className={cn('rounded px-1 py-px text-[9px] font-mono border', badgeStyle)}>
                 {badgeText}
               </span>
             </div>
-            <p className="truncate font-mono text-[11px] text-muted">{filePath || fileName}</p>
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {live || turn.inProgress ? (
             <Loader2 className="size-4 animate-spin text-accent" />
           ) : (
-            <CheckCircle2 className="size-5 text-ink" />
+            <Check className="size-3.5 text-ok" />
           )}
           <ChevronRight className={cn('size-4 text-muted2 transition-transform duration-200', expanded && 'rotate-90 text-ink')} />
         </div>
       </div>
 
       {expanded && (
-        <div className="border-t border-line/60 bg-[#F2F0EF] p-3 text-ink">
+        <div className="border-t border-line/60 bg-panel p-3 text-ink">
           <div className="flex items-center justify-between gap-2 pb-2 mb-2 border-b border-black/10 text-xs">
             <span className="font-mono text-[11px] text-muted truncate max-w-[220px]" title={filePath}>
               {filePath}
@@ -904,7 +1206,7 @@ function FileActionCard({ turn, live }) {
             </div>
           </div>
 
-          <div className="max-h-[320px] overflow-auto rounded-lg border border-black/10 bg-[#F2F0EF] p-2 font-mono text-[11px] leading-relaxed select-text">
+          <div className="max-h-[320px] overflow-auto rounded-lg border border-black/10 bg-panel p-2 font-mono text-[11px] leading-relaxed select-text">
             {fetching ? (
               <div className="py-6 flex items-center justify-center gap-2 text-muted text-xs">
                 <Loader2 className="size-3.5 animate-spin text-accent" /> Loading file content…
@@ -948,6 +1250,7 @@ function FileActionCard({ turn, live }) {
 
 /** Memoized conversation turn row rendering messages, tool events, and plans. */
 const Turn = memo(function Turn({ turn, live }) {
+  const project = useStore(s => s.project)
   if (turn.role === 'stage') {
     const active = turn.status === 'active'
     const passed = turn.status === 'done'
@@ -979,6 +1282,18 @@ const Turn = memo(function Turn({ turn, live }) {
     )
   }
 
+  if (turn.role === 'connection') {
+    return (
+      <div className="my-1 flex items-center gap-2 rounded-lg border border-ok/30 bg-ok-tint/50 px-3 py-2 text-[11.5px] text-ink">
+        <Wifi className="size-3.5 shrink-0 text-ok" />
+        <span>
+          Connected to the model service again
+          {turn.failed ? ` after ${turn.failed} failed ${turn.failed === 1 ? 'try' : 'tries'}` : ''} — carrying on.
+        </span>
+      </div>
+    )
+  }
+
   if (turn.role === 'change') return <ChangePlan turn={turn} />
 
   if (turn.role === 'test_result') {
@@ -1000,16 +1315,16 @@ const Turn = memo(function Turn({ turn, live }) {
 
   if (turn.role === 'user') {
     return (
-      <div className="flex flex-col items-end gap-1.5 my-1">
+      <div className="my-2 flex flex-col items-start gap-1.5">
         {(turn.shots || []).length > 0 && (
-          <div className="flex max-w-[88%] flex-wrap justify-end gap-1.5">
+          <div className="flex w-full flex-wrap gap-1.5">
             {turn.shots.map((shot, i) => (
               <img key={i} src={shot} alt="What they pointed at"
                    className="max-h-[104px] rounded-xl border border-line/70 object-cover object-top shadow-sm" />
             ))}
           </div>
         )}
-        <p className="max-w-[88%] rounded-2xl rounded-tr-sm bg-accent border border-accent/25 px-4 py-2.5 text-[13px] leading-relaxed text-ink shadow-sm dark:bg-[#BFB9FF] dark:border-[#BFB9FF]/30 dark:text-ink">
+        <p className="w-full rounded-xl border border-line bg-panel px-3 py-2 text-[12.5px] leading-relaxed text-ink">
           {turn.text}
         </p>
       </div>
@@ -1024,24 +1339,24 @@ const Turn = memo(function Turn({ turn, live }) {
         <span className="min-w-0 truncate font-mono text-muted2" title={turn.text}>{turn.text}</span>
       </div>
     )
-    const Icon = turn.kind === 'plan' ? Search
-      : turn.kind === 'design' ? Palette
-        : ['command', 'command_output'].includes(turn.kind) ? Terminal : Sparkles
+    if (['command', 'command_output'].includes(turn.kind)) return <CommandTurn turn={turn} live={live} />
+    if (turn.kind === 'permission') {
+      const allowed = /^allowed/i.test(turn.text || '')
+      return (
+        <div className="my-1 ml-1 flex min-w-0 items-center gap-2 text-[11.5px] text-muted">
+          {allowed ? <Check className="size-3 shrink-0 text-ok" /> : <X className="size-3 shrink-0 text-bad" />}
+          <span className="min-w-0 truncate" title={turn.text}>{turn.text}</span>
+        </div>
+      )
+    }
     return (
-      <div className="flex gap-2.5 my-1">
-        <span className={cn('mt-0.5 grid size-6 shrink-0 place-items-center rounded-full',
-          turn.tone === 'bad' ? 'bg-bad/12 text-bad'
-            : turn.tone === 'ok' ? 'bg-ok-tint text-ok' : 'bg-accent text-ink')}>
-          <Icon className="size-3" />
-        </span>
+      <div className="my-3 min-w-0 pl-1">
         <div className="min-w-0 flex-1">
-          {turn.title && <p className="text-[12.5px] font-semibold text-ink">
-            {['command', 'command_output'].includes(turn.kind) ? turn.title : cleanChatProse(turn.title)}
-          </p>}
+          {turn.title && !/^agent update$/i.test(cleanChatProse(turn.title).trim()) && (
+            <p className="text-[12.5px] font-semibold text-ink">{cleanChatProse(turn.title)}</p>
+          )}
           {turn.kind === 'design' && turn.design
             ? <DesignCard design={turn.design} />
-            : ['command', 'command_output'].includes(turn.kind)
-              ? <pre className="mt-1 max-h-[280px] overflow-auto whitespace-pre-wrap rounded-xl border border-line bg-panel2/70 p-3 font-mono text-[10.5px] leading-relaxed text-ink">{turn.text}</pre>
             : turn.kind === 'plan'
               ? (
                 <div className="mt-1 rounded-xl border border-line bg-panel2/60 p-3">
@@ -1052,6 +1367,8 @@ const Turn = memo(function Turn({ turn, live }) {
                 </div>
               )
               : <ReadableAgentText text={turn.text} />}
+          {turn.images?.length > 0 && <TurnPictures images={turn.images} project={project} />}
+          {turn.actions?.length > 0 && <TurnActions actions={turn.actions} project={project} />}
         </div>
       </div>
     )
@@ -1065,15 +1382,23 @@ const Turn = memo(function Turn({ turn, live }) {
 
   const Icon = ICONS[turn.kind] || Sparkles
   return (
-    <div className="flex gap-2.5 my-1">
-      <span className={cn('mt-0.5 grid size-6 shrink-0 place-items-center rounded-full',
-        KIND_TONE[turn.kind] || 'bg-accent text-ink')}>
+    <div className="my-1.5 flex gap-2 pl-1 text-muted">
+      <span className={cn('mt-0.5 grid size-4 shrink-0 place-items-center',
+        turn.kind === 'warn' && 'text-bad')}>
         {/* The step actually happening spins; the ones behind it do not. */}
         {live ? <Loader2 className="size-3 animate-spin" /> : <Icon className="size-3" />}
       </span>
       <div className="min-w-0 flex-1">
-        <p className={cn('break-words text-[12px] font-medium',
-          turn.kind === 'warn' ? 'text-bad' : 'text-ink')}>{turn.title}</p>
+        <p className={cn('break-words text-[11.5px]',
+          turn.kind === 'warn' ? 'text-bad' : 'text-muted')}>
+          {turn.kind === 'effort' && turn.level && (
+            <span className={cn('mr-1.5 rounded-full px-1.5 py-px align-middle font-mono text-[9.5px] font-bold uppercase tracking-wide',
+              EFFORT_TONE[turn.level] || EFFORT_TONE.low)}>
+              {turn.level}
+            </span>
+          )}
+          {turn.title}
+        </p>
         {turn.detail && (
           <p className="mt-0.5 text-[11px] leading-relaxed text-muted">{turn.detail}</p>
         )}
@@ -1081,6 +1406,76 @@ const Turn = memo(function Turn({ turn, live }) {
     </div>
   )
 })
+
+/** Buttons under a message ("Fix the failing journeys"): each sends its prompt as if it had been typed, to the developer. */
+function TurnActions({ actions, project }) {
+  const busy = useStore(s => s.busy)
+  function go(action) {
+    const s = useStore.getState()
+    if (!project || busy) return
+    send({
+      type: 'agent_update', project, agent: 'developer', prompt: action.prompt,
+      model: s.models.builder || s.models.agent, think: s.think, thinking_level: s.thinkingLevel,
+    })
+    s.setBusy(true)
+  }
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {actions.map(action => (
+        <button key={action.label} onClick={() => go(action)} disabled={busy}
+                title={busy ? 'Wait for the run in progress to end' : action.prompt}
+                className="rounded-xl border border-line2 bg-panel px-2.5 py-1.5 text-[11.5px] font-semibold text-ink
+                           transition-colors hover:border-accent hover:text-accent disabled:opacity-40">
+          {action.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** The screenshots a message carries (the visual review's, the screenshot tool's): a thumbnail each, the full picture on click. */
+function TurnPictures({ images, project }) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {images.map((image, index) => {
+        const src = `${API}/qa-screenshot/${encodeURIComponent(project || '')}?path=${encodeURIComponent(image.path)}`
+        return (
+          <a key={`${image.path}-${index}`} href={src} target="_blank" rel="noreferrer" title={image.label || 'Open the screenshot'}
+             className="group block w-[150px] overflow-hidden rounded-xl bg-panel2 shadow-sm transition-shadow hover:shadow-md">
+            <img src={src} alt={image.label || 'Screenshot'} loading="lazy" className="h-[104px] w-full object-cover object-top" />
+            {image.label && <span className="block truncate px-2 py-1 text-[9.5px] text-muted2">{image.label}</span>}
+          </a>
+        )
+      })}
+    </div>
+  )
+}
+
+/** Terminal output remains available without overwhelming a long chat. */
+function CommandTurn({ turn, live }) {
+  const [expanded, setExpanded] = useState(false)
+  const output = String(turn.text || '')
+  const lines = output ? output.split(/\r?\n/).filter(Boolean).length : 0
+  const isOutput = turn.kind === 'command_output'
+  return (
+    <div className="my-2 min-w-0 pl-1">
+      <button type="button" onClick={() => setExpanded(value => !value)} aria-expanded={expanded}
+              className="flex w-full items-center gap-2 rounded-xl border border-line bg-panel2/50 px-3 py-2 text-left transition-colors hover:bg-raised">
+        <Terminal className={cn('size-3.5 shrink-0', live ? 'text-deep' : 'text-muted2')} />
+        <span className="min-w-0 flex-1 truncate text-[11.5px] font-semibold text-ink">
+          {turn.title || (isOutput ? 'Command output' : 'Command')}
+        </span>
+        <span className="shrink-0 text-[10px] text-muted2">{lines ? `${lines} lines` : 'empty'}</span>
+        <ChevronRight className={cn('size-3.5 shrink-0 text-muted2 transition-transform', expanded && 'rotate-90')} />
+      </button>
+      {expanded && (
+        <pre className="mt-1 max-h-[280px] overflow-auto whitespace-pre-wrap rounded-xl border border-line bg-panel2/70 p-3 font-mono text-[10.5px] leading-relaxed text-ink">
+          {output || '(No output was recorded.)'}
+        </pre>
+      )}
+    </div>
+  )
+}
 
 /** Readable natural-language stream; raw commands and outputs bypass this component. */
 function ReadableAgentText({ text }) {
@@ -1105,9 +1500,4 @@ function ReadableAgentText({ text }) {
       ))}
     </div>
   )
-}
-
-function lastLine(turn) {
-  if (!turn) return ''
-  return turn.title || turn.text || ''
 }

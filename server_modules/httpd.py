@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+import html
 import json
 import re
+import shutil
+import threading
 import traceback
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -21,15 +25,17 @@ import ollama
 
 from builder_agent import build as builder
 from deploy_agent import deploy as deployer
-from prototype_agent import design as design_stage
 from prototype_agent import prototype as prototyper
+from qa_agent import report_pdf
 from qa_agent import verify as qa
 from srs_agent import document as srs_document
+from srs_agent import wireframe as wireframer
 
-from . import bus, changes, cli_monitor, cli_signin, config, deploy_vars, github_device, jobs, live, plugins as plugin_service, preview_runtime, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, versions
+from . import accounts, bus, changes, cli_monitor, cli_signin, config, connection, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, permissions, preview_runtime, privacy, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, web_app, workspace_picker
+from . import database_rows as database_rows_module
 from .session import session_for
 
-Handler = Callable[[dict[str, Any]], Any]
+Handler =Callable[[dict[str, Any]], Any]
 
 _ROUTES: list[tuple[str, re.Pattern[str], Handler]] = []
 
@@ -75,15 +81,58 @@ LOCAL_USER = {"id": "local", "username": "local", "name": "You",
               "email": "", "plan": "local"}
 
 
+@route("GET", r"/health")
+@route("GET", r"/healthz")
+def health(_ctx: dict) -> Any:
+    """A dependency-free readiness response for the local Studio API.
+
+    This deliberately does not contact Ollama, a preview, or a cloud service:
+    callers can distinguish a reachable Studio from an unavailable optional
+    dependency and can use it safely while the rest of the application starts.
+    """
+    return {
+        "ok": True,
+        "service": "agentforge-studio",
+        "status": "ready",
+        "feed_url": f"ws://127.0.0.1:{config.WS_PORT}",
+        "timestamp": int(time.time() * 1000),
+    }
+
+
 @route("GET", r"/auth/me")
 def auth_me(_ctx: dict) -> Any:
-    """This runs on one person's machine, against their own Ollama."""
-    return {"ok": True, "user": LOCAL_USER, "token": "local"}
+    """Who is signed in. With AgentForge accounts on (accounts.py), the account the admin approved; without, the person at
+    this computer, against their own Ollama."""
+    if not accounts.enabled() or config.engine() == "local":
+        return {"ok": True, "user": LOCAL_USER, "token": "local"}
+    row = accounts.current(fresh=True)
+    if row and row.get("status") == "approved":
+        return {"ok": True, "user": accounts.user_of(row), "token": "account", "required": True}
+    return {"ok": False, "required": True, "pending": bool(row) and row.get("status") == "pending"}
 
 
 @route("POST", r"/auth/login")
+def auth_login(ctx: dict) -> Any:
+    if not accounts.enabled() or config.engine() == "local":
+        return auth_local(ctx)
+    try:
+        return accounts.login(str(ctx.get("login") or ctx.get("email") or "").strip(), str(ctx.get("password") or ""))
+    except ConnectionError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 @route("POST", r"/auth/signup")
-def auth_in(ctx: dict) -> Any:
+def auth_signup(ctx: dict) -> Any:
+    if not accounts.enabled() or config.engine() == "local":
+        return auth_local(ctx)
+    try:
+        return accounts.signup(str(ctx.get("username") or "").strip(), str(ctx.get("email") or "").strip(),
+                               str(ctx.get("password") or ""), str(ctx.get("name") or "").strip())
+    except ConnectionError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def auth_local(ctx: dict) -> Any:
     name = str(ctx.get("name") or ctx.get("username") or "").strip()
     user = {**LOCAL_USER, **({"name": name} if name else {}),
             **({"email": ctx["email"]} if ctx.get("email") else {})}
@@ -92,7 +141,21 @@ def auth_in(ctx: dict) -> Any:
 
 @route("POST", r"/auth/logout")
 def auth_out(_ctx: dict) -> Any:
+    if accounts.enabled():
+        accounts.logout()
     return {"ok": True}
+
+
+@route("GET", r"/account")
+def account_status(_ctx: dict) -> Any:
+    """The signed-in account's requests for Settings: its limit, what is used and what is left (live updates arrive as
+    `account_usage` events)."""
+    return accounts.status(fresh=True)
+
+
+@route("POST", r"/account/checkout")
+def account_checkout(_ctx: dict) -> Any:
+    return accounts.checkout()
 
 
 # =========================================================================
@@ -101,33 +164,89 @@ def auth_out(_ctx: dict) -> Any:
 
 @route("GET", r"/models")
 def models(_ctx: dict) -> Any:
-    """Whatever this Ollama actually has, plus whether cloud is reachable."""
+    """The models the engine serves, plus whether cloud is reachable."""
     saved = config.settings()
+    engine = config.engine(saved)
     local: list[dict[str, Any]] = []
     ready = False
-    try:
-        listed = ollama.Client(host=saved["ollama_host"]).list()
-        for row in getattr(listed, "models", []) or []:
-            name = getattr(row, "model", None) or getattr(row, "name", None)
-            if name:
-                local.append({"id": str(name), "tag": "local"})
-        ready = True
-    except Exception:  # noqa: BLE001 - a daemon that is not running is an answer
-        ready = False
+    if engine != "built-in":
+        # The built-in engine is the only one there is: models on an Ollama app here would not be reached.
+        try:
+            listed = ollama.Client(host=saved["ollama_host"]).list()
+            for row in getattr(listed, "models", []) or []:
+                name = getattr(row, "model", None) or getattr(row, "name", None)
+                if name:
+                    local.append({"id": str(name), "tag": "local"})
+            ready = True
+        except Exception:  # noqa: BLE001 - a daemon that is not running is an answer
+            ready = False
 
     has_key = bool(saved.get("ollama_api_key"))
     cloud_models = [m for m in local if m["id"].endswith("-cloud") or m["id"].endswith(":cloud")]
     local_models = [m for m in local if m not in cloud_models]
+    if engine in ("cloud", "built-in"):
+        # ollama.com itself (with the key, or through the built-in engine): every model it serves, named the way
+        # the Ollama app names them (ollama_cloud.studio_name), so a choice made either way keeps working.
+        seen = {m["id"] for m in cloud_models}
+        cloud_models += [{"id": studio_name, "tag": "cloud", "remote": name}
+                         for name in ollama_cloud.engine_names(saved)
+                         if (studio_name := ollama_cloud.studio_name(name)) not in seen]
     return {
         "local": [m["id"] for m in local_models],
         "local_models": local_models,
         "cloud": cloud_models,
         "cloud_enabled": bool(saved.get("cloud")) or has_key or bool(cloud_models),
-        "cloud_via": "api-key" if has_key else ("signed-in" if cloud_models else "none"),
+        "cloud_via": "built-in" if engine == "built-in" else "api-key" if has_key else ("signed-in" if cloud_models else "none"),
+        "engine": engine,
         "ollama_ready": ready,
         "cloud_account": "",
         "selected": saved.get("model", ""),
     }
+
+
+@route("GET", r"/privacy")
+def privacy_status(_ctx: dict) -> Any:
+    """Whether the privacy filter (Microsoft Presidio) is on and ready, and what it hides."""
+    return privacy.status()
+
+
+@route("GET", r"/models/capabilities")
+def model_capabilities(_ctx: dict) -> Any:
+    """Which of the models in `/models` can look at a picture (`{"capabilities": {id: {"vision": bool}}, "pending": n}`).
+
+    Ollama is asked per model (`vision.py`), a few at a time in the background, so this answers at once with what is known
+    and the picker asks again while `pending` is not zero."""
+    listed = models({})
+    ids = [str(row.get("id") if isinstance(row, dict) else row)
+           for row in [*(listed.get("local_models") or []), *(listed.get("cloud") or [])]]
+    return vision.capabilities(ids)
+
+
+@route("POST", r"/ollama/test")
+def ollama_test(ctx: dict) -> Any:
+    """Whether ollama.com takes the key typed in (or, with none typed, the saved one). The key never comes back."""
+    typed = str(ctx.get("key") or "").strip()
+    key = typed if typed and typed != "****" else str(config.setting("ollama_api_key") or "")
+    return {**ollama_cloud.test(key, str(ctx.get("model") or config.setting("model") or "")),
+            "checked": "typed" if typed and typed != "****" else "saved"}
+
+
+def _safe_mcp_servers(saved: Any) -> list[dict[str, Any]]:
+    """Registered MCP servers, with each server's env values hidden.
+
+    An MCP server config can hold an API key the way `deploy_env` already
+    does; the browser gets back which env names are set, never their values,
+    the same "_set"/hint discipline this file already applies to other
+    secrets.
+    """
+    safe = []
+    for server in saved or []:
+        if not isinstance(server, dict):
+            continue
+        env = server.get("env") or {}
+        safe.append({k: v for k, v in server.items() if k != "env"}
+                    | {"env_keys": sorted(str(k) for k in env)})
+    return safe
 
 
 @route("GET", r"/settings")
@@ -135,17 +254,22 @@ def read_settings(_ctx: dict) -> Any:
     saved = config.settings()
     catalog = models({})
     deploy = {key: saved.get(key, "") for key in ("aws_profile", "aws_region", "aws_start_url", "aws_sso_region",
-                                                  "github_client_id", "github_login", "azure_account")}
-    for key in ("github_token", "vercel_token", "netlify_token", "azure_credentials"):
+                                                  "github_client_id", "github_login", "azure_account",
+                                                  "supabase_client_id", "supabase_org")}
+    for key in ("github_token", "vercel_token", "netlify_token", "azure_credentials", "supabase_client_secret"):
         deploy[f"{key}_set"] = bool(saved.get(key))
         deploy[f"{key}_hint"] = str(saved.get(key) or "")[-4:] if saved.get(key) else ""
-    production = str(saved.get("deploy_mongodb_uri") or "")
-    deploy["mongodb_uri_set"] = bool(production)
-    deploy["mongodb_uri_hint"] = production[-4:] if production else ""
-    return {**{k: v for k, v in saved.items() if not any(word in k for word in ("token", "api_key", "credentials", "mongodb_uri", "deploy_env"))},
+    deploy["deploy_mongodb_uri_set"] = bool(saved.get("deploy_mongodb_uri"))
+    deploy["deploy_mongodb_uri_hint"] = str(saved.get("deploy_mongodb_uri") or "")[-4:] if saved.get("deploy_mongodb_uri") else ""
+    return {**{k: v for k, v in saved.items() if not any(word in k for word in
+                                                         ("token", "api_key", "credentials", "secret", "mongodb_uri", "deploy_env"))},
             "admin": True, "local_num_ctx": saved.get("context") or saved.get("local_num_ctx") or 0,
+            "thinking_level": config.thinking(saved),
+            "mcp_servers": _safe_mcp_servers(saved.get("mcp_servers")),
             "cloud_enabled": bool(catalog["cloud_enabled"]),
-            "cloud_reachable": bool(catalog["cloud"] and catalog["ollama_ready"]),
+            # With the key, ollama.com is the engine and the Ollama app here does not matter.
+            "cloud_reachable": bool(catalog["cloud"] and (catalog["ollama_ready"] or catalog["engine"] == "cloud")),
+            "engine": catalog["engine"],
             "api_key_hint": str(saved.get("ollama_api_key") or "")[-4:],
             "mongodb_uri_set": bool(saved.get("mongodb_uri")),
             "mongodb_uri_hint": str(saved.get("mongodb_uri") or "")[-4:],
@@ -157,22 +281,58 @@ def read_settings(_ctx: dict) -> Any:
             "design_model": saved.get("model", "")}
 
 
+def _merge_mcp_servers(incoming: Any, previous: Any) -> list[dict[str, Any]]:
+    """Restore `env` values the browser never saw (see `_safe_mcp_servers`) for
+    a server sent back unchanged; a server that supplies its own `env` (new,
+    or deliberately edited) keeps exactly that instead, so a settings save
+    triggered by adding or removing one server can never silently wipe
+    another server's secrets."""
+    by_id = {s.get("id"): s for s in (previous or []) if isinstance(s, dict)}
+    merged = []
+    for server in incoming or []:
+        if not isinstance(server, dict) or not server.get("id"):
+            continue
+        server = dict(server)
+        if "env" not in server:
+            server["env"] = dict((by_id.get(server.get("id")) or {}).get("env") or {})
+        server.pop("env_keys", None)
+        merged.append(server)
+    return merged
+
+
 @route("POST", r"/settings")
 def write_settings(ctx: dict) -> Any:
     patch = {k: v for k, v in ctx.items() if not k.startswith("_") and k != "deploy_env"}
-    if "deploy_mongodb_uri" in patch:
-        patch["deploy_mongodb_uri"] = deploy_vars.check_database_uri(patch["deploy_mongodb_uri"])
+    if "ollama_host" in patch:
+        address = urlparse(str(patch["ollama_host"]).strip())
+        if address.scheme != "http" or address.hostname not in {"localhost", "127.0.0.1", "::1"} or not address.port:
+            raise ValueError("Local Ollama address must be http://localhost:PORT or 127.0.0.1:PORT")
     if patch.get("ollama_api_key") == "****":
         patch.pop("ollama_api_key")
+    if "deploy_mongodb_uri" in patch:
+        # The same address rule a value question enforces (deploy_vars.accept): saved directly here or
+        # typed into the question's private box, a loopback address is refused either way, not just
+        # whichever path happens to run the check.
+        patch["deploy_mongodb_uri"] = deploy_vars.check_database_uri(patch["deploy_mongodb_uri"])
+    if "mcp_servers" in patch:
+        patch["mcp_servers"] = _merge_mcp_servers(patch["mcp_servers"], config.setting("mcp_servers"))
     for alias in ("agent_model", "planner_model", "builder_model", "design_model"):
         if patch.get(alias):
             patch["model"] = patch[alias]
-    key = patch.get("ollama_api_key", config.setting("ollama_api_key", ""))
-    chosen = str(patch.get("model") or config.setting("model") or "")
-    patch["cloud"] = bool(key) and (chosen.endswith("-cloud") or chosen.endswith(":cloud"))
+    if "engine" in patch and str(patch["engine"] or "").lower() not in ("", "built-in", "cloud", "local"):
+        raise ValueError("engine is built-in, cloud, local, or empty to choose itself")
+    # `cloud` is never saved: config.settings() derives it from the key and `engine` every time it is read.
+    patch.pop("cloud", None)
     config.save_settings(patch)
     prompts.clear_cache()
+    if any(_ACCOUNT_SETTING.match(key) for key in patch):
+        cli_signin.SIGNINS.forget()        # an account was just connected or changed: the panels must not be shown the old answer
     return read_settings({})
+
+
+# The settings that make a service connected (a token, a profile, a connection string): saving one changes who the command
+# line tools are signed in as, so what was remembered of it is dropped (`cli_signin.CliSignins.forget`).
+_ACCOUNT_SETTING = re.compile(r"^(github|vercel|netlify|azure|aws|mongodb|atlas|supabase)_|^deploy_mongodb_uri$")
 
 
 @route("POST", r"/github/device/start")
@@ -187,8 +347,28 @@ def github_device_poll(ctx: dict) -> Any:
     if result.get("status") == "ready":
         token = result.pop("token", "")
         config.save_settings({"github_token": token})
+        cli_signin.SIGNINS.forget()
         result["deploy"] = read_settings({})["deploy"]
     return result
+
+
+@route("POST", r"/mcp/probe")
+def mcp_probe(ctx: dict) -> Any:
+    """Start one MCP server just long enough to list its tools, for the
+    settings UI's "test connection" action — never saved, never touches a
+    running agent's own tool list."""
+    from ollama_terminal import mcp_client
+    server_id = str(ctx.get("id") or "").strip()
+    command = str(ctx.get("command") or "").strip()
+    if not server_id or not command:
+        raise HttpError(400, "An id and a command are both required.")
+    try:
+        tools = mcp_client.probe({"id": server_id, "command": command,
+                                  "args": ctx.get("args") or [], "env": ctx.get("env") or {}})
+    except mcp_client.MCPError as exc:
+        raise HttpError(400, str(exc)) from exc
+    return {"ok": True, "tools": [{"name": t.get("name"), "description": t.get("description", "")}
+                                   for t in tools]}
 
 
 @route("POST", r"/cli-signin/available")
@@ -200,17 +380,23 @@ def cli_signin_available(ctx: dict) -> Any:
 def _keep_signin(result: dict) -> dict:
     """What a finished sign-in left in the tool's own store becomes this account's settings."""
     if result.get("status") == "ready":
-        config.save_settings(result.pop("values"))
+        values = result.pop("values")
+        # A MongoDB account signed in as its own CLI profile becomes the one in use, with its own cluster record.
+        profile = values.pop(cli_signin.ATLAS_PROFILE_SETTING, None)
+        config.save_settings(values)
+        if profile is not None:
+            mongo_connect.switch_account(profile)
         result["deploy"] = read_settings({})["deploy"]
     return result
 
 
 @route("POST", r"/cli-monitor/list")
 def cli_monitor_list(ctx: dict) -> Any:
-    """The read-only commands of this project's deployment type that can be run now, from its own record."""
+    """The read-only commands of this project's deployment type (or, with `scope: database`, of its databases)
+    that can be run now, from its own record."""
     project = str(ctx.get("project") or "")
     store.require(project)
-    return cli_monitor.catalogue(project)
+    return cli_monitor.catalogue(project, scope=str(ctx.get("scope") or "deploy"))
 
 
 @route("POST", r"/cli-monitor/start")
@@ -218,7 +404,45 @@ def cli_monitor_start(ctx: dict) -> Any:
     """Run one of them in the project's folder; its output is read back with `/cli-monitor/poll`."""
     project = str(ctx.get("project") or "")
     store.require(project)
-    return cli_monitor.MONITORS.start(project, str(ctx.get("command") or ""))
+    return cli_monitor.MONITORS.start(project, str(ctx.get("command") or ""), scope=str(ctx.get("scope") or "deploy"))
+
+
+@route("POST", r"/terminal/run")
+def terminal_run(ctx: dict) -> Any:
+    """A command typed in the terminal, run in the project's folder; read back with `/cli-monitor/poll`."""
+    project = str(ctx.get("project") or "")
+    store.require(project)
+    return cli_monitor.MONITORS.start_shell(project, str(ctx.get("command") or ""))
+
+
+@route("POST", r"/preview/log")
+def preview_log(ctx: dict) -> Any:
+    """What the running app has printed since `since` (a byte offset; -1 for its current run)."""
+    project = str(ctx.get("project") or "")
+    store.require(project)
+    return preview_runtime.read_log(project, int(ctx.get("since") if ctx.get("since") is not None else -1))
+
+
+@route("POST", r"/preview/ports")
+def preview_ports(ctx: dict) -> Any:
+    """Every part of the running app (client, gateway, services), its port, and whether it listens now."""
+    project = str(ctx.get("project") or "")
+    store.require(project)
+    return preview_runtime.ports(project)
+
+
+@route("POST", r"/database/rows")
+def database_rows(ctx: dict) -> Any:
+    """A few rows of one table or documents of one collection, with credential-like fields masked."""
+    project = str(ctx.get("project") or "")
+    store.require(project)
+    return database_rows_module.sample(project, ctx)
+
+
+@route("POST", r"/database/atlas")
+def database_atlas(ctx: dict) -> Any:
+    """The Atlas cluster behind the MongoDB connection, when an Atlas account is connected."""
+    return database_rows_module.atlas()
 
 
 @route("POST", r"/cli-monitor/poll")
@@ -233,12 +457,18 @@ def cli_monitor_stop(ctx: dict) -> Any:
 
 @route("POST", r"/cli-signin/start")
 def cli_signin_start(ctx: dict) -> Any:
-    return cli_signin.SIGNINS.start(str(ctx.get("provider") or ""), {"region": str(ctx.get("region") or "")})
+    return cli_signin.SIGNINS.start(str(ctx.get("provider") or ""),
+                                    {"region": str(ctx.get("region") or ""), "add": bool(ctx.get("add"))})
 
 
 @route("POST", r"/cli-signin/poll")
 def cli_signin_poll(ctx: dict) -> Any:
     return _keep_signin(cli_signin.SIGNINS.poll(str(ctx.get("flow_id") or "")))
+
+
+@route("POST", r"/cli-signin/input")
+def cli_signin_input(ctx: dict) -> Any:
+    return cli_signin.SIGNINS.send_input(str(ctx.get("flow_id") or ""), str(ctx.get("value") or ""))
 
 
 @route("POST", r"/cli-signin/use-existing")
@@ -251,6 +481,75 @@ def cli_signin_use_existing(ctx: dict) -> Any:
 @route("POST", r"/cli-signin/cancel")
 def cli_signin_cancel(ctx: dict) -> Any:
     return cli_signin.SIGNINS.cancel(str(ctx.get("flow_id") or ""))
+
+
+@route("POST", r"/supabase/connect/status")
+def supabase_connect_status(ctx: dict) -> Any:
+    """Whether this project already has its own Supabase project, without exposing its keys.
+
+    Signing in to the Supabase *account* is `/supabase/oauth/*` below, studio-wide - this is only
+    the per-project Supabase *project*, created once the build actually starts
+    (`builder_agent.build`, via `supabase_connect.ensure_project`)."""
+    project = str(ctx.get("project") or "")
+    store.require(project)
+    return supabase_connect.status(project)
+
+
+@route("POST", r"/supabase/oauth/status")
+def supabase_oauth_status(_ctx: dict) -> Any:
+    """Whether Supabase sign-in can start (the engine's OAuth app, or the person's own) and an account is signed in."""
+    return supabase_connect.token_status()
+
+
+@route("POST", r"/supabase/oauth/start")
+def supabase_oauth_start(_ctx: dict) -> Any:
+    return supabase_connect.OAUTH.start()
+
+
+@route("POST", r"/supabase/oauth/poll")
+def supabase_oauth_poll(ctx: dict) -> Any:
+    return supabase_connect.OAUTH.poll(str(ctx.get("flow_id") or ""))
+
+
+@route("POST", r"/supabase/oauth/cancel")
+def supabase_oauth_cancel(ctx: dict) -> Any:
+    return supabase_connect.OAUTH.cancel(str(ctx.get("flow_id") or ""))
+
+
+@route("POST", r"/supabase/oauth/switch")
+def supabase_oauth_switch(ctx: dict) -> Any:
+    """Make another signed-in Supabase account the one new projects are made in."""
+    return supabase_connect.switch_account(str(ctx.get("id") or ""))
+
+
+@route("POST", r"/supabase/oauth/remove")
+def supabase_oauth_remove(ctx: dict) -> Any:
+    """Sign one Supabase account out of the studio."""
+    return supabase_connect.remove_account(str(ctx.get("id") or ""))
+
+
+@route("GET", r"/supabase-oauth/callback")
+def supabase_oauth_callback(ctx: dict) -> Any:
+    """Where the browser lands after approving the sign-in on supabase.com: sent here by the engine's
+    sign-in broker, or - for a person's own OAuth app - registered as that app's callback URL directly
+    (`supabase_connect.REDIRECT_URI`, this studio's own API server). Only records what arrived; `poll()`
+    does the real exchange."""
+    query = ctx.get("_query") or {}
+    code, state = str(query.get("code") or ""), str(query.get("state") or "")
+    error = str(query.get("error_description") or query.get("error") or "")
+    matched = supabase_connect.OAUTH.receive_callback(state, code, error)
+    if not matched:
+        message = "This sign-in has expired, was already used, or was not started from this Studio."
+    elif error:
+        message = f"Supabase said: {html.escape(error)}"
+    else:
+        message = "Signed in to Supabase. You can close this tab and return to AgentForge."
+    body = (
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>AgentForge</title></head>"
+        "<body style=\"font:16px system-ui,sans-serif;padding:2.5rem;color:#16181d\">"
+        f"<p>{message}</p></body></html>"
+    ).encode("utf-8")
+    return Raw(body, "text/html; charset=utf-8")
 
 
 @route("GET", r"/srs-status")
@@ -350,8 +649,19 @@ def decide(ctx: dict) -> Any:
             return {"ok": False, "detail": problem}                 # the question stays open, with this to read
         ctx = {**ctx, "reply": prompts.load("deployment/value-saved", variable=asked["variable"]).strip()}
         held = ""
+    elif asked.get("kind") == "permission":
+        held = ""
+    elif ctx.get("via") == "option" and str(ctx.get("reply") or "") in {
+            str(option.get("label") if isinstance(option, dict) else option) for option in asked.get("options") or []}:
+        held = ""        # one of the card's own options (a round's Yes or No): the Studio wrote it, there is nothing to screen
     else:
         held = secrets_guard.refusal(str(ctx.get("reply") or ctx.get("feedback") or ""))
+        if not held:
+            try:
+                project_of = asked.get("project", "")
+                ctx = {**ctx, **{key: privacy.screen(project_of, str(ctx[key])) for key in ("reply", "feedback") if ctx.get(key)}}
+            except privacy.NotSent as exc:
+                held = str(exc)
     if held:
         # The question stays open: it is answered again, without the secret.
         asked = next((d for d in bus.pending_decisions() if d.get("id") == decision_id), {})
@@ -365,13 +675,17 @@ def decide(ctx: dict) -> Any:
     choice = str(ctx.get("decision") or "accept")
     reply = str(ctx.get("reply") or ctx.get("feedback") or "")
 
+    if bus.deliver(decision_id, reply if choice == "answer" else ""):
+        return {"ok": True}                        # a build holding still before its plan takes the answer and goes on
+    if question.get("kind") == "permission":
+        return {"ok": False, "detail": "that request is no longer waiting"}       # the run it was for has ended
     if project and question.get("change_id"):
         # The planner asked it: the answer (or "you decide") goes back to that request.
         return changes.answer(project, str(question["change_id"]), reply if choice == "answer" else "",
                               str(ctx.get("model") or ""))
     if project and choice in {"answer", "revise"} and reply:
         runs.agent_update_direct({"project": project, "prompt": reply,
-                                  "agent": question.get("agent", bus.DEVELOPER)})
+                                  "agent": question.get("agent", bus.DEVELOPER)}, screened=True)
     elif project:
         bus.log(project, "INFO", f"Question answered: {choice}",
                 agent=question.get("agent", bus.DEVELOPER))
@@ -382,6 +696,12 @@ def decide(ctx: dict) -> Any:
 # projects
 # =========================================================================
 
+@route("POST", r"/workspace/pick")
+def pick_workspace(_ctx: dict) -> Any:
+    """Let the local desktop customer select an empty project folder in Explorer."""
+    return {"path": workspace_picker.choose_folder()}
+
+
 @route("GET", r"/projects")
 def list_projects(_ctx: dict) -> Any:
     return store.listing()
@@ -389,17 +709,41 @@ def list_projects(_ctx: dict) -> Any:
 
 @route("POST", r"/delete-project")
 def delete_project(ctx: dict) -> Any:
-    import shutil
-
     from .session import drop
 
     project = str(ctx.get("project") or "")
     store.require(project)
+    # Make the project disappear from the studio first.  Deleting a generated
+    # application's node_modules tree can take seconds on Windows; moving the
+    # workspace aside is normally atomic, and physical cleanup can continue
+    # after the response without keeping the Delete button spinning.
     preview_runtime.stop(project)
     drop(project)
+    workspace = config.workspace_for(project)
+    external_workspace = config.has_custom_workspace(project)
     store.delete(project)
-    shutil.rmtree(config.workspace_for(project), ignore_errors=True)
-    return {"ok": True}
+    # A folder the customer explicitly selected belongs to them. Forget the
+    # Studio project, but never move or recursively delete that local folder.
+    if external_workspace:
+        return {"ok": True, "cleanup": "kept"}
+    cleanup = workspace
+    moved = False
+    if workspace.exists():
+        retired = config.STATE / "deleted-workspaces"
+        retired.mkdir(parents=True, exist_ok=True)
+        target = retired / f"{project}-{uuid.uuid4().hex}"
+        try:
+            workspace.replace(target)
+            cleanup, moved = target, True
+        except OSError:
+            # An antivirus scanner or an already-ending child process can hold
+            # a Windows file lock.  The project is still deleted immediately;
+            # let cleanup retry independently rather than making the UI wait.
+            cleanup = workspace
+    threading.Thread(target=shutil.rmtree, args=(cleanup,),
+                     kwargs={"ignore_errors": True}, name=f"delete:{project}",
+                     daemon=True).start()
+    return {"ok": True, "cleanup": "moved" if moved else "scheduled"}
 
 
 def _runtime_state(project: str) -> dict[str, Any]:
@@ -427,8 +771,7 @@ def files(ctx: dict) -> Any:
         if root.is_dir():
             return {p.relative_to(session.workspace).as_posix():
                     p.read_text(encoding="utf-8", errors="replace")
-                    for p in sorted(root.rglob("*")) if p.is_file()
-                    and p.stat().st_size < 400_000}
+                    for p in web_app.source_files(root) if p.stat().st_size < 400_000}
     return builder.files(project)
 
 
@@ -444,11 +787,12 @@ def project_session(ctx: dict) -> Any:
     project = _project(ctx)
     session = session_for(project)
     agent = session._agent  # noqa: SLF001 - the status line is about this object
+    focused = bus.latest_memory(project) if agent is None else {}
     return {"project": project, "stage": session.stage,
-            "model": agent.model if agent else config.setting("model", ""),
-            "context": agent.context if agent else 0,
-            "used": agent.context_usage() if agent else 0,
-            "tools": agent.tool_call_count if agent else 0}
+            "model": agent.model if agent else focused.get("model") or config.setting("model", ""),
+            "context": agent.context if agent else int(focused.get("limit") or focused.get("context") or 0),
+            "used": agent.context_usage() if agent else int(focused.get("used") or focused.get("tokens") or 0),
+            "tools": agent.tool_call_count if agent else int(focused.get("tools") or 0)}
 
 
 @route("GET", r"/stream/(?P<project>[^/]+)")
@@ -477,6 +821,9 @@ def workflow(ctx: dict) -> Any:
         "agents": bus.run_status(project),
         "build_available": store.build_available(record),
         "sync": _last_sync(project),
+        "plan_mode": record.get("plan_mode", True),
+        "permission_mode": permissions.mode_of(project),
+        "bypass_enabled": permissions.bypass_enabled(),
     }
 
 
@@ -489,6 +836,46 @@ def _last_sync(project: str) -> dict:
                 break
             return event
     return {"type": "sync_state", "project": project, "status": "clean"}
+
+
+@route("POST", r"/projects/(?P<project>[^/]+)/plan-mode")
+def set_plan_mode(ctx: dict) -> Any:
+    """Turn plan mode on or off for one project: on (the default, and every
+    project's behavior before this existed) proposes a plan for a typed
+    change and waits for approval; off applies it at once, the way a project
+    with no specification yet already does."""
+    project = _project(ctx)
+    record = store.update(project, plan_mode=bool(ctx.get("enabled", True)))
+    return {"project": project, "plan_mode": record.get("plan_mode", True)}
+
+
+@route("GET", r"/permissions")
+def permission_status(_ctx: dict) -> Any:
+    """The modes, the one a new project starts in, and whether the bypass mode is turned on."""
+    return permissions.status()
+
+
+@route("POST", r"/permissions")
+def permission_settings(ctx: dict) -> Any:
+    """Turn the bypass mode on or off (`bypass`), or change the mode a new project starts in (`default`)."""
+    if "bypass" in ctx:
+        permissions.enable_bypass(bool(ctx.get("bypass")))
+    if ctx.get("default"):
+        permissions.set_default(str(ctx["default"]))
+    return permissions.status()
+
+
+@route("GET", r"/projects/(?P<project>[^/]+)/permission-mode")
+def get_permission_mode(ctx: dict) -> Any:
+    return permissions.status(_project(ctx))
+
+
+@route("POST", r"/projects/(?P<project>[^/]+)/permission-mode")
+def set_permission_mode(ctx: dict) -> Any:
+    """Put one project in a permission mode: auto, manual, accept_edits or bypass (once it has been turned on)."""
+    project = _project(ctx)
+    permissions.set_mode(project, str(ctx.get("mode") or ""))
+    return permissions.status(project)
 
 
 @route("GET", r"/lifecycle/(?P<project>[^/]+)")
@@ -524,6 +911,14 @@ def runtime_restart(ctx: dict) -> Any:
     return preview_runtime.open_preview(project)
 
 
+@route("POST", r"/runtime/(?P<project>[^/]+)/stop")
+def runtime_stop(ctx: dict) -> Any:
+    """Stop only this project's managed preview; parallel projects stay live."""
+    project = _project(ctx)
+    preview_runtime.stop(project)
+    return preview_runtime.status(project)
+
+
 @route("POST", r"/live/(?P<project>[^/]+)")
 def live_view(ctx: dict) -> Any:
     """Frames and steps of a test run, for the preview to show while it happens."""
@@ -550,8 +945,15 @@ def project_versions(ctx: dict) -> Any:
 def change_decide(ctx: dict) -> Any:
     """Approve, revise or cancel the plan shown in the chat."""
     project = _project(ctx)
+    excluded = ctx.get("excluded_stages")
+    try:
+        feedback = privacy.screen(project, str(ctx.get("feedback") or ""))
+    except privacy.NotSent as exc:
+        bus.agent_msg(project, str(exc), title="Not sent")
+        return {"ok": False, "detail": str(exc)}
     return changes.decide(project, unquote(ctx["_match"].group("change")), str(ctx.get("decision") or ""),
-                          str(ctx.get("feedback") or ""), str(ctx.get("model") or ""))
+                          feedback, str(ctx.get("model") or ""),
+                          excluded_stages=excluded if isinstance(excluded, list) else None)
 
 
 @route("POST", r"/build/cancel")
@@ -626,20 +1028,20 @@ def project_wireframes(ctx: dict) -> Any:
 @route("GET", r"/srs-pdf/(?P<project>[^/]+)")
 @route("GET", r"/srs/projects/(?P<project>[^/]+)/download/pdf")
 def srs_pdf(ctx: dict) -> Any:
-    """The specification as a document. Markdown, because no PDF engine is bundled."""
+    """The specification as a PDF: SRS.md, then every diagram it was drawn with."""
     project = _project(ctx)
-    text = session_for(project).read_record("srs", "SRS.md", fallback="")
+    session = session_for(project)
+    text = session.read_record("srs", "SRS.md", fallback="")
     if not text:
         raise HttpError(404, "this project has no specification document yet")
-    return Raw(text.encode("utf-8"), "text/markdown; charset=utf-8", "SRS.md")
-
-
-@route("GET", r"/srs/projects/(?P<project>[^/]+)/wireframes/html")
-def wireframe_page(ctx: dict) -> Any:
-    project = _project(ctx)
-    route_name = str(ctx.get("_query", {}).get("route") or "/")
-    return Raw(srs_document.wireframe_html(project, route_name).encode("utf-8"),
-               "text/html; charset=utf-8")
+    diagrams = sorted((session.record / "srs" / "diagrams").glob("*.svg"))
+    if diagrams:
+        named = lambda stem: stem.upper() if len(stem) <= 4 else stem.replace("_", " ").capitalize()  # noqa: E731
+        text += "\n\n## Diagrams\n\n" + "\n\n".join(
+            f"### {named(svg.stem)}\n\n![{named(svg.stem)}](diagrams/{svg.name})" for svg in diagrams)
+    name = str((store.get(project) or {}).get("title") or project)
+    return Raw(pdf.render_markdown(text, session.record / "srs", f"{name} — Software Requirements Specification"),
+               "application/pdf", "SRS.pdf")
 
 
 # The rest of `/srs/...` is the SRS router, read directly on GET. `jobs` is
@@ -654,25 +1056,43 @@ def srs_get(ctx: dict) -> Any:
 # the prototype
 # =========================================================================
 
-@route("GET", r"/prototype/(?P<project>[^/]+)/(?P<name>.+)")
-def prototype_file(ctx: dict) -> Any:
-    """The prototype as a small static site.
+@route("GET", r"/web/(?P<project>[^/]+)/(?P<kind>wireframe|prototype)/status")
+def web_app_status(ctx: dict) -> Any:
+    """Whether the wireframes or the prototype is bundled yet, and when (what the studio's frame reloads on)."""
+    app = web_app.app_dir(session_for(_project(ctx)).workspace, ctx["_match"].group("kind"))
+    built = web_app.built(app)
+    return {"built": built, "stale": built and web_app.stale(app),
+            "version": int((app / web_app.BUNDLE).stat().st_mtime) if built else 0}
 
-    The studio points an <iframe> straight at these URLs and lets the pages link
-    to each other, so every file under `.agentforge/prototype/` — the pages, the
-    stylesheet, the script, the images — is served at its own path.
-    """
+
+@route("GET", r"/web/(?P<project>[^/]+)/(?P<kind>wireframe|prototype)")
+def web_app_page(ctx: dict) -> Any:
+    """The wireframes or the prototype: one page, the bundled React app. The studio frames it and picks the screen with the
+    address hash (`#/orders`); `?as=<role or email>` opens a prototype signed in."""
     project = _project(ctx)
-    name = unquote(ctx["_match"].group("name")).split("?")[0]
-    body, kind = prototyper.asset(project, name)
-    return Raw(body, kind)
+    app = web_app.app_dir(session_for(project).workspace, ctx["_match"].group("kind"))
+    try:
+        return Raw(web_app.preview_page(web_app.page(app)), "text/html; charset=utf-8")
+    except FileNotFoundError as exc:
+        raise HttpError(404, f"the {ctx['_match'].group('kind')} is not drawn yet") from exc
 
 
-@route("GET", r"/prototype/(?P<project>[^/]+)")
-def prototype_index(ctx: dict) -> Any:
+_HTML_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+               ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".json": "application/json", ".txt": "text/plain; charset=utf-8"}
+
+
+@route("GET", r"/web/(?P<project>[^/]+)/wireframe-html(?:/(?P<name>.*))?")
+def wireframe_html_file(ctx: dict) -> Any:
+    """The plain HTML version of the wireframes: its pages, its stylesheet and its script, each at its own address."""
     project = _project(ctx)
-    body, kind = prototyper.asset(project, "index.html")
-    return Raw(body, kind)
+    root = wireframer.html_path(project).resolve()
+    path = (root / (unquote(ctx["_match"].group("name") or "") or "index.html")).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise HttpError(404, "that page is not in the HTML wireframes")
+    body = path.read_bytes()
+    if path.suffix.lower() in (".html", ".htm"):
+        body = web_app.preview_page(body, web_app.HTML_POLICY)
+    return Raw(body, _HTML_TYPES.get(path.suffix.lower(), "application/octet-stream"))
 
 
 @route("POST", r"/design-theme-preview")
@@ -702,10 +1122,13 @@ def qa_screenshot(ctx: dict) -> Any:
 
 @route("GET", r"/qa-pdf/(?P<project>[^/]+)")
 def qa_pdf(ctx: dict) -> Any:
+    """Every Testing view's evidence as one PDF: layers, unit files, journeys and their stages,
+    accessibility, performance, security, API handlers, requirements, gaps and repairs."""
     project = _project(ctx)
-    report = qa.report(project)
-    return Raw(json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"),
-               "application/json", f"{project}-test-report.json")
+    name = str((store.get(project) or {}).get("title") or project)
+    markdown = report_pdf.markdown_of(qa.report(project), name)
+    return Raw(pdf.render_markdown(markdown, session_for(project).workspace, f"{name} — test report"),
+               "application/pdf", f"{project}-test-report.pdf")
 
 
 # =========================================================================
@@ -759,6 +1182,25 @@ def http_feature(ctx: dict) -> Any:
 @route("POST", r"/element-edit")
 def http_element_edit(ctx: dict) -> Any:
     return runs.element_edit(ctx)
+
+
+@route("POST", r"/preview-start")
+def http_preview_start(ctx: dict) -> Any:
+    return runs.preview_start(ctx)
+
+
+@route("POST", r"/connection/retry")
+def http_connection_retry(ctx: dict) -> Any:
+    """The person pressed "Try again" on the chat's notice that the model service is not answering: the run that waits
+    for it asks again at once (see connection.py)."""
+    return {"ok": connection.retry(str(ctx.get("project") or "").strip())}
+
+
+@route("POST", r"/review-screens")
+def http_review_screens(ctx: dict) -> Any:
+    """Look at the project's screens (the prototype's pages, the end-to-end tests' screenshots, or both) with a model that
+    can look at pictures, and fix what it finds; `fix: false` only reports."""
+    return runs.review_screens(ctx)
 
 
 # =========================================================================
@@ -982,8 +1424,39 @@ def _queue(router, ctx: dict, label: str) -> Any:
     path = str(ctx.get("path") or "")
     method = str(ctx.get("method") or "POST")
     body = ctx.get("body") if isinstance(ctx.get("body"), dict) else {}
+    match = re.search(r"/projects/([^/]+)", path)
+    project = unquote(match.group(1)) if match and label == "srs" else ""
+    agent = (bus.DESIGNER if any(part in path for part in ("/wireframes", "/design-spec"))
+             else bus.DEVELOPER)
+    on_cancel = None
+    if project:
+        # Register the cancellation token before the queued worker exists. A
+        # Stop received immediately after this response can therefore never be
+        # erased later by ProjectSession.begin().
+        session = session_for(project)
+        session.prepare_run()
+        if path.rstrip("/").endswith("/wireframes/approve"):
+            direction = str(body.get("prompt") or "").strip()
+            store.update(project, build_available=False, status="prototype-generating")
+            if direction:
+                pending = session.record / prototyper.PROTOTYPE_DIR / "generation.json"
+                pending.parent.mkdir(parents=True, exist_ok=True)
+                (pending.parent / "routes.json").unlink(missing_ok=True)
+                pending.write_text(json.dumps({"complete": False, "draw_complete": False,
+                                               "direction": direction}, ensure_ascii=False, indent=2),
+                                   encoding="utf-8")
+        def on_cancel() -> None:
+            if path.rstrip("/").endswith("/wireframes/approve"):
+                bus.sync_state(project, "paused", "Prototype generation stopped.", source="prototype")
+            elif "/wireframes" in path or path.rstrip("/").endswith("/approve"):
+                bus.sync_state(project, "paused", "Wireframe generation stopped.", source="wireframe")
+            elif "/generate-srs" in path:
+                bus.sync_state(project, "paused", "Specification generation stopped.",
+                               source="srs", srs_status="paused")
+            bus.cancelled(project, "Stopped.", agent=agent)
     return {"job_id": jobs.start(lambda: router(method, path, body),
-                                 label=f"{label}{path}")}
+                                 label=f"{label}{path}", project=project,
+                                 agent=agent, on_cancel=on_cancel)}
 
 
 @route("POST", r"/srs/jobs")
@@ -1034,6 +1507,35 @@ def dispatch(method: str, path: str, body: dict[str, Any] | None = None,
     raise HttpError(404, f"no route for {method} {clean}")
 
 
+def respond(method: str, path: str, body: dict[str, Any] | None = None,
+            query: dict[str, str] | None = None) -> tuple[int, Any, str, str]:
+    """One request, answered: `(status, payload, content type, download name)`.
+
+    The same answer whichever way the request came: over HTTP (`Studio`) or over the desktop app's stdin
+    (`stdio_bridge`). A `bytes` payload is a file; anything else is JSON.
+    """
+    try:
+        result = dispatch(method, path, body, query)
+    except HttpError as exc:
+        return exc.status, {"error": exc.message}, "application/json", ""
+    except FileNotFoundError as exc:
+        return 404, {"error": str(exc) or "not found"}, "application/json", ""
+    except KeyError as exc:
+        return 404, {"error": f"{exc} was not found"}, "application/json", ""
+    except (ValueError, TypeError) as exc:
+        return 400, {"error": str(exc)}, "application/json", ""
+    except Exception as exc:  # noqa: BLE001 - the browser needs the reason
+        # Printed as well as returned. A 500 whose message is empty shows in
+        # the studio as a bare "HTTP 500", which says nothing about what
+        # actually broke; the traceback here is the only record of it.
+        traceback.print_exc()
+        return 500, {"error": str(exc) or exc.__class__.__name__, "where": f"{method} {path}",
+                     "detail": traceback.format_exc()[-1500:]}, "application/json", ""
+    if isinstance(result, Raw):
+        return 200, result.body, result.content_type, result.filename
+    return 200, result if result is not None else {"ok": True}, "application/json", ""
+
+
 class Studio(BaseHTTPRequestHandler):
     server_version = "AgentForge"
     protocol_version = "HTTP/1.1"
@@ -1079,35 +1581,8 @@ class Studio(BaseHTTPRequestHandler):
         path = parsed.path[len(config.API_PREFIX):] or "/"
         query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
         body = self._body() if method == "POST" else {}
-
-        try:
-            result = dispatch(method, path, body, query)
-        except HttpError as exc:
-            self._send(exc.status, {"error": exc.message})
-            return
-        except FileNotFoundError as exc:
-            self._send(404, {"error": str(exc) or "not found"})
-            return
-        except KeyError as exc:
-            self._send(404, {"error": f"{exc} was not found"})
-            return
-        except (ValueError, TypeError) as exc:
-            self._send(400, {"error": str(exc)})
-            return
-        except Exception as exc:  # noqa: BLE001 - the browser needs the reason
-            # Printed as well as returned. A 500 whose message is empty shows in
-            # the studio as a bare "HTTP 500", which says nothing about what
-            # actually broke; the traceback here is the only record of it.
-            traceback.print_exc()
-            self._send(500, {"error": str(exc) or exc.__class__.__name__,
-                             "where": f"{method} {path}",
-                             "detail": traceback.format_exc()[-1500:]})
-            return
-
-        if isinstance(result, Raw):
-            self._send(200, result.body, result.content_type, result.filename)
-        else:
-            self._send(200, result if result is not None else {"ok": True})
+        status, payload, content_type, filename = respond(method, path, body, query)
+        self._send(status, payload, content_type, filename)
 
     def do_GET(self) -> None:  # noqa: N802
         self._serve("GET")

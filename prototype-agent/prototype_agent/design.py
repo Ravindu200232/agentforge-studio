@@ -10,7 +10,7 @@ import json
 import time
 from typing import Any
 
-from server_modules import bus, config, prompts, store
+from server_modules import bus, config, prompts, reference_staging, store
 from server_modules.session import ProjectSession, session_for
 
 RECORD = ("design.json",)
@@ -60,12 +60,19 @@ def selected_design_md(spec: dict[str, Any] | None) -> tuple[str, str]:
 
 
 def approved_customization(project: str) -> dict[str, Any]:
-    data = state(session_for(project))
+    session = session_for(project)
+    data = state(session)
     if not data.get("approved"):
         return {}
     chosen = data.get("customizer") or {}
     path, markdown = selected_design_md(chosen.get("spec"))
+    workspace_path = ""
+    if markdown:
+        # The theme doc lives in this app's own prompts/, outside the project
+        # workspace a read tool is rooted at — stage a copy inside it.
+        workspace_path, = reference_staging.stage(session.workspace, "design", {"theme.md": markdown})
     return {"design_md_path": path, "design_md": markdown,
+            "design_md_workspace_path": workspace_path,
             "customizer_prompt": chosen.get("prompt") or "",
             "customizer_spec": chosen.get("spec") or {}}
 
@@ -98,7 +105,9 @@ def draft(project: str, direction: str = "", spec: dict[str, Any] | None = None)
             customer_direction += ("\n\nCustomizer selection:\n" +
                                    json.dumps(spec, ensure_ascii=False, indent=2))
         if design_markdown:
-            customer_direction += f"\n\nSelected {design_path}:\n{design_markdown}"
+            staged, = reference_staging.stage(session.workspace, "design", {"theme.md": design_markdown})
+            customer_direction += (f"\n\nA candidate theme's guidance ({design_path}) is staged at "
+                                   f"`{staged}` — read it yourself with read_file before deciding.")
         chosen = session.ask_json(
             prompts.load("design/system") + "\n\n---\n\n" + prompts.load(
                 "design/draft",

@@ -1,0 +1,45 @@
+{
+  "about": "The exact shape the Studio's Testing screen reads. Fill `.agentforge/build/report.json` from `build.example` and `.agentforge/qa/report.json` from `qa.example`: every key listed in `required` must be present, with the same kind of value as the example (a list of objects stays a list of objects, a number stays a number). Values like \"passed|failed\" list the words to choose from. Use null for a number nothing measured. Extra keys are allowed. Counts come from the runner files on disk, never from memory.",
+  "build": {
+    "required": ["app", "stack", "complete", "routes", "commands", "layers", "requirements", "gaps", "defects_found_and_fixed"],
+    "example": {
+      "app": "the application's name",
+      "stack": "the stack id",
+      "complete": true,
+      "routes": [
+        {"route": "/a-page", "method": "", "verified": true, "how": "what loaded it and what it showed"},
+        {"route": "/api/a-handler", "method": "POST", "verified": false, "how": "why it was not checked"}
+      ],
+      "commands": [
+        {"phase": "build|unit|e2e|visual|a11y|perf|security", "command": "the exact command", "exit_code": 0, "note": "what it showed"}
+      ],
+      "layers": [
+        {"layer": "unit|e2e|visual|a11y|perf|security", "command": "the exact command", "exit_code": 0, "status": "passed|failed|unavailable", "result": "N passed, M failed", "artifact": "the runner's own output file"}
+      ],
+      "requirements": [
+        {"id": "a requirement id from the handoff", "status": "met|not_met|untested", "evidence": "the test or check that shows it"}
+      ],
+      "gaps": [
+        {"item": "what was not proven", "status": "gap|unavailable|untested|known", "reason": "why"}
+      ],
+      "defects_found_and_fixed": [
+        {"where": "the phase or screen", "defect": "what was wrong", "fix": "what changed"}
+      ],
+      "verified": ["one behaviour that was actually exercised"],
+      "notes": ["anything else worth reading"]
+    }
+  },
+  "qa": {
+    "required": ["complete", "summary", "layers", "unit", "journeys", "coverage"],
+    "example": {
+      "complete": true,
+      "summary": {"pass": 0, "fail": 0, "warn": 0},
+      "layers": [
+        {"layer": "unit|e2e|visual|a11y|perf|security", "command": "the exact command", "exit_code": 0, "status": "passed|failed|unavailable", "result": "N passed, M failed", "artifact": "the runner's own output file"}
+      ],
+      "unit": {"status": "passed|failed|not run", "total": 0, "passed": 0, "failed": 0, "artifact": ".agentforge/qa/vitest.json"},
+      "journeys": {"status": "passed|failed|not run", "contract": ".agentforge/srs/user-journeys.json", "required": ["UJ-001"], "passed": ["UJ-001"], "failed": [], "tests": ["[UJ-001] the journey test's title"]},
+      "coverage": {"status": "passed|failed|not run", "covered": 0, "total": 0}
+    }
+  }
+}

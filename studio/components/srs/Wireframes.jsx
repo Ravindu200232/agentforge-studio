@@ -1,32 +1,16 @@
 'use client'
 
-/** Renders and edits in-place HTML wireframes and their associated user journeys. */
+/** The wireframes: a low-fidelity React app the agent built, shown as it is, with its pages listed and a box to ask for a change. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import {
-  Loader2,
-  Move,
-  ArrowUpDown,
-  AlignLeft,
-  AlignCenter,
-  AlignRight,
-  Maximize2,
-  RotateCcw,
-  Copy,
-  Trash2,
-  Type,
-  Layers,
-  ArrowUp,
-  ArrowDown,
-  ArrowLeft,
-  ArrowRight,
-  RotateCcw as ResetIcon,
-  Sparkles,
-  Check,
-} from 'lucide-react'
-import { api } from '@/lib/api'
+import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, Loader2, RotateCw, Send } from 'lucide-react'
+
+import { api, isJobCancelled } from '@/lib/api'
+import { useFrameTools } from '@/lib/use-frame-tools'
 import { useStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
-import { Button, Empty, Modal } from '../ui'
+import AppTextEdit from '../AppTextEdit'
+import { Chips, DrawLayer, ToolButtons, ToolHint } from '../FrameTools'
+import { Button, Empty } from '../ui'
 
 /** The `prj_…` id the drawings live under, whichever way the owner is named. */
 function useSrsId(owner) {
@@ -45,453 +29,63 @@ function useSrsId(owner) {
   return srsId
 }
 
-/** One page, rendered small and not interactive, with generation animation when drawing. */
-function Thumbnail({ srsId, page, waiting }) {
-  const isGenerating = page.drawing || (waiting && !page.has_html)
-  if (!srsId || !page.has_html) {
-    return (
-      <div className="relative flex h-full w-full flex-col items-center justify-center overflow-hidden bg-[#F2F0EF]">
-        <div className="absolute inset-0 opacity-15 bg-[radial-gradient(#BFB9FF_1px,transparent_1px)] [background-size:12px_12px]" />
-        {isGenerating ? (
-          <div className="relative z-10 flex flex-col items-center gap-2 text-center p-3">
-            <div className="relative flex size-9 items-center justify-center rounded-none bg-accent border border-accent/40 shadow-[0_0_20px_rgba(191, 185, 255,0.3)]">
-              <Sparkles className="size-4 text-ink animate-spin" style={{ animationDuration: '6s' }} />
-              <div className="absolute inset-0 rounded-none border border-accent/40 animate-ping opacity-30" />
-            </div>
-            <span className="text-[11px] font-semibold text-ink tracking-wide">Drawing wireframe…</span>
-            <span className="text-[9px] text-muted2">Synthesizing blueprint layout</span>
-            <div className="absolute inset-x-0 h-0.5 bg-gradient-to-r from-transparent via-accent to-transparent animate-pulse" />
-          </div>
-        ) : (
-          <span className="relative z-10 text-[11px] text-muted2">not drawn yet</span>
-        )}
-      </div>
-    )
-  }
-  return (
-    <div className="relative h-full w-full overflow-hidden bg-white">
-      <iframe
-        title={page.page_name || page.route}
-        src={api.wireframeHtmlUrl(srsId, page.route)}
-        sandbox="allow-same-origin"
-        loading="lazy"
-        tabIndex={-1}
-        aria-hidden="true"
-        className={cn(
-          "pointer-events-none origin-top-left border-0 transition-all duration-500",
-          isGenerating && "filter blur-[4px] opacity-40 scale-[0.98]"
-        )}
-        style={{ width: '1280px', height: '1000px', transform: 'scale(0.23)' }}
-      />
-      {isGenerating && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#F2F0EF]/75 backdrop-blur-[2px] z-10 transition-all">
-          <div className="relative flex size-9 items-center justify-center rounded-none bg-accent border border-accent/50 shadow-[0_0_20px_rgba(191, 185, 255,0.4)]">
-            <Sparkles className="size-4 text-ink animate-spin" style={{ animationDuration: '6s' }} />
-            <div className="absolute inset-0 rounded-none border border-accent/40 animate-ping opacity-30" />
-          </div>
-          <span className="mt-2 text-[11px] font-semibold text-ink tracking-wide">Updating…</span>
-          <span className="text-[9px] text-muted font-mono">Redrawing wireframe</span>
-          <div className="absolute inset-x-0 h-[2px] bg-gradient-to-r from-transparent via-accent to-transparent animate-pulse" />
-        </div>
-      )}
-    </div>
-  )
+/** Whether the address `here` (`/orders/7`) is the route `pattern` (`/orders/[id]`). */
+function same(pattern, here) {
+  const a = String(pattern || '').split('/').filter(Boolean)
+  const b = String(here || '').split('?')[0].split('/').filter(Boolean)
+  return a.length === b.length && a.every((part, i) => /^\[.+\]$|^:/.test(part) || part === b[i])
 }
 
-/* Interactive full-size wireframe editor canvas with Figma positioning and editing tools. */
-export function WireframeEditor({ owner, page, onClose, onSaved, srsId: given = '' }) {
-  const resolved = useSrsId(owner)
-  const srsId = given || resolved
-
-  const [drawing, setDrawing] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [problem, setProblem] = useState('')
-  const [stamp, setStamp] = useState(page.has_html ? 1 : 0)
-  const [stale, setStale] = useState(Boolean(page.html_stale))
-  const [picked, setPicked] = useState('')
-  const [dirty, setDirty] = useState(false)
-  const [typing, setTyping] = useState(false)
-  const [metrics, setMetrics] = useState(null)
-  const [dragMode, setDragMode] = useState('free')
-  const frame = useRef(null)
-  const editor = useRef(null)
-  const editorUrl = useMemo(
-    () => (srsId ? api.wireframeHtmlUrl(srsId, page.route) : 'about:blank'),
-    [srsId, page.route],
-  )
-
-  // Query server directly for current wireframe HTML existence.
+/** One page, shown small and not clickable: the wireframe app opened at that page and scaled to the card. */
+function Thumbnail({ src, page, waiting }) {
+  const box = useRef(null)
+  const [scale, setScale] = useState(0.22)
   useEffect(() => {
-    if (!srsId) return
-    let live = true
-    fetch(api.wireframeHtmlUrl(srsId, page.route))
-      .then(r => { if (live && r.ok) setStamp(n => n || 1) })
-      .catch(() => {})
-    return () => { live = false }
-  }, [srsId, page.route])
-
-  const [parts, setParts] = useState([])
-
-  const attach = useCallback(() => {
-    editor.current?.detach?.()
-    const iframe = frame.current
-    if (!iframe) return
-
-    // If generated markup managed to activate a link before the editor guard
-    // attached, recover the canvas immediately instead of leaving a Studio 404
-    // in the frame. Hash-only changes are harmless; route/query changes are not.
-    if (editorUrl !== 'about:blank') {
-      try {
-        const expected = new URL(editorUrl, window.location.href)
-        const actual = iframe.contentWindow?.location
-        if (actual && (actual.pathname !== expected.pathname || actual.search !== expected.search)) {
-          iframe.src = editorUrl
-          return
-        }
-      } catch {
-        iframe.src = editorUrl
-        return
-      }
-    }
-
-    import('@/lib/wireframe-html-editor').then(({ attachEditor, PARTS }) => {
-      editor.current = attachEditor(iframe, {
-        onSelect: setPicked,
-        onDirty: setDirty,
-        onMetrics: setMetrics,
-      })
-      setParts(PARTS)
-      if (!editor.current) setProblem('This page cannot be edited in place here.')
-    })
-  }, [editorUrl])
-
-  useEffect(() => () => editor.current?.detach?.(), [])
-
-  async function draw() {
-    setDrawing(true); setProblem('')
-    try {
-      await api.drawWireframeHtml(srsId, page.route)
-      setStamp(n => n + 1)
-      setStale(false); setDirty(false); setPicked(''); setTyping(false); setMetrics(null)
-    } catch (failure) {
-      setProblem(failure?.message || 'The page could not be drawn.')
-    } finally {
-      setDrawing(false)
-    }
-  }
-
-  async function save() {
-    if (!editor.current) return
-    setSaving(true); setProblem('')
-    try {
-      if (typing) { editor.current.editText(false); setTyping(false) }
-      await api.saveWireframeHtml(srsId, page.route, editor.current.serialize())
-      editor.current.saved()
-      onSaved?.(null)
-    } catch (failure) {
-      setProblem(failure?.message || 'That layout could not be saved.')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const act = (name, ...args) => () => {
-    editor.current?.[name]?.(...args)
-    if (name === 'undo') {
-      setStamp(n => n + 1)
-      setDirty(false)
-      setPicked('')
-      setMetrics(null)
-    }
-  }
-
-  const setMode = mode => {
-    setDragMode(mode)
-    editor.current?.setDragMode?.(mode)
-  }
-
-  const Tool = ({ onClick, children, on = false, always = false, title }) => (
-    <button type="button" onClick={onClick} disabled={!picked && !always} title={title}
-      className={cn('inline-flex items-center gap-1 rounded-none px-2 py-1 text-[11px] font-medium transition cursor-pointer',
-        'disabled:opacity-30 disabled:cursor-not-allowed',
-        on ? 'bg-accent text-ink shadow-sm'
-           : 'bg-black/[.06] text-ink hover:bg-black/[.12] hover:text-ink')}>
-      {children}
-    </button>
-  )
-
+    const el = box.current
+    if (!el) return
+    const measure = () => setScale((el.clientWidth || 280) / 1280)
+    measure()
+    const watcher = new ResizeObserver(measure)
+    watcher.observe(el)
+    return () => watcher.disconnect()
+  }, [])
+  const drawing = page.drawing || (waiting && !page.has_html)
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-none border border-black/10 bg-[#F2F0EF]/90 shadow-2xl backdrop-blur-xl">
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-black/10 bg-black/30 px-5 py-3 backdrop-blur-md">
-        <div className="flex min-w-0 items-center gap-3">
-          <Button variant="outline" size="sm" onClick={onClose}
-            className="h-8 rounded-none border-black/10 bg-black/[.05] text-ink text-[11.5px]">
-            ← Wireframes
-          </Button>
-          <span className="min-w-0">
-            <span className="block truncate text-[13px] font-semibold text-ink">
-              {page.page_name || page.route}
-            </span>
-            <span className="block truncate font-mono text-[10.5px] text-muted2">
-              {page.route}{page.roles?.length ? ` · ${page.roles.join(', ')}` : ''}
-            </span>
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          {dirty && (
-            <Button variant="solid" size="sm" onClick={save} disabled={saving}
-              className="h-8 rounded-none bg-accent hover:bg-accent text-[11.5px] text-ink">
-              {saving ? <><Loader2 className="mr-1 size-3 animate-spin" /> Saving…</> : 'Save page'}
-            </Button>
-          )}
-          <Button variant="outline" size="sm" onClick={draw} disabled={drawing || !srsId}
-            className="h-8 rounded-none border-black/10 bg-black/[.05] text-ink text-[11.5px]">
-            {drawing ? <><Loader2 className="mr-1 size-3 animate-spin" /> Drawing…</>
-                     : stamp ? 'Draw again' : 'Draw this page'}
-          </Button>
-        </div>
-      </div>
-
-      {stamp ? (
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-black/10 bg-black/[.03] px-3.5 py-2 select-none">
-          {/* Tool Mode: Free Move (Figma Canvas) vs Flow Reorder */}
-          <div className="flex items-center rounded-none bg-black/40 p-0.5 border border-black/10">
-            <button
-              type="button"
-              onClick={() => setMode('free')}
-              title="Move Tool (V): Drag with cursor to freely position anywhere"
-              className={cn('flex items-center gap-1 rounded-none px-2 py-1 text-[10.5px] font-medium transition cursor-pointer',
-                dragMode === 'free' ? 'bg-[#BFB9FF] text-ink font-semibold shadow-sm' : 'text-muted hover:text-ink')}
-            >
-              <Move className="size-3" />
-              <span>Move</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode('flow')}
-              title="Reorder Tool: Drag with cursor to drop between elements"
-              className={cn('flex items-center gap-1 rounded-none px-2 py-1 text-[10.5px] font-medium transition cursor-pointer',
-                dragMode === 'flow' ? 'bg-[#BFB9FF] text-ink font-semibold shadow-sm' : 'text-muted hover:text-ink')}
-            >
-              <ArrowUpDown className="size-3" />
-              <span>Reorder</span>
-            </button>
-          </div>
-
-          <span className="mx-1 h-4 w-px bg-black/10" />
-
-          {picked ? (
-            <>
-              {/* Selected Tag & Dimensions */}
-              <span className="flex items-center gap-1 rounded-none bg-black/[.07] px-2 py-1 font-mono text-[10.5px] text-ink border border-black/10">
-                <span className="text-[#BFB9FF] font-semibold">&lt;{picked}&gt;</span>
-                {metrics && (
-                  <span className="text-muted2 text-[10px] ml-1">
-                    {metrics.w}×{metrics.h}px
-                  </span>
-                )}
-              </span>
-
-              {/* Position Steppers (X, Y) */}
-              <div className="flex items-center gap-1 rounded-none bg-black/30 px-1.5 py-0.5 border border-black/10 font-mono text-[10px]">
-                <span className="text-muted2 uppercase font-semibold text-[9.5px]">X:</span>
-                <button type="button" onClick={() => editor.current?.nudge?.(-5, 0)} className="px-1 text-muted hover:text-ink hover:bg-black/10 rounded">-</button>
-                <span className="text-ink font-medium min-w-[28px] text-center">{metrics?.x ?? 0}px</span>
-                <button type="button" onClick={() => editor.current?.nudge?.(5, 0)} className="px-1 text-muted hover:text-ink hover:bg-black/10 rounded">+</button>
-              </div>
-
-              <div className="flex items-center gap-1 rounded-none bg-black/30 px-1.5 py-0.5 border border-black/10 font-mono text-[10px]">
-                <span className="text-muted2 uppercase font-semibold text-[9.5px]">Y:</span>
-                <button type="button" onClick={() => editor.current?.nudge?.(0, -5)} className="px-1 text-muted hover:text-ink hover:bg-black/10 rounded">-</button>
-                <span className="text-ink font-medium min-w-[28px] text-center">{metrics?.y ?? 0}px</span>
-                <button type="button" onClick={() => editor.current?.nudge?.(0, 5)} className="px-1 text-muted hover:text-ink hover:bg-black/10 rounded">+</button>
-              </div>
-
-              {metrics?.hasOffset && (
-                <button
-                  type="button"
-                  onClick={() => editor.current?.resetPos?.()}
-                  title="Reset Position to 0,0"
-                  className="rounded-none bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 px-1.5 py-1 text-[10px] font-medium transition cursor-pointer"
-                >
-                  Reset Pos
-                </button>
-              )}
-
-              {/* Nudge D-Pad */}
-              <div className="flex items-center rounded-none bg-black/[.05] p-0.5 border border-black/10">
-                <button type="button" onClick={() => editor.current?.nudge?.(-1, 0)} title="Nudge Left (1px)" className="p-1 hover:bg-black/10 rounded text-muted hover:text-ink">
-                  <ArrowLeft className="size-2.5" />
-                </button>
-                <button type="button" onClick={() => editor.current?.nudge?.(0, -1)} title="Nudge Up (1px)" className="p-1 hover:bg-black/10 rounded text-muted hover:text-ink">
-                  <ArrowUp className="size-2.5" />
-                </button>
-                <button type="button" onClick={() => editor.current?.nudge?.(0, 1)} title="Nudge Down (1px)" className="p-1 hover:bg-black/10 rounded text-muted hover:text-ink">
-                  <ArrowDown className="size-2.5" />
-                </button>
-                <button type="button" onClick={() => editor.current?.nudge?.(1, 0)} title="Nudge Right (1px)" className="p-1 hover:bg-black/10 rounded text-muted hover:text-ink">
-                  <ArrowRight className="size-2.5" />
-                </button>
-              </div>
-
-              <span className="mx-1 h-4 w-px bg-black/10" />
-
-              {/* Alignments */}
-              <Tool onClick={act('align', 'left')} title="Align Left"><AlignLeft className="size-3" /></Tool>
-              <Tool onClick={act('align', 'center')} title="Align Centre"><AlignCenter className="size-3" /></Tool>
-              <Tool onClick={act('align', 'right')} title="Align Right"><AlignRight className="size-3" /></Tool>
-              <Tool onClick={act('align', 'full')} title="Full Width"><Maximize2 className="size-3" /></Tool>
-
-              <span className="mx-1 h-4 w-px bg-black/10" />
-
-              {/* Hierarchy */}
-              <Tool onClick={act('parent')} title="Select Parent Container"><Layers className="size-3 mr-0.5" /> Parent</Tool>
-              <Tool onClick={act('move', -1)} title="Move Up in DOM">↑</Tool>
-              <Tool onClick={act('move', 1)} title="Move Down in DOM">↓</Tool>
-
-              {/* Size */}
-              <Tool onClick={act('wider', -10)} title="Narrower">-10%</Tool>
-              <Tool onClick={act('wider', 10)} title="Wider">+10%</Tool>
-
-              <span className="mx-1 h-4 w-px bg-black/10" />
-
-              {/* Actions */}
-              <Tool onClick={act('duplicate')} title="Duplicate Element"><Copy className="size-3" /></Tool>
-              <Tool onClick={act('remove')} title="Delete Element"><Trash2 className="size-3 text-rose-300" /></Tool>
-              <Tool on={typing} onClick={() => { editor.current?.editText(!typing); setTyping(!typing) }} title="Edit Text Directly">
-                <Type className="size-3" />
-                <span>{typing ? 'Done typing' : 'Text'}</span>
-              </Tool>
-            </>
-          ) : (
-            <span className="flex items-center gap-1.5 font-mono text-[11px] text-muted2">
-              <Move className="size-3 text-[#BFB9FF]" />
-              <span>Click any element to drag with cursor · Drag corner handles to resize · Arrow keys to nudge</span>
-            </span>
-          )}
-
-          <span className="flex-1" />
-          <Tool always onClick={act('undo')} title="Undo last change (Ctrl+Z)">
-            <RotateCcw className="size-3" />
-            <span>Undo</span>
-          </Tool>
-        </div>
-      ) : null}
-
-      {stale && stamp ? (
-        <p className="shrink-0 border-b border-amber-400/20 bg-amber-400/10 px-4 py-2 text-[11.5px] text-amber-200">
-          The specification has changed since this page was drawn — draw it again to bring it up to date.
-        </p>
-      ) : null}
-      {problem ? (
-        <p role="alert" className="shrink-0 border-b border-rose-400/20 bg-rose-500/10 px-4 py-2 text-[11.5px] text-rose-300">
-          {problem}
-        </p>
-      ) : null}
-
-      {stamp ? (
-        <div className="flex min-h-0 flex-1">
-          {/* The catalogue. A part is inserted after whatever is picked, so
-              building a page is: pick the thing it goes under, then add it. */}
-          <aside className="w-[188px] shrink-0 overflow-y-auto border-r border-black/10 bg-[#F2F0EF] p-3">
-            <p className="mb-2 font-display text-[10.5px] font-bold uppercase tracking-wider text-muted">
-              Add components
-            </p>
-            <p className="mb-3 text-[10px] leading-snug text-muted2">
-              {picked ? 'Goes in after the part you picked.' : 'Goes in the visible area.'}
-            </p>
-            {parts.map(([group, items]) => (
-              <div key={group} className="mb-3">
-                <p className="mb-1.5 text-[9.5px] font-semibold uppercase tracking-wider text-muted2">
-                  {group}
-                </p>
-                <div className="grid grid-cols-2 gap-1">
-                  {items.map(([kind, label]) => (
-                    <button key={kind} type="button" onClick={act('insert', kind)}
-                      className="rounded-none bg-black/[.05] px-2 py-1.5 text-left text-[10.5px]
-                                 text-muted transition hover:bg-black/[.12] hover:text-ink">
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </aside>
-          <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-white">
-            {drawing && (
-              <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-[#F2F0EF]/85 backdrop-blur-md transition-all duration-300">
-                <div className="absolute inset-0 opacity-15 bg-[radial-gradient(#BFB9FF_1px,transparent_1px)] [background-size:20px_20px]" />
-                <div className="absolute inset-x-0 h-1 bg-gradient-to-r from-transparent via-[#BFB9FF] to-transparent animate-pulse shadow-[0_0_20px_#BFB9FF]" />
-                <div className="relative z-10 flex flex-col items-center rounded-none border border-black/15 bg-black/[0.04] p-8 shadow-2xl backdrop-blur-2xl text-center max-w-sm">
-                  <div className="relative flex size-14 items-center justify-center rounded-none bg-accent border border-accent/40 shadow-[0_0_35px_rgba(191, 185, 255,0.4)]">
-                    <Sparkles className="size-7 text-ink animate-spin" style={{ animationDuration: '7s' }} />
-                    <div className="absolute inset-0 rounded-none border-2 border-[#BFB9FF] animate-ping opacity-30" />
-                  </div>
-                  <h3 className="mt-4 text-[15px] font-bold tracking-tight text-ink">Updating Wireframe…</h3>
-                  <p className="mt-1 text-[12px] leading-relaxed text-ink">
-                    Generating updated layout structure and blueprint components for <span className="font-mono text-accent font-semibold">{page.route}</span>.
-                  </p>
-                  <div className="mt-4 flex items-center gap-2 rounded-full border border-accent/30 bg-accent px-3 py-1 font-mono text-[10.5px] text-ink">
-                    <Loader2 className="size-3 animate-spin text-ink" />
-                    <span>Drawing wireframe…</span>
-                  </div>
-                </div>
-              </div>
-            )}
-            <iframe
-              key={stamp}
-              ref={frame}
-              onLoad={attach}
-              title={`${page.page_name || page.route} wireframe`}
-              src={editorUrl}
-              sandbox="allow-same-origin"
-              className={cn(
-                "min-h-0 min-w-0 flex-1 border-0 bg-white transition-all duration-500",
-                drawing && "filter blur-[6px] scale-[0.99] opacity-40 pointer-events-none"
-              )}
-            />
-          </div>
-        </div>
+    <div ref={box} className="relative h-full w-full overflow-hidden bg-white">
+      {src && page.has_html ? (
+        <iframe title={page.page_name || page.route} src={src} loading="lazy" tabIndex={-1} aria-hidden="true"
+          className="pointer-events-none origin-top-left border-0"
+          style={{ width: '1280px', height: '900px', transform: `scale(${scale})` }} />
       ) : (
-        <div className="flex min-h-0 flex-1 items-center justify-center bg-[#F2F0EF] text-[12px] text-muted">
-          {srsId ? `Nothing drawn for ${page.route} yet.`
-                 : 'This project has no specification to draw from.'}
+        <div className="absolute inset-0 grid place-items-center bg-panel text-center">
+          {drawing
+            ? <span className="flex flex-col items-center gap-1.5"><Loader2 className="size-5 animate-spin text-accent" />
+                <span className="text-[11px] font-semibold text-ink">Drawing…</span></span>
+            : <span className="text-[11px] text-muted2">not drawn yet</span>}
         </div>
       )}
     </div>
   )
 }
 
-/** The modal the workspace opens a page in. */
-function PageEditor({ owner, page, onClose, onSaved, srsId = '' }) {
-  return (
-    <Modal
-      onClose={onClose}
-      overlayClassName="!p-0 backdrop-blur-none"
-      style={{ maxWidth: 'none', width: '100%', height: '100%', maxHeight: '100%' }}
-      className="overflow-hidden rounded-none border-0 p-0"
-    >
-      <div className="flex h-full min-h-0 gap-4 bg-[#F2F0EF] p-5">
-        <WireframeEditor owner={owner} srsId={srsId} page={page}
-          onClose={onClose} onSaved={onSaved} />
-      </div>
-    </Modal>
-  )
-}
-
-export function Wireframes({ srs, onEditPage, onApprove, onRetryPrototype,
-                             generating = false, approving = false }) {
+export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generating = false, approving = false }) {
   const owner = srs?.project || srs?.srs_id || srs?.id || ''
   const srsId = useSrsId(owner)
   const srsStamp = useStore(state => state.srsStamp[owner] || 0)
   const [data, setData] = useState(null)
-  const [open, setOpen] = useState(null)
   const [error, setError] = useState('')
   const [drawing, setDrawing] = useState(false)
-  const [selectedForDel, setSelectedForDel] = useState([])
-  const [deleteModalOpen, setDeleteModalOpen] = useState(false)
-  const [deleting, setDeleting] = useState(false)
+  const [route, setRoute] = useState('')
+  const [open, setOpen] = useState(false)
+  const [asking, setAsking] = useState(false)
+  const [prompt, setPrompt] = useState('')
   const [designApproved, setDesignApproved] = useState(false)
+  const [loadedCount, setLoadedCount] = useState(0)
+  const frame = useRef(null)
+  // The select, pencil and text tools over the page on show: they work on the page's own frame, and what they pick goes with the
+  // next request typed under it.
+  const tools = useFrameTools(frame, { loaded: loadedCount })
+  const { setMode, clearItems } = tools
 
   useEffect(() => {
     if (!srsId) return
@@ -509,286 +103,233 @@ export function Wireframes({ srs, onEditPage, onApprove, onRetryPrototype,
       .catch(failure => setError(failure?.message || 'The wireframes could not be read.'))
   }, [owner])
 
-  // A chat/feature update may rewrite the SRS or a wireframe without remounting
+  // A chat/feature update may rewrite the SRS or the wireframes without remounting
   // this tab. Refresh only this data view; never reload the whole Studio app.
   useEffect(() => { load() }, [load, srsStamp])
 
-  /** Poll wireframes status periodically while page drawings are being generated. */
+  /** Poll while the agent is drawing, so the pages light up as their files are written. */
   const waiting = generating || Boolean(data?.drawing)
   useEffect(() => {
     if (!waiting) return
     load()
-    const again = setInterval(load, 2000)
+    const again = setInterval(load, 2500)
     return () => clearInterval(again)
   }, [waiting, load])
 
   useEffect(() => { if (!generating) load() }, [generating, load])
 
-  /** Draw every page that has no drawing yet, and redraw the rest. */
+  // A page on show takes the whole view: whoever hosts this tab is told, and hides what is beside it (the chat) meanwhile.
+  useEffect(() => {
+    onFocus?.(open)
+    return () => onFocus?.(false)
+  }, [open, onFocus])
+
+  const pages = data?.pages || []
+  const built = Boolean(data?.built)
+  const drawn = pages.filter(p => p.has_html).length
+
+  // Back at the list of pages, or on another page: no tool in hand, and nothing is left pointed at.
+  useEffect(() => { if (!open) setMode(null) }, [open, setMode])
+  useEffect(() => { clearItems() }, [route, clearItems])
+
+  // The page on show: the first drawn one until a page is picked.
+  useEffect(() => {
+    if (!pages.length) return
+    if (!route || !pages.some(p => p.route === route)) setRoute((pages.find(p => p.has_html) || pages[0]).route)
+  }, [pages, route])
+
+  // A link inside the wireframes moves the frame to another page: follow it in the list.
+  useEffect(() => {
+    if (!built || !open) return
+    const id = setInterval(() => {
+      try {
+        const hash = frame.current?.contentWindow?.location?.hash?.slice(1)
+        if (!hash) return
+        const found = pages.find(p => p.route === hash) || pages.find(p => same(p.route, hash))
+        if (found && found.route !== route) setRoute(found.route)
+      } catch { /* the frame is not on our own address yet */ }
+    }, 500)
+    return () => clearInterval(id)
+  }, [built, open, pages, route])
+
+  const src = useMemo(
+    () => (srsId && built ? api.webUrl(srsId, 'wireframe', route, data?.version) : ''),
+    [srsId, built, route, data?.version],
+  )
+
+  /** Draw every page again, from the start. */
   async function drawAll() {
     if (!srsId) return
     setDrawing(true); setError('')
     try {
-      await api.drawWireframeHtml(srsId)
+      await api.buildWireframes(srsId)
       load()
     } catch (failure) {
-      setError(failure?.message || 'The pages could not be drawn.')
+      if (!isJobCancelled(failure)) setError(failure?.message || 'The wireframes could not be drawn.')
     } finally {
       setDrawing(false)
     }
   }
 
-  function openDeleteModal(routesToSelect = []) {
-    setSelectedForDel(routesToSelect)
-    setDeleteModalOpen(true)
-  }
-
-  function toggleDelRoute(route) {
-    setSelectedForDel(prev =>
-      prev.includes(route) ? prev.filter(r => r !== route) : [...prev, route]
-    )
-  }
-
-  function selectAllForDel() {
-    const drawnRoutes = pages.filter(p => p.has_html).map(p => p.route)
-    setSelectedForDel(drawnRoutes)
-  }
-
-  function deselectAllForDel() {
-    setSelectedForDel([])
-  }
-
-  /** Delete selected wireframes by clearing their HTML. */
-  async function deleteSelectedWireframes() {
-    if (!srsId || !selectedForDel.length) return
-    setDeleting(true)
+  /** One change, asked for in words, about this page and about what was pointed at. */
+  async function send(request, elements = []) {
+    if (!srsId || !request || asking) return false
+    setAsking(true); setError('')
     try {
-      await Promise.all(
-        selectedForDel.map(route => api.saveWireframeHtml(srsId, route, ''))
-      )
+      await api.editWireframe(srsId, request, route, elements)
       load()
-      setDeleteModalOpen(false)
-      setSelectedForDel([])
+      return true
     } catch (failure) {
-      setError(failure?.message || 'The selected wireframes could not be deleted.')
+      if (!isJobCancelled(failure)) setError(failure?.message || 'The change could not be made.')
+      return false
     } finally {
-      setDeleting(false)
+      setAsking(false)
     }
   }
 
-  const pages = data?.pages || []
+  async function ask(event) {
+    event?.preventDefault()
+    const request = prompt.trim()
+    if (!request) return
+    if (await send(request, tools.elements)) {
+      setPrompt('')
+      tools.clearItems()
+    }
+  }
+
+  /** Words that could not be swapped directly are asked of the agent instead. */
+  function askToChange({ old, value }) {
+    send(`Change the text "${old}" to "${value}"${current?.page_name ? ` on the ${current.page_name} page` : ''}.`)
+  }
+
   if (error && !data) return <Empty>{error}</Empty>
   if (!data) return <Empty>Reading the wireframes…</Empty>
   if (!pages.length) return <Empty>{waiting
-    ? 'Reading the approved plan and preparing the wireframe pages…'
+    ? 'Reading the approved plan and preparing the wireframes…'
     : 'No pages in the specification yet, so there is nothing to draw.'}</Empty>
 
-  const drawn = pages.filter(p => p.has_html).length
+  const busy = drawing || waiting || asking
+  const current = pages.find(p => p.route === route)
+  const index = pages.findIndex(p => p.route === route)
 
   return (
-    <div className="space-y-3">
+    <div className={cn("flex flex-col gap-3", open && "min-h-[520px] flex-1")}>
       {error && <p role="alert" className="text-xs text-rose-400">{error}</p>}
-      {/* Visual progress indicator displayed while wireframe pages are being drawn. */}
       {waiting && (
-        <p className="flex items-center gap-2.5 rounded-none border border-accent/30 bg-accent
-                      px-3.5 py-2.5 text-[11.5px] leading-relaxed text-ink">
+        <p className="flex items-center gap-2.5 rounded-none border border-accent/30 bg-accent px-3.5 py-2.5 text-[11.5px] leading-relaxed text-ink">
           <Loader2 className="size-3.5 shrink-0 animate-spin text-accent" />
           <span>
-            Drawing the pages — each one is drawn on its own, so they appear as
-            they finish. {drawn} of {pages.length} so far. You can carry on; this
-            keeps going without you.
+            The agent is drawing the wireframes: one React page for each screen, then the app is bundled. {drawn} of {pages.length} pages
+            written so far. You can carry on; this keeps going without you.
           </span>
         </p>
       )}
-      <div className="flex flex-wrap items-baseline justify-between gap-3">
+      {!open && <div className="flex flex-wrap items-baseline justify-between gap-3">
         <p className="text-[11.5px] text-muted">
-          {pages.length} HTML page{pages.length === 1 ? '' : 's'}, black and white, with sample data.
-          Open one to move things, retype them, or ask for a change.
-          {drawn === pages.length
-            ? ' All drawn.'
-            : ` ${drawn} of ${pages.length} drawn so far.`}
+          {pages.length} page{pages.length === 1 ? '' : 's'} as a low-fidelity React app (shadcn/ui, Tailwind), with sample data.
+          {' Open a page to click through it, or to ask for a change.'}
+          {drawn === pages.length ? ' All drawn.' : ` ${drawn} of ${pages.length} drawn so far.`}
         </p>
         <div className="flex items-center gap-2">
           {onApprove && (designApproved ? (
-            <Button variant="solid" disabled={waiting || drawing || deleting || approving || drawn === 0}
+            <Button variant="solid" disabled={busy || approving || drawn === 0}
                     onClick={onRetryPrototype} title="Generate the prototype again using the approved design">
               {approving ? <><Loader2 className="mr-1.5 size-3.5 animate-spin" />Planning prototype…</>
                          : 'Regenerate prototype'}
             </Button>
           ) : (
-            <Button variant="solid" disabled={waiting || drawing || deleting || approving || drawn === 0}
-                    onClick={onApprove}
-                    title={drawn === 0
-                      ? 'Draw at least one wireframe before approving'
-                      : drawn < pages.length
-                        ? `Approve ${drawn} ready wireframe${drawn === 1 ? '' : 's'}; missing pages will use the SRS`
-                        : 'Approve wireframes and choose the design'}>
-              {drawn < pages.length
-                ? `Approve ${drawn} ready wireframe${drawn === 1 ? '' : 's'} → Design`
-                : 'Approve wireframes → Design'}
+            <Button variant="solid" disabled={busy || approving || drawn === 0} onClick={onApprove}
+                    title={drawn === 0 ? 'Draw the wireframes before approving them' : 'Approve the wireframes and choose the design'}>
+              Approve wireframes → Design
             </Button>
           ))}
-          {pages.some(p => p.has_html) && (
-            <Button
-              variant="outline"
-              disabled={drawing || waiting || deleting || !srsId}
-              onClick={() => openDeleteModal(pages.filter(p => p.has_html).map(p => p.route))}
-              className="border-rose-500/30 text-rose-300 hover:bg-rose-500/10 hover:border-rose-500/50"
-            >
-              <Trash2 className="mr-1.5 size-3.5 text-rose-400" />
-              Delete wireframes…
-            </Button>
-          )}
-          <Button variant="outline" disabled={drawing || waiting || !srsId} onClick={drawAll}>
+          <Button variant="outline" disabled={busy || !srsId} onClick={drawAll}>
             {drawing || waiting
               ? <><Loader2 className="mr-1 size-3 animate-spin" /> Drawing…</>
-              : drawn ? 'Draw them again' : 'Draw every page'}
+              : drawn ? 'Draw them again' : 'Draw the wireframes'}
           </Button>
         </div>
-      </div>
-      <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
-        {pages.map((page, index) => (
-          <div key={`${page.route || 'wireframe'}-${index}`} className="group relative">
-            <button type="button"
-              onClick={() => (onEditPage ? onEditPage(page) : setOpen(page))}
-              className="w-full overflow-hidden rounded-none border border-line text-left transition hover:border-accent cursor-pointer">
+      </div>}
+
+      {!open && (
+        <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
+          {pages.map((page, index) => (
+            <button key={`${page.route || 'wireframe'}-${index}`} type="button"
+              onClick={() => { setRoute(page.route); setOpen(true) }}
+              className="w-full cursor-pointer overflow-hidden rounded-none border border-line text-left transition hover:border-accent">
               <span className="block aspect-[16/11] overflow-hidden border-b border-line bg-white">
-                <Thumbnail srsId={srsId} page={page} waiting={waiting} />
+                <Thumbnail src={srsId && built ? api.webUrl(srsId, 'wireframe', page.route, data?.version) : ''} page={page} waiting={waiting} />
               </span>
               <span className="block space-y-1 p-3">
-                <span className="truncate block text-[12px] font-medium text-ink">{page.page_name}</span>
+                <span className="block truncate text-[12px] font-medium text-ink">{page.page_name}</span>
                 <span className="block truncate font-mono text-[10px] text-muted2">{page.route}</span>
-                <span className="block truncate text-[10px] text-muted2">
-                  {page.roles?.length ? page.roles.join(', ') : 'public'}
-                  {page.html_stale ? ' · out of date' : ''}
-                </span>
-                {page.error && <span className="block text-[10px] text-rose-400" title={page.error}>Drawing failed · open to retry</span>}
+                <span className="block truncate text-[10px] text-muted2">{page.roles?.length ? page.roles.join(', ') : 'public'}</span>
               </span>
             </button>
-            {/* Delete button — visible on hover, opens confirmation dialog with page ticked */}
-            {page.has_html && (
-              <button
-                type="button"
-                title="Delete wireframe"
-                onClick={e => { e.stopPropagation(); openDeleteModal([page.route]) }}
-                className="absolute right-2 top-2 z-10 flex items-center justify-center rounded-none
-                           bg-black/60 p-1.5 text-muted opacity-0 transition
-                           hover:bg-rose-600 hover:text-ink
-                           group-hover:opacity-100 cursor-pointer"
-              >
-                <Trash2 className="size-3.5" />
+          ))}
+        </div>
+      )}
+
+      {open && <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex min-w-0 items-center gap-2">
+              <button type="button" onClick={() => setOpen(false)} title="Back to all the pages"
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] font-medium text-ink hover:bg-ink/[.06]">
+                <ArrowLeft className="size-3" /> All pages
               </button>
+              <span className="flex shrink-0 gap-1">
+                <button type="button" title="The page before" disabled={index <= 0} onClick={() => setRoute(pages[index - 1].route)}
+                  className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06] disabled:opacity-40"><ChevronLeft className="size-3.5" /></button>
+                <button type="button" title="The next page" disabled={index < 0 || index >= pages.length - 1} onClick={() => setRoute(pages[index + 1].route)}
+                  className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06] disabled:opacity-40"><ChevronRight className="size-3.5" /></button>
+              </span>
+              <span className="truncate text-[12px] font-medium text-ink">{current?.page_name || route}</span>
+              <span className="truncate font-mono text-[11px] text-muted2">{current ? current.route : ''}</span>
+            </span>
+            {src && (
+              <span className="flex shrink-0 items-center gap-1.5">
+                <ToolButtons small mode={tools.mode} onTool={tools.chooseTool} inked={tools.inked} onErase={tools.clearInk} />
+                <button type="button" title="Reload" onClick={() => frame.current?.contentWindow?.location.reload()}
+                  className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06]"><RotateCw className="size-3.5" /></button>
+                <a href={src} target="_blank" rel="noreferrer" title="Open in its own window"
+                  className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06]"><ExternalLink className="size-3.5" /></a>
+              </span>
             )}
           </div>
-        ))}
-      </div>
-      {open && (
-        <PageEditor owner={owner} srsId={srsId} page={open}
-          onClose={() => setOpen(null)}
-          onSaved={() => { load(); setOpen(null) }} />
-      )}
-      {/* Delete confirmation modal with checkboxes (tick marks) */}
-      {deleteModalOpen && (
-        <Modal onClose={() => !deleting && setDeleteModalOpen(false)}>
-          <div className="space-y-4 max-w-lg w-full">
-            <div className="flex items-start gap-3">
-              <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-rose-500/15">
-                <Trash2 className="size-4 text-rose-400" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <h3 className="text-[15px] font-bold text-ink">Delete wireframe pages?</h3>
-                <p className="mt-1 text-[12px] leading-relaxed text-muted">
-                  Select which wireframe HTML layouts to delete. Ticked pages will be cleared and reset to ungenerated status. This action cannot be undone.
-                </p>
+          <div className="relative min-h-0 flex-1 overflow-hidden rounded-none border border-line bg-white">
+            {src ? (
+              <>
+                <iframe ref={frame} key={data?.version} title="wireframes" src={src} onLoad={() => setLoadedCount(n => n + 1)}
+                  className="absolute inset-0 h-full w-full border-0" />
+                <DrawLayer canvasRef={tools.canvasRef} active={tools.mode === 'pencil'} />
+                <ToolHint mode={tools.mode} />
+              </>
+            ) : (
+              <div className="absolute inset-0 grid place-items-center bg-panel p-6 text-center text-[12px] text-muted">
+                {waiting ? 'Drawing…' : data?.pages?.[0]?.error || 'The wireframes are not drawn yet.'}
               </div>
-            </div>
-
-            {/* Quick Actions */}
-            <div className="flex items-center justify-between border-y border-line py-2 text-[11.5px]">
-              <span className="font-medium text-muted">
-                {selectedForDel.length} of {pages.filter(p => p.has_html).length} selected
-              </span>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={selectAllForDel}
-                  className="text-accent hover:underline cursor-pointer"
-                >
-                  Select all
-                </button>
-                <span className="text-muted2">·</span>
-                <button
-                  type="button"
-                  onClick={deselectAllForDel}
-                  className="text-muted hover:text-ink cursor-pointer"
-                >
-                  Clear selection
-                </button>
-              </div>
-            </div>
-
-            {/* Scrollable list with checkboxes */}
-            <div className="max-h-[300px] overflow-y-auto space-y-1.5 pr-1">
-              {pages.filter(p => p.has_html).map(p => {
-                const checked = selectedForDel.includes(p.route)
-                return (
-                  <label
-                    key={p.route}
-                    className={cn(
-                      "flex items-center gap-3 rounded-none border p-2.5 transition cursor-pointer select-none",
-                      checked
-                        ? "border-rose-500/50 bg-rose-500/10 text-ink"
-                        : "border-line bg-panel2/40 text-muted hover:bg-panel2 hover:text-ink"
-                    )}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggleDelRoute(p.route)}
-                      className="size-4 rounded accent-rose-600 cursor-pointer"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span className="font-semibold text-[12.5px] truncate text-ink">
-                          {p.page_name || p.route}
-                        </span>
-                        <code className="text-[10px] font-mono text-muted2 shrink-0">
-                          {p.route}
-                        </code>
-                      </div>
-                      <span className="text-[10.5px] text-muted2 block truncate">
-                        {p.roles?.length ? p.roles.join(', ') : 'public'}
-                      </span>
-                    </div>
-                  </label>
-                )
-              })}
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2 border-t border-line">
-              <Button
-                variant="outline"
-                onClick={() => setDeleteModalOpen(false)}
-                disabled={deleting}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="solid"
-                onClick={deleteSelectedWireframes}
-                disabled={deleting || selectedForDel.length === 0}
-                className="bg-rose-600 hover:bg-rose-500 text-ink shadow-sm"
-              >
-                {deleting ? (
-                  <><Loader2 className="mr-1.5 size-3 animate-spin" />Deleting…</>
-                ) : (
-                  `Delete ${selectedForDel.length} wireframe${selectedForDel.length === 1 ? '' : 's'}`
-                )}
-              </Button>
-            </div>
+            )}
           </div>
-        </Modal>
-      )}
+          {/* The same bar the Studio's own prompt is: centred, not as wide as the page, rounded, with the send button inside it. */}
+          <div className="mx-auto flex w-full max-w-[720px] shrink-0 flex-col gap-2 pb-1">
+            <Chips items={tools.items} onRemove={tools.removeItem} className="justify-center" />
+            <form onSubmit={ask}
+              className="flex items-center gap-2 rounded-[22px] border border-line bg-panel py-1.5 pl-4 pr-1.5 shadow-lg transition-all focus-within:border-accent/60">
+              <input value={prompt} onChange={event => setPrompt(event.target.value)} disabled={busy || !built}
+                aria-label="Ask for a change"
+                placeholder={current ? `Ask for a change${current.page_name ? ` to ${current.page_name}` : ''}…` : 'Ask for a change…'}
+                className="min-w-0 flex-1 bg-transparent py-1.5 text-[13px] text-ink outline-none placeholder:text-muted2 disabled:opacity-50" />
+              <button type="submit" disabled={busy || !built || !prompt.trim()} aria-label="Send the change" title="Send"
+                className="grid size-8 shrink-0 place-items-center rounded-full bg-accent text-ink shadow-sm transition-all hover:bg-press active:scale-95 disabled:pointer-events-none disabled:opacity-40">
+                {asking ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+              </button>
+            </form>
+          </div>
+        </div>
+        <AppTextEdit frameRef={frame} active={tools.mode === 'text'} loaded={loadedCount} project={srsId} kind="wireframe"
+          onSaved={load} onAskAi={askToChange} />
+      </div>}
     </div>
   )
 }

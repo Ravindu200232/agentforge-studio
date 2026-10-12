@@ -7,6 +7,8 @@
 // 4xx sub-request as a console error. Declare it, and only it, for that test:
 //
 //   test.use({ allowedStatuses: [401, 403] })
+import fs from 'node:fs'
+import path from 'node:path'
 import { test as base, expect } from '@playwright/test'
 import { startLiveView } from './live-view.js'
 
@@ -23,9 +25,20 @@ export const test = base.extend({
       if (status && allowed.has(Number(status))) return
       problems.push(`console error: ${text}`)
     })
+    // Every call this test's page made to the app's own API, and what it answered. The Testing
+    // view links each one to its handler as E2E evidence; a unit test only links what it imports.
+    let origin = ''
+    try { origin = new URL(testInfo.project.use?.baseURL || process.env.BASE_URL).origin } catch { /* any origin */ }
+    const apiCalls = new Set()
     page.on('response', response => {
       const status = response.status()
       if (status >= 500 && !allowed.has(status)) problems.push(`HTTP ${status} ${response.url()}`)
+      try {
+        const url = new URL(response.url())
+        if ((!origin || url.origin === origin) && /^\/api(\/|$)/.test(url.pathname)) {
+          apiCalls.add(`${response.request().method()} ${url.pathname} ${status}`)
+        }
+      } catch { /* not a URL of the app */ }
     })
     // When the Studio started this run, what the browser shows appears in its preview.
     // Watching must never change a test's outcome: it is best-effort and swallows its own errors.
@@ -34,6 +47,10 @@ export const test = base.extend({
       await use(page)
     } finally {
       await stopLive().catch(() => {})
+      if (apiCalls.size) {
+        await testInfo.attach('api-calls', { body: JSON.stringify([...apiCalls]), contentType: 'application/json' })
+          .catch(() => {})
+      }
     }
     expect(problems, 'the page reported problems').toEqual([])
   },
@@ -73,6 +90,34 @@ export function apiFrom(page) {
     patch: (url, body) => call('PATCH', url, body ?? {}),
     delete: url => call('DELETE', url),
   }
+}
+
+/**
+ * Screenshot-match a page against its recorded baseline - the same self-recording
+ * check visual.spec.js does for signed-out public routes. A missing baseline is
+ * written and the check passes with a "first run: baseline recorded" annotation;
+ * a later run compares against it.
+ *
+ * Use this for any *additional* screen a journey needs a visual check for (a
+ * signed-in member page, an admin screen) instead of hand-writing the
+ * fs.existsSync/page.screenshot logic again, and instead of editing
+ * visual.spec.js itself, which only ever covers signed-out public routes -
+ * signed in, every route shows the same sign-in redirect there.
+ *
+ *   await signIn(page, 'admin')
+ *   await page.goto('/admin/bookings')
+ *   await expectMatchesBaseline(page, testInfo, 'admin-bookings')
+ */
+export async function expectMatchesBaseline(page, testInfo, name) {
+  const file = `${name}.png`
+  const baseline = testInfo.snapshotPath(file)
+  if (!fs.existsSync(baseline) && !process.env.CI && testInfo.config.updateSnapshots !== 'none') {
+    fs.mkdirSync(path.dirname(baseline), { recursive: true })
+    await page.screenshot({ path: baseline, fullPage: true, animations: 'disabled' })
+    testInfo.annotations.push({ type: 'baseline', description: 'first run: baseline recorded, nothing to compare yet' })
+    return
+  }
+  await expect(page).toHaveScreenshot(file, { fullPage: true })
 }
 
 export { expect }

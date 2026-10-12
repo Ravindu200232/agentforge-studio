@@ -1,9 +1,12 @@
 """What a deployment needs from the customer that is a secret or a value only they know.
 
-A deployment may need a production database connection string, an administrator's first password, a mail
-provider's key. None of these may travel through the chat (it is sent to a model and kept in logs), and none
-may be typed into a command the agent shows. So the customer saves them here, in Settings, once; a deployment
-run receives them in the environment of its own commands under the names it asked for, and no other run does.
+A deployment may need an administrator's first password, a mail provider's key, or a production
+value the customer wants to override entirely (a different Supabase project than the one the build
+already connected to — see `supabase_connect.py` for the one every project gets automatically). None
+of these may travel through the chat (it is sent to a model and kept in logs), and none may be typed
+into a command the agent shows. So the customer saves them here, in Settings, once; a deployment run
+receives them in the environment of its own commands under the names it asked for, and no other run
+does.
 
 Values are never returned to the studio: only the names and the last four characters, as for every other
 saved credential.
@@ -11,8 +14,10 @@ saved credential.
 from __future__ import annotations
 
 import re
+import threading
+import time
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse, urlsplit, urlunsplit
 
 from . import config
 
@@ -79,11 +84,19 @@ def secret_values() -> list[str]:
         if secret and isinstance(value, str) and len(value) >= 8:
             found.append(value)
     database = config.setting("deploy_mongodb_uri", "") or ""
-    return [*found, database] if database else found
+    if not database:
+        return found
+    # The databases a build is handed are this string with another name in it, so the password is hidden on its own too.
+    password = unquote(urlparse(database).password or "")
+    return [*found, database, *(uri for uri in build_databases() if uri), *([password] if len(password) >= 8 else [])]
 
 
-# What a question may ask the studio to try before it accepts a value.
-CHECKS = ("mongodb",)
+# What a question may ask the studio to try before it accepts a value. Supabase needs none - the
+# connection a build gets is already verified by `supabase_connect.py` fetching real keys, not typed
+# in and checked after the fact. A MongoDB connection string is typed in (by hand, or by
+# `mongo_connect.py` once an Atlas account is linked), so it is the one value worth trying for real
+# before it is kept - a typo or an unreachable cluster is far cheaper to catch here than mid-deploy.
+CHECKS: tuple[str, ...] = ("mongodb",)
 
 
 def accept(question: dict, value: str) -> str:
@@ -111,27 +124,221 @@ def accept(question: dict, value: str) -> str:
     return ""
 
 
-def check_database_uri(uri: str) -> str:
-    """The production database connection string, or why it cannot be one (a hosted app cannot reach this computer)."""
+def check_database_uri(uri: str, allow_local: bool = False) -> str:
+    """The production database connection string, or why it cannot be one (a hosted app cannot reach this computer).
+
+    `allow_local` exists only for a build's own short-lived local test database, never for a saved production value.
+    """
     uri = str(uri or "").strip()
     if not uri:
         return ""
     parsed = urlparse(uri)
     if parsed.scheme not in ("mongodb", "mongodb+srv"):
         raise ValueError("a MongoDB connection string starts with mongodb:// or mongodb+srv://")
+    if allow_local:
+        return uri
     hosts = (parsed.netloc.rsplit("@", 1)[-1]).split(",")
     for host in hosts:
-        name = host.rsplit(":", 1)[0].strip("[]").lower() if not host.startswith("[") else host.strip("[]").lower()
+        name = host.strip("[]").rsplit(":", 1)[0].strip("[]").lower() if not host.startswith("[") else host.strip("[]").lower()
         if not name or name in _LOOPBACK or name.endswith((".local", ".localhost")):
             raise ValueError("that address points at this computer: a deployed application cannot reach it. "
-                             "Use a database that is reachable from the internet.")
+                             "Use a database that is reachable from the internet (for example MongoDB Atlas), "
+                             "never a local MongoDB.")
     return uri
 
 
-def environment() -> dict[str, str]:
-    """What a deployment run's commands are given: the production database and every saved variable, by name."""
+# --- the database connection is the studio's to provide, never a question ---------------------------------------------------
+
+_DATABASE_VARIABLE = re.compile(r"^(MONGO\w*|DATABASE_URL|DB_URI|DB_URL)$")
+_DATABASE_WORDS = re.compile(r"mongo\w*\W+(?:\w+\W+){0,2}(?:connection|uri|url|string)|connection\s+(?:string|uri|url)|\bMONGODB_URI\b",
+                             re.IGNORECASE)
+
+
+# What a question is about when it is not the database: a sign-in, a command-line tool, an account, a token, a name. Its
+# "why" often mentions the database as context ("MONGODB_URI set, but the Netlify CLI is not signed in"), and such a question
+# was answered with "the database is provided" - the deployment then failed, unable to say it needed a sign-in.
+_OTHER_SUBJECT = re.compile(r"\b(sign(?:ed|s)?[ -]?(?:in|out)|log(?:ged|s)?[ -]?(?:in|out)|login|authenticat\w*|cli|token|"
+                            r"account|team|site name|subdomain|domain|address is (?:taken|used))\b", re.IGNORECASE)
+
+
+def asks_for_database(question: dict) -> bool:
+    """Whether a question asks the customer for the database connection: a MongoDB connection string, an address, a variable
+    that holds one. A question about what goes in the database, or which region to run in, is not one, and nor is a question
+    about a sign-in, a tool or a name that only mentions the database in passing."""
+    if _DATABASE_VARIABLE.match(str(question.get("variable") or "").strip().upper()) or str(question.get("check") or "") == "mongodb":
+        return True
+    asked, why = str(question.get("question") or ""), str(question.get("why") or "")
+    if _DATABASE_WORDS.search(asked):
+        return True
+    if _OTHER_SUBJECT.search(asked):
+        return False
+    return bool(_DATABASE_WORDS.search(why))
+
+
+def database_state() -> dict[str, bool]:
+    """Where the database connection stands: `saved` (a connection string, or MONGODB_URI saved by name) and `atlas` (an Atlas
+    account is signed in, so the studio can make a cluster itself)."""
+    from . import mongo_connect
+
+    saved = bool(config.setting("deploy_mongodb_uri", "") or "MONGODB_URI" in (config.setting("deploy_env", {}) or {}))
+    return {"saved": saved, "atlas": bool(mongo_connect.credentials_saved() or mongo_connect.cli_account())}
+
+
+def provided(question: dict, always: bool = False) -> str:
+    """The reason a question about the database connection is not asked, or "" when it is the customer's to answer.
+
+    The studio hands every command the connection (`environment`), makes a cluster when an Atlas account is signed in
+    (`mongo_connect.ensure_for_project`) and says in the chat what is missing when neither is so: a model that asks for the
+    string anyway is told so, whatever it was told before. `always`: for a build, which never asks for it."""
+    from . import prompts
+
+    if not asks_for_database(question):
+        return ""
+    if not always:
+        state = database_state()
+        if not (state["saved"] or state["atlas"]):
+            return ""
+    return prompts.load("changes/database-provided").strip()
+
+
+# --- the database a build runs on ---------------------------------------------------------------------------------------
+
+BUILD_CHECK_SECONDS = 120          # how long "the connected cluster answers" (or does not) is remembered
+NOTE_SECONDS = 600                 # how often the customer is told, per project, that it does not
+_checked: dict[str, tuple[float, bool, str]] = {}
+_noted: dict[str, float] = {}
+_stages: dict[str, str] = {}              # how far the last look at each string got (`mongo_check` stage)
+_check_lock = threading.Lock()
+
+
+def _slug(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")[:30]
+
+
+def with_database(uri: str, database: str) -> str:
+    """`uri` pointed at `database` on the same cluster, its credentials and options as they were."""
+    parts = urlsplit(uri)
+    return urlunsplit((parts.scheme, parts.netloc, "/" + database, parts.query, ""))
+
+
+def build_databases(project: str = "") -> tuple[str, str]:
+    """The connected cluster's databases for a build, (the app's, the tests'), or ("", "") when no cluster is connected.
+
+    They are databases of their own on the cluster the customer connected - `<name>_build`, which the seed fills and the
+    preview and the end-to-end tests use, and `<name>_test`, which the unit tests empty between tests (the templates refuse any
+    name that does not end in `_test`) - so a build neither needs a MongoDB on this computer nor touches the data of the
+    database the deployed application will use. `<name>` is the database the saved string names, else the project's own name."""
+    uri = str(config.setting("deploy_mongodb_uri", "") or "")
+    if not uri:
+        return "", ""
+    base = _slug(unquote(urlsplit(uri).path.strip("/")))
+    if project and (not base or base in GENERIC_DATABASES):
+        base = _project_database(project, base)
+    base = base or "app"
+    return with_database(uri, f"{base}_build"), with_database(uri, f"{base}_test")
+
+
+# The database a string names when the studio made it before strings named none: every project built then shares it.
+GENERIC_DATABASES = {"app"}
+
+
+def _project_database(project: str, shared: str) -> str:
+    """The name a project's databases are built from when the saved string names none of its own (or only the shared `app`).
+
+    A project gets databases named after itself, so two projects on one cluster never mix their users and notes. The choice is
+    kept in the project's record the first time it is made, because the name must never change afterwards: the deployed
+    application reads the same database the build seeded. A project that was already built on the shared database keeps it."""
+    from . import store
+
+    record = store.get(project) or {}
+    pinned = str(record.get("mongo_database") or "")
+    if pinned:
+        return pinned
+    built = bool(shared) and (config.record_dir(project) / "build" / "report.json").is_file()
+    chosen = shared if built else (_slug(record.get("name")) or _slug(project) or shared)
+    if record.get("id") == project and chosen:
+        try:
+            store.update(project, mongo_database=chosen)
+        except Exception:  # noqa: BLE001 - not pinned this time is only asked again next time
+            pass
+    return chosen
+
+
+def cluster_answers(uri: str) -> tuple[bool, str]:
+    """Whether the connected cluster answers right now, and if not what it said (a paused cluster has no address, a wrong
+    password is refused). Asked for real - the same driver the app uses - and remembered for a couple of minutes, because a build
+    asks on every command."""
+    with _check_lock:
+        seen = _checked.get(uri)
+        if seen and time.time() - seen[0] < BUILD_CHECK_SECONDS:
+            return seen[1], seen[2]
+        from . import mongo_check
+
+        try:
+            result = mongo_check.check(uri)
+            answer = (bool(result.get("ok")), str(result.get("message") or ""))
+            _stages[uri] = str(result.get("stage") or "")
+        except Exception as exc:  # noqa: BLE001 - a check that cannot run is not an answer from the cluster either way
+            answer = (False, f"it could not be checked ({str(exc)[:120]})")
+            _stages[uri] = "error"
+        _checked[uri] = (time.time(), *answer)
+        return answer
+
+
+def forget_check(uri: str) -> None:
+    """Ask the cluster again next time instead of using the remembered answer (after the customer said to try again)."""
+    with _check_lock:
+        _checked.pop(uri, None)
+
+
+def refused_login(uri: str) -> bool:
+    """Whether the last look at this connection string found that Atlas answers but refuses its username or password."""
+    seen = _checked.get(uri)
+    return bool(seen and not seen[1] and _stages.get(uri) == "auth")
+
+
+def tell_unreachable(project: str, why: str) -> None:
+    """Say, once in a while, that the connected cluster cannot be used and what the build is doing instead."""
+    if not project or time.time() - _noted.get(project, 0) < NOTE_SECONDS:
+        return
+    _noted[project] = time.time()
+    from . import bus
+
+    text = (f"The MongoDB cluster you connected could not be reached ({why or 'no answer'}), so this build's database commands "
+            "use a MongoDB on this computer (localhost:27017), which may not be running. If the cluster is paused, resume it in "
+            "MongoDB Atlas: the next command uses it again.")
+    bus.log(project, "WARN", text)
+    bus.agent_msg(project, text, title="MongoDB cluster not reachable", kind="narration")
+
+
+def environment(build: bool = False, project: str = "") -> dict[str, str]:
+    """What a deployment run's commands are given, beyond its project's own Supabase connection
+    (see `supabase_connect.env_for`, merged in separately since it is per-project, not a studio-wide
+    setting): every variable the customer saved here by name, overriding that connection's own values
+    if they chose to point production at a different Supabase project, plus the saved production
+    MongoDB connection, when this project uses one.
+
+    That connection is the same one the build ran on: the cluster the customer connected (`deploy_mongodb_uri`) with the database
+    the build's seed filled (`build_databases`), never the saved string as it stands, so the deployed application finds the data the
+    build made, and what looks at the deployed data (the database monitors, the data viewer) looks at the same database.
+
+    `build`: for the commands of a build, and for the preview of what it built, which also get `TEST_MONGODB_URI`: a database
+    for the unit tests, which empty it between tests. The cluster is asked first whether it answers - never a MongoDB on this
+    computer that may not exist is what they run on. When it does not answer (paused, deleted, no network) the customer is told,
+    and the build goes on with the app's own default, a local MongoDB. A deployment is not asked: it is handed the connection and
+    says itself what it could not reach. A `MONGODB_URI` or `TEST_MONGODB_URI` the customer saved by name is handed over as it is."""
     env = {str(name): str(value) for name, value in (config.setting("deploy_env", {}) or {}).items()}
     database = str(config.setting("deploy_mongodb_uri", "") or "")
-    if database:
-        env["MONGODB_URI"] = database
+    if not database:
+        return env
+    if not build:
+        env.setdefault("MONGODB_URI", build_databases(project)[0])
+        return env
+    answers, why = cluster_answers(database)
+    if answers:
+        app, tests = build_databases(project)
+        env.setdefault("MONGODB_URI", app)
+        env.setdefault("TEST_MONGODB_URI", tests)
+    else:
+        tell_unreachable(project, why)
     return env

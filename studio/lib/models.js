@@ -64,18 +64,6 @@ export const modelLabel = (model) =>
 export const isCloud = (id) => String(id || '').includes('-cloud')
   || String(id || '').endsWith(':cloud')
 
-/**
- * Cloud by the server's own classification, falling back to the name.
- *
- * The name is not always enough: the server decides from `remote_host`, which
- * also catches a community wrapper such as `bjoernb/gemma4-31b-fast:latest`
- * that proxies to ollama.com while carrying no -cloud suffix at all.
- */
-export const cloudModel = (cat, id) => {
-  const entry = (cat?.all || []).find(m => m.id === id)
-  return entry ? !!entry.cloud : isCloud(id)
-}
-
 export function catalogue(payload) {
   const p = payload || {}
   const cloud = (p.cloud || []).map(m => ({
@@ -91,8 +79,12 @@ export function catalogue(payload) {
     if (!byId.has(id)) byId.set(id, { id, tag: 'local' })
   }
 
-  for (const m of CURATED) {
-    if (!byId.has(m.id)) byId.set(m.id, { ...m, willPull: true })
+  // Models to pull are only worth offering where an Ollama app runs: with the built-in engine, or just an
+  // ollama.com key, there is none.
+  if (p.ollama_ready || p.engine === 'local') {
+    for (const m of CURATED) {
+      if (!byId.has(m.id)) byId.set(m.id, { ...m, willPull: true })
+    }
   }
   const local = [...byId.values()]
   return {
@@ -101,47 +93,7 @@ export function catalogue(payload) {
     cloudEnabled: !!p.cloud_enabled,
     cloudVia: p.cloud_via || 'none',
     ollamaReady: !!p.ollama_ready,
+    engine: p.engine || (p.cloud_via === 'api-key' ? 'cloud' : 'local'),
     cloudAccount: p.cloud_account || '',
   }
-}
-
-/**
- * Whether the chosen model can actually be reached right now, and through
- * what. Null when nothing is chosen, so the picker shows no line at all.
- *
- * An empty local list is not the same answer as an unreachable daemon --
- * a fresh Ollama with nothing pulled reports the same empty list as one that
- * is not running -- so the reachable flag comes from the server rather than
- * being inferred here.
- */
-export function connection(cat, id) {
-  if (!id) return null
-  if (cloudModel(cat, id)) {
-    if (!cat.cloudEnabled) {
-      return { on: false, text: 'not connected — sign in to Ollama or add a key' }
-    }
-    if (cat.cloudVia === 'api-key') {
-      return { on: true, text: 'connected · ollama.com key' }
-    }
-    return {
-      on: true,
-      text: cat.cloudAccount
-        ? `connected · ollama.com as ${cat.cloudAccount}`
-        : 'connected · signed-in Ollama',
-    }
-  }
-  if (!cat.ollamaReady) return { on: false, text: 'Ollama is not answering' }
-  return (cat.installed || []).includes(id)
-    ? { on: true, text: 'connected · local Ollama' }
-    : { on: false, text: 'not pulled yet — it downloads on the first build' }
-}
-
-export const hasVision = (all, id) => !!all.find(m => m.id === id)?.vision
-
-export const maxContext = (all, id) =>
-  Number(all.find(m => m.id === id)?.ctx) || 0
-
-export const roomyContext = (all, id) => {
-  const ctx = maxContext(all, id)
-  return ctx === 0 || ctx >= 32768
 }

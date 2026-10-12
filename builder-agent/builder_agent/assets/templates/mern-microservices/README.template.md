@@ -4,14 +4,14 @@ Everything here was installed, unit-tested and built
 before it was made a template. Build the application on top of it.
 
     npm install
-    npm run dev      # Vite UI :5173, gateway :4000, services :4001–4020
+    npm run dev      # Vite UI on PORT (or :5173); gateway and services on free ports (4000, 4001+ when free)
     npm test         # every workspace that has tests
     npm run qa:inventory   # which route, page and component has no unit test of its own (exit 1 until none)
     npm run test:coverage  # what the unit tests execute, per file
     npm run build    # the client bundle the gateway serves
 
-After a client build, local preview serves that built bundle on 5173 and proxies
-`/api` to the gateway on 4000. Rebuild after changing the client to refresh it.
+If Vite cannot start, local preview serves the last client build on the same port and
+proxies `/api` to the gateway. Rebuild after changing the client to refresh it.
 
 ## Adding a service
 
@@ -20,7 +20,9 @@ rename the two `.tpl` files, rename `Item`/`items` to the resource the service
 owns, and route it at the gateway.
 
 `scripts/dev-all.mjs` finds it on its own — it looks for
-`packages/*/src/server.js` and needs no edit.
+`packages/*/src/server.js` and needs no edit. Neither does the root `Dockerfile`: it builds
+whichever package a deployment names (`--build-arg SERVICE=packages/<name>`), so a new service is
+deployable to its own instance the moment it exists.
 
 ## What is yours to write
 

@@ -1,5 +1,5 @@
 {
-  "name": "sketch-remix",
+  "name": "sketch-remix-mongo",
   "private": true,
   "type": "module",
   "sideEffects": false,
@@ -27,9 +27,9 @@
     "@remix-run/react": "^2.17.5",
     "@remix-run/serve": "^2.17.5",
     "isbot": "^5.2.2",
-    "mongoose": "^8.9.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "mongoose": "^8.9.5",
     "bcryptjs": "^2.4.3",
     "jose": "^5.9.6"
   },

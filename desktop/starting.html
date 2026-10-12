@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AgentForge</title>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; img-src 'self' data:">
+  <style>
+    :root { color-scheme: light dark; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: grid; place-items: center; background: #ffffff; color: #16181d;
+      font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) { body { background: #111317; color: #e8e9ec; } }
+    .box { display: grid; justify-items: center; gap: 14px; }
+    img { width: 64px; height: 64px; }
+    .bar { width: 220px; height: 4px; overflow: hidden; border-radius: 4px; background: rgba(127,127,127,.2); }
+    .bar span { display: block; width: 40%; height: 100%; border-radius: 4px; background: #8b84f3;
+                animation: slide 1.2s ease-in-out infinite; }
+    @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+    p { margin: 0; opacity: .7; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <img src="build/icon.png" alt="">
+    <strong>AgentForge</strong>
+    <div class="bar"><span></span></div>
+    <p>Starting the engine…</p>
+  </div>
+</body>
+</html>

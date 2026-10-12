@@ -11,17 +11,37 @@ jobs:
   test:
     runs-on: ubuntu-latest
     services:
-      mongo:
-        image: mongo:7
-        ports: ['27017:27017']
+      # Unit tests (test/helpers/db.js) talk to a plain Postgres on the same port and credentials
+      # `supabase start`'s local stack uses, so they never touch this project's real Supabase
+      # project. A bare Postgres container is enough for them - they don't need Auth or Storage.
+      postgres:
+        image: postgres:15
+        ports: ['54322:5432']
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
-      # Every stack's `npm start` listens on 3001 (Remix and the MERN gateway read PORT).
+      # Every stack's `npm start` listens on 3001 (Next.js) or 5173 (Remix, Vite).
       PORT: '3001'
       BASE_URL: http://localhost:3001
-      MONGODB_URI: mongodb://localhost:27017/ci
-      # Tests never touch the application's database; a test database ends in _test.
-      TEST_MONGODB_URI: mongodb://localhost:27017/ci_test
       CI: 'true'
+      # This project's real Supabase project. Set these as repository secrets (Settings ->
+      # Secrets and variables -> Actions) with the same values AgentForge's build setup connected -
+      # never commit them. The build and E2E/security steps below need them to start the app for
+      # real; the unit-test step does not (it uses the local Postgres service above instead).
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

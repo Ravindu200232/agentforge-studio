@@ -1,7 +1,7 @@
 'use client'
 
 import { Bell } from 'lucide-react'
-import { View, Table, Stats, Empty, tone } from '../parts'
+import { View, Table, Stats, Empty } from '../parts'
 
 /** CloudWatch alarms for the stack. */
 export default function AwsAlarms({ project, item }) {

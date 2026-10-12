@@ -6,7 +6,7 @@ own side. These did not answer the way you recorded:
 
 {{failures}}
 
-Treat this as a bug found in the deployed application. Follow `deployment-repair`: read the platform's
-logs for the requests, name the cause, repair the source or the configuration, redeploy, and prove every
-check again from the start. Update `checks` with what you now see. Do not mark the run live until they
-all hold.
+This is the one repair round (`deployment-repair`): read the platform's logs for these requests once, name the
+cause, repair the source or the configuration, redeploy once, and run only these checks again. Do not run tests
+or the whole check list again. Update `checks` with what you now see. If they still do not hold afterwards, mark
+the run `FAILED` with the cause in `error`: there is no further round.

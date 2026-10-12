@@ -12,14 +12,25 @@ import { Badge, Empty, Table, TR, TH, TD } from '../ui'
 export default function Routes({ qa }) {
   if (qa?.contracts?.length) return (
     <div>
-      <p className="mb-4 text-[11.5px] text-muted">API route inventory and linked unit-test results. A linked test file passing does not by itself prove every HTTP contract.</p>
+      <div className="mb-4 rounded-none border border-line bg-panel px-4 py-3">
+        <p className="text-[12px] font-semibold text-ink">{qa.contracts.length} API handlers found in this project</p>
+        <p className="mt-1 text-[11.5px] text-muted">This inventory is read from the built app’s handler files. A handler is linked to a <b>unit</b> test that imports it, and to an <b>e2e</b> test whose browser called it (with the method and the status it answered). A handler with neither is shown as a coverage gap, not hidden as an empty result.</p>
+      </div>
       <Table><thead><TR><TH>Route / methods</TH><TH>Handler</TH><TH>Linked tests</TH></TR></thead>
         <tbody>{qa.contracts.map(row => (
           <TR key={row.handler}>
             <TD><code className="text-ink">{row.route}</code><p className="mt-1 text-[10px] text-muted">{row.methods.join(' · ') || 'Methods not resolved'}</p></TD>
             <TD className="break-all font-mono text-muted">{row.handler}</TD>
             <TD>{row.tests.length ? row.tests.map(test => (
-              <div key={test.file} className="mb-2 flex flex-wrap items-center gap-2"><code className="break-all text-[10px]">{test.file}</code><Badge tone={test.status === 'failed' ? 'bad' : test.status === 'passed' ? 'ok' : 'mute'}>{test.status}</Badge></div>
+              <div key={`${test.kind}-${test.file}-${test.title || ''}`} className="mb-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone="mute">{test.kind || 'unit'}</Badge>
+                  <code className="break-all text-[10px]">{test.file}</code>
+                  <Badge tone={test.status === 'failed' ? 'bad' : test.status === 'passed' ? 'ok' : 'mute'}>{test.status}</Badge>
+                </div>
+                {test.title && <p className="mt-1 text-[10.5px] text-ink">{test.title}</p>}
+                {!!test.calls?.length && <p className="mt-0.5 font-mono text-[10px] text-muted">called: {test.calls.join(' · ')}</p>}
+              </div>
             )) : <Badge>no linked test record</Badge>}</TD>
           </TR>
         ))}</tbody>

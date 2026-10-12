@@ -1,5 +1,6 @@
 
 import { create } from 'zustand'
+import { api } from './api'
 import { advance, emptyProgress } from './progress-model'
 import { captureSession, emptySession, reduceSession, ROLES } from './agent-session'
 
@@ -17,7 +18,9 @@ const DEFAULTS = {
 
   models: { planner: '', design: '', builder: '', agent: '', qa: '',
             srs: '', deploy: '', image: 'fooocus' },
-  // Both tiers, High and Ultra, think; there is no switch for it any more.
+  // Kept alongside the boolean for older build controls. The chat picker uses
+  // this richer level so it can offer Low, High and Extra high explicitly.
+  thinkingLevel: 'high',
   think: true,
   // Whether the run in flight is actually reasoning, as reported by the
   // engine - not the same thing as the `think` switch, which is only a request.
@@ -35,7 +38,7 @@ export const KEYS = {
   srs: 'agentforge-sm', deploy: 'agentforge-dm', image: 'agentforge-im',
 
   srsId: 'agentforge-srs-id', srsPhase: 'agentforge-srs-phase',
-  think: 'agentforge-think', images: 'agentforge-img',
+  think: 'agentforge-think', thinkingLevel: 'agentforge-thinking-level', images: 'agentforge-img',
   starred: 'agentforge-starred', recent: 'agentforge-recent',
 }
 
@@ -56,11 +59,23 @@ const RESUMABLE_SRS_PHASES = new Set(['planning', 'interview', 'plan', 'review',
 
 export const useStore = create((set, get) => ({
   accountEpoch: 0,
+  // The signed-in AgentForge account's request limit, used and left, as the backend reports them (`account_usage` events).
+  accountUsage: null,
+  setAccountUsage: (usage) => set({ accountUsage: usage }),
   projectSessions: {},
   projectViews: {},
   buildAvailability: {},
   projectSync: {},
   srsStamp: {},
+  // What the agent may do without asking, per project: auto, manual, accept_edits or bypass (server_modules/permissions.py).
+  // A project that never picked one is in the default mode, which is also what a new project starts in.
+  permissionModeByProject: {},
+  defaultPermissionMode: 'auto',
+  bypassEnabled: false,
+  permissionsLoaded: false,
+  setPermissionMode: (project, mode) => set(state => ({
+    permissionModeByProject: { ...state.permissionModeByProject, [project]: mode } })),
+  setPermissionSettings: (patch) => set(patch),
   // Artifact-specific refresh signals. They update only the matching panel and
   // never reset project navigation or reload the whole Studio app.
   prototypeArtifactStamp: {},
@@ -86,7 +101,7 @@ export const useStore = create((set, get) => ({
     get().reset(null)
     get().resetSrs()
     try { LS?.removeItem('agentforge-project-views') } catch { }
-    set({ accountEpoch: get().accountEpoch + 1, streams: {}, projectSessions: {}, projectViews: {}, buildAvailability: {}, projectSync: {},
+    set({ accountEpoch: get().accountEpoch + 1, streams: {}, projectSessions: {}, projectViews: {}, buildAvailability: {}, projectSync: {}, permissionModeByProject: {},
       srsStamp: {}, prototypeArtifactStamp: {}, runtimes: {}, queue: [] })
   },
   switchAgent: (agentRole) => set(state => {
@@ -134,8 +149,11 @@ export const useStore = create((set, get) => ({
         if (current.lastEventAt > latestEventAt) session = { ...session, ...current,
           runStats: current.runStats || session.runStats }
         const ids = new Set(session.eventIds)
-        session.logs = [...saved.logs, ...current.logs.filter(row => row.at > (saved.logs.at(-1)?.at || 0))].slice(-800)
-        session.chat = [...saved.chat, ...current.chat.filter(row => row.at > (saved.chat.at(-1)?.at || 0))].slice(-300)
+        // Keep every recovered turn. The chat UI reveals older rows in small
+        // batches, so a reload or a late socket event cannot make history go
+        // missing just because the run was long.
+        session.logs = [...saved.logs, ...current.logs.filter(row => row.at > (saved.logs.at(-1)?.at || 0))]
+        session.chat = [...saved.chat, ...current.chat.filter(row => row.at > (saved.chat.at(-1)?.at || 0))]
         session = { ...session, draft: current.draft, selection: current.selection, previewRoute: current.previewRoute,
           files: current.files, eventIds: [...new Set([...ids, ...current.eventIds])].slice(-1200) }
       }
@@ -148,6 +166,9 @@ export const useStore = create((set, get) => ({
     return { buildAvailability: { ...state.buildAvailability, [snapshot.project]: allowed },
       projectSync: { ...state.projectSync, [snapshot.project]: snapshot.sync },
       projectSessions: { ...state.projectSessions, [snapshot.project]: restored },
+      permissionModeByProject: { ...state.permissionModeByProject,
+        [snapshot.project]: snapshot.permission_mode || 'auto' },
+      ...(snapshot.bypass_enabled !== undefined ? { bypassEnabled: Boolean(snapshot.bypass_enabled) } : {}),
       ...(state.project === snapshot.project ? restored[state.agentRole] : {}) }
   }),
 
@@ -175,7 +196,6 @@ export const useStore = create((set, get) => ({
   setWorkKind: (workKind) => set({ workKind }),
   setOpening: (opening) => set({ opening }),
   askOpen: false,
-  setAskOpen: (askOpen) => set({ askOpen }),
   setBusy: (busy) => set(busy ? { busy } : { busy, opening: false }),
   bumpProjects: () => set(s => ({ projectsStamp: s.projectsStamp + 1 })),
 
@@ -184,7 +204,6 @@ export const useStore = create((set, get) => ({
   setPreviewRoute: (previewRoute) => set({ previewRoute }),
 
   e2eLive: null,
-  setE2eLive: (e2eLive) => set({ e2eLive }),
   project: null,
   view: 'preview',
   // The deployment run the Deploy panel is showing, so the chat beside it can
@@ -246,18 +265,18 @@ export const useStore = create((set, get) => ({
 
   logs: [],
   addLog: (level, text) => set(s => ({
-    logs: [...s.logs.slice(-800), { level, text, at: Date.now() }],
+    logs: [...s.logs, { level, text, at: Date.now() }],
   })),
 
   // What the console shows about the run itself: the model, how much of its
   // context window is in use, and how much work it has done.
   runStats: null,
-  setRunStats: (runStats) => set({ runStats }),
 
   // Composing the next move, or carrying one out. The gap between the two is
   // where a feed looks stalled, so it is shown rather than left blank.
   agentState: '',
-  setAgentState: (agentState) => set({ agentState }),
+  // How far along that is, when the engine says (`12/35` while it compacts its memory).
+  agentDetail: '',
 
   // The one question a run is waiting on, if any. It carries its own deadline
   // and clears itself, so a closed dialog costs a choice and not a build.
@@ -277,7 +296,6 @@ export const useStore = create((set, get) => ({
   // The engine's own browser, as it is right now. Headless, so this is the
   // only way to see what it is doing.
   browserFrame: null,
-  setBrowserFrame: (browserFrame) => set({ browserFrame }),
 
   // Visual attachments for pending messages, including element selections and annotated screenshots.
   selection: [],
@@ -297,7 +315,7 @@ export const useStore = create((set, get) => ({
   // tool activity the chat panel derives from `logs`.
   chat: [],
   pushChat: (entry) => set(s => ({
-    chat: [...s.chat.slice(-200), { at: Date.now(), ...entry }],
+    chat: [...s.chat, { at: Date.now(), ...entry }],
   })),
 
   // Queue messages entered while a run is in progress to be sent automatically once it finishes.
@@ -318,14 +336,6 @@ export const useStore = create((set, get) => ({
   setProgress: (step, pct) =>
     set(s => ({ progress: advance(s.progress, step, pct) })),
   phases: [],
-  upsertPhase: (p) => set(s => {
-    const key = `${p.kind || 'run'}:${p.key || p.title || p.phase}`
-    const i = s.phases.findIndex(x => `${x.kind || 'run'}:${x.key || x.title || x.phase}` === key)
-    if (i < 0) return { phases: [...s.phases, p] }
-    const next = s.phases.slice()
-    next[i] = { ...next[i], ...p }
-    return { phases: next }
-  }),
 
   files: {},
   activeFile: null,
@@ -366,6 +376,8 @@ export const useStore = create((set, get) => ({
       // Both tiers think. What an older browser saved came from the switch
       // the tiers replaced, and would have sent High without its thinking.
       think: DEFAULTS.think,
+      thinkingLevel: ['low', 'high', 'xhigh'].includes(read(KEYS.thinkingLevel, ''))
+        ? read(KEYS.thinkingLevel, 'high') : DEFAULTS.thinkingLevel,
       images: read(KEYS.images, '0') === '1',
       hist: readJSON(KEYS.hist, []),
       projectViews: readJSON('agentforge-project-views', {}),
@@ -378,20 +390,14 @@ export const useStore = create((set, get) => ({
     }
   },
 
-  setTheme: () => {
-    set({ theme: 'dark' })
-    try {
-      document.documentElement.setAttribute('data-theme', 'dark')
-      document.documentElement.classList.add('dark')
-      LS?.setItem(KEYS.theme, 'dark')
-    } catch { }
-  },
-  toggleTheme: () => {},
   persist: (key, value) => { try { LS?.setItem(key, value) } catch { } },
 
   /** Agent roles that adopt the globally selected language model. */
   ROLE_MODELS: ['agent', 'planner', 'design', 'builder', 'qa', 'srs', 'deploy'],
 
+  /** The model every agent uses, picked beside the first input or the chat. It is saved on the server too:
+   *  the interview, the plan, the specification and the diagrams run on the saved model, not on what a
+   *  request carries. */
   applyModel: (model) => {
     const chosen = String(model || '').trim()
     if (!chosen) return []
@@ -403,7 +409,24 @@ export const useStore = create((set, get) => ({
     for (const role of roles) {
       try { LS?.setItem(KEYS[role], chosen) } catch { }
     }
+    api.saveSettings({ agent_model: chosen })
+      .catch(error => useStore.getState().addLog?.('WARN', `Could not save the model choice — ${error.message}`))
     return roles
+  },
+
+  /** Change only the model this chat role will send on its next turn. */
+  setRoleModel: (role, model) => {
+    const chosen = String(model || '').trim()
+    if (!chosen || !useStore.getState().ROLE_MODELS.includes(role)) return
+    set(state => ({ models: { ...state.models, [role]: chosen } }))
+    try { LS?.setItem(KEYS[role], chosen) } catch { }
+  },
+
+  /** The richer effort setting mirrors the legacy on/off request for old flows. */
+  setThinkingLevel: (thinkingLevel) => {
+    const level = ['low', 'high', 'xhigh'].includes(thinkingLevel) ? thinkingLevel : 'high'
+    set({ thinkingLevel: level, think: level !== 'low' })
+    try { LS?.setItem(KEYS.thinkingLevel, level) } catch { }
   },
 
   /** Persisted chat and log streams cached per project across workspace navigation. */
@@ -414,12 +437,6 @@ export const useStore = create((set, get) => ({
   busyProject: '',
   setBusyProject: (busyProject) => set({ busyProject }),
 
-  /** Merges restored historical project stream events behind any live incoming socket messages. */
-  adoptStream: (stream) => set(state => ({
-    logs: [...(stream.logs || []), ...state.logs],
-    chat: [...(stream.chat || []), ...state.chat],
-  })),
-
       // Persist active project chat stream when switching project context.
   reset: (project) => set(state => {
     const sessions = { ...state.projectSessions }
@@ -429,7 +446,7 @@ export const useStore = create((set, get) => ({
     const evictable = Object.keys(sessions).filter(name => name !== project && !ROLES.some(role => sessions[name]?.[role]?.busy))
     for (const name of evictable.slice(0, Math.max(0, Object.keys(sessions).length - 8))) delete sessions[name]
     return {
-    project, agentState: '', approval: null, drawing: null,
+    project, agentState: '', agentDetail: '', approval: null, drawing: null,
     browserFrame: null, selection: [],
     steps: {}, phases: [], files: {},
     activeFile: null, liveFile: null, liveBuf: '', follow: true,
@@ -449,86 +466,10 @@ export const useStore = create((set, get) => ({
   }),
 
   tests: emptyTests(),
-  testStart: () => set({
-    tests: { ...emptyTests(), running: true, startedAt: Date.now() },
-    e2eParallel: emptyE2eParallel(),
-  }),
-  testRun: (attempt) => set(s => ({ tests: { ...s.tests, attempt, running: true } })),
 
   stage: '',
-  setStage: (stage) => set({ stage }),
-  testResult: (m) => set(s => {
-    const rows = [...s.tests.rows, {
-      status: m.status || 'run', msg: m.msg || '', detail: m.detail || '',
-      stage: s.stage, at: Date.now(),
-    }]
-
-    const pass = rows.filter(r => r.status === 'pass').length
-    const fail = rows.filter(r => r.status === 'fail').length
-    const warn = rows.filter(r => r.status === 'warn').length
-    return { tests: { ...s.tests, rows, pass, fail, warn } }
-  }),
-  testFixing: (m) => set(s => ({
-    tests: {
-      ...s.tests,
-      fixing: [...s.tests.fixing,
-               { attempt: m.attempt, errors: m.errors || [], at: Date.now() }],
-    },
-  })),
-  testDone: () => set(s => ({
-    tests: { ...s.tests, running: false },
-    e2eParallel: { ...s.e2eParallel, active: false },
-  })),
 
   e2eParallel: emptyE2eParallel(),
-  e2eParallelEvent: (m) => set(s => {
-    const current = s.e2eParallel || emptyE2eParallel()
-    if (m.state === 'start') {
-      return { e2eParallel: {
-        ...emptyE2eParallel(), active: true,
-        workers: Math.max(1, Math.min(4, Number(m.workers) || 1)),
-        waves: Number(m.waves) || 0,
-      } }
-    }
-    if (m.state === 'wave') {
-      return { e2eParallel: {
-        ...current, active: true, wave: Number(m.wave) || 0,
-        waves: Number(m.waves) || current.waves,
-        lanes: emptyE2eLanes(),
-      } }
-    }
-    if (m.state === 'done') {
-      return { e2eParallel: { ...current, active: false } }
-    }
-    return { e2eParallel: current }
-  }),
-  e2eEvent: (m) => set(s => {
-    const current = s.e2eParallel || emptyE2eParallel()
-    const laneNo = Math.max(1, Math.min(4, Number(m.lane) || 1))
-    const lanes = [...(current.lanes || emptyE2eLanes())]
-    const old = lanes[laneNo - 1] || emptyE2eLane(laneNo)
-    const state = String(m.state || '')
-    lanes[laneNo - 1] = {
-      ...old,
-      lane: laneNo,
-      state,
-      title: m.title ?? old.title,
-      role: m.role ?? old.role,
-      route: m.route ?? old.route,
-      label: m.label ?? old.label,
-      message: m.message ?? (state === 'journey_start' ? '' : old.message),
-      index: Number.isFinite(Number(m.index)) ? Number(m.index) : old.index,
-      total: Number.isFinite(Number(m.total)) ? Number(m.total) : old.total,
-      ok: m.ok ?? old.ok,
-      updatedAt: Date.now(),
-    }
-    return { e2eParallel: {
-      ...current,
-      active: current.active || state !== 'journey_done',
-      workers: Math.max(current.workers || 0, laneNo),
-      lanes,
-    } }
-  }),
 
   qaReport: null,
   setQaReport: (qaReport) => set({ qaReport }),
@@ -539,12 +480,6 @@ export const useStore = create((set, get) => ({
   // A question the run stopped on, waiting for an answer.
   question: null,
 }))
-
-/** A project's saved stream, or a clean one for a project with no history. */
-function restored(stream) {
-  return { logs: stream?.logs || [], chat: stream?.chat || [],
-           runStats: stream?.runStats || null }
-}
 
 
 function emptyTests() {

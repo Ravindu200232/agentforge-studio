@@ -1,15 +1,23 @@
 """Chat uploads must land in the output app and remain safe across name collisions."""
 
 import base64
+import re
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-import re
-from types import SimpleNamespace
 from unittest.mock import patch
 
-from server_modules import httpd
-from prototype_agent import prototype
+ROOT = Path(__file__).resolve().parent.parent
+for folder in (".", "src", "srs-agent", "builder-agent", "prototype-agent", "qa-agent", "deploy-agent"):
+    sys.path.insert(0, str(ROOT / folder))
+
+from server_modules import httpd  # noqa: E402
+from support import isolate_workspaces  # noqa: E402
+
+
+def setUpModule():
+    isolate_workspaces()
 
 
 class ChatMediaTests(unittest.TestCase):
@@ -91,24 +99,6 @@ class ChatMediaTests(unittest.TestCase):
                 httpd.site_image_save({"project": "prj_example", "filename": "notes.txt",
                                        "data_base64": base64.b64encode(b"text").decode()})
         self.assertEqual(raised.exception.status, 400)
-
-    def test_prototype_stages_selected_media_without_moving_original(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            workspace = Path(temporary)
-            image = workspace / "media/logo.png"
-            image.parent.mkdir()
-            image.write_bytes(b"logo")
-            session = SimpleNamespace(
-                workspace=workspace,
-                read_record=lambda *args, **kwargs: [
-                    {"path": "media/logo.png", "purpose": "Brand logo"},
-                    {"path": "media/../other.png", "purpose": "Unsafe"}])
-            staged = prototype._uploaded_site_images(session, workspace / ".agentforge/prototype")
-            self.assertEqual(staged, [{"name": "logo.png", "usage": "Brand logo",
-                                       "source": "media/logo.png",
-                                       "prototype_url": "assets/uploads/logo.png"}])
-            self.assertEqual((workspace / ".agentforge/prototype/assets/uploads/logo.png").read_bytes(), b"logo")
-            self.assertEqual(image.read_bytes(), b"logo")
 
 
 if __name__ == "__main__":

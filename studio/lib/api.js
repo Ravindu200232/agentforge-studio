@@ -21,6 +21,29 @@ export function getAuthToken() {
 
 let onSignedOut = null
 
+const NETWORK_MESSAGE = 'Unable to reach AgentForge right now. Your project is saved; check the connection and try again.'
+
+function networkError(cause) {
+  const error = new Error(NETWORK_MESSAGE)
+  error.code = 'network'
+  error.cause = cause
+  return error
+}
+
+export class JobCancelledError extends Error {
+  constructor(message = 'Stopped') {
+    super(message)
+    this.name = 'JobCancelledError'
+    this.code = 'cancelled'
+    this.cancelled = true
+  }
+}
+
+export function isJobCancelled(error) {
+  return Boolean(error?.cancelled || error?.code === 'cancelled'
+    || error?.name === 'AbortError' || error?.name === 'JobCancelledError')
+}
+
 /** Called when the server says this session is over, from wherever it happens. */
 export function whenSignedOut(fn) {
   onSignedOut = fn
@@ -32,7 +55,15 @@ async function req(path, opts = {}) {
   if (token && !headers['Authorization']) {
     headers['Authorization'] = `Bearer ${token}`
   }
-  const r = await fetch(API + path, { ...opts, headers })
+  let r
+  try {
+    r = await fetch(API + path, { ...opts, headers })
+  } catch (cause) {
+    // Browser fetch rejects without a response for offline, proxy and server
+    // restart failures.  Give every screen the same actionable message rather
+    // than exposing an unhelpful browser-specific "Failed to fetch".
+    throw networkError(cause)
+  }
   const text = await r.text()
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
@@ -55,7 +86,8 @@ async function req(path, opts = {}) {
 async function download(path, filename) {
   const token = getAuthToken()
   const headers = token ? { Authorization: `Bearer ${token}` } : {}
-  const r = await fetch(API + path, { headers })
+  let r
+  try { r = await fetch(API + path, { headers }) } catch (cause) { throw networkError(cause) }
   if (!r.ok) {
     const text = await r.text()
     let data = null
@@ -82,6 +114,9 @@ const post = (path, body) => req(path, {
 })
 
 export const api = {
+  // Lightweight Studio API readiness check. It stays available even when
+  // Ollama, previews, or cloud integrations are still starting up.
+  health: () => req('/health'),
   auth: {
     signup: (data) => post('/auth/signup', data),
     login: (data) => post('/auth/login', data),
@@ -91,23 +126,35 @@ export const api = {
   // A project belongs to whoever built it, from the moment it is created;
   // there is nothing for the studio to assign.
   projects: () => req('/projects'),
+  chooseWorkspace: () => post('/workspace/pick', {}),
   models: () => req('/models'),
-  mongo: () => req('/mongo'),
+  // Which models can look at pictures: { capabilities: { id: { vision } }, pending } (filled in as Ollama answers).
+  modelCapabilities: () => req('/models/capabilities'),
   settings: () => req('/settings'),
+  accountCheckout: () => post('/account/checkout', {}),
+  account: () => req('/account'),
   saveSettings: (s) => post('/settings', s),
-  imageCheck: () => req('/image-check'),
-  // Draws one design theme's own page. Kept afterwards, so the second
-  // person to open that theme waits for a file read, not for a model.
-  drawThemePreview: (slug, model) => post('/design-theme-preview', { slug, model }),
-  imageStart: () => post('/image-start', {}),
+  mcpProbe: (server) => post('/mcp/probe', server),
+  setPlanMode: (project, enabled) => post(`/projects/${encodeURIComponent(project)}/plan-mode`, { enabled }),
+  // What the agent may do without asking (server_modules/permissions.py): the modes, the one a new project starts in, bypass on or off.
+  permissions: () => req('/permissions'),
+  setPermissions: (patch) => post('/permissions', patch),
+  setPermissionMode: (project, mode) => post(`/projects/${encodeURIComponent(project)}/permission-mode`, { mode }),
   files: (project, agent = 'developer') => req(`/files/${encodeURIComponent(project)}?agent=${agent}`),
   saveFile: (project, path, content, changeSummary = '') => post('/save-file', { project, path, content, change_summary: changeSummary }),
   open: (project) => post(`/open/${encodeURIComponent(project)}`, {}),
   runtime: (project) => req(`/runtime/${encodeURIComponent(project)}`),
+  stopPreview: (project) => post(`/runtime/${encodeURIComponent(project)}/stop`, {}),
 
   // An address for this project's app that works away from this machine.
   previewLink: (project) => post('/preview-link', { project }),
   previewActivity: (project, runtimeId) => post(`/runtime/${encodeURIComponent(project)}/activity`, { runtimeId }),
+
+  // Look at the end-to-end tests' screenshots again with a model that can look at pictures. `fix: false` only looks and
+  // reports; the model is the one the studio last used.
+  reviewScreens: (project, what = 'tests', fix = true) => post('/review-screens', { project, what, fix }),
+  // "Try again", pressed while a run waits for a model service that is not answering: it asks again at once.
+  connectionRetry: (project) => post('/connection/retry', { project }),
   deleteProject: (project) => post('/delete-project', { project }),
 
   // Stop the running build.
@@ -126,25 +173,17 @@ export const api = {
   // What a run is waiting on right now, for a studio that missed the message.
   decisions: () => req('/decisions'),
 
-  // What a project's conversation is already holding, for the status line.
-  session: (project) => req(`/session/${encodeURIComponent(project)}`),
-
   // Everything that has happened to a project, so a reload does not lose it.
   stream: (project) => req(`/stream/${encodeURIComponent(project)}`),
   retrySync: project => post('/sync/retry', { project }),
 
-  // A change typed into the specification, carried down into whichever of the
-  // prototype and the build the user chose.
-  specChange: (project, prompt, targets) => post('/spec-change', { project, prompt, targets }),
   // Every user-approved update is retained before a run starts. The execution
   // still uses the existing SRS transaction; this adds the company audit trail.
-  changeRequests: project => req(`/change-requests/${encodeURIComponent(project)}`),
   createChangeRequest: body => post('/change-requests/draft', body),
   approveChangeRequest: (project, id, targets) =>
     post(`/change-requests/${encodeURIComponent(id)}/approve`, { project, targets }),
   workflow: (project) => req(`/workflow/${encodeURIComponent(project)}`),
   lifecycle: (project) => req(`/lifecycle/${encodeURIComponent(project)}`),
-  saveStream: (project, logs, chat) => post('/stream', { project, logs, chat }),
 
   // Throw away a specification that has not been approved.
   discardSrs: (srs_id) => post('/discard-srs', { srs_id }),
@@ -167,28 +206,33 @@ export const api = {
   wireframes: (owner) => (/^prj_/.test(String(owner || ''))
     ? api.srs(`/projects/${encodeURIComponent(owner)}/wireframes`)
     : req(`/project-wireframes/${encodeURIComponent(owner)}`)),
-  // Queue asynchronous prototype drawing jobs for specific routes or entire specifications.
-  drawWireframeHtml: (srsId, route = '', quiet = true) =>
-    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/html`, { route, quiet }),
-  // What the tools editor rearranged, as the page itself.
-  saveWireframeHtml: (srsId, route, html) =>
-    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/html/edit`, { route, html }),
-  // Read straight from the agent rather than through a job: it is one page of
-  // HTML and it is what the <iframe> loads.
-  wireframeHtmlUrl: (srsId, route) =>
-    `${API}/srs/projects/${encodeURIComponent(srsId)}/wireframes/html`
-      + `?route=${encodeURIComponent(route)}`,
+  // Draw the wireframes again (a job), or carry on a run that was stopped.
+  buildWireframes: (srsId, prompt = '', resume = false) =>
+    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/build`, { prompt, resume }),
+  // One change to the wireframes, asked for in words; `route` when it is about one page.
+  editWireframe: (srsId, prompt, route = '', elements = []) =>
+    api.srs(`/projects/${encodeURIComponent(srsId)}/wireframes/edit`, { prompt, route, elements }),
+  // One change to the prototype, asked for in words; `elements` are the things on the page they pointed at.
+  editPrototype: (project, prompt, elements = []) =>
+    api.srs(`/projects/${encodeURIComponent(project)}/prototype/edit`, { prompt, elements }),
+  // Retype words on a page of the wireframes or the prototype (`kind`): swapped in the app's source when they are written in one place.
+  editAppText: (project, kind, old, text) =>
+    api.srs(`/projects/${encodeURIComponent(project)}/app/text-edit`, { kind, old, new: text }),
+  // The wireframes or the prototype is one bundled page the <iframe> loads; the screen is the address hash, and `version`
+  // (when the bundle was made) makes the frame load the new bundle after a change.
+  webUrl: (project, kind, route = '', version = 0, as = '') =>
+    `${API}/web/${encodeURIComponent(project)}/${kind}`
+      + (version || as ? `?${[version ? `v=${version}` : '', as ? `as=${encodeURIComponent(as)}` : ''].filter(Boolean).join('&')}` : '')
+      + (route ? `#${route}` : ''),
+  // Whether it is bundled, and when.
+  webStatus: (project, kind) => req(`/web/${encodeURIComponent(project)}/${kind}/status`),
 
   siteImages: (project) => req(`/site-images/${encodeURIComponent(project)}`),
-  siteImageUrl: (project, file) =>
-    `${API}/site-image/${encodeURIComponent(project)}/${encodeURIComponent(file)}`,
   siteImageSave: (project, file, purpose = '') => Promise.resolve(tooBig(file)).then(big => {
     if (big) throw big
     return fileToBase64(file).then(data_base64 =>
       post('/site-image-save', { project, filename: file.name, purpose, data_base64 }))
   }),
-  siteImageDescribe: (project, file, purpose) =>
-    post('/site-image-describe', { project, file, purpose }),
   siteImageDrop: (project, file) => post('/site-image-drop', { project, file }),
 
   // Photograph what the user pointed at, so it can travel with the message.
@@ -234,9 +278,7 @@ export const api = {
     'SRS.pdf'),
   downloadSrsPdf: (srsId, name = 'SRS.pdf') =>
     download(`/srs/projects/${encodeURIComponent(srsId)}/download/pdf`, name),
-  srsStatus: () => req('/srs-status'),
   integrations: (project) => req(`/srs/projects/${encodeURIComponent(project)}/integrations`),
-  saveIntegrations: (project, answers) => post(`/srs/projects/${encodeURIComponent(project)}/integrations`, { answers }),
 
   resumeSrs: path => resumeSrsJob(path),
   srs: (path, body) => body === undefined
@@ -256,7 +298,6 @@ export const api = {
       }, opts))
   }),
 
-  deployStatus: () => req('/deploy-status'),
   deployResults: (project) => req(`/deploy-results/${encodeURIComponent(project)}`),
   deployStart: (body) => post('/deploy-start', body),
 
@@ -275,16 +316,39 @@ export const api = {
   // the server runs its login, shows what it prints, and reads what it leaves behind. `available` also says
   // whether the tool is installed and who it is signed in as; `useExisting` keeps that account with no browser.
   // What a deployment's own command line tools can show, run when opened and read back as it is written.
-  cliMonitorList: (project) => post('/cli-monitor/list', { project }),
-  cliMonitorStart: (project, command) => post('/cli-monitor/start', { project, command }),
+  // `scope: 'database'` is the same thing for the project's databases: the Supabase CLI and the MongoDB driver.
+  cliMonitorList: (project, scope = 'deploy') => post('/cli-monitor/list', { project, scope }),
+  cliMonitorStart: (project, command, scope = 'deploy') => post('/cli-monitor/start', { project, command, scope }),
   cliMonitorPoll: (job, since) => post('/cli-monitor/poll', { job, since }),
   cliMonitorStop: (job) => post('/cli-monitor/stop', { job }),
 
+  // A few rows of one table (`{source: 'supabase', schema, table}`) or collection (`{source: 'mongodb', collection}`),
+  // credential-like fields masked; and the Atlas cluster behind the MongoDB connection.
+  databaseRows: (project, body, opts) => localJob('/database/rows', { project, ...body }, opts),
+  databaseAtlas: () => post('/database/atlas', {}),
+
+  // The terminal: what the running app printed (from byte `since`; -1 = its current run), and a command typed in the
+  // project folder, read back with cliMonitorPoll / stopped with cliMonitorStop.
+  previewLog: (project, since = -1) => post('/preview/log', { project, since }),
+  // Every part of the running app and whether it listens; a part that does not is started with
+  // send({ type: 'preview_start', project, part }).
+  previewPorts: (project) => post('/preview/ports', { project }),
+  terminalRun: (project, command) => post('/terminal/run', { project, command }),
+
   cliSigninAvailable: (provider = '', fresh = false) => post('/cli-signin/available', { provider, fresh }),
-  cliSigninStart: (provider, region = '') => post('/cli-signin/start', { provider, region }),
+  // `add`: sign in as another account without leaving the one that is signed in (MongoDB Atlas profiles).
+  cliSigninStart: (provider, region = '', add = false) => post('/cli-signin/start', { provider, region, add }),
   cliSigninPoll: (flowId) => post('/cli-signin/poll', { flow_id: flowId }),
+  cliSigninInput: (flowId, value) => post('/cli-signin/input', { flow_id: flowId, value }),
   cliSigninUseExisting: (provider, region = '') => post('/cli-signin/use-existing', { provider, region }),
   cliSigninCancel: (flowId) => post('/cli-signin/cancel', { flow_id: flowId }),
+
+  supabaseOauthStatus: () => post('/supabase/oauth/status', {}),
+  supabaseOauthStart: () => post('/supabase/oauth/start', {}),
+  supabaseOauthPoll: (flowId) => post('/supabase/oauth/poll', { flow_id: flowId }),
+  supabaseOauthCancel: (flowId) => post('/supabase/oauth/cancel', { flow_id: flowId }),
+  supabaseOauthSwitch: (id) => post('/supabase/oauth/switch', { id }),
+  supabaseOauthRemove: (id) => post('/supabase/oauth/remove', { id }),
 
   // The providers this person has an account with. `plugins()` answers with the
   // catalogue and, for each one, which settings are saved and the last four
@@ -306,10 +370,11 @@ async function deployJob(method, path, body, { onWait, signal } = {}) {
   const started = await post('/deploy/jobs', { path, method, body })
   const id = started.job_id
   for (let i = 0; ; i++) {
-    if (signal?.aborted) throw new Error('cancelled')
+    if (signal?.aborted) throw new JobCancelledError()
     await new Promise(r => setTimeout(r, i < 10 ? 300 : 900))
     const job = await req(`/deploy/jobs/${id}`)
     if (job.status === 'running') { onWait?.(job.elapsed); continue }
+    if (job.status === 'cancelled') throw new JobCancelledError()
     if (job.status === 'error') throw new Error(job.error || 'the deployment agent failed')
     if (job.http_status >= 400) {
       const detail = job.result?.error ?? job.result?.detail
@@ -344,8 +409,11 @@ async function pollSrs(id, key, { onWait, signal } = {}) {
   const started = Date.now()
   let failures = 0
   while (Date.now() - started < 60 * 60 * 1000) {
-    if (signal?.aborted) throw new Error('cancelled')
-    await new Promise(resolve => setTimeout(resolve, 1500))
+    if (signal?.aborted) {
+      try { localStorage.removeItem(key) } catch { }
+      throw new JobCancelledError()
+    }
+    await new Promise(resolve => setTimeout(resolve, 500))
     let job
     try { job = await req(`/srs/jobs/${id}`); failures = 0 }
     catch (error) {
@@ -355,6 +423,7 @@ async function pollSrs(id, key, { onWait, signal } = {}) {
     }
     if (job.status === 'running') { onWait?.(job.elapsed); continue }
     try { localStorage.removeItem(key) } catch { }
+    if (job.status === 'cancelled') throw new JobCancelledError()
     if (job.status === 'error') throw new Error(job.error || 'The SRS update failed')
     // Format validation error detail lists into human-readable error messages.
     if (job.http_status >= 400) throw new Error(readDetail(job) || `HTTP ${job.http_status}`)
@@ -431,10 +500,11 @@ async function localJob(path, body, { onWait, signal } = {}) {
   const started = await post('/jobs', { path, method: 'POST', body })
   const id = started.job_id
   for (let i = 0; ; i++) {
-    if (signal?.aborted) throw new Error('cancelled')
+    if (signal?.aborted) throw new JobCancelledError()
     await new Promise(r => setTimeout(r, i < 10 ? 300 : 900))
     const job = await req(`/jobs/${id}`)
     if (job.status === 'running') { onWait?.(job.elapsed); continue }
+    if (job.status === 'cancelled') throw new JobCancelledError()
     if (job.status === 'unknown') throw new Error(job.error || 'the job expired')
     if (job.status === 'error') throw new Error(job.error || 'the request failed')
     if (job.http_status >= 400) {
@@ -451,4 +521,5 @@ export const HTTP_FALLBACK = {
   agent_resume: '/resume',
   feature: '/feature',
   element_edit: '/element-edit',
+  preview_start: '/preview-start',
 }

@@ -1,10 +1,11 @@
 import { api } from '@/lib/api'
 import { guideForDiagram } from '@/lib/diagram-guide'
+import { isMermaid } from '@/lib/mermaid-source'
 
 // Normalize diagram artifacts across sidecar outputs and on-disk server representations.
 export function diagramRows(rows) {
   return (rows || [])
-    .filter(d => d && (d.source || d.mermaid || d.svg))
+    .filter(d => d && (d.source || d.mermaid || d.svg || d.drawing_failed))
     .map(d => {
       const name = d.kind || d.name || 'diagram'
       const guide = guideForDiagram(name)
@@ -22,6 +23,10 @@ export function diagramRows(rows) {
       applicable: d.applicable !== false,
       applicabilityNote: d.applicability_note || d.applicabilityNote || '',
       mermaid: d.source || d.mermaid || '',
+      drawable: isMermaid(d.source || d.mermaid),
+      fallback: Boolean(d.fallback),
+      drawingFailed: Boolean(d.drawing_failed),
+      renderError: d.render_error || '',
 
       svg: d.svg || '',
       png: Boolean(d.png_path || d.png),

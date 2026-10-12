@@ -13,7 +13,7 @@ export default function VercelChecks({ project, item }) {
             <Empty title="No checks configured" hint={json.message} />
             {(json.next || []).length > 0 && (
               <Card title="What you can do next">
-                <ul className="space-y-1.5 text-[12px] text-ink">{json.next.map((step, i) => <li key={i}><code className="font-mono text-[11px] text-[#1D4ED8]">{step.command}</code> <span className="text-[#6B7280]">— {step.when}</span></li>)}</ul>
+                <ul className="space-y-1.5 text-[12px] text-ink">{json.next.map((step, i) => <li key={i}><code className="font-mono text-[11px] text-deep">{step.command}</code> <span className="text-muted">— {step.when}</span></li>)}</ul>
               </Card>
             )}
           </>))}

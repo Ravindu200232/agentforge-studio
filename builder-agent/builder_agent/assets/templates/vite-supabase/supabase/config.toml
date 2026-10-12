@@ -1,0 +1,22 @@
+# The local Supabase CLI stack (`supabase start`), for local development and for the tests under
+# test/helpers/db.js. Deliberately minimal, not a full `supabase init` dump - reconcile it with
+# `supabase init` if the installed CLI's own schema has moved past this.
+project_id = "__APP_DB__"
+
+[api]
+enabled = true
+port = 54321
+
+[db]
+port = 54322
+
+[studio]
+enabled = true
+port = 54323
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:5173"
+
+[storage]
+enabled = true

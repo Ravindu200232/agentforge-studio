@@ -11,8 +11,14 @@
  * stops only the server it started. Nothing else is touched, and no port is left
  * bound. The command's exit code is this script's exit code.
  *
- * Servers, by stack: Next.js (`next start`), Remix (`remix-serve`), and the MERN
- * gateway with its services (`scripts/start-all.mjs`).
+ * Servers, by stack: Next.js (`next start`), Remix (`remix-serve`), the MERN gateway
+ * with its services (`scripts/start-all.mjs`), a single Express server that serves its
+ * own built client (`server/src/server.js`, the vite-mongo layout), and a plain Vite
+ * build (`vite preview`, for the Vite-only stacks that have no server of their own).
+ *
+ * A stack whose server talks to MongoDB gets an isolated, uniquely-named `_e2e`
+ * database for this run only, seeded (if the app defines `npm run seed`) and dropped
+ * when the run ends — a QA run must never read or write the project's real data.
  */
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -37,8 +43,8 @@ const logFile = option('--log', process.env.WITH_SERVER_LOG || path.join('.agent
 const readyPath = option('--ready', '/')
 const windows = process.platform === 'win32'
 
-function manifest() {
-  return JSON.parse(fs.readFileSync('package.json', 'utf8'))
+function manifest(file = 'package.json') {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return {} }
 }
 
 function localEnv(name) {
@@ -55,20 +61,44 @@ function databaseName(uri) {
   return decodeURIComponent(new URL(uri).pathname.replace(/^\/+|\/+$/g, ''))
 }
 
+/** Every manifest this project actually runs code from - wherever `mongoose`/`mongodb` might be declared. */
+function allManifests() {
+  const found = [manifest()]
+  if (fs.existsSync(path.join('server', 'package.json'))) found.push(manifest(path.join('server', 'package.json')))
+  if (fs.existsSync('packages')) {
+    for (const entry of fs.readdirSync('packages', { withFileTypes: true })) {
+      if (entry.isDirectory()) found.push(manifest(path.join('packages', entry.name, 'package.json')))
+    }
+  }
+  return found
+}
+
+function usesMongo() {
+  return allManifests().some((m) => (m.dependencies && (m.dependencies.mongoose || m.dependencies.mongodb)))
+}
+
 /**
  * Every browser-QA run owns a Mongo database. The server, seed script and test
  * command all receive this exact URI, so cleanup can never point at a different
  * database from the app under test. A unique name also makes an interrupted run
  * harmless to the next run.
  */
+// Atlas refuses a database name longer than 38 characters on its shared clusters, and `<app>_build_<ms>_<pid>_e2e` was
+// longer ("Database name ... is too long"), so the run could not start. The run's name is `<base, cut to 23>_<10 chars>_e2e`:
+// the first 8 of the 10 are the start time in base 36, which is how a leftover from a killed run is known to be old.
+const MAX_DATABASE_NAME = 38
+const STAMP = Date.now().toString(36).padStart(8, '0').slice(-8) + (process.pid % 1296).toString(36).padStart(2, '0')
+let qaBases = []
+
 function qaMongoUri() {
-  const project = manifest()
-  const deps = { ...project.dependencies, ...project.devDependencies }
-  if (!deps.mongoose && !deps.mongodb) return null
+  if (!usesMongo()) return null
 
   const explicit = process.env.E2E_MONGODB_URI
-  const source = explicit || process.env.MONGODB_URI || localEnv('MONGODB_URI')
-    || 'mongodb://127.0.0.1:27017/' + (project.name || 'app')
+  const fromEnv = process.env.MONGODB_URI || localEnv('MONGODB_URI')
+  if (!explicit && !fromEnv) {
+    console.warn('with-server: no MONGODB_URI is set, so this run uses a MongoDB on this computer (127.0.0.1:27017).')
+  }
+  const source = explicit || fromEnv || 'mongodb://127.0.0.1:27017/' + (manifest().name || 'app')
   const parsed = new URL(source)
 
   if (explicit) {
@@ -77,9 +107,23 @@ function qaMongoUri() {
     return source
   }
 
-  const base = (databaseName(source) || project.name || 'app').replace(/[^a-zA-Z0-9_-]/g, '_')
-  parsed.pathname = '/' + base + '_' + Date.now() + '_' + process.pid + '_e2e'
+  const full = (databaseName(source) || manifest().name || 'app').replace(/[^a-zA-Z0-9_-]/g, '_')
+  const base = full.slice(0, MAX_DATABASE_NAME - STAMP.length - '__e2e'.length)
+  qaBases = [...new Set([base, full])]
+  parsed.pathname = '/' + base + '_' + STAMP + '_e2e'
   return parsed.toString()
+}
+
+/** How old a database left behind by an earlier run of this app is, in ms; null when it is not one of those. */
+function leftoverAge(name) {
+  for (const base of qaBases) {
+    if (!name.startsWith(base + '_') || !name.endsWith('_e2e')) continue
+    const middle = name.slice(base.length + 1, -'_e2e'.length)
+    if (/^[0-9a-z]{10}$/.test(middle)) return Date.now() - parseInt(middle.slice(0, 8), 36)
+    const old = middle.match(/^(\d{13})_\d+$/)              // the earlier, longer name: <ms>_<pid>
+    if (old) return Date.now() - Number(old[1])
+  }
+  return null
 }
 
 /** A file under node_modules, looked up from here upwards (npm workspaces hoist). */
@@ -95,6 +139,10 @@ function serverCommand(port) {
   if (fs.existsSync(path.join('scripts', 'start-all.mjs'))) {
     return { file: process.execPath, args: [path.join('scripts', 'start-all.mjs')], why: 'MERN gateway and services' }
   }
+  if (fs.existsSync(path.join('server', 'src', 'server.js'))) {
+    if (!fs.existsSync(path.join('client', 'dist', 'index.html'))) throw new Error('there is no production client build: run npm run build first')
+    return { file: process.execPath, args: [path.join('server', 'src', 'server.js')], why: 'server (serving the built client)' }
+  }
   const project = manifest()
   const deps = { ...project.dependencies, ...project.devDependencies }
   if (deps.next) {
@@ -109,7 +157,13 @@ function serverCommand(port) {
     if (!fs.existsSync(path.join('build', 'server', 'index.js'))) throw new Error('there is no production build: run npm run build first')
     return { file: process.execPath, args: [bin, './build/server/index.js'], why: 'remix-serve' }
   }
-  throw new Error('cannot tell how to start this app for a test run (no Next.js, Remix or MERN start script found)')
+  if (deps.vite) {
+    const bin = inNodeModules('vite/bin/vite.js')
+    if (!bin) throw new Error('vite is not installed: run npm install')
+    if (!fs.existsSync('dist')) throw new Error('there is no production build: run npm run build first')
+    return { file: process.execPath, args: [bin, 'preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], why: 'vite preview' }
+  }
+  throw new Error('cannot tell how to start this app for a test run (no Next.js, Remix, MERN, server/ or Vite build found)')
 }
 
 function freePort() {
@@ -163,11 +217,63 @@ function run(commandParts, env) {
   })
 }
 
-async function resetQaDatabase(uri) {
+/**
+ * Playwright overwrites test-results/results.json on every run, so after journeys, visual and
+ * accessibility run one after another only the last is left. Keep this run's own copy in
+ * .agentforge/qa/runs/, named after its script (test-a11y.json), where the Testing views read
+ * every run from. Not this script's result to judge: a failed copy only says so.
+ */
+function keepRunResults(commandParts, since) {
+  const source = path.join('test-results', 'results.json')
+  try {
+    if (!fs.existsSync(source) || fs.statSync(source).mtimeMs < since) return
+    const label = String(commandParts[commandParts.length - 1] || '')
+      .replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'run'
+    const folder = path.join('.agentforge', 'qa', 'runs')
+    fs.mkdirSync(folder, { recursive: true })
+    fs.copyFileSync(source, path.join(folder, `${label}.json`))
+  } catch (error) {
+    console.error(`with-server: could not keep this run's results: ${error.message}`)
+  }
+}
+
+/** Empty one database (a driver `Db`): dropped, or collection by collection when the user may not drop a database. */
+async function emptyDatabase(db) {
+  try {
+    await db.dropDatabase()
+  } catch (error) {
+    // A database user that may read and write but not drop a whole database (a common Atlas role) can still drop
+    // each collection, and this run's database is uniquely named: emptying it is the same clean start. Without this
+    // the run could not start at all, and the journeys fell back to the shared development data.
+    if (!(error?.code === 13 || /not (allowed|authorized)|unauthorized/i.test(String(error?.message)))) throw error
+    const collections = await db.listCollections({}, { nameOnly: true }).toArray()
+    for (const { name } of collections) {
+      if (!name.startsWith('system.')) await db.collection(name).drop().catch(() => {})
+    }
+  }
+}
+
+async function resetQaDatabase(uri, { leftovers = false } = {}) {
   if (!uri) return
   const { default: mongoose } = await import('mongoose')
   const connection = await mongoose.createConnection(uri, { serverSelectionTimeoutMS: 10_000 }).asPromise()
-  try { await connection.dropDatabase() } finally { await connection.close() }
+  try {
+    await emptyDatabase(connection.db)
+    if (leftovers) {
+      // A run that was killed (a time limit, Stop) never reached its own cleanup, and its database stayed: dropped here once
+      // it is two hours old, so they do not pile up against the cluster's limits. Never a reason to fail this run.
+      try {
+        const client = connection.getClient()
+        const { databases } = await client.db('admin').admin().listDatabases({ nameOnly: true })
+        for (const { name } of databases) {
+          const age = name === databaseName(uri) ? null : leftoverAge(name)
+          if (age !== null && age > 2 * 60 * 60 * 1000) await emptyDatabase(client.db(name)).catch(() => {})
+        }
+      } catch (error) {
+        console.error(`with-server: earlier runs' test databases were not cleaned up: ${error.message}`)
+      }
+    }
+  } finally { await connection.close() }
 }
 
 async function main() {
@@ -183,7 +289,7 @@ async function main() {
   }
 
   if (mongoUri) {
-    await resetQaDatabase(mongoUri)
+    await resetQaDatabase(mongoUri, { leftovers: true })
     if (manifest().scripts?.seed) {
       const seeded = await run(['npm', 'run', 'seed'], qaEnv)
       if (seeded !== 0) throw new Error('could not seed isolated QA database (exit ' + seeded + ')')
@@ -221,11 +327,13 @@ async function main() {
   console.log(`Serving ${server.why} at ${base} for this run (log: ${logFile})`)
 
   const resolved = resolveCommand(command)
+  const startedAt = Date.now()
   const code = await new Promise((resolve) => {
     const test = spawn(resolved.file, resolved.args, { stdio: 'inherit', env: qaEnv })
     test.on('error', (error) => { console.error(`could not run ${command[0]}: ${error.message}`); resolve(1) })
     test.on('exit', (exitCode) => resolve(exitCode ?? 1))
   })
+  keepRunResults(command, startedAt)
   stop(child)
   await resetQaDatabase(mongoUri)
   process.exit(code)

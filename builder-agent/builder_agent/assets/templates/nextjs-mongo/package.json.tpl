@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node scripts/port-guard.mjs 3001 && next dev --port 3001",
+    "dev": "next dev",
     "build": "next build",
-    "start": "node scripts/port-guard.mjs 3001 && next start --port 3001",
+    "start": "next start",
     "seed": "node scripts/seed.mjs",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",

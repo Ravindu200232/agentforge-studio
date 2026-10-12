@@ -15,8 +15,8 @@
 
 // Every action is its own row. Grouping consecutive reads under one icon
 // saved space and made three separate steps look like one, which is the
-// opposite of what a step-by-step feed is for.
-const MAX_TURNS = 160
+// opposite of what a step-by-step feed is for. Do not cap the list: the chat
+// panel pages older rows in rather than silently dropping them.
 
 const KINDS = [
   // [pattern, kind, how to title it]
@@ -40,7 +40,6 @@ const KINDS = [
   [/^\s*\$\s+(.+)$/i, 'run', m => m[1]],
   [/^\s*Design contract:\s*(.+)$/i, 'design', m => `Design: ${m[1]}`],
   [/^\s*Scaffolded\s+(.+)$/i, 'setup', m => `Scaffolded ${m[1]}`],
-  [/^\s*Prepared project skills:\s*(.+)$/i, 'setup', m => 'Prepared the project skills'],
   [/^\s*Context checkpoint/i, 'setup', () => 'Summarised older context to make room'],
 ]
 
@@ -49,6 +48,7 @@ const MUTED = [
   /^\s*\$\s/,                       // the echoed command; the "Ran …" line covers it
   /^\s*(?:HTTP|WS|connection)\b/i,
   /^\s*type:\s/i,
+  /\btool error\s*:/i,              // internal tool retries; the agent recovers or reports a real failure
   /fast refresh|webpack|destination stream closed/i,
 ]
 
@@ -148,6 +148,10 @@ function classify(row) {
     const path = readMatched[1].replace(/^[`'"]|[`'"]$/g, '').replace(/\\/g, '/')
     return { kind: 'read', title: `Read ${path}`, detail: '', file: path, action: 'read' }
   }
+  const effortMatched = /^\[effort:(low|medium|high|ultra)\]\s*(.*)$/i.exec(line)
+  if (effortMatched) {
+    return { kind: 'effort', title: effortMatched[2] || 'Model call', detail: '', level: effortMatched[1].toLowerCase() }
+  }
   for (const [pattern, kind, title] of KINDS) {
     const match = pattern.exec(line)
     if (match) return { kind, title: title(match), detail: '' }
@@ -171,10 +175,8 @@ function classify(row) {
  */
 const remembered = new WeakMap()
 
-// A name a row keeps for as long as it exists. The feed shows the last 160
-// turns, so once a run is longer than that every arriving line shifts every
-// position - and a key built from a position would change for every row on
-// screen, which is a remount of the whole history to append one line.
+// A name a row keeps for as long as it exists. A key built from position would
+// change for every row as new lines arrive and remount the history.
 let counted = 0
 
 function turnFor(row) {
@@ -244,23 +246,5 @@ export function chatTurns(logs = [], chat = []) {
     turns.push(remembered.get(entry))
   }
   turns.sort((a, b) => (a.at || 0) - (b.at || 0))
-  return turns.slice(-MAX_TURNS)
-}
-
-/** A one-line verdict for a finished run, from the evidence it produced. */
-export function verdictOf(qa) {
-  const unit = qa?.vitest
-  const e2e = qa?.report?.e2e
-  const bits = []
-  if (unit) {
-    const cases = (unit.testResults || []).flatMap(s => s.assertionResults || [])
-    const passed = cases.filter(c => c.status === 'passed').length
-    if (cases.length) bits.push(`${passed}/${cases.length} unit tests passing`)
-  }
-  if (e2e?.stage_total) {
-    bits.push(`${e2e.stage_passed}/${e2e.stage_total} browser stages passing`)
-  }
-  const findings = qa?.report?.security?.findings || []
-  if (findings.length) bits.push(`${findings.length} security finding(s)`)
-  return bits.join(' · ')
+  return turns
 }

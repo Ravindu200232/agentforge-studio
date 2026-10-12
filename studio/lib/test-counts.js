@@ -40,11 +40,3 @@ export function projectUnitTestStatus(qa, project) {
   if (!qa || !project || qa.project !== project) return null
   return unitTestStatus(qa.vitest)
 }
-
-export function suiteRows(v) {
-  return (v?.testResults || []).map(t => ({
-    file: String(t?.name || t?.testFilePath || '').replace(/\\/g, '/').split('/tests/').pop(),
-    cases: t?.assertionResults || [],
-    status: t?.status || '',
-  }))
-}

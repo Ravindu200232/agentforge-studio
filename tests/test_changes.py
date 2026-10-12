@@ -10,10 +10,12 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tests"))
 for folder in (".", "src", "srs-agent", "builder-agent", "prototype-agent", "qa-agent"):
     sys.path.insert(0, str(ROOT / folder))
 
 from server_modules import bus, changes, config, httpd, prompts, runs  # noqa: E402
+from support import forget_project  # noqa: E402
 
 PROJECT = "prj_changes_test"
 
@@ -94,17 +96,23 @@ class ChangesTestCase(unittest.TestCase):
         self.session = FakeSession(self.workspace)
         self.events: list[dict] = []
         bus._pending_decisions.clear()
+        # Each test recreates this in-memory project name. `forget()` now
+        # tombstones deleted projects so late worker events cannot revive
+        # them; register the intentional reuse before subscribing to events.
+        bus.project_created(PROJECT)
         changes._threads.clear()
+        self.reconciled = mock.Mock(return_value={"status": "done"})
         patches = [
             mock.patch.object(changes, "session_for", lambda project: self.session),
             mock.patch.object(config, "record_dir", lambda project: self.workspace / ".agentforge"),
-            mock.patch.object(changes, "_guides", lambda: "GUIDES"),
+            mock.patch.object(changes, "_guides", lambda *args: "GUIDES"),
+            mock.patch("srs_agent.document.reconcile", self.reconciled),
         ]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
         self.addCleanup(bus.subscribe(self.events.append))
-        self.addCleanup(bus.forget, PROJECT)
+        self.addCleanup(forget_project, PROJECT)
 
     def settle(self, change_id: str):
         thread = changes._threads.get(change_id)
@@ -137,12 +145,11 @@ class PlanFirstTests(ChangesTestCase):
         self.session.replies = [dict(PLAN)]
         self.submit("add a due date to every task")
         prompt = " ".join(self.session.prompts[0].split())          # the file wraps its lines
-        for sentence in ("If this prompt affects the SRS files, update them.",
-                         "If it affects the wireframes, update the wireframes.",
-                         "If it affects the prototype, update the prototype.",
-                         "If it affects the build, update the build."):
+        for sentence in ("Update SRS, wireframes, prototype and build only when the request actually affects them.",
+                         "SRS text, Mermaid diagrams, wireframes and prototype updates are direct artifact edits with no test steps.",
+                         "For build changes, plan focused unit tests only for changed or newly added business logic files; never plan the full unit suite."):
             self.assertIn(sentence, prompt)
-        self.assertIn("For every part that is updated or new, create or edit its test files and run them.", prompt)
+        self.assertIn("Plan E2E and other quality layers only for a new feature or changed user-visible behavior.", prompt)
         self.assertIn("add a due date to every task", prompt)
         self.assertIn("srs.json", prompt)          # the folder listing of this project
         self.assertIn("app/", prompt)
@@ -263,10 +270,10 @@ class ReviseApproveCancelTests(ChangesTestCase):
             self.settle(change_id)
         request, plan = self.session.executed[0]
         flat = " ".join(request.split())
-        self.assertIn("If this prompt affects the SRS files, update them.", flat)
-        self.assertIn("whole `.agentforge` folder", flat)
-        self.assertIn("read, write and edit", flat)
-        self.assertIn("For every part that is updated or new, create or edit its test files and run them.", flat)
+        self.assertIn("Follow the plan in order and change only affected files.", flat)
+        self.assertIn("Keep derived artifacts consistent when their source changes.", flat)
+        self.assertIn("Do not create or run tests for SRS text, Mermaid diagram, wireframe or prototype-only updates.", flat)
+        self.assertIn("For build updates, add or run focused unit tests only for changed or newly added business logic files; never run the full unit suite.", flat)
         self.assertIn("add a due date to every task", request)
         self.assertIn("GUIDES", request)
         self.assertIn("Add the field", plan)
@@ -279,6 +286,54 @@ class ReviseApproveCancelTests(ChangesTestCase):
         # The studio is told which stages' files changed, from the folders they are in.
         self.assertTrue(self.of_type("prototype"))
         self.assertTrue([e for e in self.of_type("sync_state") if e.get("source") == "change"])
+
+    def test_a_change_to_the_specification_brings_its_overview_back_in_line_with_it(self):
+        change_id = self.proposed()
+        self.session.edits = [".agentforge/srs/srs.json"]
+        with mock.patch("builder_agent.build.built", lambda project: False):
+            changes.decide(PROJECT, change_id, "approve")
+            self.settle(change_id)
+        # The open decisions it settles and the quality review are redone, from the customer's own words and the agent's summary.
+        self.reconciled.assert_called_once_with(PROJECT, "add a due date to every task", "Done: changed what the plan said.", self.session)
+        self.assertEqual(changes._load(PROJECT, change_id)["status"], "done")
+
+    def test_a_change_that_leaves_the_specification_alone_does_not_touch_its_overview(self):
+        change_id = self.proposed()
+        self.session.edits = ["app/page.jsx"]
+        with mock.patch("builder_agent.build.built", lambda project: False):
+            changes.decide(PROJECT, change_id, "approve")
+            self.settle(change_id)
+        self.reconciled.assert_not_called()
+
+    def test_a_change_that_was_blocked_does_not_either(self):
+        change_id = self.proposed()
+        self.session.edits = [".agentforge/srs/srs.json"]
+        self.session.execution = {"status": "blocked", "text": "Could not do it.", "rounds": 1}
+        with mock.patch("builder_agent.build.built", lambda project: False):
+            changes.decide(PROJECT, change_id, "approve")
+            self.settle(change_id)
+        self.reconciled.assert_not_called()
+        self.assertEqual(changes._load(PROJECT, change_id)["status"], "failed")
+
+    def test_excluding_a_stage_drops_its_steps_before_execution(self):
+        change_id = self.proposed()
+        changes.decide(PROJECT, change_id, "approve", excluded_stages=["Build"])
+        self.settle(change_id)
+        request, plan = self.session.executed[0]
+        self.assertIn("Add the field", plan)
+        self.assertNotIn("Add it to the form", plan)
+        self.assertIn("Build: not affected", plan)
+        self.assertEqual(changes._load(PROJECT, change_id)["excluded_stages"], ["Build"])
+        self.assertEqual(changes._load(PROJECT, change_id)["status"], "done")
+
+    def test_excluding_every_affected_stage_finishes_without_executing(self):
+        change_id = self.proposed()
+        changes.decide(PROJECT, change_id, "approve", excluded_stages=["SRS", "Build"])
+        self.settle(change_id)
+        self.assertEqual(self.session.executed, [])
+        state = changes._load(PROJECT, change_id)
+        self.assertEqual(state["status"], "done")
+        self.assertIn("Nothing left to build", state["summary"])
 
     def test_a_blocked_run_is_a_failed_change_not_a_done_one(self):
         change_id = self.proposed()
@@ -349,19 +404,117 @@ class RoutingTests(unittest.TestCase):
     def test_chat_requests_are_planned_when_there_is_a_specification_and_answered_directly_when_not(self):
         with mock.patch.object(runs.changes, "applies", lambda project: True), \
                 mock.patch.object(runs.changes, "submit", lambda *a, **k: {"planned": True}), \
-                mock.patch.object(runs, "agent_update_direct", lambda message: {"planned": False}):
+                mock.patch.object(runs, "agent_update_direct", lambda message, screened=False: {"planned": False}):
             self.assertEqual(runs.agent_update({"project": "p", "prompt": "change it"}), {"planned": True})
         with mock.patch.object(runs.changes, "applies", lambda project: False), \
-                mock.patch.object(runs, "agent_update_direct", lambda message: {"planned": False}):
+                mock.patch.object(runs, "agent_update_direct", lambda message, screened=False: {"planned": False}):
             self.assertEqual(runs.agent_update({"project": "p", "prompt": "change it"}), {"planned": False})
 
     def test_the_prompt_pack_carries_the_instructions(self):
         for name in ("plan", "execute", "unanswered", "history", "previous-plan", "questions-left", "no-questions"):
             self.assertTrue(prompts.exists(f"changes/{name}"), name)
         plan = prompts.load("changes/plan")
-        for word in ('"kind": "answer"', '"kind": "question"', '"kind": "plan"', "read_file"):
+        for word in ('"kind":"answer"', '"kind":"question"', '"kind":"plan"', "Project artifacts"):
             self.assertIn(word, plan)
+
+
+class PlanModeTests(unittest.TestCase):
+    """Phase 7: a real per-project plan on/off toggle, feeding `applies()`
+    exactly where routing already decides plan-first vs. direct apply."""
+
+    def test_a_project_that_never_set_it_keeps_todays_always_on_behavior(self):
+        with mock.patch.object(changes.store, "get", return_value={"id": "p"}), \
+             mock.patch("srs_agent.document.has_document", return_value=True):
+            self.assertTrue(changes.applies("p"))
+
+    def test_plan_mode_off_skips_planning_even_with_a_specification(self):
+        with mock.patch.object(changes.store, "get", return_value={"id": "p", "plan_mode": False}), \
+             mock.patch("srs_agent.document.has_document", return_value=True):
+            self.assertFalse(changes.applies("p"))
+
+    def test_plan_mode_on_is_unaffected(self):
+        with mock.patch.object(changes.store, "get", return_value={"id": "p", "plan_mode": True}), \
+             mock.patch("srs_agent.document.has_document", return_value=True):
+            self.assertTrue(changes.applies("p"))
+
+    def test_a_project_with_no_specification_still_never_plans_either_way(self):
+        with mock.patch.object(changes.store, "get", return_value={"id": "p", "plan_mode": True}), \
+             mock.patch("srs_agent.document.has_document", return_value=False):
+            self.assertFalse(changes.applies("p"))
+
+    def test_the_route_toggles_it_and_workflow_reports_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            original = config.PROJECTS_FILE
+            config.PROJECTS_FILE = Path(folder) / "projects.json"
+            original_workspaces = config.WORKSPACES
+            config.WORKSPACES = Path(folder) / "workspaces"
+            try:
+                from server_modules import store
+                record = store.create("an idea")
+                project = record["id"]
+                match = mock.Mock(group=lambda name: project)
+
+                seen = httpd.workflow({"_match": match})
+                self.assertTrue(seen["plan_mode"])   # never set yet -> on
+
+                result = httpd.set_plan_mode({"_match": match, "enabled": False})
+                self.assertFalse(result["plan_mode"])
+
+                seen = httpd.workflow({"_match": match})
+                self.assertFalse(seen["plan_mode"])
+            finally:
+                config.PROJECTS_FILE = original
+                config.WORKSPACES = original_workspaces
+                forget_project(project)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrototypeRebundleTests(unittest.TestCase):
+    """A chat change that edits the prototype's (or the wireframe's) source bundles it again before the preview reloads: the
+    preview shows the bundle, and a theme made white in `src/index.css` used to stay dark on screen."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.session = mock.Mock(workspace=Path(self.temp.name), cancelled=False)
+        self.bundled: list[str] = []
+        self.stale = True
+        from server_modules import web_app
+
+        for patch in (mock.patch.object(changes, "session_for", lambda project: self.session),
+                      mock.patch.object(web_app, "stale", lambda app: self.stale),
+                      mock.patch.object(web_app, "build_for", lambda session, project, kind, agent="": self.bundled.append(kind)),
+                      mock.patch.object(bus, "prototype_changed", lambda project: self.bundled.append("reload"))):
+            self.enterContext(patch)
+
+    def announce(self, *paths):
+        changes._announce("p", {}, {path: "new" for path in paths})
+
+    def test_an_edited_theme_is_bundled_before_the_preview_reloads(self):
+        self.announce(".agentforge/prototype/app/src/index.css")
+        self.assertEqual(self.bundled, ["prototype", "reload"])
+
+    def test_the_wireframe_is_bundled_when_its_source_changed(self):
+        self.announce(".agentforge/wireframe/app/src/pages/home.tsx")
+        self.assertEqual(self.bundled, ["wireframe"])
+
+    def test_nothing_is_bundled_when_the_agent_already_did_or_nothing_in_the_app_changed(self):
+        self.stale = False
+        self.announce(".agentforge/prototype/app/src/index.css")
+        self.assertEqual(self.bundled, ["reload"])
+        self.bundled.clear()
+        self.stale = True
+        self.announce(".agentforge/prototype/app/bundle.html", ".agentforge/prototype/routes.json")
+        self.assertEqual(self.bundled, ["reload"])
+
+    def test_a_bundle_that_cannot_be_made_is_said_and_the_change_stands(self):
+        from server_modules import web_app
+
+        logged: list[str] = []
+        with mock.patch.object(web_app, "build_for", side_effect=web_app.BuildFailed("syntax error")), \
+                mock.patch.object(bus, "log", lambda project, level, text, agent="": logged.append(text)):
+            self.announce(".agentforge/prototype/app/src/index.css")
+        self.assertIn("could not be bundled again: syntax error", logged[0])

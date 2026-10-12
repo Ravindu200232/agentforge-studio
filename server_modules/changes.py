@@ -132,17 +132,6 @@ def recent(project: str, limit: int = 30) -> list[dict]:
     return rows
 
 
-def for_run(project: str, run_id: str) -> dict | None:
-    """The request a flow's run belongs to (a run is one request carried out)."""
-    if not run_id:
-        return None
-    for path in sorted(_dir(project).glob("chg-*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-        found = _load(project, path.stem)
-        if found and found.get("run_id") == run_id:
-            return found
-    return None
-
-
 def _alive(change_id: str) -> bool:
     thread = _threads.get(change_id)
     return bool(thread and thread.is_alive())
@@ -153,9 +142,15 @@ def _language(project: str) -> str:
 
 
 def applies(project: str) -> bool:
-    """Whether there is something to change: a project with a specification is planned against it."""
+    """Whether a typed change goes through propose->approve: a project with a
+    specification is planned against it, unless the customer turned plan mode
+    off for this project (a real per-project choice — a project that has
+    never set it behaves exactly as it always has, plan mode on)."""
     from srs_agent import document as srs_document
 
+    record = store.get(project)
+    if record is not None and not record.get("plan_mode", True):
+        return False
     return srs_document.has_document(project)
 
 
@@ -240,6 +235,20 @@ def _turns(change: dict) -> str:
     return prompts.load("changes/history", turns=body)
 
 
+def _excluding(plan: dict, excluded: set[str]) -> dict:
+    """The plan with excluded stages' steps dropped and their impact rows marked not affected.
+
+    Excluded work is simply never described to the executing agent — there is
+    no instruction, and so no reason, for it to touch that stage's files.
+    """
+    if not excluded:
+        return plan
+    return {**plan,
+            "steps": [step for step in plan.get("steps", []) if step.get("stage") not in excluded],
+            "impact": [{**row, "affected": bool(row.get("affected")) and row.get("stage") not in excluded}
+                      for row in plan.get("impact", [])]}
+
+
 def plan_markdown(plan: dict) -> str:
     """The plan as the text the executing agent is handed."""
     lines = [f"# {plan.get('title', '')}", "", str(plan.get("summary", "")), "", "## What it touches"]
@@ -299,8 +308,14 @@ def _check(data: Any, may_ask: bool) -> dict:
             deploy_vars.valid_name(variable)
             check = str(data.get("check") or "").strip()
             if check and check not in deploy_vars.CHECKS:
-                raise ValueError(f'"check" is one of {", ".join(deploy_vars.CHECKS)}, or left out')
+                allowed = ", ".join(deploy_vars.CHECKS) or "nothing right now"
+                raise ValueError(f'"check" must be left out ({allowed} is offered)')
             asked.update(variable=variable, secret=bool(data.get("secret", True)), check=check)
+        # The database connection is the studio's to provide: a model that asks the customer for it is told why not (the
+        # repair turn), so the customer is never asked for a connection string in the chat.
+        held = deploy_vars.provided(asked)
+        if held:
+            raise ValueError(held)
         return asked
     if kind != "plan":
         raise ValueError('"kind" must be "answer", "question" or "plan"')
@@ -385,7 +400,8 @@ def submit(project: str, request: str, model: str = "", echo: bool = True, flow:
     return {"ok": True, "project": project, "change": change["id"]}
 
 
-def decide(project: str, change_id: str, decision: str, feedback: str = "", model: str = "") -> dict:
+def decide(project: str, change_id: str, decision: str, feedback: str = "", model: str = "",
+          excluded_stages: list[str] | None = None) -> dict:
     """The buttons on the plan card."""
     change = _load(project, change_id)
     if not change:
@@ -394,7 +410,12 @@ def decide(project: str, change_id: str, decision: str, feedback: str = "", mode
         with _lock:
             if change["status"] != "proposed":
                 return {"ok": False, "detail": "that plan is no longer waiting for approval"}
+            excluded = [str(stage) for stage in (excluded_stages or []) if str(stage).strip()]
             change["status"] = "approved"
+            change["excluded_stages"] = excluded
+            if excluded:
+                change["history"].append({"role": "user", "kind": "excluded_stages",
+                                          "text": "Excluded from this run: " + ", ".join(excluded)})
             _save(change)
         bus.change(project, change)
         _spawn(project, change_id, _execute, project, change_id, model)
@@ -471,9 +492,16 @@ def restore_questions() -> list[dict]:
 # --- the two halves -----------------------------------------------------------
 
 def _spawn(project: str, change_id: str, fn: Any, *args: Any) -> None:
+    session = session_for(project)
+    prepare = getattr(session, "prepare_run", None)
+    if callable(prepare):
+        prepare()
+
     def run() -> None:
         try:
             fn(*args)
+            if getattr(session_for(project), "cancelled", False) is True:
+                raise RunCancelled(project)
         except RunCancelled:
             _mark(project, change_id, "cancelled")
             bus.cancelled(project, "Stopped.")
@@ -620,6 +648,15 @@ def _execute(project: str, change_id: str, model: str) -> None:
         return _execute_flow(project, change, flow, model)
     session = session_for(project)
     session.begin("change")
+    excluded = set(change.get("excluded_stages") or [])
+    plan_data = _excluding(change["plan"], excluded)
+    if excluded and not plan_data.get("steps"):
+        change.update(status="done", summary="Nothing left to build — every affected stage was excluded.")
+        _save(change)
+        _set_active(project, None)
+        bus.change(project, change)
+        session.finish(change["summary"])
+        return
     change.update(status="running")
     _save(change)
     bus.change(project, change)
@@ -627,14 +664,22 @@ def _execute(project: str, change_id: str, model: str) -> None:
         number = versions.next_number(project)
         versions.preserve_results(project, number, session.workspace)          # what the tests said before this update
         before, counts_before = _snapshot(session.workspace), versions.test_counts(session.workspace)
-        plan = plan_markdown(change["plan"])
+        plan = plan_markdown(plan_data)
         records = "\n".join(f"- {name}" for name in versions.result_records(session.workspace)) or "(none yet)"
         request = prompts.load("changes/execute", request=change["request"], plan=plan,
                                artifacts=project_map(session.workspace), language=_language(project),
-                               results=records, guides=_guides())
+                               results=records, guides=_guides(project))
         result = session.execute_approved(request, plan, model)
         after = _snapshot(session.workspace)
         _announce(project, before, after)
+        if result["status"] == "complete" and _srs_changed(before, after):
+            # The specification was changed: what its overview says (the open decisions, the quality review) is brought back
+            # in line with what it says now, instead of staying as it was when it was first written.
+            from srs_agent import document as srs_document
+
+            srs_document.reconcile(project, change["request"], result["text"], session)
+        if result["status"] == "complete" and change.get("journeys"):
+            _run_fixed_journeys(project, session, [str(j) for j in change["journeys"]])
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -661,14 +706,47 @@ def _execute(project: str, change_id: str, model: str) -> None:
         session.fail(change["error"])
 
 
-def _guides() -> str:
+def _run_fixed_journeys(project: str, session: Any, journeys: list[str]) -> None:
+    """After a fix of failed journeys the person asked for: only those journeys run again, and the chat says how they did.
+    What still fails is offered to be fixed again, never run again by itself."""
+    from qa_agent import e2e_run
+    from qa_agent.screen_keeper import Keeper
+
+    with Keeper(session.workspace):
+        outcome = e2e_run.run(project, session, grep=journeys, reason="fix")
+    if outcome.get("status") in {"skipped", "error", "build_failed"}:
+        return
+    still = [row["id"] for row in e2e_run.failures(session.workspace)]
+    fixed = [j for j in journeys if j not in still]
+    text = (f"Ran {', '.join(journeys)} again: " + (f"{', '.join(fixed)} now pass" if fixed else "none of them passes yet")
+            + (f"; {', '.join(j for j in journeys if j in still)} still fail" if any(j in still for j in journeys) else "") + ".")
+    if still:
+        bus.agent_msg(project, text + " They are not run again by themselves.", title="Journeys run again",
+                      actions=[{"label": "Fix the failing journeys", "prompt": "fix the failing journeys"}])
+    else:
+        bus.agent_msg(project, text + " Every journey now passes.", title="Journeys run again")
+        from .qa_report import summary_counts
+
+        saved = session.read_record("qa", "report.json", fallback=None)
+        if (store.get(project) or {}).get("status") == "tested-with-failures" and not summary_counts(
+                saved if isinstance(saved, dict) else {})["fail"]:
+            store.update(project, status="tested")
+
+
+def _guides(project: str = "") -> str:
     """The build and test guides, for a change that reaches application code."""
     try:
         from builder_agent import scaffold
 
-        return scaffold.common_context()
+        return scaffold.common_context(str((store.get(project) or {}).get("stack") or "") if project else "")
     except Exception:  # noqa: BLE001 - guidance is a help, not a requirement
         return ""
+
+
+def _srs_changed(before: dict, after: dict) -> bool:
+    """Whether a run changed any file of the specification."""
+    record = f"{config.RECORD_DIR}/srs/"
+    return any(path.startswith(record) for path in set(before) | set(after) if before.get(path) != after.get(path))
 
 
 def _announce(project: str, before: dict, after: dict) -> None:
@@ -677,6 +755,7 @@ def _announce(project: str, before: dict, after: dict) -> None:
     if not changed:
         return
     record = f"{config.RECORD_DIR}/"
+    _rebundle(project, changed)
     if any(path.startswith(f"{record}prototype/") for path in changed):
         bus.prototype_changed(project)
     if any(path.startswith(f"{record}srs/") for path in changed):
@@ -688,8 +767,33 @@ def _announce(project: str, before: dict, after: dict) -> None:
             builder.show_preview(project)
 
 
+def _rebundle(project: str, changed: set[str]) -> None:
+    """A change that edited the wireframe's or the prototype's source bundles that app again, before the preview reloads.
+
+    The preview shows the bundled page (`bundle.html`), never the source: a chat change that turned the theme white edited
+    `src/index.css`, the preview reloaded the bundle made before it, and the screen stayed dark as if nothing had changed. A
+    bundle that cannot be made is said in the chat; it never undoes a change that worked."""
+    from . import web_app
+
+    for kind in web_app.KINDS:
+        source = f"{config.RECORD_DIR}/{kind}/app/"
+        edited = [path for path in changed if path.startswith(source)
+                  and Path(path).name not in {web_app.BUNDLE, web_app.BUILT}
+                  and not any(part in {"node_modules", "dist"} for part in Path(path).parts)]
+        if not edited:
+            continue
+        session = session_for(project)
+        if not web_app.stale(web_app.app_dir(session.workspace, kind)):
+            continue                                           # the agent bundled it itself, after its last edit
+        try:
+            web_app.build_for(session, project, kind, agent=bus.DESIGNER)
+        except RunCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the change stands; what keeps it from showing is told
+            bus.log(project, "WARN", f"The {kind} was changed but could not be bundled again: {str(exc)[:300]}",
+                    agent=bus.DESIGNER)
+
+
 # What the flows' modules use of the state above.
 alive = _alive
 mark = _mark
-load = _load
-

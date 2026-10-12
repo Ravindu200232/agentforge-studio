@@ -8,9 +8,9 @@ Next.js forwarded and is not inspected.
 from __future__ import annotations
 
 import base64
+import collections
 import hashlib
 import json
-import os
 import socket
 import struct
 import threading
@@ -20,7 +20,7 @@ from . import bus, config
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-OP_CONTINUE, OP_TEXT, OP_BINARY = 0x0, 0x1, 0x2
+OP_CONTINUE, OP_TEXT = 0x0, 0x1
 OP_CLOSE, OP_PING, OP_PONG = 0x8, 0x9, 0xA
 
 MAX_FRAME = 8 * 1024 * 1024
@@ -73,38 +73,76 @@ def _frame(opcode: int, payload: bytes) -> bytes:
     return bytes(header) + payload
 
 
+# What may wait to be sent to one browser that is not reading before it is dropped (it reconnects and reloads what it missed).
+SEND_QUEUE_BYTES = 64 * 1024 * 1024
+
+
 class Client:
-    def __init__(self, conn: socket.socket, address: Any):
+    """One open browser (or the studio's proxy in front of it).
+
+    What is sent to it is queued and written by a thread of its own. A tab that stopped reading (a hidden or frozen one, a
+    proxy that is backed up) used to leave `sendall` waiting for ever inside whatever thread emitted the event, and every
+    build and every run that emitted after it waited behind that one: the whole backend went quiet. Now the emitting thread
+    only queues, and a browser that falls too far behind is dropped."""
+
+    def __init__(self, conn: socket.socket, address: Any, limit: int = 0):
         self.conn = conn
         self.address = address
-        self.lock = threading.Lock()
+        self.limit = limit or SEND_QUEUE_BYTES
         self.open = True
+        self._frames: collections.deque[bytes] = collections.deque()
+        self._queued = 0
+        self._ready = threading.Condition()
+        threading.Thread(target=self._write_loop, name="ws-write", daemon=True).start()
+
+    def _enqueue(self, frame: bytes) -> None:
+        with self._ready:
+            if not self.open:
+                return
+            if self._queued + len(frame) <= self.limit:
+                self._frames.append(frame)
+                self._queued += len(frame)
+                self._ready.notify()
+                return
+        self.close()                               # too far behind: it is not reading
+
+    def _write_loop(self) -> None:
+        while True:
+            with self._ready:
+                while self.open and not self._frames:
+                    self._ready.wait(1.0)
+                if not self.open:
+                    return
+                frame = self._frames.popleft()
+                self._queued -= len(frame)
+            try:
+                self.conn.sendall(frame)
+            except OSError:
+                self.close()
+                return
 
     def send(self, message: dict) -> None:
         if not self.open:
             return
         data = json.dumps(message, ensure_ascii=False, default=str).encode("utf-8")
-        try:
-            with self.lock:
-                self.conn.sendall(_frame(OP_TEXT, data))
-        except OSError:
-            self.close()
+        self._enqueue(_frame(OP_TEXT, data))
 
     def pong(self, payload: bytes) -> None:
-        try:
-            with self.lock:
-                self.conn.sendall(_frame(OP_PONG, payload))
-        except OSError:
-            self.close()
+        self._enqueue(_frame(OP_PONG, payload))
 
     def close(self) -> None:
-        if not self.open:
-            return
-        self.open = False
-        try:
-            self.conn.close()
-        except OSError:
-            pass
+        with self._ready:
+            if not self.open:
+                return
+            self.open = False
+            self._frames.clear()
+            self._queued = 0
+            self._ready.notify_all()
+        for step in (lambda: self.conn.shutdown(socket.SHUT_RDWR), self.conn.close):    # shutdown ends a send that is waiting
+            try:
+                step()
+            except OSError:
+                pass
 
 
 class FeedServer:
@@ -248,11 +286,13 @@ class FeedServer:
                 client.close()
             self.clients.clear()
         if self.socket:
+            # Close alone leaves a listening socket bound on Linux and macOS while the accept loop still holds
+            # it, so a restarted feed could not take its port back; shutdown wakes that loop and frees the port.
+            try:
+                self.socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             try:
                 self.socket.close()
             except OSError:
                 pass
-
-
-def env_port() -> int:
-    return int(os.environ.get("AGENTFORGE_WS_PORT", config.WS_PORT))

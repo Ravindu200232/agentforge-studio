@@ -27,18 +27,14 @@ function entriesFor(scope) {
   return (state.project === scope.project && state.agentRole === scope.role
     ? state.browserConsole : state.projectSessions[scope.project]?.[scope.role]?.browserConsole) || []
 }
-let observer = null
 
-export function observeConsole(callback) { observer = callback }
 export function recordConsole(kind, text, project, role) { push(kind, text, owner(project, role)) }
-
 
 function push(kind, text, scope = owner()) {
   if (scope.epoch !== useStore.getState().accountEpoch) return
   let entries = entriesFor(scope)
   const line = String(text || '').replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT)
   if (!line || NOISE.test(line)) return
-  observer?.(kind, line)
 
   const last = entries[entries.length - 1]
   if (last && last.kind === kind && last.text === line) {

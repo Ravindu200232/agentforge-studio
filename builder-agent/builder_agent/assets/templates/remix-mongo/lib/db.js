@@ -3,20 +3,33 @@ import mongoose from 'mongoose';
 /**
  * One connection, cached across module re-evaluation.
  *
- * Vite re-evaluates modules on every hot update in development, so a plain
- * module-level `let` opens a new connection each time until the pool is
- * exhausted — and the symptom is timeouts that look like slow queries. The
- * cache lives on globalThis because that is the one thing a reload does not
- * reset.
+ * Remix re-evaluates modules on every hot reload in development, and a plain module-level `let`
+ * would open a new connection each time until the pool is exhausted: the symptom is timeouts that
+ * look like slow queries. The cache lives on globalThis because that is the one thing a reload
+ * does not reset.
  *
- * In Remix this is called from a `loader` or an `action`, both of which run on
- * the server. Importing it from a component would put Mongoose in the browser
- * bundle; Remix's own server/client split is what prevents that, and it is why
- * data belongs in a loader rather than in a `useEffect`.
+ * Server code only: import this from a `loader`, an `action` or a `*.server.js` module, never from
+ * code a browser runs. The browser never talks to the database.
  */
 const cache = globalThis.__mongoose ?? (globalThis.__mongoose = { conn: null, promise: null });
 
-export async function connectDb(uri = process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/__APP_DB__') {
+// Wait 10s for the cluster rather than the driver's 30s, so a paused or unreachable cluster says so while a page or a
+// health check still waits; and keep the pool small, because each serverless instance holds one of its own and a free
+// Atlas cluster has a few hundred connections in all.
+const OPTIONS = { bufferCommands: false, serverSelectionTimeoutMS: 10_000, maxPoolSize: 10 };
+
+function connectionString(uri) {
+  // A value piped through a shell or pasted in a dashboard can arrive with whitespace or a newline, which the driver refuses.
+  const given = typeof uri === 'string' ? uri.trim() : '';
+  if (given) return given;
+  // Deployed without MONGODB_URI: say so, rather than quietly trying a database on the host itself that is not there.
+  if (process.env.NODE_ENV === 'production' && !process.env.ALLOW_LOCAL_MONGODB) {
+    throw new Error("MONGODB_URI is not set: add it to the environment variables of this deployment.");
+  }
+  return 'mongodb://127.0.0.1:27017/__APP_DB__';
+}
+
+export async function connectDb(uri = process.env.MONGODB_URI) {
   if (cache.conn) return cache.conn;
   // A caller that already connected (the test helper opens the project's own `_test`
   // database) owns that connection. Calling `mongoose.connect` again with another URI
@@ -26,7 +39,7 @@ export async function connectDb(uri = process.env.MONGODB_URI ?? 'mongodb://127.
     cache.conn = mongoose.connection;
     return cache.conn;
   }
-  cache.promise ??= mongoose.connect(uri, { bufferCommands: false });
+  cache.promise ??= mongoose.connect(connectionString(uri), OPTIONS);
   try {
     cache.conn = await cache.promise;
   } catch (error) {

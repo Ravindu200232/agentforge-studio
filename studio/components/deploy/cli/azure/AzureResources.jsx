@@ -18,7 +18,7 @@ export default function AzureResources({ project, item }) {
           <div className="grid gap-3 sm:grid-cols-2">
             {Object.entries(groups).map(([name, rows]) => (
               <Card key={name} title={`${name} · ${rows.length}`}>
-                <ul className="space-y-1">{rows.map(r => <li key={r.Name} className="flex items-center gap-2 text-[11.5px]"><span className="size-2 rounded-full bg-[#22C55E]" /><span className="min-w-0 flex-1 truncate text-ink">{r.Name}</span><span className="text-[10.5px] text-[#637381]">{r.Location}</span></li>)}</ul>
+                <ul className="space-y-1">{rows.map(r => <li key={r.Name} className="flex items-center gap-2 text-[11.5px]"><span className="size-2 rounded-full bg-ok" /><span className="min-w-0 flex-1 truncate text-ink">{r.Name}</span><span className="text-[10.5px] text-muted2">{r.Location}</span></li>)}</ul>
               </Card>
             ))}
           </div>

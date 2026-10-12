@@ -8,7 +8,7 @@ import { Button, Modal } from '../ui'
 
 const ACTIVE = new Set(['BOOTSTRAPPING', 'CI_RUNNING', 'DEPLOYING', 'VALIDATING'])
 
-export function DeployDanger({ runId, state, running, onDone }) {
+export function DeployDanger({ runId, state, running, onDone, compact = false }) {
   const [ask, setAsk] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -38,10 +38,10 @@ export function DeployDanger({ runId, state, running, onDone }) {
   return (
     <>
       {running && (
-        <Button size="sm" variant="ghost" onClick={() => setAsk('cancel')}
+        <Button size={compact ? 'icon-sm' : 'sm'} variant="ghost" onClick={() => setAsk('cancel')}
                 className="text-muted hover:bg-tint hover:text-deep"
                 title="Stop this deployment. Cloud resources are not deleted.">
-          <Square className="size-3" /> Cancel
+          <Square className="size-3" /> {!compact && 'Cancel'}
         </Button>
       )}
 

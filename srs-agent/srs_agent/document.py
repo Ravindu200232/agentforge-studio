@@ -1,41 +1,41 @@
 """The specification itself.
 
 Written as focused calls rather than as one agentic conversation, because the two
-produce very different documents. A single run asked to write the document, the
-diagrams and fourteen pages spends its output budget on the first few and
-truncates the rest — which is how a wireframe ends up four hundred characters
-long. So: one call for the document, one per diagram, one per page, and the
-independent ones run at the same time.
+produce very different documents. A single run asked to write the document and
+all of its diagrams spends its output budget on the first few and truncates the
+rest. So: one call for the document, one per diagram, and the independent ones run
+at the same time. (The wireframes that follow are not drawn here: the project's agent
+builds them as a React app, see `wireframe.py`.)
 
 Continuity does not come from a shared conversation here. It comes from the
 artifacts: the approved plan bounds the document, the document bounds the
-diagrams and the pages, and each call is given exactly the part it needs.
+diagrams, and each call is given exactly the part it needs.
 """
 from __future__ import annotations
 
+import copy
 import json
-import hashlib
 import re
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from server_modules import bus, config, journeys, llm, mermaid, prompts, store
-from server_modules.session import ProjectSession, session_for
-from server_modules.validation import completeness
+from server_modules import bus, config, journeys, llm, mermaid, prompts, reference_staging, store, web_app
+from server_modules.session import ProjectSession, RunCancelled, session_for
+from server_modules.validation import completeness, json_edits
+from server_modules.validation import corpus as corpus_rules
 from server_modules.validation import review as review_rules
 from server_modules.validation import srs_schema
 
+from . import diagram_fallback, diagram_look
 from . import handoff as handoff_files
 from . import plan as plan_stage
-from . import wireframe_brief
 
 SRS_DIR = "srs"
 DOCUMENT = (SRS_DIR, "srs.json")
 HANDOFF = (SRS_DIR, "handoff.json")
-WIREFRAME_INDEX = (SRS_DIR, "wireframes", "index.json")
-WIREFRAME_SYSTEM = "wireframe-system"          # the web ideas and the shared layout the wireframes start from
+USER_JOURNEYS = (SRS_DIR, "user-journeys.json")
 
 # Every diagram the standards profile covers. Each is one call; the ones whose
 # evidence is missing come back as NOT_APPLICABLE and are recorded as such.
@@ -43,22 +43,98 @@ DIAGRAM_KINDS = ("system_context", "use_case", "erd", "sequence", "activity",
                  "class_object", "state_machine", "dfd", "bpmn", "component",
                  "deployment")
 
+# A notation reference is about the standard, not the project, so one search per
+# kind is shared by every project this process draws for rather than repeated.
+_reference_cache: dict[str, str] = {}
+_reference_lock = threading.Lock()
+
+# Each query is deliberately tied to a recognised source for this notation
+# rather than asking a generic search result to define a modelling standard.
+# Search snippets are presentation guidance only; the project SRS remains the
+# sole source of actors, entities, flows, and relationships.
+_NOTATION_SEARCHES = {
+    "activity": "site:sparxsystems.org UML activity diagram initial final decision fork join notation",
+    "bpmn": "site:omg.org BPMN 2.0 start event end event task gateway pool lane sequence flow",
+    "class_object": "site:visual-paradigm.com UML class diagram notation visibility multiplicity composition aggregation",
+    "component": "site:online.visual-paradigm.com UML component diagram provided required interface notation",
+    "deployment": "site:support.microsoft.com UML deployment diagram nodes artifacts communication path",
+    "dfd": "site:gov.uk data flow diagram Yourdon DeMarco Gane Sarson notation",
+    "erd": "site:mermaid.js.org entity relationship diagram crow foot cardinality syntax",
+    "sequence": "site:mermaid.js.org sequence diagram activation return alt loop syntax",
+    "state_machine": "site:uml-diagrams.org UML state machine diagram initial final transition notation",
+    "system_context": "system context diagram system boundary external entities notation",
+    "use_case": "site:visual-paradigm.com UML use case diagram actors system boundary include extend notation",
+}
+_NOTATION_CATALOG = Path(__file__).resolve().parents[2] / "srs-test-sources" / "diagram-sources" / "catalog.json"
+
+
+def _catalog_reference(kind: str) -> str:
+    """The checked local source catalogue, small enough to hand to one diagram call."""
+    try:
+        catalog = json.loads(_NOTATION_CATALOG.read_text(encoding="utf-8"))
+        entry = (catalog.get("kinds") or {}).get(kind) or {}
+    except (OSError, json.JSONDecodeError):
+        return ""
+    sources = entry.get("sources") or []
+    links = "\n".join(f"- {row.get('title')}: {row.get('url')}" for row in sources
+                      if isinstance(row, dict) and row.get("url"))
+    notation = ", ".join(str(item) for item in (entry.get("accepted_notation") or []))
+    visual = str(entry.get("visual_observation") or "")
+    return ("Checked notation sources (style/notation only):\n" + links
+            + (f"\nAccepted notation: {notation}" if notation else "")
+            + (f"\nVisual observation: {visual}" if visual else ""))[:1600]
+
+
+def _diagram_reference(kind: str) -> str:
+    """A short, real-world grounding note on standard notation for this diagram
+    kind — never a source of actors, entities or flows, only of correct,
+    recognizable notation for a {kind} diagram."""
+    with _reference_lock:
+        if kind in _reference_cache:
+            return _reference_cache[kind]
+    local = _catalog_reference(kind)
+    found = llm.web_search(_NOTATION_SEARCHES.get(
+        kind, f"UML {kind.replace('_', ' ')} diagram example correct notation"), max_results=3)
+    searched = "\n".join(f"- {row['title']}: {row['content'][:300]}"
+                           for row in found if row.get("content"))[:900]
+    note = "\n\n".join(piece for piece in (local, searched) if piece)[:2400]
+    with _reference_lock:
+        _reference_cache[kind] = note
+    return note
+
+
+# The same grounding pattern as `_diagram_reference()`, applied to the document
+# itself rather than to one diagram kind — one query is enough since "what
+# makes a requirements document well-written" doesn't vary per project.
+_srs_reference: str | None = None
+_srs_reference_lock = threading.Lock()
+
+
+def _srs_quality_reference() -> str:
+    """A short, real-world grounding note on what makes a requirements
+    specification well-written — never a source of this project's own
+    requirements, only of what "well-written" looks like, so the review
+    that follows judges against a real external reference instead of only
+    the model's own untethered sense of quality."""
+    global _srs_reference
+    with _srs_reference_lock:
+        if _srs_reference is not None:
+            return _srs_reference
+    try:
+        local = corpus_rules.quality_grounding()
+    except ValueError:
+        local = ""
+    found = llm.web_search(
+        "IEEE 830 software requirements specification quality checklist "
+        "ambiguity traceability well-written requirement examples", max_results=3)
+    searched = "\n".join(f"- {row['title']}: {row['content'][:300]}"
+                          for row in found if row.get("content"))[:900]
+    note = "\n\n".join(piece for piece in (local, searched) if piece)[:2400]
+    with _srs_reference_lock:
+        _srs_reference = note
+    return note
+
 NOT_APPLICABLE = "NOT_APPLICABLE"
-
-WIREFRAME_APPROVAL_PROMPT = (
-    "Use the approved /plan as the scope. Read the site map and the application spec at "
-    ".agentforge/srs/handoff/ (sitemap.md, app.md). Before drawing anything, search the web "
-    "(Ollama web search) for how good products of this kind lay out their screens, and take "
-    "ideas from what you find. Then draw one creative, strictly black-and-white low-fidelity "
-    "HTML wireframe for every planned screen, with no page limit. A screen is one page with one "
-    "job: tables, forms and detail views each get a page of their own and are linked from the "
-    "pages that lead to them, never piled into another page; use a popup only for a short "
-    "contextual action. Draw the shared layout once and keep it identical on every page: the "
-    "same navigation, header, sidebar and footer in the same position, and the same buttons, "
-    "forms, cards, tables and status marks. Use realistic sample data and make the way from "
-    "page to page obvious. Show the pages as a grid, one by one as they finish, and enable editing."
-)
-
 
 # --- reading ----------------------------------------------------------------
 
@@ -71,15 +147,6 @@ def document(project: str) -> dict[str, Any]:
 
 def has_document(project: str) -> bool:
     return bool(document(project).get("srs_document"))
-
-
-def _slug(route: str) -> str:
-    cleaned = str(route or "/").strip("/")
-    if not cleaned:
-        return "home"
-    stem = "".join(c if c.isalnum() else "_" for c in cleaned).strip("_") or "page"
-    # /a-b and /a_b must never overwrite one another's HTML.
-    return f"{stem}-{hashlib.sha1(str(route).encode('utf-8')).hexdigest()[:8]}"
 
 
 def _pages_of(doc: dict) -> list[dict]:
@@ -109,8 +176,13 @@ def _wireframe_pages(doc: dict, approved: dict) -> list[dict]:
 # --- writing ----------------------------------------------------------------
 
 def _write_document(session: ProjectSession, project: str, record: dict,
-                    approved: dict, transcript: str) -> dict:
-    """One call for the whole specification, validated against the schema."""
+                    approved: dict) -> dict:
+    """One call for the whole specification, validated against the schema.
+
+    The approved plan and the interview are on disk at `.agentforge/plan.json`
+    and `.agentforge/interview.json`; the model reads them itself rather than
+    having them pasted in here.
+    """
     bus.phase(project, "srs:document", "Writing the requirements",
               detail="Decomposing the approved plan into testable requirements.")
     # The focused call has no conversation of its own, so the project's memory
@@ -121,18 +193,111 @@ def _write_document(session: ProjectSession, project: str, record: dict,
         system=prompts.load("srs/system")
         + (f"\n\n## What this project already knows\n\n{memory}" if memory else ""),
         user=prompts.load("srs/document",
-                          plan=json.dumps(approved, ensure_ascii=False, indent=2),
-                          transcript=transcript,
                           project_name=(str(approved.get("app_name") or "").strip()
                                         or record.get("name") or project),
                           stack=record.get("stack", ""),
                           language=record.get("language", "English")),
         validator=srs_schema.srs_validator,
-        label="srs_document")
+        label="srs_document",
+        project=project, workspace=session.workspace)
     doc = envelope["srs_document"]
     named = str((doc.get("app_summary") or {}).get("app_name") or "").strip()
     if named and str(doc.get("project_name") or "").strip() in ("", project):
         doc["project_name"] = named
+    return envelope
+
+
+def _journey_edits_validator(doc: dict, issues: list[dict]):
+    """Check the model's route for each wrong step against the SRS's own pages and roles before any of it is kept.
+
+    Only the steps that were wrong may change; an edit to any other step is ignored, so a correct route is never touched.
+    """
+    wrong = {(issue["workflow"], issue["step"]) for issue in issues}
+
+    def check(data: Any) -> list[tuple[str, int, str]]:
+        rows = data.get("edits") if isinstance(data, dict) else data
+        if not isinstance(rows, list):
+            raise ValueError('return {"edits": [{"workflow_name": "...", "step": 1, "route": "/..."}]}')
+        edits = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                key = (str(row.get("workflow_name") or ""), int(row.get("step")))
+            except (TypeError, ValueError):
+                continue
+            if key in wrong:
+                edits.append((key[0], key[1], str(row.get("route") or "").strip()))
+        trial = copy.deepcopy(doc)
+        _apply_journey_edits(trial, edits)
+        left = [issue["problem"] for issue in journeys.journey_issues(trial)
+                if (issue["workflow"], issue["step"]) in wrong]
+        if left:
+            raise ValueError("these steps are still wrong — give a route for each:\n- " + "\n- ".join(left[:20]))
+        return edits
+    return check
+
+
+def _apply_journey_edits(doc: dict, edits: list[tuple[str, int, str]]) -> None:
+    flows = {str(flow.get("workflow_name") or ""): flow for flow in doc.get("business_workflows") or []
+             if isinstance(flow, dict)}
+    for name, step, route in edits:
+        flow = flows.get(name)
+        if not flow or not 1 <= step <= len(flow.get("steps") or []):
+            continue
+        routes = list(flow.get("step_routes") or [])
+        routes += [""] * (len(flow.get("steps") or []) - len(routes))
+        routes[step - 1] = route
+        flow["step_routes"] = routes
+
+
+def _validate_journeys(project: str, envelope: dict) -> dict:
+    """Every workflow step on a page its role can open, checked and fixed before anything downstream reads the journeys.
+
+    The SRS writes `step_routes` itself. Only the steps that are wrong — no route, a route that is no page, a page the
+    role cannot open — go back to the model, which answers with a route for each of those steps and nothing else; every
+    other step and the rest of the specification stay exactly as they are. Whatever is still wrong after that is taken
+    from the page the step names, among the pages its role can open, or the page the person is already on. Never a
+    reason to fail the specification.
+    """
+    doc = envelope["srs_document"]
+    journeys.trim_step_routes(doc)
+    issues = journeys.journey_issues(doc)
+    if issues:
+        names = sorted({issue["workflow"] for issue in issues})
+        bus.log(project, "WARN", f"{len(issues)} journey step route(s) to correct in {len(names)} workflow(s); "
+                                 "fixing only those steps.")
+        pages = "\n".join(
+            f"- `{page['route']}` — {page['page_name']} — "
+            + (("signed in: " + (", ".join(sorted(page["roles"])) or "any signed-in role")) if page["login_required"]
+               else "no sign-in")
+            for page in journeys._pages_of(doc))
+        marked = {(issue["workflow"], issue["step"]): issue for issue in issues}
+        workflows = "\n\n".join(
+            f"### {flow.get('workflow_name')} — {flow.get('who') or 'anyone'}\n" + "\n".join(
+                f"{index}. {step} — "
+                + (f"**WRONG: {marked[(str(flow.get('workflow_name') or ''), index)]['problem']}**"
+                   if (str(flow.get("workflow_name") or ""), index) in marked
+                   else f"on `{(flow.get('step_routes') or [''] * index)[index - 1]}`")
+                for index, step in enumerate(flow.get("steps") or [], 1))
+            for flow in doc.get("business_workflows") or []
+            if isinstance(flow, dict) and str(flow.get("workflow_name") or "") in names)
+        try:
+            edits = llm.complete_json(
+                system=prompts.load("srs/system"),
+                user=prompts.load("srs/journey-routes", pages=pages, workflows=workflows),
+                validator=_journey_edits_validator(doc, issues), label="srs_journey_routes", attempts=2,
+                project=project)
+            _apply_journey_edits(doc, edits)
+            bus.log(project, "INFO", f"Corrected {len(edits)} journey step route(s): "
+                                     + "; ".join(f'"{name}" step {step} → {route}' for name, step, route in edits)[:400])
+        except Exception as exc:  # noqa: BLE001 - the page names below still place every step
+            bus.log(project, "WARN", f"Could not correct the journey routes with the model ({str(exc)[:160]}); "
+                                     "placing those steps by the pages they name.")
+    changed = journeys.fill_step_routes(doc)
+    count = len([flow for flow in doc.get("business_workflows") or [] if isinstance(flow, dict)])
+    bus.log(project, "SUCCESS", f"{count} user journeys validated: every step is on a page its role can open"
+                                + (f" ({changed} step route(s) completed)." if changed else "."))
     return envelope
 
 
@@ -145,62 +310,260 @@ def _write_record_visible(session: ProjectSession, project: str, parts: tuple,
                      note="written")
 
 
+def _write_user_journeys(session: ProjectSession, project: str, doc: dict) -> dict[str, Any]:
+    """Save the SRS workflows as the one canonical journey list for E2E coverage."""
+    contract = journeys.journey_contract_for(doc)
+    _write_record_visible(session, project, USER_JOURNEYS, contract)
+    bus.log(project, "SUCCESS", f"{len(contract['journeys'])} user journeys saved for E2E coverage.")
+    return contract
+
+
+def _workspace_relative(path: Path | str, workspace: Path) -> str:
+    """A path a workspace-rooted read-only tool is actually allowed to read."""
+    candidate = Path(path)
+    # `reference_staging.stage()` correctly returns a workspace-relative
+    # string for the model.  The reviewer also needs that value, but must first
+    # anchor it before resolving it; calling `.resolve()` on the raw string was
+    # what prevented every cloud review from running.
+    if not candidate.is_absolute():
+        candidate = workspace / candidate
+    try:
+        return candidate.resolve().relative_to(workspace.resolve()).as_posix()
+    except ValueError:
+        # The reviewer must never receive an absolute path it cannot read. A
+        # basename produces a helpful ordinary "file does not exist" response
+        # if a caller accidentally stages context in the wrong workspace.
+        return candidate.name
+
+
+def _short_text(value: Any, limit: int = 240) -> str:
+    """Keep staged model context informative without turning it into a dump."""
+    return str(value or "").strip()[:limit]
+
+
+def _table_name(reference: Any) -> str:
+    """Extract ``table`` from an SRS reference such as ``table.id``."""
+    return _short_text(reference, 120).split(".", 1)[0]
+
+
+def _compact_table(table: Any, field_limit: int = 7) -> dict[str, Any] | None:
+    """Schema facts a diagram author needs, without every persistence detail."""
+    if not isinstance(table, dict) or not str(table.get("table_name") or "").strip():
+        return None
+    fields = [row for row in (table.get("fields") or []) if isinstance(row, dict)]
+    # Keys, relationships and lifecycle fields explain an engineering diagram;
+    # use ordinary fields only to make the entity intelligible.
+    priority = [row for row in fields if row.get("primary_key") or row.get("references")
+                or str(row.get("type") or "").startswith("enum(")]
+    chosen = list(priority)
+    for row in fields:
+        if row not in chosen and len(chosen) < field_limit:
+            chosen.append(row)
+    return {
+        "table_name": _short_text(table.get("table_name"), 80),
+        "description": _short_text(table.get("description"), 180),
+        "fields": [
+            {key: row[key] for key in ("name", "type", "primary_key", "nullable", "references")
+             if key in row}
+            for row in chosen[:field_limit]
+        ],
+    }
+
+
+def _important_tables(database: Any, limit: int = 14) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Select a connected, readable schema slice for a single diagram canvas."""
+    if not isinstance(database, dict):
+        return [], []
+    tables = [row for row in (database.get("tables") or []) if isinstance(row, dict)]
+    relationships = [row for row in (database.get("relationships") or []) if isinstance(row, dict)]
+    degree: dict[str, int] = {}
+    for relation in relationships:
+        for key in ("from", "to"):
+            name = _table_name(relation.get(key))
+            if name:
+                degree[name] = degree.get(name, 0) + 1
+    ranked = sorted(
+        enumerate(tables),
+        key=lambda pair: (-degree.get(str(pair[1].get("table_name") or ""), 0), pair[0]),
+    )
+    selected_names = {str(row.get("table_name") or "") for _, row in ranked[:limit]}
+    selected = [compact for _, row in ranked[:limit]
+                if (compact := _compact_table(row)) is not None]
+    selected_relationships = []
+    for relation in relationships:
+        left, right = _table_name(relation.get("from")), _table_name(relation.get("to"))
+        if left in selected_names and right in selected_names:
+            selected_relationships.append({
+                "from": relation.get("from"), "to": relation.get("to"),
+                "type": relation.get("type"),
+                "description": _short_text(relation.get("description"), 140),
+            })
+    return selected, selected_relationships[:24]
+
+
+def _compact_workflows(doc: dict, limit: int = 8) -> list[dict[str, Any]]:
+    """Preserve the business-flow evidence that sequence/process views need."""
+    compact = []
+    for workflow in (doc.get("business_workflows") or []):
+        if not isinstance(workflow, dict):
+            continue
+        name = _short_text(workflow.get("workflow_name"), 120)
+        steps = [_short_text(step, 220) for step in (workflow.get("steps") or []) if str(step).strip()]
+        if name and steps:
+            compact.append({"workflow_name": name, "who": _short_text(workflow.get("who"), 80),
+                            "steps": steps[:7]})
+    return compact[:limit]
+
+
+def _diagram_context(doc: dict, kind: str) -> dict[str, Any]:
+    """A kind-specific, complete enough SRS slice for reliable diagram authoring.
+
+    The old generic slice attempted to serialize the whole database then dropped
+    that field to meet a size cap.  ERD, class, state and workflow diagrams were
+    consequently asked to draw with only the product summary and emitted tool
+    narration.  This preserves the relevant facts in a bounded form instead.
+    """
+    database = doc.get("database_design") or {}
+    tables, relationships = _important_tables(database)
+    roles = [
+        {"role_name": _short_text(role.get("role_name"), 80),
+         "description": _short_text(role.get("description"), 180)}
+        for role in (doc.get("roles") or []) if isinstance(role, dict)
+    ][:8]
+    integrations = [
+        {"name": _short_text(item.get("name"), 100), "type": _short_text(item.get("type"), 100),
+         "description": _short_text(item.get("description"), 180)}
+        for item in (doc.get("integration_requirements") or []) if isinstance(item, dict)
+    ][:8]
+    context: dict[str, Any] = {
+        "app_summary": doc.get("app_summary") or {},
+        "roles": roles,
+        "authentication_requirement": doc.get("authentication_requirement") or {},
+        "main_modules": [str(item)[:120] for item in (doc.get("main_modules") or [])][:18],
+        "integrations": integrations,
+    }
+    if kind in {"erd", "class_object"}:
+        context["database_design"] = {"tables": tables, "relationships": relationships}
+    elif kind == "state_machine":
+        lifecycle = []
+        for table in tables:
+            for field in table.get("fields") or []:
+                if str(field.get("type") or "").startswith("enum("):
+                    lifecycle.append({"table": table["table_name"], "field": field.get("name"),
+                                      "states": field.get("type")})
+        context["lifecycle_candidates"] = lifecycle[:18]
+        context["business_workflows"] = _compact_workflows(doc, limit=5)
+    elif kind in {"sequence", "activity", "bpmn"}:
+        context["business_workflows"] = _compact_workflows(doc)
+    elif kind in {"dfd", "component", "deployment", "system_context", "use_case"}:
+        context["business_workflows"] = _compact_workflows(doc, limit=5)
+        context["data_entities"] = [table["table_name"] for table in tables[:12]]
+    else:
+        context["business_workflows"] = _compact_workflows(doc, limit=5)
+    return context
+
+
 def _draw_diagram(session: ProjectSession, project: str, doc: dict,
                   kind: str) -> dict | None:
-    """One diagram: its source, and its SVG when a renderer is installed."""
+    """One diagram: its source, and its SVG when a renderer is installed.
+
+    What is saved is always Mermaid, never words. The first reply is asked for with the read tool (the read shows in
+    the chat). If it is not a diagram - the model narrating its reads ("Let me read…"), or its reasoning - or Mermaid
+    rejects it, the next replies are asked for with no tools and the specification slice in the prompt, so there is
+    nothing to narrate. If the model still returns no diagram, the diagram is drawn straight from the specification's
+    own facts (`diagram_fallback`); a kind with no such facts is reported as not drawn, never saved as text.
+    """
     try:
         guidance = prompts.load(f"srs/diagrams/{kind}")
     except prompts.MissingPrompt:
         return None
 
-    digest = json.dumps({k: doc.get(k) for k in
-                         ("app_summary", "roles", "public_pages", "protected_pages",
-                          "database_design", "business_workflows", "api_design",
-                          "authentication_requirement", "main_modules")
-                         if doc.get(k)}, ensure_ascii=False)[:18000]
+    # The staged context is shaped to the requested diagram. It retains schema
+    # and workflow evidence without exceeding the read tool's output limit.
+    context = _diagram_context(doc, kind)
+    digest = json.dumps(context, ensure_ascii=False)
+    # Staged rather than pasted in: the model reads its own curated slice of
+    # the specification with its read tool, and the read shows in the chat.
+    # fresh=False: every kind's digest lands in this same shared folder, in
+    # parallel (`llm.in_lanes`) — clearing it per kind would race the other
+    # kinds' files still waiting to be read.
+    context_path, = reference_staging.stage(
+        session.workspace, f"{config.RECORD_DIR}/{SRS_DIR}/diagram-context",
+        {f"{kind}.json": digest}, fresh=False)
+
+    reference = _diagram_reference(kind)
+
+    def _ask(problem: str = "", previous: str = "") -> str:
+        user = prompts.load("srs/diagram", kind=kind, standard=kind, guidance=guidance,
+                            document=context_path,
+                            reference=reference or "(no external reference found — follow the standard above)")
+        retrying = bool(problem)
+        if retrying:
+            user += "\n\n" + prompts.load(
+                "srs/diagram-retry", kind=kind.replace("_", " "), declaration=mermaid.declaration_for(kind),
+                problem=problem, digest=digest,
+                previous=f"Your rejected source:\n\n```\n{previous[:4000]}\n```\n\n" if previous else "")
+        # The reasoning a model leaves in `thinking` is never a diagram, so it is never taken for one.
+        return mermaid.clean(llm.complete(
+            system=prompts.load("srs/system"), user=user, project=project, think=False if retrying else None,
+            workspace=None if retrying else session.workspace, thinking_fallback=False))
 
     bus.agent_msg(project, f"Generating the {kind.replace('_', ' ')} diagram from the specification.",
                   title="SRS diagram", kind="narration")
-    source = llm.complete(
-        system=prompts.load("srs/system"),
-        user=prompts.load("srs/diagram", kind=kind, standard=kind,
-                          guidance=guidance, document=digest))
-    source = mermaid.clean(source)
+    source = _ask()
 
-    if source.upper().startswith(NOT_APPLICABLE):
-        return {"id": f"DIA-{kind}", "kind": kind, "title": kind.replace("_", " ").title(),
-                "format": "mermaid", "source": "", "applicable": False,
-                "applicability_note": source.split(":", 1)[-1].strip()[:240]}
-
-    # The renderer is the only parser that counts. A hand-written check passes
-    # `Member --> (Login)`, which Mermaid rejects, so the repair loop is driven
-    # by Mermaid's own complaint rather than by a guess at the syntax.
+    # The tuned prompt is the quality control for diagram notation and visual
+    # hierarchy.  We only retry a reply that is not a diagram at all, or a
+    # concrete Mermaid parser/render failure; hidden shape or reference gates
+    # would make the model regenerate a valid source for reasons the prompt
+    # did not communicate.
     mmd = session.record_path(SRS_DIR, "diagrams", f"{kind}.mmd")
     svg = session.record_path(SRS_DIR, "diagrams", f"{kind}.svg")
     rendered, why = False, "no renderer"
 
     for attempt in range(3):
-        wrong = mermaid.problems(kind, source)
-        if not wrong:
-            if mermaid.available():
-                bus.agent_msg(project, f"Render {kind.replace('_', ' ')} diagram with Mermaid CLI.",
-                              title="Rendering diagram", kind="command")
-            rendered, why = mermaid.render(source, svg)
-            if mermaid.available():
-                bus.agent_msg(project, "SVG rendered successfully." if rendered else why,
-                              title="Mermaid output", kind="command_output")
-            if rendered:
-                break
-            wrong = [why]
-        if attempt == 2 or not mermaid.available():
+        if source.upper().startswith(NOT_APPLICABLE):
+            return {"id": f"DIA-{kind}", "kind": kind, "title": kind.replace("_", " ").title(),
+                    "format": "mermaid", "source": "", "applicable": False,
+                    "applicability_note": source.split(":", 1)[-1].strip()[:240]}
+        wrong = ""
+        if not mermaid.has_diagram(kind, source):
+            why = "the model's reply was not a diagram"
+            wrong = ("That reply was not Mermaid source"
+                     + (f" — it was words, beginning “{source[:80]}”." if source else " — it was empty."))
+        elif mermaid.available():
+            bus.agent_msg(project, f"Render {kind.replace('_', ' ')} diagram with Mermaid CLI.",
+                          title="Rendering diagram", kind="command")
+            rendered, why = mermaid.render_diagram(kind, source, svg)
+            bus.agent_msg(project, "SVG rendered successfully." if rendered else why,
+                          title="Mermaid output", kind="command_output")
+            # Only Mermaid rejecting the source goes back to the model. A renderer that could not run is not the
+            # source's fault: rewriting it would only change a good diagram, and the picture is drawn later from
+            # the saved source (_recover_rendered_diagrams) once the renderer works.
+            if not rendered and mermaid.is_syntax_error(why):
+                wrong = f"Mermaid rejected it: {why}"
+        if not wrong or attempt == 2:
             break
-        source = mermaid.clean(llm.complete(
-            system=prompts.load("srs/system"),
-            user=prompts.load("srs/diagram", kind=kind, standard=kind,
-                              guidance=guidance, document=digest)
-            + f"\n\n## Your last attempt\n\n```\n{source[:4000]}\n```\n\n"
-              f"It did not render: {'; '.join(wrong)}\n\n"
-              f"Return corrected Mermaid source only."))
+        source = _ask(wrong, source if mermaid.has_diagram(kind, source) else "")
+
+    fallback = False
+    no_diagram = not mermaid.has_diagram(kind, source)
+    if no_diagram or (mermaid.available() and not rendered and mermaid.is_syntax_error(why)):
+        drawn = diagram_fallback.build(kind, context)
+        if drawn:
+            source, fallback = drawn, True
+            bus.agent_msg(project, f"The model did not return a {kind.replace('_', ' ')} diagram Mermaid could draw, "
+                                   "so it was drawn directly from the specification.",
+                          title="SRS diagram", kind="narration")
+            rendered, why = False, "no renderer"
+            if mermaid.available():
+                rendered, why = mermaid.render_diagram(kind, source, svg)
+        elif no_diagram:
+            bus.log(project, "WARN", f"Diagram · {kind.replace('_', ' ')} (not drawn — the model returned no diagram)")
+            return {"id": f"DIA-{kind}", "kind": kind, "title": kind.replace("_", " ").title(),
+                    "format": "mermaid", "source": "", "applicable": True, "drawing_failed": True,
+                    "render_error": "The model did not return a diagram and the specification has too little "
+                                    "to draw this one from directly. Redraw it to try again."}
 
     mmd.write_text(source, encoding="utf-8")
     bus.file_written(project, mmd.relative_to(session.workspace).as_posix(), source,
@@ -214,134 +577,29 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
         "format": "mermaid", "source": source, "applicable": True,
         "mmd_path": mmd.relative_to(session.workspace).as_posix(),
     }
+    if fallback:
+        entry["fallback"] = True
     if rendered:
         entry["svg"] = svg.read_text(encoding="utf-8", errors="replace")
         entry["svg_path"] = svg.relative_to(session.workspace).as_posix()
         entry["rendered_by"] = "mermaid_cli"
         entry["format"] = "svg+mermaid-source"
-    elif mermaid.available():
+    if not rendered and mermaid.available():
         entry["render_error"] = why[:240]
     return entry
 
 
-def _page_instruction(project: str, doc: dict, page: dict, docs: dict[str, str], request: str = "",
-                      ideas: str = "", layout: str = "") -> str:
-    """The prompt one wireframe is drawn from.
-
-    The handoff is passed as it was written, less what a drawing does not need (`prompts/srs/wireframe-context.json`), so this
-    holds no rules about what a page contains: the specification says it, in its own words, for whatever product it describes.
-    """
-    route = str(page.get("route") or "/")
-    context = wireframe_brief.context(docs)
-    if not context:
-        raise ValueError("the SRS handoff files are missing; wireframes need the approved contract")
-    instruction = prompts.load("srs/wireframe-page",
-                               route=route,
-                               page_name=str(page.get("page_name") or route),
-                               sections=", ".join(wireframe_brief.page_lines(page.get("sections"))) or "(not listed)",
-                               functions=", ".join(wireframe_brief.page_lines(page.get("functions"))) or "(not listed)",
-                               app_summary=json.dumps(doc.get("app_summary") or {}, ensure_ascii=False),
-                               page_contract=json.dumps(wireframe_brief.page_facts(page), ensure_ascii=False, indent=2),
-                               ideas=ideas or "(none gathered — draw from the specification and your own judgement)",
-                               layout=layout or "(none drawn — keep the shell and the components consistent from the site map)",
-                               plan=wireframe_brief.clean(plan_stage.markdown(project)),
-                               context=context)
-    if request:
-        instruction += "\n\n## Approved wireframe request\n\n" + request
-    return instruction
-
-
-def _draw_page(session: ProjectSession, project: str, doc: dict, page: dict,
-               docs: dict[str, str] | None = None, request: str = "",
-               system: dict[str, str] | None = None, quiet: bool = False) -> dict:
-    """One wireframe: a complete HTML document for one route."""
-    route = str(page.get("route") or "/")
-    if not quiet:
-        bus.agent_msg(project, f"Drawing {page.get('page_name') or route} ({route}) from the approved specification and handoff.",
-                      title="Wireframe page", kind="narration")
-    docs = docs if docs is not None else handoff_docs(session)
-    system = system or {}                     # made once for the whole run by `_generate_wireframes`
-    sections = page.get("sections") or []
-    functions = page.get("functions") or []
-    weight = max(1, len(sections) + len(functions) // 2)
-
-    instruction = _page_instruction(project, doc, page, docs, request,
-                                    ideas=system.get("ideas", ""), layout=system.get("layout", ""))
-    minimum = max(completeness.WIREFRAME_FLOOR,
-                  weight * completeness.WIREFRAME_CHARS_PER_SECTION)
-    html = llm.complete_html(system=prompts.load("srs/system"), user=instruction,
-                             minimum=minimum, label=f"wireframe:{route}")
-    gaps = completeness.wireframe_depth([(route, html)], doc)
-    if gaps:
-        html = llm.complete_html(
-            system=prompts.load("srs/system"), minimum=minimum,
-            user=instruction + "\n\nYour last draft failed these wireframe checks:\n"
-                 + completeness.as_instructions(gaps)
-                 + "\n\nReturn a complete corrected HTML page, with its inline CSS.",
-            label=f"wireframe_repair:{route}")
-        gaps = completeness.wireframe_depth([(route, html)], doc)
-        if gaps:
-            raise ValueError("; ".join(gaps)[:400])
-
-    slug = _slug(route)
-    path = session.record_path(SRS_DIR, "wireframes", f"{slug}.html")
-    path.write_text(html, encoding="utf-8")
-    if not quiet:
-        bus.file_written(project, path.relative_to(session.workspace).as_posix(), html,
-                         note="drawn")
-        bus.log(project, "SUCCESS",
-                f"Wireframe · {page.get('page_name') or route} ({len(html):,} characters)")
-    return {"route": route, "name": str(page.get("page_name") or route), "slug": slug,
-            "file": path.relative_to(session.workspace).as_posix()}
-
-
-def _wireframe_system(session: ProjectSession, project: str, doc: dict, docs: dict[str, str], fresh: bool,
-                      quiet: bool = False) -> dict[str, Any]:
-    """The web ideas and the shared layout every page is drawn from.
-
-    Kept with the project, so redrawing one page reuses them; made anew when every page is drawn again.
-    """
-    have = {} if fresh else {
-        "ideas": session.read_record(SRS_DIR, WIREFRAME_SYSTEM, "ideas.md", fallback="") or "",
-        "layout": session.read_record(SRS_DIR, WIREFRAME_SYSTEM, "layout.html", fallback="") or "",
-    }
-    made = wireframe_brief.prepare(doc, docs, have,
-                                   (lambda _text: None) if quiet else lambda text: bus.log(project, "INFO", text))
-    for name, file in (("ideas", "ideas.md"), ("layout", "layout.html")):
-        if name in made["new"]:
-            path = session.record_path(SRS_DIR, WIREFRAME_SYSTEM, file)
-            path.write_text(made[name], encoding="utf-8")
-            if not quiet:
-                bus.file_written(project, path.relative_to(session.workspace).as_posix(), made[name], note="written")
-    return made
-
-
-def handoff_docs(session: ProjectSession) -> dict[str, str]:
-    """The handoff markdown, read off disk.
-
-    Every stage after the specification works from these rather than from the
-    specification being pasted into its prompt again — which is what keeps the
-    wireframes, the prototype and the build reading the same contract.
-    """
-    folder = session.record / SRS_DIR / "handoff"
-    out: dict[str, str] = {}
-    for name in handoff_files.HANDOFF_FILES:
-        path = folder / name
-        if path.is_file():
-            out[name] = path.read_text(encoding="utf-8", errors="replace")
-    return out
-
-
 def _write_handoff(session: ProjectSession, project: str, doc: dict, record: dict) -> dict:
     """What every later stage consumes, derived from the document it must honour."""
-    from prototype_agent import design as design_stage
+    from . import interview
 
     stack = str(record.get("stack") or "")
-    design = design_stage.approved_spec(project) or None
 
-    # app.md and sitemap.md are projections, not model output. A document the
-    # model writes can truncate, and these are the contract the build reads.
-    for name, body in handoff_files.render_all(doc, stack, design).items():
+    # app.md and builder.md are projections, not model output. A document the
+    # model writes can truncate, and these are the contract the stages read.
+    # app.md carries what the customer said in their own words: the idea and the interview.
+    for name, body in handoff_files.render_all(doc, stack, str(record.get("idea") or ""),
+                                               interview.full_transcript(project)).items():
         path = session.record_path(SRS_DIR, "handoff", name)
         path.write_text(body, encoding="utf-8")
         bus.file_written(project, path.relative_to(session.workspace).as_posix(),
@@ -378,7 +636,8 @@ def _write_handoff(session: ProjectSession, project: str, doc: dict, record: dic
         user=("Write the single instruction the build agent works from. Name every "
               "page, role, record, workflow and acceptance proof it must deliver, "
               "in the order it should build them. Prose, no JSON, no preamble.\n\n"
-              + json.dumps(handoff, ensure_ascii=False)[:30000]))
+              + json.dumps(handoff, ensure_ascii=False)[:30000]),
+        project=project)
     handoff["files"] = {"BUILD.md": handoff["prompt"]}
     session.write_record(*HANDOFF, data=handoff)
     session.write_record(SRS_DIR, "BUILD.md", data=handoff["prompt"])
@@ -466,8 +725,6 @@ def generate(project: str) -> dict[str, Any]:
     if not approved:
         raise ValueError("approve the plan before generating the specification")
 
-    from . import interview
-
     session = session_for(project)
     session.begin("srs", role=bus.DEVELOPER)
     # The studio blurs the SRS tab and shows the generating animation for as
@@ -475,14 +732,18 @@ def generate(project: str) -> dict[str, Any]:
     bus.sync_state(project, "running", "Writing the specification",
                    source="srs", srs_status="running")
     started = time.time()
-    transcript = interview.full_transcript(project)
 
     try:
         bus.agent_msg(project, "Writing the specification from the approved plan and interview answers.",
                       title="SRS generation", kind="narration")
-        envelope = _write_document(session, project, record, approved, transcript)
+        envelope = _write_document(session, project, record, approved)
         doc = envelope["srs_document"]
-        _write_record_visible(session, project, DOCUMENT, envelope)
+        # The document record embeds every rendered SVG. Sending that entire
+        # record through the live file-event channel can fill a browser's
+        # WebSocket buffer and leave the background job waiting in `sendall`.
+        # The individual Mermaid source events above remain inspectable; this
+        # durable record only needs an atomic local save.
+        session.write_record(*DOCUMENT, data=envelope)
         bus.log(project, "SUCCESS",
                 f"{len(doc.get('functional_requirements') or [])} functional and "
                 f"{len(doc.get('non_functional_requirements') or [])} non-functional "
@@ -496,6 +757,7 @@ def generate(project: str) -> dict[str, Any]:
                       title="SRS review", kind="narration")
         envelope = _review_loop(session, project, envelope, approved)
         envelope = _close_gaps(session, project, envelope, approved)
+        envelope = _validate_journeys(project, envelope)
         srs_schema.srs_validator(envelope)
         _write_record_visible(session, project, DOCUMENT, envelope)
 
@@ -518,12 +780,15 @@ def generate(project: str) -> dict[str, Any]:
                 f"{rendered} rendered to SVG."
                 + ("" if mermaid.available() else
                    " Install @mermaid-js/mermaid-cli to see them as pictures."))
+        # Each drawn diagram is photographed and looked at by a model that can see pictures, and fixed (two rounds at most).
+        diagram_look.run(project, session, doc["diagrams"])
 
         doc = envelope["srs_document"]
         doc["approved_plan_markdown"] = plan_stage.markdown(project)
         doc["approved_plan"] = approved
         _write_record_visible(session, project, DOCUMENT, envelope)
         _write_record_visible(session, project, (SRS_DIR, "SRS.md"), _render_markdown(doc))
+        _write_user_journeys(session, project, doc)
 
         # Draw from the final reviewed specification and handoff, not a draft
         # that a later repair may have changed. Each page appears independently.
@@ -547,48 +812,23 @@ def generate(project: str) -> dict[str, Any]:
             f"{summary['functional']} functional and {summary['non_functional']} "
             f"non-functional requirements, {summary['tables']} tables, "
             f"{summary['roles']} roles, {summary['diagrams']} diagrams. "
-            f"The handoff documents are at .agentforge/srs/handoff/ — app.md, "
-            f"sitemap.md, prototype.md and builder.md. Read those rather than "
-            f"asking for the specification again.")
+            f"The handoff documents are at .agentforge/srs/handoff/ — app.md (what the "
+            f"customer asked for, and the site map) and builder.md (the full specification). "
+            f"Read those rather than asking for the specification again.")
         session.finish(f"Specification written in {elapsed}s.")
         bus.sync_state(project, "clean", "Specification written",
                        source="srs", srs_status="completed")
         return {"srs": envelope, "summary": summary}
+    except RunCancelled:
+        session.stage = "idle"
+        session.save_context()
+        bus.sync_state(project, "paused", "Specification generation stopped.", source="srs")
+        raise
     except Exception as exc:  # noqa: BLE001
         session.fail(str(exc))
         bus.sync_state(project, "failed", str(exc)[:300], error=str(exc)[:300],
                        source="srs", srs_status="failed")
         raise
-
-
-def _forget_stale_wireframes(session: ProjectSession, screens: list[dict]) -> None:
-    """Delete drawings whose route the specification no longer has.
-
-    A regenerated specification renames and drops routes, and the pages drawn for
-    the old ones stay on disk looking like part of the current set.
-    """
-    folder = session.record / SRS_DIR / "wireframes"
-    if not folder.is_dir():
-        return
-    keep = {str(row.get("file") or "").rsplit("/", 1)[-1] for row in screens}
-    keep.add("index.json")
-    for path in folder.iterdir():
-        if path.is_file() and path.name not in keep:
-            try:
-                path.unlink()
-            except OSError:
-                pass
-
-
-def _drawn_pages(session: ProjectSession) -> list[tuple[str, str]]:
-    index = session.read_record(*WIREFRAME_INDEX, fallback=None) or {}
-    out: list[tuple[str, str]] = []
-    for row in (index.get("screens") or []):
-        path = session.workspace / str(row.get("file") or "")
-        if path.is_file():
-            out.append((str(row.get("route") or ""),
-                        path.read_text(encoding="utf-8", errors="replace")))
-    return out
 
 
 def _slug_words(value: str) -> list[str]:
@@ -801,6 +1041,15 @@ def _close_gaps(session: ProjectSession, project: str, envelope: dict,
     return envelope
 
 
+def _repair_edits_validator(envelope: dict):
+    """Apply a repair's edits to a copy of the SRS and accept it only when the result is still a valid SRS."""
+    def check(data: Any) -> tuple[dict, int]:
+        edits = data.get("edits") if isinstance(data, dict) else data
+        repaired = {**envelope, "srs_document": json_edits.apply_edits(envelope["srs_document"], edits)}
+        return srs_schema.srs_validator(repaired), len(edits)
+    return check
+
+
 def _review_loop(session: ProjectSession, project: str, envelope: dict,
                  approved: dict) -> dict:
     """Audit the draft against the standards, and send it back while that helps."""
@@ -815,19 +1064,48 @@ def _review_loop(session: ProjectSession, project: str, envelope: dict,
 
         bus.phase(project, "srs:review", "Reviewing the specification",
                   detail=f"Against the requirements standards (round {round_no + 1}).")
+        structure = completeness.section_completeness(doc)
+        ambiguity = completeness.ambiguity_resolution(doc)
+        corpus_audit = corpus_rules.audit_document(doc)
+        doc.setdefault("requirements_quality_review", {})["corpus_evidence"] = corpus_audit
+        structure_readout = (
+            f"- populated: {', '.join(structure['populated']) or '(none)'}\n"
+            f"- empty: {', '.join(structure['empty']) or '(none)'}\n"
+            f"- ambiguities flagged: {ambiguity['total']}, resolved: {ambiguity['resolved']} "
+            f"({ambiguity['rate']:.0%})\n"
+            + corpus_rules.audit_readout(corpus_audit))
+        try:
+            reference = _srs_quality_reference()
+        except Exception:  # noqa: BLE001 - grounding is a bonus, never a blocker
+            reference = ""
         try:
             verdict = llm.complete_json(
                 system=prompts.load("srs/review",
-                                    standards=prompts.skills("srs", only=review_rules.AUDIT_SKILLS,
+                               standards=prompts.skills("srs", only=review_rules.AUDIT_SKILLS,
                                                              budget=5000),
-                                    document=review_rules.digest(doc)),
+                               document=review_rules.digest(doc),
+                               reference=reference or "(unavailable this run)",
+                               structure=structure_readout,
+                               corpus_audit=corpus_rules.audit_readout(corpus_audit)),
                 user="Report against the standards above. Judge how the requirements "
                      "are written, not what the product does.",
-                validator=review_rules.review_validator(doc), label="srs_review")
+                validator=review_rules.review_validator(doc), label="srs_review", project=project)
         except Exception as exc:  # noqa: BLE001 - a critic must never block the draft
             bus.log(project, "WARN", f"Review skipped ({exc}) — keeping the draft.")
             review_rules.stamp(doc, "skipped", round_no, "the review did not complete")
             return envelope
+
+        # The cloud critic reports the subjective engineering review; a small
+        # set of corpus-aligned facts (such as a missing verification method)
+        # is non-negotiable.  Add them after validating the model payload so a
+        # model cannot accept a document with a deterministic evidence gap.
+        evidence_findings = corpus_rules.blocking_findings(corpus_audit)
+        if evidence_findings:
+            verdict = dict(verdict)
+            verdict["findings"] = list(verdict.get("findings") or []) + [
+                {"severity": "blocker", "skill": "corpus-evidence",
+                 "rule": "deterministic SRS evidence audit", "problem": problem}
+                for problem in evidence_findings]
 
         blocking = review_rules.blockers(verdict)
         session.write_record(SRS_DIR, "reviews", f"round-{round_no + 1}.json", data=verdict)
@@ -835,12 +1113,16 @@ def _review_loop(session: ProjectSession, project: str, envelope: dict,
         if review_rules.satisfied(verdict):
             bus.log(project, "SUCCESS", f"Specification accepted after {round_no + 1} round(s).")
             review_rules.stamp(doc, "accepted", round_no + 1,
-                               "the draft met the standards", verdict)
+                               "the draft met the standards", verdict,
+                               structural={"sections": structure, "ambiguity": ambiguity,
+                                           "corpus": corpus_audit})
             return envelope
 
         if round_no >= cap:
             review_rules.stamp(doc, "capped", round_no + 1,
-                               f"the {cap}-round review limit was reached", verdict)
+                               f"the {cap}-round review limit was reached", verdict,
+                               structural={"sections": structure, "ambiguity": ambiguity,
+                                           "corpus": corpus_audit})
             return envelope
 
         if previous is not None and len(blocking) >= previous:
@@ -848,30 +1130,425 @@ def _review_loop(session: ProjectSession, project: str, envelope: dict,
             return envelope
 
         previous = len(blocking)
-        bus.log(project, "WARN", f"{len(blocking)} blocking finding(s) — rewriting.")
+        bus.log(project, "WARN", f"{len(blocking)} blocking finding(s) — fixing them with edits.")
         try:
-            repaired = llm.complete_json(
+            # The model answers with edits to the parts the findings name, never the whole document again: much less
+            # to write, and nothing that was right can be lost on the way.
+            repaired, applied = llm.complete_json(
                 system=prompts.load("srs/system"),
                 user=prompts.load("srs/repair",
                                   findings=review_rules.findings_text(verdict),
                                   plan=json.dumps(approved, ensure_ascii=False, indent=2),
-                                  document=json.dumps(envelope, ensure_ascii=False, indent=2)),
-                validator=srs_schema.srs_validator, label="srs_review_repair")
-            repaired["srs_document"]["diagrams"] = doc.get("diagrams") or []
+                                  document=json.dumps(doc, ensure_ascii=False, indent=2)),
+                validator=_repair_edits_validator(envelope), label="srs_review_repair", project=project)
             envelope = repaired
             session.write_record(*DOCUMENT, data=envelope)
+            bus.log(project, "INFO", f"{applied} edit(s) applied to the specification.")
         except Exception as exc:  # noqa: BLE001
-            bus.log(project, "WARN", f"The rewrite failed ({exc}); keeping the draft.")
+            bus.log(project, "WARN", f"The repair failed ({exc}); keeping the draft.")
             review_rules.stamp(doc, "stalled", round_no + 1, "a repair round failed", verdict)
             return envelope
     return envelope
 
 
+# --- keeping the overview true after a change --------------------------------
+
+def _plain(value: Any) -> str:
+    """Text as it is compared: lower case, punctuation that does not matter gone, spaces collapsed."""
+    words = (word.strip("./-") for word in re.sub(r"[^\w%./-]+", " ", str(value or "").lower()).split())
+    return " ".join(word for word in words if word)
+
+
+def _quoted(evidence: str, source: str) -> bool:
+    """Whether the words a model gives as its evidence are really in `source`: all of them in a row, or - for a quote that
+    differs by a word - nearly all of its distinct words. A model that cannot show where it read something has not read it."""
+    want, have = _plain(evidence), _plain(source)
+    if len(want) < 8 or not have:
+        return False
+    if want in have:
+        return True
+    present = set(have.split())
+    words = {word for word in want.split() if len(word) >= 4}
+    return bool(words) and sum(1 for word in words if word in present) / len(words) >= 0.85
+
+
+def _settled_validator(open_ids: set[str], said: str):
+    """Accept the model's list of settled decisions: known ids only, each with what was decided and the words, from what the
+    customer said, that settle it."""
+    def check(data: Any) -> list[dict[str, str]]:
+        rows = data.get("settled") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError('"settled" must be a list (empty when the request settles none of them)')
+        found: dict[str, dict[str, str]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ident = str(row.get("id") or "").strip()
+            decision = str(row.get("decision") or "").strip()
+            evidence = str(row.get("evidence") or "").strip()
+            if ident in open_ids and decision and _quoted(evidence, said):
+                found.setdefault(ident, {"id": ident, "decision": decision[:400], "evidence": evidence[:400]})
+        return list(found.values())
+    return check
+
+
+def _settle_decisions(project: str, doc: dict, request: str, summary: str) -> list[dict[str, str]]:
+    """Mark the open decisions the customer's request settles as settled, and say what was decided.
+
+    The decisions are the document's `ambiguities` that still `needs_clarification`. Only the ones the request states or clearly
+    implies the answer to are settled, and only when the words the model gives as its evidence are really in what the customer
+    said or in the summary of the change."""
+    rows = [a for a in doc.get("ambiguities") or [] if isinstance(a, dict) and a.get("needs_clarification") and a.get("id")]
+    if not rows or not str(request or "").strip():
+        return []
+    listing = "\n".join(f"- {a['id']} · {a.get('area', '')}: {a.get('description', '')} (assumed: {a.get('assumption_made', '')})"
+                        for a in rows)
+    try:
+        settled = llm.complete_json(
+            system=prompts.load("srs/system"),
+            user=prompts.load("srs/reconcile", request=str(request).strip()[:4000],
+                              summary=str(summary or "(no summary)").strip()[:3000], decisions=listing),
+            validator=_settled_validator({str(a["id"]) for a in rows}, f"{request}\n{summary}"),
+            label="srs_reconcile", project=project)
+    except RunCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the decisions stay open: one more look for the customer, never a failed change
+        bus.log(project, "WARN", f"Could not tell which open decisions the change settled ({str(exc)[:200]}) — they stay open.")
+        return []
+    by_id = {str(a["id"]): a for a in rows}
+    for row in settled:
+        entry = by_id[row["id"]]
+        entry["needs_clarification"] = False
+        entry["resolution"] = row["decision"]
+        entry["resolved_by"] = "customer request"
+    return settled
+
+
+def _requirement_texts(doc: dict, finding: dict) -> str:
+    """The requirements a review finding is about, as they read now: the one it names and any other it mentions. Empty when
+    it names none that is in the document (a finding about the specification as a whole has nothing to be judged against)."""
+    by_id: dict[str, dict] = {}
+    for key in ("functional_requirements", "non_functional_requirements", "security_requirements"):
+        for item in doc.get(key) or []:
+            if isinstance(item, dict) and item.get("id"):
+                by_id[str(item["id"])] = item
+
+    def line(ident: str, item: dict) -> str:
+        return f"{ident}: " + json.dumps({k: v for k, v in item.items() if k not in ("rationale", "id")}, ensure_ascii=False)[:600]
+
+    wanted = [str(finding.get("requirement_id") or "").strip()]
+    wanted += re.findall(r"\b[A-Z]{2,4}-\d+\b", str(finding.get("problem") or ""))
+    named: list[str] = []
+    for ident in wanted:
+        if ident and ident in by_id and ident not in named:
+            named.append(ident)
+    return "\n".join(line(i, by_id[i]) for i in named[:3])[:3000]
+
+
+def _resolved_validator(shown: dict[str, str]):
+    """Accept the model's list of resolved findings: known findings only, each with words that really are in the requirement
+    text it was shown."""
+    def check(data: Any) -> list[dict[str, str]]:
+        rows = data.get("resolved") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError('"resolved" must be a list (empty when none of the findings is put right)')
+        found: dict[str, dict[str, str]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ident = str(row.get("finding") or "").strip().upper()
+            evidence = str(row.get("evidence") or "").strip()
+            if ident in shown and _quoted(evidence, shown[ident]):
+                found.setdefault(ident, {"finding": ident, "evidence": evidence[:400]})
+        return list(found.values())
+    return check
+
+
+# What a finding of the specification's own evidence audit says, because it is not a model's opinion: the audit is run again.
+AUDIT_SKILL = "corpus-evidence"
+
+
+def _settle_findings(project: str, doc: dict, request: str, summary: str) -> int:
+    """Take off the quality review the findings that the specification, as it reads now, no longer has.
+
+    The findings are the ones the specification's review listed and nobody has put right yet. A finding of the evidence audit
+    (`AUDIT_SKILL`) is cleared when the audit, run again, no longer reports it; no model is asked about it. Any other is checked
+    by a model against the current text of the requirement it is about, and is only cleared when the words that put it right
+    are really in that text. A finding that names no requirement stays. The review itself is not run again, because a new
+    review finds new things to say every time and would never get shorter. Returns how many were cleared."""
+    review = doc.get("requirements_quality_review")
+    reviewer = review.get("reviewer") if isinstance(review, dict) else None
+    findings = [f for f in (reviewer or {}).get("unresolved_findings") or [] if isinstance(f, dict)]
+    if not findings:
+        return 0
+    evidence: dict[str, str] = {}
+    shown: dict[str, str] = {}
+    blocks = []
+    still: set[str] | None = None
+    for number, finding in enumerate(findings, start=1):
+        ident = f"F{number}"
+        if finding.get("skill") == AUDIT_SKILL:
+            if still is None:
+                try:
+                    still = set(corpus_rules.blocking_findings(corpus_rules.audit_document(doc)))
+                except Exception:  # noqa: BLE001 - an audit that cannot run clears nothing
+                    still = {str(f.get("problem") or "") for f in findings}
+            if str(finding.get("problem") or "") not in still:
+                evidence[ident] = "the specification's evidence audit no longer reports it"
+            continue
+        texts = _requirement_texts(doc, finding)
+        if not texts:
+            continue
+        shown[ident] = texts
+        blocks.append(f"{ident} [{finding.get('severity', 'minor')}] {finding.get('requirement_id') or 'a requirement it mentions'}: "
+                      f"{finding.get('problem', '')}"
+                      + (f"\n    Suggested: {finding['suggested_rewrite']}" if finding.get("suggested_rewrite") else "")
+                      + f"\n    As it reads now:\n{texts}")
+    if shown:
+        try:
+            resolved = llm.complete_json(
+                system=prompts.load("srs/system"),
+                user=prompts.load("srs/reconcile-findings", request=str(request or "").strip()[:3000],
+                                  summary=str(summary or "(no summary)").strip()[:3000], findings="\n\n".join(blocks)),
+                validator=_resolved_validator(shown), label="srs_reconcile_findings", project=project)
+            evidence.update({row["finding"]: row["evidence"] for row in resolved})
+        except RunCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the findings stay: the review is only ever shortened by what is shown to be fixed
+            bus.log(project, "WARN", f"Could not tell which review findings the change put right ({str(exc)[:200]}) — they stay.")
+    kept, cleared = [], []
+    for number, finding in enumerate(findings, start=1):
+        ident = f"F{number}"
+        if ident in evidence:
+            cleared.append({**finding, "resolved_by": "customer change", "evidence": evidence[ident]})
+        else:
+            kept.append(finding)
+    if cleared:
+        reviewer["unresolved_findings"] = kept
+        reviewer["resolved_findings"] = [*(reviewer.get("resolved_findings") or []), *cleared]
+    return len(cleared)
+
+
+def reconcile(project: str, request: str, summary: str = "", session: ProjectSession | None = None) -> dict[str, Any]:
+    """After a change was made to the specification at the customer's request: bring what the overview says back in line.
+
+    The open decisions the request settles are marked settled, and the quality-review findings that the requirements no longer
+    have are taken off the review, so "decisions needed" and the quality review show where things stand after the change, not
+    where they stood when the specification was first written. Nothing is rewritten and nothing is cleared that is not shown
+    to be settled. Never raises, a Stop excepted."""
+    try:
+        if not has_document(project):
+            return {"status": "none"}
+        envelope = document(project)
+        doc = envelope.get("srs_document") or {}
+        session = session or session_for(project)
+        reviewer = (doc.get("requirements_quality_review") or {}).get("reviewer") or {}
+        open_before = sum(1 for a in doc.get("ambiguities") or [] if isinstance(a, dict) and a.get("needs_clarification"))
+        found_before = len(reviewer.get("unresolved_findings") or [])
+
+        settled = _settle_decisions(project, doc, request, summary)
+        cleared = _settle_findings(project, doc, request, summary)
+        if not settled and not cleared:
+            return {"status": "done", "settled": [], "cleared": 0, "open_decisions": open_before, "findings": found_before}
+        session.write_record(*DOCUMENT, data=envelope)
+
+        parts = []
+        if settled:
+            parts.append(f"{len(settled)} of {open_before} open decision{'s' if open_before != 1 else ''} settled "
+                         f"({', '.join(row['id'] for row in settled)})")
+        if cleared:
+            parts.append(f"{cleared} of {found_before} quality-review finding{'s' if found_before != 1 else ''} put right")
+        bus.agent_msg(project, "The specification's overview is up to date: " + "; ".join(parts) + ".",
+                      title="Specification review", kind="narration")
+        bus.sync_state(project, "clean", "Specification review updated", source="srs", srs_status="completed")
+        return {"status": "done", "settled": settled, "cleared": cleared, "open_decisions": open_before - len(settled),
+                "findings": found_before - cleared}
+    except RunCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the change itself is made; only the overview could not be refreshed
+        bus.log(project, "WARN", f"The specification's overview could not be refreshed after the change: {str(exc)[:300]}")
+        return {"status": "failed", "reason": str(exc)[:300]}
+
+
 # --- what the studio reads --------------------------------------------------
 
+def _recover_rendered_diagrams(project: str, envelope: dict[str, Any]) -> bool:
+    """Render valid legacy Mermaid sources once a renderer becomes available.
+
+    Projects created while the desktop process could not find Node already have
+    reviewed Mermaid source, but no ``svg`` field for the Studio to display.
+    Recovering that image must not invoke a model, alter the specification, or
+    replace any source: it only adds the deterministic render artifact that
+    was unavailable at the time of the original SRS run.
+    """
+    doc = envelope.get("srs_document") or {}
+    rows = doc.get("diagrams") or []
+    if not isinstance(rows, list) or not mermaid.available():
+        return False
+
+    session = session_for(project)
+    recovered = False
+    for entry in rows:
+        if not isinstance(entry, dict) or entry.get("svg") or entry.get("applicable") is False:
+            continue
+        kind = str(entry.get("kind") or "").strip()
+        source = mermaid.clean(str(entry.get("source") or entry.get("mermaid") or ""))
+        # Historical projects can predate a newer *notation* guard while
+        # still containing Mermaid that the real renderer accepts.  Recovery
+        # never changes that source; Mermaid CLI remains the authoritative
+        # syntax check before a legacy preview is restored.
+        if not kind or not source or not mermaid.has_diagram(kind, source):
+            continue            # nothing to draw, or words that are not a diagram (redrawing them is a model's job)
+
+        svg = session.record_path(SRS_DIR, "diagrams", f"{kind}.svg")
+        rendered, _why = mermaid.render_diagram(kind, source, svg)
+        if not rendered:
+            continue
+        entry["svg"] = svg.read_text(encoding="utf-8", errors="replace")
+        entry["svg_path"] = svg.relative_to(session.workspace).as_posix()
+        entry["rendered_by"] = "mermaid_cli"
+        entry["format"] = "svg+mermaid-source"
+        entry.pop("render_error", None)
+        recovered = True
+
+    if recovered:
+        session.write_record(*DOCUMENT, data=envelope)
+        bus.log(project, "SUCCESS", "Recovered SVG previews for existing Mermaid diagrams.")
+    return recovered
+
+
 def diagrams(project: str) -> dict[str, Any]:
-    doc = document(project).get("srs_document", {})
+    envelope = document(project)
+    _recover_rendered_diagrams(project, envelope)
+    doc = envelope.get("srs_document", {})
     return {"diagrams": doc.get("diagrams") or []}
+
+
+def redraw_diagrams(project: str, *, deep: bool = False,
+                    kinds: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
+    """Refresh the current SRS diagrams without rebuilding the SRS.
+
+    A normal refresh redraws the saved Mermaid sources using the latest
+    renderer/theme.  It is deliberately local and fast: an eleven-diagram
+    preview should not need eleven cloud authoring calls and eleven cloud
+    reviews.  ``deep=True`` remains available for an explicit, much slower AI
+    re-authoring pass when the *content* of the diagrams needs to change.
+    """
+    store.require(project)
+    envelope = document(project)
+    doc = envelope.get("srs_document") or {}
+    if not doc:
+        raise ValueError("generate the specification before redrawing its diagrams")
+
+    requested = tuple(kind for kind in DIAGRAM_KINDS if not kinds or kind in kinds)
+    if not requested:
+        raise ValueError("choose at least one supported diagram kind")
+
+    session = session_for(project)
+    session.begin("diagram_refresh", role=bus.DEVELOPER)
+    action = "Rebuilding diagrams with AI" if deep else "Refreshing diagram previews"
+    bus.sync_state(project, "running", action,
+                   source="srs", srs_status="running")
+    try:
+        if deep:
+            bus.agent_msg(project,
+                          "Rebuilding every diagram from the current SRS with the standards template.",
+                          title="Diagram rebuild", kind="narration")
+            drawn = llm.in_lanes(
+                list(requested),
+                lambda kind: _draw_diagram(session, project, doc, kind),
+                on_error=lambda kind, exc: {
+                    "id": f"DIA-{kind}", "kind": kind,
+                    "title": kind.replace("_", " ").title(),
+                    "format": "mermaid", "source": "", "applicable": False,
+                    "applicability_note": f"drawing failed: {exc}"[:240],
+                },
+            )
+        else:
+            previous = {str(entry.get("kind") or ""): entry
+                        for entry in (doc.get("diagrams") or []) if isinstance(entry, dict)}
+
+            def refresh(kind: str) -> dict:
+                entry = dict(previous.get(kind) or {})
+                mmd = session.record_path(SRS_DIR, "diagrams", f"{kind}.mmd")
+                svg = session.record_path(SRS_DIR, "diagrams", f"{kind}.svg")
+                source = mermaid.clean(mmd.read_text(encoding="utf-8", errors="replace")) \
+                    if mmd.is_file() else str(entry.get("source") or "").strip()
+                if entry.get("drawing_failed") or (source and not mermaid.has_diagram(kind, source)):
+                    # Words an older run saved as the diagram, or a diagram that was never drawn: re-rendering would only
+                    # fail the same way, so this one kind is drawn afresh.
+                    redrawn = _draw_diagram(session, project, doc, kind)
+                    if redrawn:
+                        return redrawn
+                entry.update({
+                    "id": entry.get("id") or f"DIA-{kind}",
+                    "kind": kind,
+                    "title": entry.get("title") or kind.replace("_", " ").title(),
+                    "format": "mermaid",
+                    "source": source,
+                    "applicable": bool(source),
+                    "mmd_path": mmd.relative_to(session.workspace).as_posix(),
+                })
+                if not source:
+                    for field in ("svg", "svg_path", "rendered_by", "render_error"):
+                        entry.pop(field, None)
+                    entry["applicability_note"] = entry.get("applicability_note") or "No saved Mermaid source."
+                    return entry
+                rendered, reason = mermaid.render_diagram(kind, source, svg)
+                if rendered:
+                    entry.update({
+                        "format": "svg+mermaid-source",
+                        "svg": svg.read_text(encoding="utf-8", errors="replace"),
+                        "svg_path": svg.relative_to(session.workspace).as_posix(),
+                        "rendered_by": "mermaid_cli",
+                    })
+                    entry.pop("render_error", None)
+                else:
+                    # A source Mermaid rejects loses its old picture; a renderer that could not run keeps it.
+                    if mermaid.is_syntax_error(reason):
+                        for field in ("svg", "svg_path", "rendered_by"):
+                            entry.pop(field, None)
+                    entry["render_error"] = reason[:240]
+                return entry
+
+            bus.agent_msg(project,
+                          "Refreshing saved Mermaid sources with the current Visual Paradigm-style renderer.",
+                          title="Diagram refresh", kind="narration")
+            drawn = llm.in_lanes(list(requested), refresh)
+        refreshed = {str(entry.get("kind") or ""): entry for entry in drawn if entry}
+        old = {str(entry.get("kind") or ""): entry
+               for entry in (doc.get("diagrams") or []) if isinstance(entry, dict)}
+        def keep_old(kind: str) -> bool:
+            # A redraw that produced nothing never replaces a diagram that had been drawn.
+            new, was = refreshed.get(kind), old.get(kind)
+            return bool(new and new.get("drawing_failed") and was
+                        and mermaid.has_diagram(kind, str(was.get("source") or "")))
+
+        doc["diagrams"] = [old[kind] if keep_old(kind) else refreshed.get(kind, old.get(kind))
+                           for kind in DIAGRAM_KINDS
+                           if refreshed.get(kind) or old.get(kind)]
+        if deep:
+            diagram_look.run(project, session, doc["diagrams"])         # a refresh of saved sources changes none of them
+        _write_record_visible(session, project, DOCUMENT, envelope)
+        rendered = sum(1 for entry in doc["diagrams"] if entry.get("svg"))
+        total = sum(1 for entry in doc["diagrams"] if entry.get("applicable"))
+        bus.log(project, "SUCCESS" if rendered else "WARN",
+                f"Diagram {'rebuild' if deep else 'refresh'} complete: {rendered} of {total} rendered to SVG.")
+        # Focused diagram calls do not need to mutate the shared chat memory:
+        # the durable SRS record is the source of truth for later stages.  A
+        # concurrent tool session can hold that conversation lock, which must
+        # never keep a completed diagram job from reporting its result.
+        bus.log(project, "INFO",
+                f"Diagram artifacts {'rebuilt' if deep else 'refreshed'}: {rendered} of {total} SVG previews rendered.")
+        session.finish("Diagram refresh complete.")
+        bus.sync_state(project, "clean", "Diagram refresh complete",
+                       source="srs", srs_status="completed")
+        return {"diagrams": doc["diagrams"], "rendered": rendered, "total": total,
+                "requested": list(requested), "mode": "deep" if deep else "fast"}
+    except Exception:
+        session.fail("diagram refresh could not be completed")
+        bus.sync_state(project, "clean", "Diagram refresh failed", source="srs", srs_status="failed")
+        raise
 
 
 def handoff(project: str) -> dict[str, Any]:
@@ -887,168 +1564,49 @@ def agent_handoff(project: str) -> dict[str, Any]:
     return {"files": files, "prompt": data.get("prompt", "")}
 
 
-def wireframes(project: str) -> dict[str, Any]:
-    """The drawings and the journeys, in the shape the studio's screens read.
+def screens(project: str) -> list[dict]:
+    """Every screen the specification names, and any the approved plan has that a draft left out: the pages the wireframes and the
+    prototype are made of."""
+    doc = document(project).get("srs_document", {})
+    return _wireframe_pages(doc, plan_stage.approved_plan(project))
 
-    `pages` with `page_name` and `has_html` feeds the wireframe grid; `journeys`
-    feeds the User Journey view, which shows nothing at all without it.
+
+def wireframes(project: str) -> dict[str, Any]:
+    """The wireframe pages and the journeys, in the shape the studio's screens read.
+
+    `pages` has one row for every screen: `has_html` says its page is written in the wireframe app and the app is bundled, so the
+    studio can show it. `journeys` feeds the User Journey view.
     """
     session = session_for(project)
-    index = session.read_record(*WIREFRAME_INDEX, fallback=None)
-    rows = (index or {}).get("screens") or []
     doc = document(project).get("srs_document", {})
-    by_route = {str(p.get("route")): p for p in _wireframe_pages(
-        doc, plan_stage.approved_plan(project))}
-    indexed = {str(row.get("route")): row for row in rows}
-    drawing = bool((index or {}).get("drawing") and session.stage in ("srs", "wireframes"))
+    app = web_app.app_dir(session.workspace, "wireframe")
+    rows = screens(project)
+    files = web_app.page_files([str(p["route"]) for p in rows])
+    bundled = web_app.built(app)
+    state = session.read_record("wireframe", "state.json", fallback=None) or {}
+    drawing = session.stage in ("srs", "wireframes")
 
     pages = []
-    for route, page in by_route.items():
-        row = indexed.get(route, {})
-        file = session.workspace / str(row.get("file")) if row.get("file") else None
-        has_html = bool(file and file.is_file() and file.stat().st_size)
+    for page in rows:
+        route = str(page["route"])
+        written = any((app / "src" / "pages" / f"{files[route]}{ext}").is_file() for ext in (".tsx", ".jsx"))
         pages.append({
             "route": route,
-            "page_name": row.get("name") or page.get("page_name") or route,
+            "page_name": page.get("page_name") or route,
             "page_type": page.get("page_type") or "",
             "login_required": bool(page.get("login_required")),
             "roles": page.get("allowed_roles") or [],
             "functions": page.get("functions") or [],
-            "slug": row.get("slug") or _slug(route),
-            "has_html": has_html,
-            "have": has_html,
-            "drawing": bool(drawing and row.get("drawing")),
-            "error": row.get("error") or "",
+            "slug": files[route],
+            "has_html": bool(written and bundled),
+            "have": bool(written and bundled),
+            "drawing": bool(drawing and not written),
+            "error": str(state.get("error") or ""),
         })
-    return {"pages": pages, "wireframes": pages, "screens": pages, "drawing": drawing,
+    return {"pages": pages, "wireframes": pages, "screens": pages, "drawing": drawing, "built": bundled,
+            "version": int((app / web_app.BUNDLE).stat().st_mtime) if bundled else 0,
             "journeys": journeys.user_journeys_for(doc),
-            "version": doc.get("version", ""), "generated_from": "srs"}
-
-
-def wireframe_html(project: str, route: str) -> str:
-    session = session_for(project)
-    index = session.read_record(*WIREFRAME_INDEX, fallback=None) or {}
-    wanted = str(route or "/")
-    for row in (index.get("screens") or []):
-        if str(row.get("route")) == wanted:
-            path = session.workspace / str(row.get("file") or "")
-            if path.is_file():
-                return path.read_text(encoding="utf-8")
-    raise FileNotFoundError(f"no wireframe for {wanted}")
-
-
-def save_wireframe_html(project: str, route: str, html: str) -> dict[str, Any]:
-    session = session_for(project)
-    index = session.read_record(*WIREFRAME_INDEX, fallback=None) or {}
-    for row in (index.get("screens") or []):
-        if str(row.get("route")) == str(route):
-            path = session.workspace / str(row.get("file") or "")
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(html, encoding="utf-8")
-            bus.file_written(project, str(row.get("file")), html,
-                             note="edited", agent=bus.DESIGNER)
-            return {"ok": True, "route": route}
-    raise FileNotFoundError(f"no wireframe for {route}")
-
-
-def _generate_wireframes(session: ProjectSession, project: str, doc: dict,
-                         approved: dict, route: str = "", request: str = "", quiet: bool = False) -> int:
-    """Draw every approved route, saving progress after each independent page."""
-    pages = _wireframe_pages(doc, approved)
-    previous = session.read_record(*WIREFRAME_INDEX, fallback=None) or {}
-    old = {str(row.get("route")): row for row in previous.get("screens") or []}
-    selected = [p for p in pages if not route or str(p.get("route")) == route]
-    if not selected:
-        raise FileNotFoundError(f"no page to draw for {route or 'this project'}")
-    docs = handoff_docs(session)
-    if not docs:
-        raise ValueError("the SRS handoff files are missing")
-
-    selected_routes = {str(p["route"]) for p in selected}
-    rows = []
-    for page in pages:
-        page_route = str(page["route"])
-        row = dict(old.get(page_route) or {})
-        row.update({"route": page_route, "name": page.get("page_name") or page_route,
-                    "slug": row.get("slug") or _slug(page_route),
-                    "file": row.get("file") or
-                    f".agentforge/srs/wireframes/{_slug(page_route)}.html"})
-        if page_route in selected_routes:
-            row.update({"drawing": True, "error": ""})
-        rows.append(row)
-    state = {"screens": rows, "drawing": True}
-    lock = threading.Lock()
-    session.write_record(*WIREFRAME_INDEX, data=state)
-    if not quiet:
-        bus.phase(project, "wireframes", "Drawing the wireframes",
-                  detail=f"{len(selected)} page(s) from the approved plan and SRS handoff.")
-        bus.agent_msg(project, f"Drawing {len(selected)} wireframe page(s) from the approved SRS and handoff.",
-                      title="Wireframe generation", kind="narration")
-
-    def update(page: dict, result: dict | None = None, error: Exception | None = None) -> None:
-        with lock:
-            row = next(r for r in rows if r["route"] == str(page["route"]))
-            if result:
-                row.update(result)
-            row["drawing"] = False
-            row["error"] = str(error)[:300] if error else ""
-            session.write_record(*WIREFRAME_INDEX, data=state)
-
-    system: dict[str, str] = {}
-
-    def draw(page: dict) -> dict | None:
-        try:
-            result = (_draw_page(session, project, doc, page, docs, request, system, quiet=True)
-                      if quiet else _draw_page(session, project, doc, page, docs, request, system))
-            update(page, result=result)
-            return result
-        except Exception as exc:  # one failed route must not hide the others
-            update(page, error=exc)
-            if not quiet:
-                bus.log(project, "WARN", f"Wireframe {page.get('route')} failed: {exc}")
-            return None
-
-    try:
-        # Before any page: ideas from the web and the one layout every page starts from (kept when a single page is redrawn).
-        if not quiet:
-            bus.phase(project, "wireframes", "Preparing the design system",
-                      detail="Looking up how products like this lay out their screens, then drawing the shared layout.")
-        system.update(_wireframe_system(session, project, doc, docs, fresh=not route, quiet=quiet))
-        results = llm.in_lanes(selected, draw)
-    finally:
-        state["drawing"] = False
-        session.write_record(*WIREFRAME_INDEX, data=state)
-        if not route:
-            _forget_stale_wireframes(session, rows)
-    count = sum(bool(result) for result in results)
-    if not quiet:
-        bus.phase(project, "wireframes", "Drawing the wireframes", status="complete",
-                  detail=f"{count} of {len(selected)} pages drawn.")
-        bus.agent_msg(project, f"{count} of {len(selected)} wireframes are ready in the "
-                               f"Wireframe tab. Open a page to edit it."
-                               + (" Retry any page that failed." if count < len(selected) else ""),
-                      title="Wireframes ready" if count == len(selected) else "Wireframes need attention")
-    return count
-
-
-def redraw(project: str, route: str = "", quiet: bool = False) -> dict[str, Any]:
-    """Draw one page again, or every page, each on its own call."""
-    session = session_for(project)
-    doc = document(project).get("srs_document", {})
-    if not quiet:
-        session.begin("wireframes", role=bus.DEVELOPER)
-    try:
-        request = prompts.load("srs/wireframe-redraw", route=route) if quiet and route else ""
-        count = _generate_wireframes(session, project, doc,
-                                     plan_stage.approved_plan(project), route=route,
-                                     request=request, quiet=quiet)
-        if not quiet:
-            session.finish(f"{count} wireframe(s) drawn.")
-        return wireframes(project)
-    except Exception as exc:  # noqa: BLE001
-        if not quiet:
-            session.fail(str(exc))
-        raise
+            "srs_version": doc.get("version", ""), "generated_from": "srs"}
 
 
 def detail(project: str) -> dict[str, Any]:
@@ -1081,6 +1639,7 @@ def results(project: str) -> dict[str, Any]:
     plan_text = doc.get("approved_plan_markdown") or plan_stage.markdown(project)
     transcript = interview.snapshot(project)
     drawn = wireframes(project)
+    journey_contract = session_for(project).read_record(*USER_JOURNEYS, fallback=None)
     diagram_rows = [d for d in (doc.get("diagrams") or [])
                     if isinstance(d, dict) and d.get("applicable") is not False]
 
@@ -1095,6 +1654,7 @@ def results(project: str) -> dict[str, Any]:
         "interview": transcript,
         "wireframes": drawn["pages"],
         "journeys": drawn["journeys"],
+        "journey_contract": journey_contract if isinstance(journey_contract, dict) else None,
         "versions": plan_stage.current(project).get("versions", []),
         "status": (store.get(project) or {}).get("status", ""),
         "version": doc.get("version", ""),
@@ -1111,30 +1671,16 @@ def results(project: str) -> dict[str, Any]:
 
 
 def approve(project: str, prompt: str = "") -> dict[str, Any]:
+    """The specification is approved: the wireframes are drawn from its app.md (see `wireframe.py`)."""
+    from . import wireframe
+
     if not has_document(project):
         raise ValueError("there is no specification to approve yet")
     session = session_for(project)
     if session.stage in ("srs", "wireframes"):
         raise ValueError("wait for the current specification or wireframe run to finish")
-    request = str(prompt or WIREFRAME_APPROVAL_PROMPT).strip()
     store.update(project, status="approved")
     store.advance(project, "design")
-    bus.log(project, "SUCCESS", "SRS approved — drawing HTML wireframes from the plan and handoff files.")
-    session.begin("wireframes", role=bus.DEVELOPER)
-    bus.sync_state(project, "running", "Drawing approved wireframes", source="wireframe")
-    try:
-        doc = document(project)["srs_document"]
-        drawn = _generate_wireframes(session, project, doc,
-                                     plan_stage.approved_plan(project),
-                                     request=request)
-        total = wireframes(project)["pages"]
-        ready = sum(bool(row["has_html"]) for row in total)
-        session.finish(f"{ready} of {len(total)} wireframe(s) ready.")
-        bus.sync_state(project, "clean", "Wireframes ready", source="wireframe")
-        return {"ok": True, "project": project, "drawn": drawn,
-                "ready": ready, "total": len(total)}
-    except Exception as exc:  # noqa: BLE001
-        session.fail(str(exc))
-        bus.sync_state(project, "failed", str(exc)[:300], source="wireframe",
-                       error=str(exc)[:300])
-        raise
+    bus.log(project, "SUCCESS", "SRS approved — drawing the wireframes from app.md.")
+    result = wireframe.run(project, str(prompt or "").strip())
+    return {**result, "drawn": result.get("ready", 0)}

@@ -15,10 +15,7 @@ in the project workspace.
 - Crow's Foot notation for entity-relationship diagrams.
 - Yourdon/DeMarco notation for data flow diagrams.
 
-The full profile is in `prompts/srs/INTERNATIONAL_SRS_V3.md` and
-`prompts/srs/PROFESSIONAL_DIAGRAMS_V4.md`; the skill pages under
-`prompts/srs/skills/` are the working standard for each area. Read the ones that
-apply before you write that part of the document.
+Apply each standard to the part of the document it governs.
 
 ## The plan is the boundary
 

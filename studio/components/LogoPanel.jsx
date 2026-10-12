@@ -79,7 +79,7 @@ export default function LogoPanel({ idea, model, onAccept, onSkip }) {
 
   return (
     <Modal onClose={() => onSkip(uploadMap(pictures))} className="max-w-[1040px] overflow-hidden p-0">
-      <div className="relative overflow-hidden bg-[radial-gradient(circle_at_8%_0%,rgba(191, 185, 255,.16),transparent_30%),linear-gradient(180deg,rgba(255,255,255,.97),rgba(247,249,253,.95))] dark:bg-[radial-gradient(circle_at_8%_0%,rgba(191, 185, 255,.15),transparent_30%),#F2F0EF]">
+      <div className="relative overflow-hidden bg-[radial-gradient(circle_at_8%_0%,rgba(191, 185, 255,.16),transparent_30%),linear-gradient(180deg,rgba(255,255,255,.97),rgba(247,249,253,.95))] dark:bg-[radial-gradient(circle_at_8%_0%,rgba(191, 185, 255,.15),transparent_30%),var(--bg2)]">
         <button onClick={() => onSkip(uploadMap(pictures))}
                 className="absolute right-5 top-5 z-10 grid size-9 place-items-center rounded-full bg-black/80 text-muted shadow-sm ring-1 ring-line/70 backdrop-blur transition hover:text-ink dark:bg-black/25"
                 title="Skip logo">

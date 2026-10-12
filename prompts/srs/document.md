@@ -3,13 +3,15 @@
 Produce the complete software requirements specification for this product as one
 JSON object. Return only the JSON — no prose, no markdown fence.
 
-## The approved plan — this is the boundary
+## Before you write anything
 
-{{plan}}
+Read these two files yourself with your `read_file` tool — they are not
+pasted in here:
 
-## The interview, in full
-
-{{transcript}}
+   - `.agentforge/plan.json` — the approved plan; this is the SRS's boundary,
+     and it is the record you write the document from.
+   - `.agentforge/interview.json` — the interview, in full. If this file does
+     not exist, there was no interview; proceed from the approved plan alone.
 
 ## Project setup
 
@@ -45,6 +47,14 @@ is two requirements. Give each one a `verification_method` — `Functional Test`
 `Test / Inspection`, `Demonstration / Inspection` or `Analysis` — and a
 `rationale` naming the approved capability it serves. Use stable sequential IDs.
 
+Before returning, check the same evidence an independent reviewer will check:
+both requirement sets exist; every ID is unique and shaped `FR-###` or
+`NFR-###`; every statement contains `shall`; every row has an approved
+verification method; each functional row has a rationale; each non-functional
+row has a measurable threshold or named standard; and each functional row has
+exactly one traceability row with a `test_case`. These checks make the SRS
+testable without copying another product's requirements or expanding scope.
+
 Non-functional requirements follow the same rule and carry a **measurable
 threshold**: twelve to twenty of them across performance, scalability,
 availability, security, accessibility, usability, maintainability and
@@ -54,6 +64,16 @@ percentile under 50 concurrent users" is.
 Every workflow in the approved plan must appear by name in
 `business_workflows`, with its role and ordered end-to-end steps. Do not omit
 workflows simply because the same capability appears in a requirement.
+
+Each workflow also carries `step_routes`: exactly one route per step, in the
+same order — the page that step happens on. Use only routes from
+`public_pages` and `protected_pages`, and only pages the workflow's `who` can
+open: a page without sign-in is open to everyone, a signed-in page only to the
+roles in its `allowed_roles`, and someone who never signs in opens no signed-in
+page. A step that names a page is on that page. A step that continues where the
+person already is (filling a form, choosing an option, the system answering)
+repeats the route of the step before it. Never pick a page because it shares a
+word with the step.
 
 Every screen in the approved plan must appear in exactly one of
 `public_pages` or `protected_pages`, with its route, roles, sections and
@@ -118,7 +138,7 @@ this main SRS has passed validation.
     "api_design": [{"method": "GET", "path": "/api/...", "description": "...", "auth_required": true, "allowed_roles": ["..."]}],
     "functional_requirements": [{"id": "FR-001", "module": "...", "requirement": "The system shall ...", "priority": "high", "allowed_roles": ["..."], "verification_method": "Functional Test", "rationale": "..."}],
     "non_functional_requirements": [{"id": "NFR-001", "category": "Performance", "requirement": "...", "verification_method": "Analysis"}],
-    "business_workflows": [{"workflow_name": "...", "who": "...", "steps": ["..."]}],
+    "business_workflows": [{"workflow_name": "...", "who": "...", "steps": ["...", "..."], "step_routes": ["/...", "/..."]}],
     "validation_rules": [{"field": "table.field", "rule": "..."}],
     "notification_rules": [{"event": "...", "recipients": ["..."], "channels": ["email"]}],
     "security_requirements": ["..."],

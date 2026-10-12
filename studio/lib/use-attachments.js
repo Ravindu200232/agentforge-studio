@@ -77,8 +77,12 @@ export function useAttachments() {
         try {
           const res = await api.srsUpload(projectId, it.file,
                                           { purpose: it.purpose || '' })
-          const text = res?.source?.text || ''
-          const id = res?.source?.id || ''
+          // The SRS endpoint returns the saved attachment itself.  Keeping its
+          // workspace-relative path lets the first agent turn read the source
+          // with its normal tools instead of relying on a pasted file name.
+          const source = res?.attachment || res?.source || {}
+          const text = source.text || ''
+          const id = source.id || ''
           if (id) ids.push(id); else failed++
           patch(it.key, {
             state: 'done',
@@ -86,7 +90,7 @@ export function useAttachments() {
             sentTo: id ? projectId : '',
             read: text,
       // Keep extraction warnings such as scan or OCR notices.
-            url: res?.url || '',
+            url: source.path || res?.url || '',
             note: res?.note || (text ? '' : 'Nothing could be read from this one.'),
           })
         } catch (e) {

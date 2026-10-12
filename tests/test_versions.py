@@ -116,10 +116,7 @@ class UpdateLeavesAVersionTests(ChangesTestCase):
         self.approve()
         request = " ".join(self.session.executed[0][0].split())
         self.assertIn("- .agentforge/qa/vitest.json", self.session.executed[0][0])
-        self.assertIn("edit them, never replace them", request)
-        self.assertIn("keep every earlier entry", request)
-        self.assertIn("never over the record", request)
-        self.assertIn("Never delete an earlier result", request)
+        self.assertIn("Update saved result records only for checks actually run; preserve earlier entries.", request)
 
     def test_overwritten_results_are_kept_aside_and_flagged_in_the_version(self):
         record = self.workspace / ".agentforge/qa/vitest.json"

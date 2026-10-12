@@ -10,6 +10,9 @@ export const useAuthStore = create((set, get) => ({
   token: '',
   loading: true,
   error: '',
+  // With AgentForge cloud accounts on, signing in is needed before cloud use.
+  required: false,
+  notice: '',
 
   init: async () => {
     const token = getAuthToken()
@@ -18,11 +21,13 @@ export const useAuthStore = create((set, get) => ({
       // Even with no token kept here, the session cookie may still sign them
       // in - that is what the frames, the pictures and the socket travel on.
       const res = await api.auth.me()
+      const required = Boolean(res?.required)
       if (res?.ok && res?.user) {
-        set({ user: res.user, loading: false })
+        set({ user: res.user, loading: false, required })
       } else {
         setAuthToken('')
-        set({ user: null, token: '', loading: false })
+        set({ user: null, token: '', loading: false, required,
+              notice: '' })
       }
     } catch {
       setAuthToken('')
@@ -81,7 +86,7 @@ export const useAuthStore = create((set, get) => ({
     }
   },
 
-  clearError: () => set({ error: '' }),
+  clearError: () => set({ error: '', notice: '' }),
 }))
 
 // A session that ends on the server - it expired, or it was ended from

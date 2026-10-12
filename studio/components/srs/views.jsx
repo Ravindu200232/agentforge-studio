@@ -3,11 +3,13 @@
 import { useState } from 'react'
 import {
   AlertTriangle, ArrowRight, Check, CheckCircle2, Compass, Copy, Cpu, Database, FileCode,
-  FileText, Globe, Key, Lock, Maximize2, MessageSquare, ShieldAlert, ShieldCheck, Sparkles,
+  FileText, Globe, Lock, Maximize2, MessageSquare, ShieldAlert, ShieldCheck, Sparkles,
   Users, Workflow, Zap,
 } from 'lucide-react'
-import { Empty, Table } from '../ui'
+import { Empty } from '../ui'
+import DiagramMissing from './DiagramMissing'
 import DiagramViewer from './DiagramViewer'
+import Decisions from './Decisions'
 import Overview from './Overview'
 import { UserJourney, Wireframes } from './Wireframes'
 import { cn } from '@/lib/utils'
@@ -28,25 +30,6 @@ const idOf = (item, i) =>
   (item && typeof item === 'object'
     && (item.id || item.ref || item.module || item.category || item.area)) || `#${i + 1}`
 
-/** A numbered section of the document. */
-function Section({ title, children, count, n }) {
-  return (
-    <div className="mb-6">
-      <div className="flex items-baseline gap-2.5 border-b-2 border-line2 pb-[7px]">
-        {n != null && <span className="font-mono text-[11px] text-accent">{n}</span>}
-        <h3 className="font-display text-[15px] font-extrabold tracking-[-.01em] text-ink">
-          {title}
-        </h3>
-        <span className="flex-1" />
-        {count != null && (
-          <span className="font-mono text-[10px] text-muted2">{count}</span>
-        )}
-      </div>
-      <div className="mt-1">{children}</div>
-    </div>
-  )
-}
-
 function Bullets({ items, tone }) {
   if (!list(items).length) return <p className="py-2 text-[11.5px] text-muted2">None recorded.</p>
   return (
@@ -63,11 +46,6 @@ function Bullets({ items, tone }) {
     </ul>
   )
 }
-
-/** Two section columns with a fixed gutter. */
-const Columns = ({ children }) => (
-  <div className="grid gap-x-[30px] md:grid-cols-2">{children}</div>
-)
 
 
 function Document({ srs }) {
@@ -102,7 +80,7 @@ function Document({ srs }) {
   return (
     <div className="mx-auto max-w-[1140px] pb-14 text-ink space-y-7">
       {/* ── Document Master Header Card ── */}
-      <div className="relative overflow-hidden rounded-none border border-accent/25 bg-[#F2F0EF] p-6 sm:p-8 shadow-2xl">
+      <div className="relative overflow-hidden rounded-none border border-accent/25 bg-panel p-6 sm:p-8 shadow-2xl">
         <div className="pointer-events-none absolute -right-16 -top-16 size-80 rounded-full bg-accent blur-3xl" />
 
         <div className="relative z-10 flex flex-wrap items-center justify-between gap-3 border-b border-black/10 pb-5">
@@ -323,7 +301,7 @@ function DocumentToc({ auth, hasPlan }) {
     ['acceptance', 'Acceptance Criteria'],
   ]
   return (
-    <div className="rounded-none border border-black/10 bg-[#F2F0EF] p-6 shadow-xl">
+    <div className="rounded-none border border-black/10 bg-panel p-6 shadow-xl">
       <div className="flex items-center gap-2 mb-3">
         <Compass className="size-4 text-accent" />
         <h3 className="text-[14px] font-bold text-ink">Document Navigation & Table of Contents</h3>
@@ -348,7 +326,7 @@ function DocumentToc({ auth, hasPlan }) {
 
 function DocSection({ id, n, title, children }) {
   return (
-    <section id={id} className="scroll-mt-6 rounded-none border border-black/10 bg-[#F2F0EF] p-6 sm:p-7 shadow-xl">
+    <section id={id} className="scroll-mt-6 rounded-none border border-black/10 bg-panel p-6 sm:p-7 shadow-xl">
       <div className="flex items-center gap-3 border-b border-black/10 pb-4 mb-5">
         <span className="flex size-6 items-center justify-center rounded-none bg-accent font-mono text-[11px] font-bold text-ink border border-accent/30">
           {n}
@@ -433,7 +411,7 @@ function RequirementTable({ items, functional }) {
   const rows = list(items)
   if (!rows.length) return <DocParagraph>None recorded.</DocParagraph>
   return (
-    <div className="overflow-x-auto rounded-none border border-black/10 bg-[#F2F0EF] p-3">
+    <div className="overflow-x-auto rounded-none border border-black/10 bg-panel p-3">
       <table className="w-full text-left text-[12px]">
         <thead>
           <tr className="border-b border-black/5 text-[10.5px] font-semibold uppercase tracking-wider text-muted2">
@@ -486,7 +464,7 @@ function IntegrationTable({ items }) {
   const rows = list(items)
   if (!rows.length) return <DocParagraph>No external integrations are required for the initial release.</DocParagraph>
   return (
-    <div className="overflow-x-auto rounded-none border border-black/10 bg-[#F2F0EF] p-3">
+    <div className="overflow-x-auto rounded-none border border-black/10 bg-panel p-3">
       <table className="w-full text-left text-[12px]">
         <thead>
           <tr className="border-b border-black/5 text-[10.5px] font-semibold uppercase tracking-wider text-muted2">
@@ -540,7 +518,7 @@ function TraceabilityTable({ items }) {
   const rows = list(items)
   if (!rows.length) return <DocParagraph>No traceability rows were recorded.</DocParagraph>
   return (
-    <div className="overflow-x-auto rounded-none border border-black/10 bg-[#F2F0EF] p-3">
+    <div className="overflow-x-auto rounded-none border border-black/10 bg-panel p-3">
       <table className="w-full text-left text-[12px]">
         <thead>
           <tr className="border-b border-black/5 text-[10.5px] font-semibold uppercase tracking-wider text-muted2">
@@ -589,7 +567,7 @@ function DatabaseTable({ table, index }) {
         <span>{index + 1}. {(table.table_name || table.name || `Table ${index + 1}`).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</span>
       </h4>
       {table.description && <p className="text-[12px] text-muted mb-3">{table.description}</p>}
-      <div className="overflow-x-auto rounded-none border border-black/5 bg-[#F2F0EF] p-2">
+      <div className="overflow-x-auto rounded-none border border-black/5 bg-panel p-2">
         <table className="w-full text-left text-[11.5px]">
           <thead>
             <tr className="border-b border-black/5 text-[10px] font-semibold uppercase tracking-wider text-muted2">
@@ -805,7 +783,7 @@ function Plan({ srs }) {
   const planText = String(srs.plan || '')
   return (
     <div className="mx-auto max-w-[1140px] pb-14 text-ink space-y-7">
-      <div className="rounded-none border border-accent/25 bg-[#F2F0EF] p-6 shadow-xl">
+      <div className="rounded-none border border-accent/25 bg-panel p-6 shadow-xl">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/10 pb-4">
           <div className="flex items-center gap-2.5">
             <div className="grid size-9 place-items-center rounded-none bg-accent text-ink border border-accent/30">
@@ -830,7 +808,7 @@ function Plan({ srs }) {
         </p>
       </div>
 
-      <div className="rounded-none border border-black/10 bg-[#F2F0EF] p-6 shadow-xl">
+      <div className="rounded-none border border-black/10 bg-panel p-6 shadow-xl">
         <div className="prose prose-invert max-w-none text-[13px] leading-[1.8] text-ink whitespace-pre-wrap font-sans">
           {planText}
         </div>
@@ -862,7 +840,7 @@ function Requirements({ srs }) {
 
   return (
     <div className="mx-auto max-w-[1140px] pb-14 text-ink space-y-7">
-      <div className="rounded-none border border-accent/25 bg-[#F2F0EF] p-6 shadow-xl">
+      <div className="rounded-none border border-accent/25 bg-panel p-6 shadow-xl">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/10 pb-4">
           <div className="flex items-center gap-2.5">
             <div className="grid size-9 place-items-center rounded-none bg-accent text-ink border border-accent/30">
@@ -929,8 +907,8 @@ function Requirements({ srs }) {
                   className={cn(
                     'rounded-none border p-4.5 transition-all shadow-sm flex flex-col justify-between',
                     isAutoSynced
-                      ? 'border-accent/35 bg-[#F2F0EF]'
-                      : 'border-black/10 bg-[#F2F0EF] hover:border-black/20'
+                      ? 'border-accent/35 bg-panel'
+                      : 'border-black/10 bg-panel hover:border-black/20'
                   )}
                 >
                   <div>
@@ -981,7 +959,7 @@ function Requirements({ srs }) {
           </h3>
           <div className="grid gap-3.5 sm:grid-cols-2">
             {workflows.map((wf, idx) => (
-              <div key={idx} className="rounded-none border border-black/10 bg-[#F2F0EF] p-5">
+              <div key={idx} className="rounded-none border border-black/10 bg-panel p-5">
                 <div className="flex items-center justify-between mb-3 border-b border-black/5 pb-2.5">
                   <h4 className="text-[14px] font-bold text-ink flex items-center gap-2">
                     <Workflow className="size-4 text-accent" />
@@ -1011,7 +989,7 @@ function Requirements({ srs }) {
 
       {(filter === 'all' || filter === 'security' || filter === 'quality') && (
         <div className="grid gap-5 sm:grid-cols-2">
-          <div className="rounded-none border border-black/10 bg-[#F2F0EF] p-5">
+          <div className="rounded-none border border-black/10 bg-panel p-5">
             <h4 className="text-[14px] font-bold text-ink flex items-center gap-2 mb-3">
               <ShieldCheck className="size-4 text-ink" />
               Security Guardrails
@@ -1030,7 +1008,7 @@ function Requirements({ srs }) {
             </div>
           </div>
 
-          <div className="rounded-none border border-black/10 bg-[#F2F0EF] p-5">
+          <div className="rounded-none border border-black/10 bg-panel p-5">
             <h4 className="text-[14px] font-bold text-ink flex items-center gap-2 mb-3">
               <Sparkles className="size-4 text-accent" />
               Quality & Validation Rules
@@ -1062,7 +1040,7 @@ function Data({ srs }) {
 
   return (
     <div className="mx-auto max-w-[1140px] pb-14 text-ink space-y-7">
-      <div className="rounded-none border border-black/25 bg-[#F2F0EF] p-6 shadow-xl">
+      <div className="rounded-none border border-black/25 bg-panel p-6 shadow-xl">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/10 pb-4">
           <div className="flex items-center gap-2.5">
             <div className="grid size-9 place-items-center rounded-none bg-black/20 text-ink border border-black/30">
@@ -1091,7 +1069,7 @@ function Data({ srs }) {
           const fields = list(table.fields || table.columns)
           const recordName = (table.table_name || table.name || `Record ${i + 1}`).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
           return (
-            <div key={i} className="rounded-none border border-black/10 bg-[#F2F0EF] p-5 sm:p-6 shadow-xl">
+            <div key={i} className="rounded-none border border-black/10 bg-panel p-5 sm:p-6 shadow-xl">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/10 pb-3 mb-4">
                 <div className="flex items-center gap-2.5">
                   <div className="grid size-7 place-items-center rounded-none bg-black/15 text-ink border border-black/25">
@@ -1158,7 +1136,7 @@ function Data({ srs }) {
       </div>
 
       {relationships.length > 0 && (
-        <div className="rounded-none border border-black/10 bg-[#F2F0EF] p-6 shadow-xl">
+        <div className="rounded-none border border-black/10 bg-panel p-6 shadow-xl">
           <h3 className="text-[15px] font-bold text-ink mb-3 flex items-center gap-2">
             <Workflow className="size-4 text-accent" />
             <span>How Records Connect (Business Relationships)</span>
@@ -1196,7 +1174,7 @@ function Roles({ srs }) {
 
   return (
     <div className="mx-auto max-w-[1140px] pb-14 text-ink space-y-7">
-      <div className="rounded-none border border-accent/25 bg-[#F2F0EF] p-6 shadow-xl">
+      <div className="rounded-none border border-accent/25 bg-panel p-6 shadow-xl">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/10 pb-4">
           <div className="flex items-center gap-2.5">
             <div className="grid size-9 place-items-center rounded-none bg-accent text-ink border border-accent/30">
@@ -1222,7 +1200,7 @@ function Roles({ srs }) {
 
       <div className="grid gap-4 sm:grid-cols-2">
         {roles.map((r, i) => (
-          <div key={i} className="rounded-none border border-black/10 bg-[#F2F0EF] p-5 shadow-lg">
+          <div key={i} className="rounded-none border border-black/10 bg-panel p-5 shadow-lg">
             <div className="flex items-center gap-3 border-b border-black/10 pb-3 mb-3">
               <div className="grid size-10 place-items-center rounded-none bg-accent text-ink border border-accent/25">
                 <Users className="size-5" />
@@ -1264,7 +1242,7 @@ function Roles({ srs }) {
       {(publicPages.length > 0 || protectedPages.length > 0) && (
         <div className="grid gap-4 sm:grid-cols-2">
           {publicPages.length > 0 && (
-            <div className="rounded-none border border-black/10 bg-[#F2F0EF] p-5 shadow-lg">
+            <div className="rounded-none border border-black/10 bg-panel p-5 shadow-lg">
               <h4 className="text-[14px] font-bold text-ink flex items-center gap-2 mb-3">
                 <Globe className="size-4 text-ink" />
                 Public Pages (Anyone Can View)
@@ -1281,7 +1259,7 @@ function Roles({ srs }) {
           )}
 
           {protectedPages.length > 0 && (
-            <div className="rounded-none border border-black/10 bg-[#F2F0EF] p-5 shadow-lg">
+            <div className="rounded-none border border-black/10 bg-panel p-5 shadow-lg">
               <h4 className="text-[14px] font-bold text-ink flex items-center gap-2 mb-3">
                 <Lock className="size-4 text-amber-400" />
                 Protected Pages (Requires Login)
@@ -1317,7 +1295,7 @@ function Handoff({ srs }) {
 
   return (
     <div className="mx-auto max-w-[1140px] pb-14 text-ink space-y-7">
-      <div className="rounded-none border border-accent/25 bg-[#F2F0EF] p-6 shadow-xl">
+      <div className="rounded-none border border-accent/25 bg-panel p-6 shadow-xl">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/10 pb-4">
           <div className="flex items-center gap-2.5">
             <div className="grid size-9 place-items-center rounded-none bg-accent text-ink border border-accent/30">
@@ -1361,11 +1339,11 @@ function Handoff({ srs }) {
         </div>
       </div>
 
-      <div className="rounded-none border border-black/10 bg-[#F2F0EF] p-6 shadow-xl">
+      <div className="rounded-none border border-black/10 bg-panel p-6 shadow-xl">
         <h3 className="text-[14px] font-bold text-ink mb-3">
           Builder Agent Prompt Stream
         </h3>
-        <pre className="whitespace-pre-wrap break-words rounded-none border border-black/5 bg-[#F2F0EF] p-4.5 font-mono text-[11.5px] leading-relaxed text-ink max-h-[420px] overflow-y-auto">
+        <pre className="whitespace-pre-wrap break-words rounded-none border border-black/5 bg-panel p-4.5 font-mono text-[11.5px] leading-relaxed text-ink max-h-[420px] overflow-y-auto">
           {handoff.prompt}
         </pre>
       </div>
@@ -1383,7 +1361,7 @@ function Diagrams({ srs }) {
   return (
     <div className="mx-auto max-w-[1140px] pb-14 text-ink space-y-6">
       {/* ── 1. Hero & Diagram Switcher ── */}
-      <div className="rounded-none border border-accent/25 bg-[#F2F0EF] p-6 shadow-xl">
+      <div className="rounded-none border border-accent/25 bg-panel p-6 shadow-xl">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/10 pb-4">
           <div className="flex items-center gap-2.5">
             <div className="grid size-9 place-items-center rounded-none bg-accent text-ink border border-accent/30">
@@ -1423,7 +1401,7 @@ function Diagrams({ srs }) {
       </div>
 
       {/* ── 2. Diagram Purpose & Definition Card ── */}
-      <div className="rounded-none border border-black/10 bg-[#F2F0EF] p-6 shadow-xl">
+      <div className="rounded-none border border-black/10 bg-panel p-6 shadow-xl">
         <div className="flex items-center justify-between border-b border-black/10 pb-3 mb-3">
           <span className="font-mono text-[10.5px] uppercase tracking-wider text-accent font-bold">
             {current.standard || current.title || 'OMG UML Standard'}
@@ -1474,7 +1452,7 @@ function Diagrams({ srs }) {
         </div>
 
         {!current.applicable && (
-          <div className="mt-4 rounded-none border border-amber-500/25 bg-amber-500/[.06] p-3 text-[12px] text-amber-200">
+          <div className="mt-4 rounded-none border border-amber-500/25 bg-amber-500/[.06] p-3 text-[12px] text-amber-800">
             <span className="font-bold">Not applicable to this baseline:</span>{' '}
             {current.applicabilityNote || 'The approved requirements do not provide the semantics needed to draw this view without inventing behavior.'}
           </div>
@@ -1482,7 +1460,7 @@ function Diagrams({ srs }) {
       </div>
 
       {/* ── 3. Visual SVG Graphic Container ── */}
-      <div className="group relative overflow-x-auto rounded-none border border-black/10 bg-[#F2F0EF] p-5 shadow-2xl">
+      <div className="group relative overflow-x-auto rounded-none border border-black/10 bg-panel p-5 shadow-2xl">
         {current.svg ? (
           <>
             <button
@@ -1495,19 +1473,21 @@ function Diagrams({ srs }) {
                 dangerouslySetInnerHTML={{ __html: current.svg }}
               />
             </button>
-            <span className="pointer-events-none absolute right-4 top-4 flex items-center gap-1.5 rounded-full bg-black/80 px-3 py-1.5 text-[11px] font-semibold text-ink opacity-0 transition-opacity group-hover:opacity-100 border border-black/10 shadow-lg">
+            <span className="pointer-events-none absolute right-4 top-4 flex items-center gap-1.5 rounded-full bg-black/80 px-3 py-1.5 text-[11px] font-semibold text-white opacity-0 transition-opacity group-hover:opacity-100 border border-black/10 shadow-lg">
               <Maximize2 className="size-3.5" /> Click to Enlarge
             </span>
           </>
-        ) : (
+        ) : current.drawable ? (
           <pre className="whitespace-pre font-mono text-[11.5px] text-muted max-h-[360px] overflow-y-auto p-2">
             {current.mermaid}
           </pre>
+        ) : (
+          <DiagramMissing diagram={current} />
         )}
       </div>
 
       {/* ── 4. Plain-English System Flow & Narrative Guide ── */}
-      <div className="rounded-none border border-accent/25 bg-[#F2F0EF] p-6 shadow-xl text-ink">
+      <div className="rounded-none border border-accent/25 bg-panel p-6 shadow-xl text-ink">
         <div className="flex items-center gap-2.5 border-b border-black/10 pb-3.5 mb-4">
           <div className="grid size-8 place-items-center rounded-none bg-accent text-ink border border-accent/30">
             <Compass className="size-4" />
@@ -1566,7 +1546,12 @@ function Diagrams({ srs }) {
       {zoomed && current.svg && (
         <DiagramViewer svg={current.svg} title={current.title} onClose={() => setZoomed(false)} />
       )}
-      {!current.svg && (
+      {current.fallback && (
+        <p className="text-[11px] text-muted2 italic">
+          Drawn directly from the specification, because the model did not return a diagram. Redraw it for a model-drawn version.
+        </p>
+      )}
+      {!current.svg && current.drawable && (
         <p className="text-[11px] text-muted2 italic">
           {current.rendered
             ? 'The picture for this revision is on disk but only the current version is displayed — its Mermaid source is shown instead.'
@@ -1585,7 +1570,7 @@ function Interview({ srs }) {
 
   return (
     <div className="mx-auto max-w-[1140px] pb-14 text-ink space-y-7">
-      <div className="rounded-none border border-accent/25 bg-[#F2F0EF] p-6 shadow-xl">
+      <div className="rounded-none border border-accent/25 bg-panel p-6 shadow-xl">
         <div className="flex items-center gap-2.5 border-b border-black/10 pb-4">
           <div className="grid size-9 place-items-center rounded-none bg-accent text-ink border border-accent/30">
             <MessageSquare className="size-4" />
@@ -1609,7 +1594,7 @@ function Interview({ srs }) {
           const a = byId[q.id]
           const value = a && (Array.isArray(a.value) ? a.value.join(', ') : a.value)
           return (
-            <div key={q.id || i} className="rounded-none border border-black/10 bg-[#F2F0EF] p-5 shadow-lg">
+            <div key={q.id || i} className="rounded-none border border-black/10 bg-panel p-5 shadow-lg">
               <div className="flex items-center gap-2 mb-2">
                 <span className="flex size-5 items-center justify-center rounded-full bg-accent font-mono text-[10px] font-bold text-ink">
                   {i + 1}
@@ -1645,6 +1630,7 @@ function Interview({ srs }) {
 export const VIEWS = [
   { id: 'wireframe', label: 'Wireframe', C: Wireframes },
   { id: 'overview', label: 'Overview', C: Overview },
+  { id: 'decisions', label: 'Decisions', C: Decisions },
   { id: 'journey', label: 'User Journey', C: UserJourney },
   { id: 'document', label: 'Document', C: Document },
   { id: 'requirements', label: 'Requirements', C: Requirements },
@@ -1663,6 +1649,10 @@ export function badgeFor(id, srs) {
   const n = (value) => (Array.isArray(value) ? value.length : 0)
   if (id === 'overview') {
     return null
+  }
+  if (id === 'decisions') {
+    const open = list(doc.ambiguities).filter(a => a?.needs_clarification).length
+    return open ? { n: open, bad: true } : null
   }
   if (id === 'requirements' && n(doc.functional_requirements)) {
     return { n: n(doc.functional_requirements), bad: false }
@@ -1685,7 +1675,6 @@ export function badgeFor(id, srs) {
 
 function Risks({ srs }) {
   const doc = srs.document || {}
-  const ambiguities = list(doc.ambiguities)
   const risks = list(doc.risk_priority)
   const acceptance = list(doc.acceptance_criteria)
 
@@ -1693,7 +1682,7 @@ function Risks({ srs }) {
 
   return (
     <div className="mx-auto max-w-[1140px] pb-14 text-ink space-y-7">
-      <div className="rounded-none border border-amber-500/25 bg-[#F2F0EF] p-6 shadow-xl">
+      <div className="rounded-none border border-amber-500/25 bg-panel p-6 shadow-xl">
         <div className="flex items-center gap-2.5 border-b border-black/10 pb-4">
           <div className="grid size-9 place-items-center rounded-none bg-amber-600/20 text-amber-400 border border-amber-500/30">
             <ShieldAlert className="size-4" />
@@ -1723,7 +1712,7 @@ function Risks({ srs }) {
           ]).map((r, i) => {
             const sev = String(r.severity || 'Medium').toLowerCase()
             return (
-              <div key={i} className="rounded-none border border-black/10 bg-[#F2F0EF] p-5 shadow-lg flex flex-col justify-between">
+              <div key={i} className="rounded-none border border-black/10 bg-panel p-5 shadow-lg flex flex-col justify-between">
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <span className={cn(
@@ -1758,7 +1747,7 @@ function Risks({ srs }) {
       </div>
 
       {acceptance.length > 0 && (
-        <div className="rounded-none border border-black/10 bg-[#F2F0EF] p-6 shadow-xl">
+        <div className="rounded-none border border-black/10 bg-panel p-6 shadow-xl">
           <h3 className="text-[15px] font-bold text-ink mb-4 flex items-center gap-2">
             <CheckCircle2 className="size-4 text-ink" />
             <span>Acceptance Verification Criteria</span>

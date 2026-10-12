@@ -1,131 +1,122 @@
 ---
 name: stack-mern-microservices
-description: How a workspace of services behind one gateway is deployed (AWS EC2, AWS ECS or Azure only): the instance layout, service discovery, per-service databases, health of the whole, and the questions to ask the customer.
+description: Deploy a MERN microservices application as real, separate instances - one Fargate task per package on AWS ECS, Cloud Map service discovery, only the gateway public, images built in the cloud never locally. AWS EC2 and Azure alternatives.
 ---
 
-# Deploying a MERN microservices workspace
+# Deploying a MERN microservices application
 
-Read this page after `core/SKILL.md` and the page for the chosen target. It says what is particular to a
-workspace of several Node services behind one public gateway, with a React client and MongoDB. Only
-**AWS EC2, AWS ECS and Azure App Service** deploy this stack: Vercel, Netlify and GitHub Pages run one
-application, not a set of cooperating services, so they are not offered. If the customer asks for
-another target, say why and offer these.
+Read this page after `core/SKILL.md` and the page for the chosen target (AWS EC2, AWS ECS or Azure App
+Service - this stack needs real server hosting and is not offered on Vercel, Netlify or GitHub). It says
+what is particular to a workspace of **genuinely separate services**: `client/` (a Vite React SPA),
+`packages/gateway/` (the one public door) and `packages/<name>/` (one bounded context each, added from
+`scaffold/service/`). Each one is deployed as its own instance or container - that is the point of this
+stack, and it is why it exists alongside `vite-mongo`, which is the same idea with exactly one service.
 
 ## What to read in the project
 
-The root `package.json` (workspaces, scripts, `engines`), `packages/*/package.json` and each
-`packages/<name>/src/` (`server.js`, `config.js`, `db.js`, models, routes), the gateway's `config.js`,
-`proxy.js` and `app.js` (which paths it proxies to which service, how it serves the built client),
-`client/` (Vite config, build output `client/dist`), `scripts/` (`start-all`, `dev-all`, `seed`,
-`port-guard`), `.env.example`, and the specification's list of bounded contexts. Make a table from what
-you read: for each process, its name, its internal port variable (`<NAME>_PORT`, `<NAME>_URL`,
-`SERVICE_PORT`), the database it uses and the routes the gateway sends to it. That table is the
-foundation of the plan.
+Root `package.json` (the `packages/*` and `client` npm workspaces - read `packages/` to see which
+services actually exist; the base scaffold ships only `gateway`), `packages/gateway/src/config.js` (the
+`<NAME>_URL`/`<NAME>_PORT` environment variable each service is reached through - this is already
+environment-driven, never a hardcoded address, which is exactly what makes separate-instance deployment
+possible with no code change), `packages/gateway/src/app.js` (which paths it proxies where, and that it
+serves the built client), each `packages/<name>/src/{app.js,config.js,db.js}`, the root `Dockerfile` and
+`.dockerignore`, `.env.example`, `scripts/seed.mjs`, and `.agentforge/PLUGIN.md` when a sign-in or
+upload plugin was selected.
 
-## How the pieces fit
+## How the pieces fit, deployed
 
-- The **gateway** is the only public component. It owns the public port (`PORT`), serves the built
-  client (`client/dist`), and proxies `/api/...` to services by address read from configuration
-  (`<NAME>_URL`, or `<NAME>_PORT` on the same host). It never holds domain logic.
-- Each **service** listens on an internal port (`SERVICE_PORT`) and is never exposed to the internet.
-- `npm run build` builds the client bundle the gateway serves; there is no build step for the services.
-- Two ways of starting it exist in the project: `npm start` runs the gateway alone (right where each
-  service is started by something else), and `npm run start:all` (`scripts/start-all.mjs`) starts every
-  service and the gateway as one process tree, giving each service an internal port and telling the
-  gateway where it is, and taking the whole tree down if one process dies so the host restarts it.
-- The gateway's `/ready` says only that the gateway process is up. It says nothing about the services
-  behind it, so it is not a health check of the application.
+- **Only the gateway is public.** Every service is reachable only from the gateway - nothing else ever
+  gets a public address, a load balancer, or an inbound security-group rule from the internet.
+- **Each service gets its own real instance** (an ECS Fargate task, or an EC2 instance, one per
+  package) - not a thread, not a child process, not a shared container. This is what "separate
+  instances" means for this stack, and it is true of `packages/gateway` too: the gateway is itself one
+  more instance, the one with a public listener in front of it.
+- **Service discovery replaces `127.0.0.1`.** Locally, `CATALOG_PORT` (an internal port on the same
+  machine) is enough. Deployed, the gateway needs a real address for each service running on its own
+  instance - that address is handed to it as `<NAME>_URL`, already exactly how `config.js` reads it.
+  Nothing in the application code changes between local development and a real multi-instance
+  deployment; only which environment variable value is supplied does.
 
-## The layout is the customer's decision: ask
+## Recommended: AWS ECS Fargate with Cloud Map
 
-The right shape depends on cost, isolation and the customer's tolerance for complexity. Do not pick it
-silently. Ask, one question at a time, recommending the smallest that satisfies the specification:
+The root `Dockerfile` builds one image per package (`--build-arg SERVICE=packages/<name>`), **built in
+AWS CodeBuild, never with a local `docker build`** - follow `aws-ecs/SKILL.md` sections 1-2 once per
+package that exists in `packages/`, with these changes from a single-service app:
 
-**EC2**
-1. *One instance for everything* (gateway and every service under systemd, one unit per process, or the
-   whole tree as one unit through `start:all`): cheapest, simplest, one Elastic IP, one database
-   allow-list entry. All the processes share one machine's memory and fate. Or *one instance per
-   service* plus a gateway instance: isolation and independent restarts, several instances to pay for
-   and patch, private networking between them, and each service's address given to the gateway through
-   its `<NAME>_URL`. Ask which; the recommendation is one instance unless the specification asks for
-   independent scaling or isolation.
-2. If one instance: the size. Estimate memory as about 150 MB per Node process, plus the operating
-   system and the web server, plus headroom, and say the number; never exceed the size the customer
-   chose without asking.
+1. **One ECR repository, many tags.** Push each package's image as `<package>-<commit>` to one shared
+   repository rather than creating a repository per package - fewer resources, same isolation (each
+   package's images are just a different tag prefix). `buildspec.yml` takes the package path as a
+   variable so one CodeBuild project builds any of them.
+2. **One Fargate task definition per package**, sized for that package's own load (a gateway proxying
+   requests needs far less CPU than a service doing real work) - follow `aws-ecs/SKILL.md` section 2 once
+   per package, in the same cluster.
+3. **AWS Cloud Map (ECS Service Connect)**, one private DNS namespace for the cluster. Each service's
+   ECS service registers itself (`catalog.internal`, for example), and the gateway's task definition sets
+   `CATALOG_URL=http://catalog.internal:4001` (the service's container port) - this is the whole
+   mechanism; no other wiring is needed because `proxyTo()` already just calls whatever URL it is given.
+4. **Only the gateway's ECS service sits behind the Application Load Balancer** and CloudFront
+   (`aws-ecs/SKILL.md` section 2, applied to the gateway's task only). Every other service's security
+   group allows inbound **only** from the gateway's security group, on that service's container port -
+   no target group, no listener rule, no public DNS name for it at all.
+5. **Health**: every package answers `/health` identically (the gateway's own readiness, or a service's
+   `src/app.js` route) - one ALB target-group health check and one ECS task health check path works
+   for all of them.
+6. **Scale each service independently** (`aws-ecs/SKILL.md` section 8, once per package) - the actual
+   payoff of this architecture: a service under real load scales out on its own without touching the
+   gateway or any other service.
+7. **Release order**: deploy or update backend services before the gateway on a first release, so the
+   gateway's first requests already have somewhere to proxy to; Cloud Map registration means order does
+   not matter on a routine redeploy.
+8. **Record**: the keys `aws-ecs/SKILL.md` section 7 lists, once per package (a list in `run.json` keyed
+   by package name - cluster, service, task definition, log group, image tag - plus the one shared ECR
+   repository, CodeBuild project and Cloud Map namespace).
 
-**ECS**
-1. *One ECS service per microservice* (each with its own task definition, desired count, health check and
-   scaling; the gateway service behind the public load balancer, the others behind an internal one or a
-   service-discovery name), or *one task running every container* (the gateway and services as
-   containers of one task, talking over localhost), or *one container running the whole tree*
-   (`start:all`). State the cost and complexity of each and recommend one task with a container per
-   process unless independent scaling is required.
-2. Service discovery for the per-service option: Cloud Map service names or an internal load balancer;
-   the gateway gets each address as `<NAME>_URL`.
+## Alternative: AWS EC2, one instance per package
 
-**Azure App Service**
-1. *One web app running the whole tree* (`start:all` as the start command; one plan, one address, the
-   simplest), or *one web app per service plus a gateway web app* in the same plan (independent
-   deployment and restart; the services' addresses are public unless access restrictions or virtual
-   network integration make them private, and the gateway gets each as `<NAME>_URL`). Recommend one web
-   app unless the customer wants independent releases.
+Cheaper for a small number of services, more to operate by hand. Follow `aws-ec2/SKILL.md` once per
+package: the service's own small instance, no Elastic IP and no CloudFront for anything but the
+gateway's instance (the others get no public address at all - a private-subnet security group open only
+to the gateway's instance's security group, on the service's port). The gateway's `<NAME>_URL` is then
+that service's private IP or private DNS name. No Docker is involved in this path; each instance runs
+`node packages/<name>/src/server.js` under systemd exactly as `aws-ec2/SKILL.md` describes for a
+single-service app.
 
-**All targets**
-3. *Databases*: one database per service in one cluster (each service gets its own database name,
-   inside the customer's cluster) or one cluster per service (more isolation, more cost). The database
-   name is never left out of a connection string, and no service may read another's database.
-4. *Scaling and availability*: one copy of each process, or more than one for the gateway and busy
-   services, and whether availability across zones matters. More copies mean the services must be
-   stateless and share the signing secret.
-5. *Names*: what the deployment, the stack and each service's resources are called.
+## Alternative: Azure
 
-## Making it work
+One App Service (or Container App) per package, in the same VNet, with VNet integration so services
+reach each other by private address instead of the public internet; only the gateway's app gets a public
+hostname and a custom domain. Follow `azure/SKILL.md` once per package for the resource and release
+steps; the `<NAME>_URL` environment variable on the gateway's app is the other services' private FQDNs.
 
-- **Internal addresses and ports.** Every service's address reaches the gateway through
-  configuration, not code. Give each service a unique internal port (`INTERNAL_PORT_BASE` or the
-  per-service variables). Nothing but the gateway is in a public security group, load balancer listener
-  or firewall rule: services accept connections only from the gateway's security group (or the private
-  network), never from the internet.
-- **Secrets shared across processes.** If the gateway and services verify the same tokens, they share
-  one signing secret, generated once, stored once in the target's secret store, and injected into each
-  process. It is kept across releases. Each service reads its own database connection string; never share
-  one credential between services that the customer chose to isolate.
-- **Startup order.** Services before the gateway; a service that is down is a 503 at the gateway, never a
-  200. Each process restarts on failure (systemd `Restart=always`, ECS `essential` containers and a
-  restart policy, App Service's own supervision through the tree-exit behaviour of `start:all`).
-- **Build.** Install from the root lockfile, run `npm test` for every workspace, `npm run build` for the
-  client, and package the workspace with the client's `dist` and only production dependencies. Container
-  images (ECS) are built by the cloud build, one image for the whole tree or one per service, as the
-  layout says.
-- **Seeds.** `scripts/seed.mjs` may write development data: read it, and run against production only
-  what the customer chose (see `core` section 6), per service database.
+## The MongoDB connection
+
+`MONGODB_URI` is **not asked for**. The Studio provides it: the machine facts above say what this project's MongoDB is, and your commands receive `MONGODB_URI` in their environment - the customer's connected Atlas cluster with this project's own database, the one the build's seed filled, as a real, internet-reachable string (a loopback address is never handed over). When only an Atlas account is signed in, the Studio makes the cluster and the database before the run starts; when nothing is connected it does not start the deployment at all and tells the customer to connect MongoDB in Settings, so a deployment never reaches you without one. So never ask the customer for a connection string, an address, an Atlas account or whether to use a local database, never write `localhost` for it, never print it, and never run or probe a MongoDB on this computer to check it: the live check of this stack (a real round trip against the deployed address) is the proof. Each service may use its own database name within the one cluster (a separate database per bounded context is the usual pattern here); the connection string's host is the same real, internet-reachable cluster for all of them. List the fixed outbound address of whichever target was chosen (NAT gateway,
+Elastic IP, or VNet gateway) on the Atlas cluster's Network Access list.
 
 ## What "live" means for this stack
 
-A gateway that answers 200 is not proof. Beyond `core` section 10:
-
-- the public address serves the client, and the gateway's `/ready` answers;
-- **every service is reached through the gateway** by a real request to one of its routes, over the
-  public address, that returns data from that service's database (list the routes from the gateway's
-  proxy table, and call one per service);
-- a service made unavailable produces the gateway's 503 (this is only observed when it is safe to do so,
-  never by stopping production processes; read the code path instead and say so);
-- each service's logs and the gateway's logs show no errors during those requests;
-- no service port answers from the internet: try each internal port on the public address or the
-  instance's public name and confirm it is refused.
-
-A `health` route on the gateway that calls each service and reports them separately is the right thing
-to add if the project has none; the plan names it as a step.
+Within the smoke proof of `core` section 10 (read-only requests: no sign-in, no write, no test data): the
+gateway's public address serves the built client's own content; one request that needs a service (for example
+`/api/products`) is forwarded and answered by that service running on its own instance, not a 503 ("Upstream
+service unavailable" is the honest failure, never a silent empty 200). Only the gateway has a public address;
+that is read from the stack's outputs and its security groups, not probed from outside.
 
 ## Questions to ask the customer
 
-These are prompts, not a script: write each question yourself for this project and ask only what the
-project, an earlier answer and the skill pages do not already settle, after the layout questions above.
-One at a time, recommendation first, and let "you decide" be an answer:
+Take these as defaults, not as questions: `core` section 12 caps a whole deployment at three questions, so most of what follows is a choice to state in the plan, not to ask.
 
-1. Where is the production MongoDB (one cluster or several), and are its connection strings saved in
-   Settings?
-2. Which region, given where the database and the users are?
-3. Should each production database start empty, with only required reference data, or with demo data?
-4. Does the customer have a custom domain for the gateway?
-5. What may the whole deployment cost per month? (Say the estimate for the chosen layout.)
+These are prompts, not a script: write each question yourself for this project and ask only what the
+project, an earlier answer and the skill pages do not already settle. One at a time, recommendation
+first, and let "you decide" be an answer:
+
+1. ECS Fargate with Cloud Map (recommended - independent scaling, no servers to patch, image built in
+   the cloud) or one EC2 instance per service (cheaper for few, low-traffic services, no Docker at all)?
+   State the trade-off and the estimated monthly cost of each.
+2. How many packages exist under `packages/` right now, and does the customer expect more before
+   launch (more services, more task definitions/instances to size and price)?
+3. Per-service CPU/memory (Fargate) or instance size (EC2), and whether each should scale automatically.
+4. The database is not a question: the Studio provides the cluster and this project's database (see "The MongoDB connection"). Do not ask about it; carry on with the next one.
+5. Which region should the cluster and every instance run in?
+6. Should the production database start empty, with only required reference data, or with demo data?
+7. Does the customer have a custom domain for the gateway's public address?
+8. Which environment variables in `.env.example` should be set now, and which are left for the customer?

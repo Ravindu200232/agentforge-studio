@@ -65,11 +65,5 @@ export function displayPct(state, now = Date.now()) {
   return round(clamp(state.pct + Math.min(CREEP_LIMIT, still * CREEP_PER_SEC), 0, CEILING))
 }
 
-/** Seconds since the number last actually moved. */
-export function stillFor(state, now = Date.now()) {
-  if (!state || !state.started) return 0
-  return Math.max(0, Math.floor((now - state.since) / 1000))
-}
-
 function clamp(n, lo, hi) { return Math.min(hi, Math.max(lo, n)) }
 function round(n) { return Math.round(n * 10) / 10 }

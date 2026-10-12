@@ -1,7 +1,8 @@
-"""One preview at a time, and the live browser that shows a test run in it."""
+"""Parallel project previews and the live browser that shows a test run in them."""
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -14,16 +15,18 @@ ROOT = Path(__file__).resolve().parent.parent
 for folder in (".", "src", "builder-agent"):
     sys.path.insert(0, str(ROOT / folder))
 
-from server_modules import bus, live, preview_runtime  # noqa: E402
+from server_modules import bus, live, preview_runtime, supabase_connect  # noqa: E402
 
 
 class FakeProcess:
     _next = 1000
     environments: list[dict] = []
+    commands: list[list[str]] = []
 
     def __init__(self, *args, **kwargs):
         FakeProcess._next += 1
         FakeProcess.environments.append(kwargs.get("env") or {})
+        FakeProcess.commands.append(args[0])
         self.pid = FakeProcess._next
         self.returncode = None
 
@@ -53,9 +56,7 @@ class PreviewRuntimeTests(unittest.TestCase):
             mock.patch.object(preview_runtime.config, "workspace_for", lambda project: self.root / project),
             mock.patch.object(preview_runtime.config, "record_dir", lambda project: self.root / project / ".agentforge"),
             mock.patch.object(preview_runtime.subprocess, "Popen", FakeProcess),
-            mock.patch.object(preview_runtime, "_free_port", lambda port, timeout=6: None),
             mock.patch.object(preview_runtime, "_terminate_tree", terminate),
-            mock.patch.object(preview_runtime, "_signal_managed_stop", return_value=False),
             mock.patch.object(preview_runtime, "_wait_ready", lambda *a, **k: None),
             mock.patch.object(preview_runtime, "_listening_pids", lambda port: []),
             mock.patch.object(preview_runtime, "_port_open", lambda port: port in self.open_ports),
@@ -65,67 +66,82 @@ class PreviewRuntimeTests(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def test_opening_another_project_ends_the_first_ones_preview(self):
+    def test_opening_another_project_keeps_the_first_preview_running(self):
         first = preview_runtime.open_preview("alpha")
         self.assertEqual(first["status"], "starting")
         alpha_pid = preview_runtime._processes["alpha"]["process"].pid
 
+        second = preview_runtime.open_preview("beta")
+        self.assertEqual(second["status"], "starting")
+        self.assertNotEqual(first["port"], second["port"])
+        self.assertEqual(preview_runtime._processes["alpha"]["process"].pid, alpha_pid)
+        self.assertEqual(set(preview_runtime._processes), {"alpha", "beta"})
+        self.assertEqual(self.terminated, [])
+
+    def test_stopping_one_project_leaves_the_other_preview_running(self):
+        first = preview_runtime.open_preview("alpha")
         preview_runtime.open_preview("beta")
-        self.assertIn(alpha_pid, self.terminated)                      # its process was killed
-        self.assertEqual(list(preview_runtime._processes), ["beta"])   # only the project on screen is served
-        self.assertEqual(preview_runtime.status("alpha")["status"], "stopped")
-        self.assertIn(("alpha", "stopped"), [(e[0], e[1]) for e in self.events])
+        alpha_pid = preview_runtime._processes["alpha"]["process"].pid
+        beta_pid = preview_runtime._processes["beta"]["process"].pid
+
+        stopped = preview_runtime.stop("beta")
+
+        self.assertEqual(stopped["status"], "stopped")
+        self.assertEqual(stopped["project"], "beta")
+        self.assertEqual(first["port"], preview_runtime._processes["alpha"]["port"])
+        self.assertNotIn("beta", preview_runtime._processes)
+        self.assertIn(beta_pid, self.terminated)
+        self.assertNotIn(alpha_pid, self.terminated)
 
     def test_reopening_the_project_on_screen_keeps_its_running_preview(self):
         preview_runtime.open_preview("alpha")
         preview_runtime._processes["alpha"]["status"] = "running"
-        self.open_ports.add(preview_runtime.PREVIEW_PORT)
+        self.open_ports.add(preview_runtime._processes["alpha"]["port"])
         pid = preview_runtime._processes["alpha"]["process"].pid
         again = preview_runtime.open_preview("alpha")
         self.assertEqual(again["status"], "running")
         self.assertEqual(preview_runtime._processes["alpha"]["process"].pid, pid)   # not restarted
         self.assertEqual(self.terminated, [])
 
-    def test_mern_preview_uses_vite_5173_and_gateway_4000(self):
+    def test_vite_stack_preview_uses_a_private_dynamic_port(self):
         manifest = self.root / "alpha" / "package.json"
-        manifest.write_text(json.dumps({"scripts": {"dev": "node scripts/dev-all.mjs",
-                                                  "start:all": "node scripts/start-all.mjs"}}))
+        manifest.write_text(json.dumps({"scripts": {"dev": "vite"}, "devDependencies": {"vite": "6.0.0"}}))
         FakeProcess.environments.clear()
         state = preview_runtime.open_preview("alpha")
-        self.assertEqual(state["port"], 5173)
-        self.assertEqual(state["url"], "http://127.0.0.1:5173/")
-        self.assertEqual(FakeProcess.environments[-1]["PORT"], "4000")
-        self.assertEqual(FakeProcess.environments[-1]["VITE_PORT"], "5173")
-        self.assertEqual(FakeProcess.environments[-1]["AGENTFORGE_PREVIEW_RUNTIME_ID"],
-                         state["runtimeId"])
-        self.assertEqual(preview_runtime._processes["alpha"]["controlMode"], "file")
+        self.assertGreaterEqual(state["port"], preview_runtime.PREVIEW_PORT_FIRST)
+        self.assertLessEqual(state["port"], preview_runtime.PREVIEW_PORT_LAST)
+        self.assertEqual(state["url"], f"http://127.0.0.1:{state['port']}/")
+        self.assertEqual(FakeProcess.environments[-1]["PORT"], str(state["port"]))
+        self.assertEqual(FakeProcess.environments[-1]["HOST"], "127.0.0.1")
+        self.assertNotIn("VITE_PORT", FakeProcess.environments[-1])
 
     def test_remix_preview_does_not_take_nextjs_port(self):
         manifest = self.root / "alpha" / "package.json"
         manifest.write_text(json.dumps({"scripts": {"dev": "remix vite:dev"},
                                         "dependencies": {"@remix-run/serve": "2"}}))
         state = preview_runtime.open_preview("alpha")
-        self.assertEqual(state["port"], 5173)
-        self.assertEqual(FakeProcess.environments[-1]["PORT"], "5173")
+        self.assertGreaterEqual(state["port"], preview_runtime.PREVIEW_PORT_FIRST)
+        self.assertEqual(FakeProcess.environments[-1]["PORT"], str(state["port"]))
         self.assertNotIn("VITE_PORT", FakeProcess.environments[-1])
 
-    def test_old_mern_preview_on_3001_is_replaced(self):
-        preview_runtime.open_preview("alpha")
+    def test_a_project_restarts_its_own_preview_when_its_framework_changes(self):
+        manifest = self.root / "alpha" / "package.json"
+        manifest.write_text(json.dumps({"scripts": {"dev": "vite"}, "devDependencies": {"vite": "6.0.0"}}))
+        first = preview_runtime.open_preview("alpha")
         preview_runtime._processes["alpha"]["status"] = "running"
         old = preview_runtime._processes["alpha"]["process"].pid
-        self.open_ports.add(3001)
-        manifest = self.root / "alpha" / "package.json"
-        manifest.write_text(json.dumps({"scripts": {"dev": "node scripts/dev-all.mjs"}}))
+        self.open_ports.add(first["port"])
+        manifest.write_text(json.dumps({"scripts": {"dev": "next dev"}, "dependencies": {"next": "15.0.0"}}))
         state = preview_runtime.open_preview("alpha")
         self.assertIn(old, self.terminated)
-        self.assertEqual(state["port"], 5173)
+        self.assertNotEqual(state["port"], first["port"])
 
     def test_unavailable_port_returns_failed_state_instead_of_http_error(self):
-        with mock.patch.object(preview_runtime, "_free_port", side_effect=RuntimeError("Port 5173 is still in use")), \
+        with mock.patch.object(preview_runtime, "_port_open", return_value=True), \
              mock.patch.object(preview_runtime.bus, "log"):
             state = preview_runtime.open_preview("alpha")
         self.assertEqual(state["status"], "failed")
-        self.assertIn("5173", state["detail"])
+        self.assertIn("No private preview port", state["detail"])
 
     def test_a_preview_whose_port_stopped_answering_is_started_again(self):
         preview_runtime.open_preview("alpha")
@@ -139,7 +155,7 @@ class PreviewRuntimeTests(unittest.TestCase):
         preview_runtime.open_preview("alpha")
         self.assertEqual(preview_runtime._processes["alpha"]["script"], "dev")
         preview_runtime._processes["alpha"]["status"] = "running"
-        self.open_ports.add(preview_runtime.PREVIEW_PORT)
+        self.open_ports.add(preview_runtime._processes["alpha"]["port"])
         (self.root / "alpha" / ".next").mkdir()
         (self.root / "alpha" / ".next" / "BUILD_ID").write_text("x")
         preview_runtime.open_preview("alpha")
@@ -148,7 +164,7 @@ class PreviewRuntimeTests(unittest.TestCase):
     def test_a_finished_build_is_served_by_a_fresh_process(self):
         preview_runtime.open_preview("alpha")
         preview_runtime._processes["alpha"]["status"] = "running"
-        self.open_ports.add(preview_runtime.PREVIEW_PORT)
+        self.open_ports.add(preview_runtime._processes["alpha"]["port"])
         old = preview_runtime._processes["alpha"]["process"].pid
         preview_runtime.reopen("alpha")
         self.assertIn(old, self.terminated)
@@ -161,6 +177,16 @@ class PreviewRuntimeTests(unittest.TestCase):
         self.assertIn("--require", options)
         self.assertIn(preview_runtime.FRAME_HOOK.as_posix(), options)
         self.assertTrue(preview_runtime.FRAME_HOOK.is_file())
+
+    def test_preview_gets_its_own_supabase_environment(self):
+        FakeProcess.environments.clear()
+        with mock.patch.object(supabase_connect, "env_for", return_value={
+                "NEXT_PUBLIC_SUPABASE_URL": "https://example.supabase.co",
+                "NEXT_PUBLIC_SUPABASE_ANON_KEY": "anon-key"}) as env_for:
+            preview_runtime.open_preview("alpha")
+        env_for.assert_called_once_with("alpha")
+        self.assertEqual(FakeProcess.environments[-1]["NEXT_PUBLIC_SUPABASE_URL"],
+                         "https://example.supabase.co")
 
     def test_a_project_with_nothing_built_leaves_the_running_preview_alone(self):
         preview_runtime.open_preview("alpha")
@@ -186,6 +212,49 @@ class FrameHookTests(unittest.TestCase):
             self.assertEqual(frame_options is None, expect_open)
             self.assertEqual("http://localhost:*" in policy, expect_open)
             self.assertEqual("'none'" in policy, not expect_open)
+
+
+class FramedCookieTests(unittest.TestCase):
+    """The desktop app's Studio is at agentforge://app: another site than the app it frames, so the app's cookies must be ones a framed page keeps."""
+
+    SCRIPT = (
+        "const http=require('node:http');"
+        "const s=http.createServer((q,r)=>{"
+        "r.setHeader('Content-Security-Policy',\"frame-ancestors 'none'\");"
+        "r.setHeader('Set-Cookie',['sid=1; Path=/; HttpOnly; SameSite=Lax','theme=dark; Path=/; Secure; SameSite=Strict','plain=1']);"
+        "r.end('x')})"
+        ".listen(0,async()=>{const r=await fetch('http://127.0.0.1:'+s.address().port);"
+        "console.log(JSON.stringify([r.headers.getSetCookie(),r.headers.get('content-security-policy')]));s.close()})")
+
+    def run_node(self, hook=True, framed=False):
+        env = {**os.environ}
+        env.pop("AGENTFORGE_FRAMED_CROSS_SITE", None)
+        if framed:
+            env["AGENTFORGE_FRAMED_CROSS_SITE"] = "1"
+        command = ["node", *(["--require", str(preview_runtime.FRAME_HOOK)] if hook else []), "-e", self.SCRIPT]
+        done = subprocess.run(command, capture_output=True, text=True, timeout=30, env=env)
+        return json.loads(done.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "node is needed to run the hook")
+    def test_in_the_desktop_app_every_cookie_the_app_sets_is_one_a_framed_page_may_keep(self):
+        cookies, policy = self.run_node(framed=True)
+        self.assertEqual(cookies, ["sid=1; Path=/; HttpOnly; Secure; SameSite=None",
+                                   "theme=dark; Path=/; Secure; SameSite=None",          # Secure once, never twice
+                                   "plain=1; Secure; SameSite=None"])
+        self.assertIn("agentforge:", policy)                                              # and the desktop app may frame it at all
+        self.assertIn("http://localhost:*", policy)
+        self.assertNotIn("'none'", policy)
+
+    @unittest.skipUnless(shutil.which("node"), "node is needed to run the hook")
+    def test_anywhere_else_the_apps_cookies_are_left_exactly_as_it_set_them(self):
+        original = ["sid=1; Path=/; HttpOnly; SameSite=Lax", "theme=dark; Path=/; Secure; SameSite=Strict", "plain=1"]
+        self.assertEqual(self.run_node(framed=False)[0], original)
+        self.assertEqual(self.run_node(hook=False, framed=True)[0], original)             # no hook, no change
+
+    def test_the_preview_is_started_told_which_it_is_only_in_the_desktop_app(self):
+        source = (ROOT / "server_modules" / "preview_runtime.py").read_text(encoding="utf-8")
+        self.assertIn('if os.environ.get("AGENTFORGE_TRANSPORT") == "stdio":', source)
+        self.assertIn('environment["AGENTFORGE_FRAMED_CROSS_SITE"] = "1"', source)
 
 
 class LiveBrowserTests(unittest.TestCase):
