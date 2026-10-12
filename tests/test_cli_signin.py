@@ -124,6 +124,13 @@ class WhoIsSignedInTests(unittest.TestCase):
         self.assertTrue(row["signed_in"])
         self.assertEqual(row["identity"], {"account": "Acme", "org": "Acme", "id": "org-1"})
 
+    def test_supabase_whoami_identifies_a_new_account_without_an_organisation(self):
+        shown = json.dumps({"id": "user-1", "email": "me@example.com", "username": "me"})
+        with cli(), self.run_output({"whoami": shown, "orgs list": "[]"}):
+            row = cli_signin.SIGNINS.available("supabase", fresh=True)["supabase"]
+        self.assertTrue(row["signed_in"])
+        self.assertEqual(row["identity"], {"account": "me@example.com", "org": "me@example.com", "id": "user-1"})
+
     def test_the_answer_is_kept_briefly_so_that_looking_is_not_slow(self):
         calls = []
 

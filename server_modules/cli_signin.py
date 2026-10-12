@@ -332,18 +332,23 @@ def _azure_read(tool: str, options: dict) -> dict:
 
 
 def _supabase_identity(tool: str) -> dict | None:
-    """The first organisation visible to the CLI's currently active account.
+    """The CLI's current user, plus its first visible organisation when one exists.
 
-    Supabase does not expose a separate `whoami`; the same organisation list is what the project
-    connector asks after OAuth. Keep the id as well as the display name so the account has a stable
-    identity even when an organisation is renamed.
+    CLI 2.120 exposes `whoami`; unlike the organisation list it still identifies a newly signed-in
+    user who has no organisations yet. Older CLIs fall back to the organisation response.
     """
+    shown = _run([tool, "whoami", "--output-format", "json"], timeout=35)
+    user = _json_of(shown.stdout) if shown.returncode == 0 else {}
+    user = user if isinstance(user, dict) else {}
+    user_id = str(user.get("id") or "")
+    user_account = str(user.get("email") or user.get("username") or user_id)
+
     done = _run([tool, "orgs", "list", "--output", "json"], timeout=35)
     rows = _json_list(done.stdout) if done.returncode == 0 else []
     first = rows[0] if rows and isinstance(rows[0], dict) else {}
     org_id, name = str(first.get("id") or ""), str(first.get("name") or "")
-    account = name or org_id
-    return {"account": account, "org": name or account, "id": org_id or account} if account else None
+    account = user_account or name or org_id
+    return {"account": account, "org": name or account, "id": org_id or user_id or account} if account else None
 
 
 def _supabase_login(tool: str, options: dict, identity: dict | None) -> list:
