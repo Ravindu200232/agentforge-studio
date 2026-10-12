@@ -1,0 +1,59 @@
+name: macOS Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GitHub Release tag to receive the macOS files
+        required: true
+        default: v1.1.0-mac
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    name: Build Apple Silicon release
+    runs-on: macos-14
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out the macOS branch
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Build the signed app, DMG, and ZIP
+        run: bash release/build-mac.sh
+
+      - name: Verify and checksum release files
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./desktop/package.json').version")"
+          ARCH="$(uname -m)"
+          APP="release/out-mac/AgentForge.app"
+          DMG="release/out-mac/AgentForge-${VERSION}-mac-${ARCH}.dmg"
+          ZIP="release/out-mac/AgentForge-${VERSION}-mac-${ARCH}.zip"
+          test "$ARCH" = arm64
+          codesign --verify --deep --strict "$APP"
+          hdiutil verify "$DMG"
+          unzip -tq "$ZIP"
+          shasum -a 256 "$DMG" "$ZIP" > release/out-mac/SHA256SUMS.txt
+          echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Upload files to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          DMG: ${{ steps.release.outputs.dmg }}
+          ZIP: ${{ steps.release.outputs.zip }}
+        run: |
+          gh release view "$RELEASE_TAG" >/dev/null
+          gh release upload "$RELEASE_TAG" "$DMG" "$ZIP" release/out-mac/SHA256SUMS.txt --clobber
