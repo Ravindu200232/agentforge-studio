@@ -44,7 +44,7 @@ class FakeProcess:
         self.typed.append(text)
 
 
-def cli(tools=("gh", "aws", "vercel", "netlify", "az", "atlas")):
+def cli(tools=("gh", "aws", "vercel", "netlify", "az", "supabase", "atlas")):
     """Pretend these tools are installed."""
     return mock.patch.object(cli_signin, "_where", lambda name: f"/bin/{name}" if name in tools else "")
 
@@ -71,7 +71,7 @@ class WhatTheToolsPrintTests(unittest.TestCase):
 
     def test_a_tool_that_opens_no_browser_is_not_told_it_did(self):
         self.assertTrue(cli_signin.PROVIDERS["aws"].opens_browser)
-        for key in ("github", "vercel", "netlify", "azure"):
+        for key in ("github", "vercel", "netlify", "azure", "supabase"):
             self.assertFalse(cli_signin.PROVIDERS[key].opens_browser, key)
         self.assertFalse(cli_signin.PROVIDERS["aws"].shows_code)          # a link to approve, no code to type
 
@@ -115,6 +115,13 @@ class WhoIsSignedInTests(unittest.TestCase):
         with cli(), self.run_output({"account show": shown}):
             row = cli_signin.SIGNINS.available("azure", fresh=True)["azure"]
         self.assertEqual((row["identity"]["account"], row["identity"]["subscription"]), ("me@example.com", "Pay-As-You-Go"))
+
+    def test_supabase_names_the_first_organisation_visible_to_the_cli_account(self):
+        shown = json.dumps([{"id": "org-1", "name": "Acme"}, {"id": "org-2", "name": "Second"}])
+        with cli(), self.run_output({"orgs list": shown}):
+            row = cli_signin.SIGNINS.available("supabase", fresh=True)["supabase"]
+        self.assertTrue(row["signed_in"])
+        self.assertEqual(row["identity"], {"account": "Acme", "org": "Acme", "id": "org-1"})
 
     def test_the_answer_is_kept_briefly_so_that_looking_is_not_slow(self):
         calls = []
@@ -214,6 +221,32 @@ class LoginFlowTests(unittest.TestCase):
         with cli(), mock.patch.object(cli_signin, "_run", lambda command, timeout=30: subprocess.CompletedProcess(command, 1, "", "")):
             with self.assertRaisesRegex(ValueError, "not signed in"):
                 cli_signin.SIGNINS.use_existing("github")
+
+    def test_supabase_uses_its_official_browser_login_in_a_terminal_and_keeps_no_token(self):
+        process = FakeProcess([
+            "Hello from Supabase! Press Enter to open browser and login automatically.",
+            "Here is your login link in case browser did not open ",
+            "https://supabase.com/dashboard/cli/login?session_id=temporary",
+        ])
+        signed_out = {"supabase": {"identity": None}}
+        with cli(), mock.patch.object(cli_signin.pty_process, "spawn", return_value=process) as spawn, \
+                mock.patch.object(cli_signin.SIGNINS, "available", lambda *a, **k: signed_out):
+            started = cli_signin.SIGNINS.start("supabase")
+            self.wait_for_output()
+            pending = cli_signin.SIGNINS.poll(started["flow_id"])
+            process.finish()
+            orgs = subprocess.CompletedProcess([], 0, '[{"id":"org-1","name":"Acme"}]', "")
+            with mock.patch.object(cli_signin, "_run", return_value=orgs):
+                done = cli_signin.SIGNINS.poll(started["flow_id"])
+        self.assertEqual(spawn.call_args.args[0], ["/bin/supabase", "login", "--no-browser"])
+        self.assertEqual(process.typed, ["\r"])
+        self.assertEqual(pending["verification_uri"],
+                         "https://supabase.com/dashboard/cli/login?session_id=temporary")
+        self.assertEqual(done["values"], {
+            "supabase_oauth_access_token": "", "supabase_oauth_refresh_token": "",
+            "supabase_oauth_expires_at": 0, "supabase_oauth_via": "cli",
+            "supabase_org": "Acme", "supabase_account_id": "org-1",
+        })
 
     # What `atlas auth login --noBrowser` printed through a terminal (recorded from the real CLI).
     ATLAS_LOGIN = [

@@ -38,7 +38,8 @@ class BrowserInspectTests(unittest.TestCase):
             with mock.patch("ollama_terminal.browser_inspect.subprocess.run", side_effect=completed) as run:
                 result = browser_inspect.inspect_local_page(root, "http://127.0.0.1:3001/rooms")
         self.assertEqual(result["title"], "Rooms")
-        self.assertEqual(run.call_args.kwargs["cwd"], root)
+        # macOS resolves /var to its real /private/var location; both identify the same temporary workspace.
+        self.assertEqual(run.call_args.kwargs["cwd"], root.resolve())
         self.assertEqual(run.call_args.args[0][:2], ["node", "-e"])
         self.assertIn("overflowElements", run.call_args.args[0][2])
 

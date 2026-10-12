@@ -90,7 +90,9 @@ DEFAULTS: dict[str, Any] = {
     "privacy_model": "en_core_web_sm", # the spaCy model Presidio finds names with (without it: patterns only, no names)
     "privacy_entities": [],            # which kinds of personal data are hidden; empty is privacy.DEFAULT_ENTITIES
     "diagram_visual_review": True,     # the specification's diagrams are photographed and looked at by a vision model, two rounds at most
-    "supabase_oauth_via": "",       # "broker" (the engine's OAuth app) or "own" (one this person registered)
+    # "broker" (the engine OAuth app), "own" (one this person registered), or "cli" (Supabase's
+    # official browser login, whose credential remains in the native CLI credential store).
+    "supabase_oauth_via": "",
     "supabase_account_id": "",      # the active account's organisation id
     "supabase_account_credentials": {},   # the other accounts signed in, kept aside: id -> tokens (never sent to the UI)
     "supabase_org": "",

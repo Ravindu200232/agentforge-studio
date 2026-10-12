@@ -1,11 +1,9 @@
 """Connecting Supabase, and giving a project its own real Supabase project inside it.
 
-The Supabase CLI has no browser or device-code sign-in the way `gh`/`vercel`/`netlify`/`az` do
-(`cli_signin.py`) - tried live: `supabase login` refuses outright unless it is run in a real
-interactive terminal ("Cannot use automatic login flow inside non-TTY environments"), which a
-subprocess this server launches never is, and it has no device-code fallback the way GitHub's does.
-Its only documented non-interactive path is a pasted personal access token, which is not the
-one-click browser sign-in the rest of the Studio gives every other provider.
+Current Supabase CLIs provide their own browser OAuth login. `cli_signin.py` runs that flow in a
+pseudo-terminal and leaves its credential in Supabase's native credential store; this module marks
+that account as active and deliberately lets later `supabase` commands read the credential
+themselves. That is the installable desktop fallback and needs no AgentForge-owned OAuth app.
 
 What Supabase does have is a real OAuth2 API for third-party integrations
 (api.supabase.com/v1/oauth/authorize, .../v1/oauth/token, PKCE supported, a `localhost` redirect
@@ -74,10 +72,9 @@ ACCESS_TOKEN_SETTING = "supabase_oauth_access_token"
 REFRESH_TOKEN_SETTING = "supabase_oauth_refresh_token"
 EXPIRES_AT_SETTING = "supabase_oauth_expires_at"
 ORG_SETTING = "supabase_org"
-# Which OAuth app issued the saved tokens: "broker" (the publisher's, through the engine Worker) or "own"
-# (one this person registered; also what tokens saved before the broker existed are).
+# Which OAuth app issued the saved tokens, or "cli" when the official CLI's native credential store owns it.
 VIA_SETTING = "supabase_oauth_via"
-VIA_BROKER, VIA_OWN = "broker", "own"
+VIA_BROKER, VIA_OWN, VIA_CLI = "broker", "own", "cli"
 # The other accounts signed in, kept aside (id -> its tokens); "credentials" in the name keeps them out of GET /settings.
 ACCOUNTS_SETTING = "supabase_account_credentials"
 ACTIVE_ID_SETTING = "supabase_account_id"
@@ -123,7 +120,8 @@ def token_status() -> dict:
     broker = bool(_broker())
     return {"app_registered": broker or credentials_saved(), "connected": connected,
             "org": str(config.setting(ORG_SETTING) or ""), "broker": broker,
-            "accounts": accounts(), "active": _current_id() if connected else ""}
+            "accounts": accounts(), "active": _current_id() if connected else "",
+            "via": _via() if connected else ""}
 
 
 def forget_account() -> None:
@@ -141,6 +139,8 @@ def forget_account() -> None:
 # signing in again with another organisation (of the same login or of another) is how a second account is added.
 
 def _signed_in() -> bool:
+    if config.setting(VIA_SETTING) == VIA_CLI:
+        return bool(config.setting(ORG_SETTING) or config.setting(ACTIVE_ID_SETTING))
     return bool(config.setting(ACCESS_TOKEN_SETTING) or config.setting(REFRESH_TOKEN_SETTING))
 
 
@@ -155,7 +155,8 @@ def _current_id() -> str:
     known = str(config.setting(ACTIVE_ID_SETTING) or "")
     if known or not _signed_in():
         return known
-    seed = str(config.setting(REFRESH_TOKEN_SETTING) or config.setting(ACCESS_TOKEN_SETTING) or "")
+    seed = str(config.setting(REFRESH_TOKEN_SETTING) or config.setting(ACCESS_TOKEN_SETTING)
+               or config.setting(ORG_SETTING) or VIA_CLI)
     return "acct-" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
 
 
@@ -222,7 +223,8 @@ def _json_body(answer: httpx.Response) -> dict:
 
 def _via() -> str:
     """Which OAuth app issued the saved tokens (anything saved before the broker existed is the person's own)."""
-    return VIA_BROKER if config.setting(VIA_SETTING) == VIA_BROKER else VIA_OWN
+    saved = str(config.setting(VIA_SETTING) or "")
+    return saved if saved in (VIA_BROKER, VIA_CLI) else VIA_OWN
 
 
 def _broker_post(path: str, payload: dict) -> httpx.Response:
@@ -238,6 +240,8 @@ def _token_request(form: dict, via: str) -> httpx.Response:
     client secret is added by the Worker; on the person's own app it is added here."""
     if via == VIA_BROKER:
         return _broker_post("/oauth/supabase/token", form)
+    if via == VIA_CLI:
+        raise ValueError("The Supabase CLI owns this credential and refreshes it itself.")
     client_id, client_secret = str(config.setting(CLIENT_ID_SETTING) or ""), str(config.setting(CLIENT_SECRET_SETTING) or "")
     own = dict(form)
     if own["grant_type"] == "authorization_code":
@@ -290,6 +294,8 @@ def _fetch_org() -> dict:
 
 def _refresh_if_needed() -> str:
     """The access token to use right now, silently refreshed if it has lapsed."""
+    if _via() == VIA_CLI and _signed_in():
+        return ""
     access = str(config.setting(ACCESS_TOKEN_SETTING) or "")
     expires_at = float(config.setting(EXPIRES_AT_SETTING) or 0)
     if access and time.time() < expires_at:
@@ -311,7 +317,14 @@ def _refresh_if_needed() -> str:
 
 
 def _env_with_token() -> dict[str, str]:
-    return {**os.environ, "NO_COLOR": "1", "SUPABASE_ACCESS_TOKEN": _refresh_if_needed()}
+    env = {**os.environ, "NO_COLOR": "1"}
+    if _via() == VIA_CLI and _signed_in():
+        # An inherited variable wins over the CLI's native credential store. Remove it so this mode
+        # really uses the account that `supabase login` just adopted.
+        env.pop("SUPABASE_ACCESS_TOKEN", None)
+        return env
+    env["SUPABASE_ACCESS_TOKEN"] = _refresh_if_needed()
+    return env
 
 
 # --- the browser sign-in itself (PKCE authorization-code, callback on the studio's own server) --
@@ -529,7 +542,8 @@ def _tool() -> str:
     found = cli_signin._where("supabase")  # noqa: SLF001 - the one place outside cli_signin that needs it
     if not found:
         raise ValueError("The Supabase command line tool is not installed on this machine. "
-                          "Install it with `npm i -g supabase` and try again.")
+                          "Install it with `brew install supabase/tap/supabase` on macOS "
+                          "(or Scoop on Windows) and try again.")
     return found
 
 

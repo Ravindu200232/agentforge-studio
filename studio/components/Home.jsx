@@ -602,7 +602,7 @@ export default function Home({
                   <div>
                     <h2 className="text-[17px] font-bold text-ink">Where should this project be saved?</h2>
                     <p className="mt-1 text-[12px] leading-relaxed text-muted">
-                      Choose a new empty folder in Explorer, or let AgentForge create it in its own workspace.
+                      Choose a new empty folder, or let AgentForge create it in its own workspace.
                     </p>
                   </div>
                 </div>
@@ -627,7 +627,7 @@ export default function Home({
                   <button type="button" disabled={pickingWorkspace} onClick={chooseWorkspace}
                           className="inline-flex h-9 items-center gap-2 rounded-xl border border-line px-3 text-[12px] font-semibold text-ink transition-colors hover:bg-raised disabled:opacity-50">
                     <FolderOpen className="size-3.5 text-accent" />
-                    {pickingWorkspace ? 'Opening Explorer…' : workspacePath ? 'Choose another folder' : 'Choose folder'}
+                    {pickingWorkspace ? 'Opening folder picker…' : workspacePath ? 'Choose another folder' : 'Choose folder'}
                   </button>
                   <button type="button" disabled={pickingWorkspace} onClick={() => {
                     const chosen = workspacePath

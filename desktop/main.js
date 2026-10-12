@@ -46,17 +46,22 @@ function logFile() {
   return fs.createWriteStream(file, { flags: 'a' })
 }
 
-function backendEnv() {
+function backendEnv(python) {
   const env = { ...process.env }
   delete env.ELECTRON_RUN_AS_NODE
-  const tools = path.join(paths.installRoot(), 'tools')
+  const tools = paths.toolsRoot()
   Object.assign(env, {
     AGENTFORGE_TRANSPORT: 'stdio',
     AGENTFORGE_DATA: paths.dataRoot(),
     AGENTFORGE_WORKSPACES: paths.workspacesRoot(),
     PYTHONUTF8: '1',
     PYTHONIOENCODING: 'utf-8',
-    PATH: [...paths.toolPaths(), env.PATH || env.Path || ''].join(path.delimiter),
+    // An installed macOS app is a signed, read-only bundle. Never let Python create __pycache__ files inside it,
+    // otherwise the first backend launch would mutate the bundle and invalidate its code signature.
+    PYTHONDONTWRITEBYTECODE: '1',
+    // Models and project scripts commonly invoke `python`, not the absolute interpreter path. The bundled macOS
+    // runtime includes that launcher beside python3, so put its folder on PATH for every backend child as well.
+    PATH: [path.dirname(python), ...paths.toolPaths(), env.PATH || env.Path || ''].join(path.delimiter),
   })
   delete env.Path                                      // one PATH, not two spellings of it
   if (fs.existsSync(path.join(tools, 'ms-playwright'))) env.PLAYWRIGHT_BROWSERS_PATH = path.join(tools, 'ms-playwright')
@@ -161,10 +166,11 @@ function start() {
 
   app.whenReady().then(() => {
     const log = logFile()
+    const python = paths.findPython()
     backend = new Backend({
-      python: paths.findPython(),
+      python,
       root: paths.backendRoot(),
-      env: backendEnv(),
+      env: backendEnv(python),
       log: text => log.write(text.endsWith('\n') ? text : `${text}\n`),
     })
     backend.on('event', event => { if (win && !win.isDestroyed()) win.webContents.send('feed:event', event) })
@@ -177,7 +183,11 @@ function start() {
     createWindow()
   })
 
-  app.on('window-all-closed', () => app.quit())
+  app.on('activate', () => {
+    // Closing the last macOS window conventionally leaves the app running; clicking its Dock icon opens it again.
+    if (!win && backend) createWindow()
+  })
+  app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 
   let stopping = false
   app.on('before-quit', event => {

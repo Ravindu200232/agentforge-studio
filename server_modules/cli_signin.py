@@ -1,4 +1,4 @@
-"""Signing in to GitHub, AWS, Vercel, Netlify, Azure and MongoDB Atlas through their own command line tools.
+"""Signing in to deployment providers through their own command line tools.
 
 Each of these tools has a `login` that completes a sign-in in the browser and keeps the credential
 where it always does (GitHub's keyring, AWS's login cache, Vercel's and Netlify's config files,
@@ -20,13 +20,10 @@ MongoDB partners, so this studio has no app of its own to sign in with.) Its `lo
 interactive menu and exits at once without a terminal, so it is the one provider run in a pseudo-terminal
 (`pty_process.py`) and answered where it asks (`Provider.answers`).
 
-Supabase does not belong here, on purpose, not by oversight: its CLI's `login` refuses to run at all
-outside a real interactive terminal ("Cannot use automatic login flow inside non-TTY environments"),
-which every provider above works around by having a device- or browser-code flow that needs no TTY.
-Supabase has none - its only non-interactive path is a pasted personal access token
-(`SUPABASE_ACCESS_TOKEN` / `supabase login --token`). That one credential is handled in
-`supabase_connect.py` instead, the same paste-and-verify shape `DeployAccounts.jsx`'s
-`HostedCredential` already uses for Netlify's and Azure's own tokens.
+Supabase CLI 2.120 and later also has browser OAuth. It insists on a terminal, so it runs through the
+same pseudo-terminal as Atlas with `--no-browser`; the Studio opens the link that the CLI prints. The
+credential stays in Supabase's native credential store. AgentForge records only which organisation was
+adopted and tells `supabase_connect.py` to let future CLI commands read that native credential.
 """
 from __future__ import annotations
 
@@ -334,6 +331,41 @@ def _azure_read(tool: str, options: dict) -> dict:
     return {"azure_account": json.dumps(who)} if who else {}
 
 
+def _supabase_identity(tool: str) -> dict | None:
+    """The first organisation visible to the CLI's currently active account.
+
+    Supabase does not expose a separate `whoami`; the same organisation list is what the project
+    connector asks after OAuth. Keep the id as well as the display name so the account has a stable
+    identity even when an organisation is renamed.
+    """
+    done = _run([tool, "orgs", "list", "--output", "json"], timeout=35)
+    rows = _json_list(done.stdout) if done.returncode == 0 else []
+    first = rows[0] if rows and isinstance(rows[0], dict) else {}
+    org_id, name = str(first.get("id") or ""), str(first.get("name") or "")
+    account = name or org_id
+    return {"account": account, "org": name or account, "id": org_id or account} if account else None
+
+
+def _supabase_login(tool: str, options: dict, identity: dict | None) -> list:
+    # `--no-browser` makes the URL observable by the Studio instead of asking a child process to
+    # launch it. The command still performs Supabase's official browser OAuth flow.
+    return [tool, "login", "--no-browser"]
+
+
+def _supabase_read(tool: str, options: dict) -> dict:
+    who = _supabase_identity(tool)
+    if not who:
+        return {}
+    return {
+        "supabase_oauth_access_token": "",
+        "supabase_oauth_refresh_token": "",
+        "supabase_oauth_expires_at": 0,
+        "supabase_oauth_via": "cli",
+        "supabase_org": who["org"],
+        "supabase_account_id": who["id"],
+    }
+
+
 ATLAS_PROFILE_SETTING = "mongodb_atlas_profile"
 
 
@@ -415,6 +447,12 @@ PROVIDERS: dict[str, Provider] = {
     "azure": Provider("azure", "Azure", "az", "winget install Microsoft.AzureCLI  (or: brew install azure-cli)",
                       _azure_identity, lambda tool, options, identity: [tool, "login", "--use-device-code"],
                       _azure_read),
+    "supabase": Provider("supabase", "Supabase", "supabase",
+                         "brew install supabase/tap/supabase  (Windows: scoop install supabase)",
+                         _supabase_identity, _supabase_login, _supabase_read,
+                         needs_terminal=True,
+                         answers=((re.compile(r"(Press Enter to open browser[^.]*)", re.I), "\r"),),
+                         finished=re.compile(r"You are now logged in|Finished supabase login|Happy coding", re.I)),
     # `--noBrowser`: the studio shows the code and the link itself. The first menu is "Select authentication type";
     # its first entry, a user account, is the browser sign-in. Any later question (a default organisation or project)
     # takes its default: every command run afterwards names its project explicitly.

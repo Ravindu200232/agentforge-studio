@@ -7,8 +7,8 @@ import { Button } from './ui'
 
 /**
  * Signs in to a provider through its own command line tool (`cli_signin.py`: `gh`, `vercel`,
- * `netlify`, `az`, `aws`, `atlas`), the same shape for every one of them. Supabase is not one of these -
- * its CLI has no browser sign-in at all; see `SupabaseConnect.jsx` for its own OAuth flow instead.
+ * `netlify`, `az`, `aws`, `supabase`, `atlas`), the same shape for every one of them. Interactive tools
+ * run in a pseudo-terminal, so their official browser sign-in works inside the desktop app too.
  *
  * Says whether the tool is installed (and how to install it if not), who it is already signed in as
  * (which can be used as it is, with no browser), and otherwise runs its login: the code to type and
@@ -99,7 +99,7 @@ export default function CliSignIn({ provider, onDone, region = '', label = '', a
     return (
       <div className="rounded-2xl bg-bg/60 p-4">
         <p className="text-[11px] text-muted">
-          The {title} command line tool is not installed on this PC. Install it, then check again — signing in
+          The {title} command line tool is not installed on this computer. Install it, then check again — signing in
           then takes one click.
         </p>
         <div className="mt-2 flex flex-wrap items-center gap-2">
