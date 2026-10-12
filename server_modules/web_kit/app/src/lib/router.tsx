@@ -1,5 +1,5 @@
 import * as React from "react";
-import { signInRoute } from "@/demo";
+import { accounts, signInRoute } from "@/demo";
 import { routes, type RouteDef } from "@/routes";
 
 // The app's routes live in the address hash (`#/orders`), so the whole app is one HTML file that can be opened from anywhere.
@@ -136,9 +136,15 @@ function SelfTest() {
   React.useEffect(() => {
     let live = true;
     const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const as = new URLSearchParams(window.location.search).get("as")?.toLowerCase() || "";
+    const account = accounts.find((item) => [item.email, item.roleKey, item.role]
+      .some((value) => value.toLowerCase() === as));
     (async () => {
       const found: { route: string; error: string }[] = [];
       for (const route of routes) {
+        // Public pages are checked as a guest; protected pages are checked
+        // only with an account that can actually open them.
+        if (route.signedIn ? !account?.canOpen.includes(route.route) : !!account) continue;
         navigate(route.route.split("/").map((part) => (isParam(part) ? "1" : part)).join("/") || "/");
         await wait(60);
         const crashed = window.__afErrors?.[route.route];

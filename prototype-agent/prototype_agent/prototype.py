@@ -97,7 +97,9 @@ def _sign_in_text(accounts: list[dict], sign_in: str, rows: list[dict]) -> str:
     lines = [f"The product has sign-in, and the app already has it working underneath: `src/demo.ts` holds one fictitious account for each "
              "role (the finished application is seeded with the same ones) and `useSession()` from `@/lib/session` signs them in. "
              f"Make the sign-in page, **{page['name']}** (`{sign_in}`), a real one:", "",
-             "- a form that calls `signIn(email, password)`, with its error shown under it when it returns null;",
+             "- import `useSession` from `@/lib/session`, call `const { signIn } = useSession()` inside the sign-in page component, "
+             "then submit the form with `signIn(email, password)` and show an error when it returns null. "
+             "`signIn` is a method of the hook, not a named export from that module;",
              "- no page shows the demo accounts: no demo panel or demo buttons, no emails, passwords or hints about them, on the "
              "sign-in page or anywhere else (the Studio gives them to the person in the chat when the prototype is done);",
              "- after signing in, people land on their own first page (the session opens it); `signOut()` is the Sign out;",

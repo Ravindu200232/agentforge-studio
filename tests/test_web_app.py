@@ -268,13 +268,28 @@ class BundlingTests(Scratch):
         self.assertEqual(told, ["Could not resolve ./missing"])
         self.assertEqual(web_app.page(app), b"<html>fixed</html>")
 
-    def test_it_gives_up_after_two_repairs_and_says_what_the_bundler_said(self):
+    def test_it_stops_when_a_repair_changes_no_source(self):
         app = self.made()
         told = []
         with mock.patch.object(web_app, "prepare_kit", return_value=(True, "")), self.fake_vite(app, ok=False, text="boom"):
-            with self.assertRaisesRegex(web_app.BuildFailed, "boom"):
-                web_app.ensure_built(app, told.append)
+            with self.assertRaisesRegex(web_app.BuildFailed, "Repair made no progress: boom"):
+                web_app.ensure_built(app, told.append, rounds=None)
         self.assertEqual(len(told), 2)
+
+    def test_distinct_build_errors_can_be_repaired_in_sequence(self):
+        app = self.made()
+        failures = [f"build error {i}" for i in range(12)]
+        outcomes = iter([(False, error) for error in failures] + [(True, "")])
+        repaired = []
+
+        def repair(error):
+            repaired.append(error)
+            (app / "src" / "repair-progress.ts").write_text(f"// {len(repaired)}", encoding="utf-8")
+
+        with mock.patch.object(web_app, "bundle", side_effect=lambda path: next(outcomes)), \
+                mock.patch.object(web_app, "check_pages", return_value=None):
+            web_app.ensure_built(app, repair, rounds=None)
+        self.assertEqual(repaired, failures)
 
     def test_the_agent_fix_is_a_run_of_its_own_with_the_bundler_text(self):
         session = mock.Mock(workspace=self.root, cancelled=False)
@@ -334,6 +349,20 @@ class CheckingThePagesTests(Scratch):
     def test_an_app_whose_screens_all_open_has_nothing_to_fix(self):
         self.assertEqual(self.check('<pre id="af-selftest" hidden>[]</pre>')[0], [])
 
+    def test_signed_in_screens_are_checked_with_their_account(self):
+        from ollama_terminal import screenshot
+
+        app = self.made()
+        web_app.write_demo(app, ACCOUNTS, sign_in="/")
+        guest = '<pre id="af-selftest" hidden>[]</pre>'
+        signed_in = '<pre id="af-selftest" hidden>[{"route":"/account","error":"TypeError: broken"}]</pre>'
+        with mock.patch.object(screenshot, "working_browser", return_value=("edge", "chrome")), \
+                mock.patch.object(screenshot, "dump_dom", side_effect=[guest, signed_in]) as dump:
+            errors = REAL_CHECK(app)
+        self.assertEqual(errors, [("/account", "TypeError: broken")])
+        self.assertEqual(dump.call_args_list[0].args[1], "?selftest=1#/")
+        self.assertEqual(dump.call_args_list[1].args[1], "?selftest=1&as=baker%40example.com#/")
+
     def test_a_check_that_cannot_run_says_nothing_and_stops_nothing(self):
         self.assertIsNone(self.check(self.DOM, browser=None)[0], "no browser")
         self.assertIsNone(self.check("<html><body>the page never answered</body></html>")[0])
@@ -358,6 +387,15 @@ class CheckingThePagesTests(Scratch):
         with mock.patch.object(web_app, "bundle", return_value=(True, "")),                 mock.patch.object(web_app, "check_pages", return_value=[("/x", "TypeError: nope")]):
             web_app.ensure_built(app, told.append)          # bundled; the page shows its own error
         self.assertEqual(len(told), 2)
+
+    def test_a_prototype_cannot_finish_with_a_crashing_page(self):
+        app = self.made()
+        repaired = []
+        with mock.patch.object(web_app, "bundle", return_value=(True, "")), \
+                mock.patch.object(web_app, "check_pages", return_value=[("/x", "TypeError: nope")]):
+            with self.assertRaisesRegex(web_app.BuildFailed, "Repair made no progress"):
+                web_app.ensure_built(app, repaired.append, rounds=None, require_clean_pages=True)
+        self.assertEqual(len(repaired), 2)
 
     def test_an_app_that_cannot_be_checked_is_taken_as_it_is(self):
         told = []
@@ -466,7 +504,7 @@ class KitOwnedFilesTests(Scratch):
 
     def test_a_product_with_no_page_at_the_root_opens_on_its_sign_in_page_or_its_first_screen(self):
         router = (web_app.KIT_SOURCE / "app" / "src" / "lib" / "router.tsx").read_text(encoding="utf-8")
-        self.assertIn('import { signInRoute } from "@/demo";', router)
+        self.assertIn('import { accounts, signInRoute } from "@/demo";', router)
         self.assertIn('path === "/"', router)
         self.assertIn("matchRoute(signInRoute) ? signInRoute : routes[0]?.route", router)
 

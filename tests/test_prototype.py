@@ -182,6 +182,8 @@ class DrawingTests(Scratch):
         self.assertIn('"route": "/register"', demo_ts.split("export const signUp")[1])
         request = self.session.tasks[0]
         self.assertIn("`signIn(email, password)`", request)
+        self.assertIn("`const { signIn } = useSession()`", request)
+        self.assertIn("not a named export from that module", request)
         self.assertIn("`/login`", request)
 
     def test_no_page_of_the_prototype_shows_the_demo_accounts_they_are_given_in_the_chat(self):
