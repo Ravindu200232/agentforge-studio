@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from server_modules import config, prompts
+from server_modules import config, login_ui, prompts
 
 PAGES_PER_PHASE = 4
 PROGRESS = ("build", "progress.json")
@@ -169,6 +169,12 @@ def problems(workspace: Path, phase: dict[str, Any]) -> list[str]:
             found.append(f"`{route}` is not recorded in .agentforge/build/progress.json (a page is done when it has an entry with its files)")
         elif not built(workspace, route, notes):
             found.append(f"`{route}` is recorded, but none of the files it names exists: {', '.join(notes[route][:3])}")
+        if any(part in route.lower() for part in ("login", "sign-in", "signin")):
+            paths = [(workspace / name).resolve() for name in notes.get(route, [])]
+            paths = [path for path in paths if path.is_relative_to(workspace.resolve())]
+            if login_ui.issues(paths):
+                found.append(f"`{route}` shows demo accounts or prefilled credentials in its login UI; remove them "
+                             "and keep the working blank sign-in form. Credentials are sent in Studio chat.")
     return found
 
 

@@ -97,10 +97,31 @@ def generate(project: str, request: str = "", fresh: bool = True) -> dict[str, A
     if result.get("status") not in (None, "complete") and result.get("text"):
         bus.log(project, "WARN", f"The agent stopped early: {str(result['text'])[:300]}", agent=bus.DESIGNER)
 
+    from prototype_agent import demo
+    from server_modules import login_ui
+
+    doc = document.document(project).get("srs_document", {})
+    sign_in = demo.sign_in_route(doc)
+    login_pages = [app / "src" / "pages" / f"{row['file']}.tsx" for row in rows
+                   if row["route"] == sign_in]
+    for _ in range(2):
+        flagged = login_ui.issues(login_pages)
+        if not flagged:
+            break
+        session.run_direct("Remove visible demo accounts, seeded emails/passwords and demo buttons from these wireframe "
+                           "login pages. Leave a normal blank sign-in form and preserve navigation: " + ", ".join(flagged))
+    if login_ui.issues(login_pages):
+        raise ValueError("wireframe login page still shows demo account details")
     web_app.build_for(session, project, KIND, agent=bus.DESIGNER)
     _remember(session, error="")
     bus.phase(project, "wireframes", "Drawing the wireframes", status="complete", agent=bus.DESIGNER)
     bus.wireframe_changed(project)
+    accounts = demo.draw_accounts(doc)
+    message = demo.accounts_message(accounts, [{"route": r["route"], "name": r["name"]} for r in rows],
+                                    sign_in) if accounts else ""
+    if message:
+        bus.agent_msg(project, message.replace("made for reviewing the prototype", "for the upcoming prototype and build"),
+                      title="Demo accounts", agent=bus.DESIGNER)
     return result
 
 

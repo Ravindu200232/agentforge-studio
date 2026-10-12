@@ -106,6 +106,21 @@ def _sign_in_text(accounts: list[dict], sign_in: str, rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _clean_login(session: Any, app: Path, sign_in: str) -> None:
+    from server_modules import login_ui
+
+    files = web_app.page_files([sign_in]) if sign_in else {}
+    login_pages = [app / "src" / "pages" / f"{files[sign_in]}.tsx"] if sign_in else []
+    for _ in range(2):
+        flagged = login_ui.issues(login_pages)
+        if not flagged:
+            return
+        session.run_direct("Remove visible demo accounts, seeded emails/passwords and demo buttons from this prototype "
+                           "login page. Keep its working sign-in form and role navigation: " + ", ".join(flagged))
+    if login_ui.issues(login_pages):
+        raise ValueError("prototype login page still shows demo account details")
+
+
 def _draw_with_agent(project: str, spec: dict[str, Any], direction: str) -> list[dict]:
     """Set up a new app, then let the project's agent read the wireframes, plan, and write the prototype into it.
 
@@ -220,6 +235,7 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str) -> list
                if not any((written / f"{files[str(r['route'])]}{ext}").is_file() for ext in (".tsx", ".jsx"))]
     if missing:
         raise PrototypeIncomplete(missing)
+    _clean_login(session, app, sign_in)
     web_app.build_for(session, project, KIND, agent=bus.DESIGNER)
 
     write("routes.json", json.dumps({"routes": routes_out}, ensure_ascii=False, indent=2))
@@ -283,6 +299,10 @@ def _generate(project: str, direction: str, *, from_wireframes: bool = False) ->
         if session.cancelled:
             raise RunCancelled(project)
         drawn = _look_at(project, session, drawn)
+        saved_accounts = _read_record(session, PROTOTYPE_DIR, "demo-accounts.json", fallback=None) or {}
+        _clean_login(session, app_path(project), str(saved_accounts.get("sign_in") or ""))
+        if web_app.stale(app_path(project)):
+            web_app.build_for(session, project, KIND, agent=bus.DESIGNER)
 
         checkpoint_path = session.record / PROTOTYPE_DIR / "generation.json"
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
