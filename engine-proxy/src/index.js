@@ -32,14 +32,17 @@ const FORWARD = ['content-type', 'accept', 'user-agent']
 // Unknown models fail closed until their published rate is added. Cached input is
 // charged at the regular input rate, a conservative upper bound for the credit ledger.
 const PRICE = {
-  'deepseek-v4.1-flash': [0.30, 1.20], 'deepseek-v4-pro': [1.32, 3.96],
+  'deepseek-v4.1-flash': [0.30, 1.20], 'deepseek-v4-flash': [0.44, 1.32],
+  'deepseek-v4-pro': [1.32, 3.96],
   gemma4: [0.14, 0.40], 'glm-5.3': [1.40, 4.40], 'glm-5.3-flash': [0.15, 0.50],
-  'glm-5.2': [1.40, 4.40], 'gpt-oss:120b': [0.15, 0.60], 'gpt-oss:20b': [0.07, 0.30],
+  'glm-5.2': [1.40, 4.40], 'glm-5.1': [1.00, 3.20],
+  'gpt-oss:120b': [0.15, 0.60], 'gpt-oss:20b': [0.07, 0.30],
   'kimi-k3': [3.00, 15.00], 'kimi-k2.7-code': [0.95, 4.00], 'kimi-k2.6': [0.95, 4.00],
   'minimax-m3': [0.60, 2.40], 'minimax-m2.7': [0.30, 1.20],
-  'mistral-large-4': [0.68, 2.09], 'mistral-large-3': [0.50, 1.50],
+  'mistral-large-3': [0.50, 1.50],
   'nemotron-3-nano': [0.06, 0.24], 'nemotron-3-super': [0.015, 0.60],
   'nemotron-3-ultra': [0.10, 3.00],
+  'qwen3.5:397b': [0.60, 3.60],
 }
 
 function priceFor(model) {
@@ -48,7 +51,7 @@ function priceFor(model) {
   if (!rate) return null
   const now = new Date()
   const peak = now.getUTCDay() >= 1 && now.getUTCDay() <= 5 && now.getUTCHours() >= 12 && now.getUTCHours() < 18
-  return !peak && (name === 'deepseek-v4.1-flash' || name === 'deepseek-v4-pro')
+  return !peak && (name === 'deepseek-v4.1-flash' || name === 'deepseek-v4-flash' || name === 'deepseek-v4-pro')
     ? rate.map(value => value / 2) : rate
 }
 
