@@ -23,9 +23,9 @@ keeps the older path: the person registers an OAuth app in their own Supabase or
 callback URL, and pastes the Client ID and Secret into Settings. Which path issued the saved tokens
 is remembered (`supabase_oauth_via`), because a refresh token only works with the app that issued it.
 
-Either way the browser ends up on the Studio's own already-running API server, at one fixed URL
-(`httpd.py`'s `/supabase-oauth/callback` route) - no separate listener to open or a port of its own
-to collide with. `OAUTH.start()` opens the browser and hands back a flow id (used as the OAuth
+Either way the browser ends up on the Studio's `/supabase-oauth/callback` route. The HTTP backend
+answers it on its API port; the desktop backend opens a temporary listener, using a free port for
+the publisher's broker if the usual port is occupied. `OAUTH.start()` opens the browser and hands back a flow id (used as the OAuth
 `state`, so the callback route can find it again); the callback route only records what arrived and
 answers the browser with a page to close; `OAUTH.poll()` (from the studio, in the background) is
 what actually exchanges the code for tokens once they've arrived, refreshing them silently from then
@@ -85,9 +85,9 @@ ACTIVE_ID_SETTING = "supabase_account_id"
 AUTHORIZE_URL = "https://api.supabase.com/v1/oauth/authorize"
 TOKEN_URL = "https://api.supabase.com/v1/oauth/token"
 CALLBACK_PATH = "/supabase-oauth/callback"
-# Fixed, because an OAuth app's callback URL is matched exactly - this is what goes in Supabase's
-# own "Authorization callback URLs" field when publishing the app: this studio's own API server
-# (API_PORT/API_PREFIX, config.py), not a port of its own and not a project's local Supabase stack
+# Fixed for a person's own OAuth app, because its callback URL is matched exactly. The publisher's
+# broker receives the Supabase callback and may return to any free localhost port in the desktop app.
+# This is the web Studio's API server (API_PORT/API_PREFIX, config.py), not a project's local Supabase stack
 # (which already owns 54321-54323).
 #
 # "localhost", not "127.0.0.1": tried live - Supabase's authorize endpoint answers
@@ -347,12 +347,12 @@ class OAuthConnects:
             self._flows.pop(key, None)
 
     @staticmethod
-    def _broker_link(flow_id: str, challenge: str) -> str:
+    def _broker_link(flow_id: str, challenge: str, return_to: str = REDIRECT_URI) -> str:
         """The authorize link from the broker: it knows the OAuth app's client id and the one callback URL that
         app was registered with, and signs the state so only it will accept the browser coming back."""
         try:
             answer = _broker_post("/oauth/supabase/start",
-                                  {"flow_id": flow_id, "challenge": challenge, "return_to": REDIRECT_URI})
+                                  {"flow_id": flow_id, "challenge": challenge, "return_to": return_to})
         except httpx.HTTPError as exc:
             raise ValueError(f"The AgentForge sign-in server could not be reached: {exc}") from exc
         body = _json_body(answer)
@@ -374,23 +374,30 @@ class OAuthConnects:
         verifier, challenge = _pkce_pair()
         flow_id = "sbo_" + secrets.token_urlsafe(24)
         via, link = VIA_OWN, ""
-        if _broker():
-            # The publisher's OAuth app: nothing for the person to register. If the broker is not set up (or not
-            # reachable) a person's own saved app still works; with none, say why.
-            try:
-                via, link = VIA_BROKER, self._broker_link(flow_id, challenge)
-            except ValueError:
-                if not credentials_saved():
-                    raise
-        elif not credentials_saved():
+        broker = bool(_broker())
+        if not broker and not credentials_saved():
             raise ValueError("Register a Supabase OAuth app first (Organization settings -> OAuth Apps) "
                               "and save its Client ID and Secret.")
-        if not link:
-            via, link = VIA_OWN, self._own_link(flow_id, challenge)
-        # The desktop app listens on no port: its callback is answered only while this sign-in is waiting.
+        # The desktop app listens only during sign-in. A running web Studio may already own the usual port;
+        # the publisher's broker accepts any localhost callback port, so reserve a free one before asking it
+        # for the authorize link. A person's own OAuth app still needs its registered, fixed callback URL.
         from . import oauth_listener
 
-        oauth_listener.open_for(CALLBACK_PATH, FLOW_TTL_SECONDS)
+        port = oauth_listener.open_for(CALLBACK_PATH, FLOW_TTL_SECONDS, allow_dynamic=broker)
+        return_to = f"http://localhost:{port}{config.API_PREFIX}{CALLBACK_PATH}"
+        try:
+            if broker:
+                try:
+                    via, link = VIA_BROKER, self._broker_link(flow_id, challenge, return_to)
+                except ValueError:
+                    if not credentials_saved() or port != config.API_PORT:
+                        raise
+            if not link:
+                via, link = VIA_OWN, self._own_link(flow_id, challenge)
+        except Exception:
+            if config.TRANSPORT == "stdio":
+                oauth_listener.close()
+            raise
         with self._lock:
             self._prune()
             self._flows[flow_id] = _Flow(flow_id=flow_id, verifier=verifier, via=via)

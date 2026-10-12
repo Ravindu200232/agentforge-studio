@@ -78,8 +78,10 @@ The desktop app's backend (`server.py --stdio`) talks to the window over stdin a
 - The live feed arrives over IPC.
 - A test run's live view goes through a folder.
 
-The one exception is a short-lived `127.0.0.1:7824` listener, open only while a Supabase browser sign-in waits for
-its callback. A generated app's own preview still runs on its own `127.0.0.1` port.
+The one exception is a short-lived loopback listener, open only while a Supabase browser sign-in waits for its
+callback. It uses port 7824 when free; the built-in OAuth broker can use a free port if another Studio already owns
+7824. A person's own OAuth app still uses its registered callback port. A generated app's own preview runs on its
+own `127.0.0.1` port.
 
 ## Unsigned builds
 

@@ -416,6 +416,15 @@ class BrokerSignInTests(SupabaseSettingsCase):
         self.assertGreaterEqual(len(sent["challenge"]), 43)  # a PKCE S256 challenge; the verifier stays here
         self.assertNotIn("verifier", json.dumps(sent))
 
+    def test_desktop_passes_its_reserved_callback_port_to_the_broker(self):
+        with mock.patch.object(config, "TRANSPORT", "stdio"), \
+             mock.patch("server_modules.oauth_listener.open_for", return_value=54321) as listener, \
+             mock.patch("httpx.post", return_value=self.answer(200, {"authorize_url": self.link()})) as post:
+            sc.OAUTH.start()
+        listener.assert_called_once_with(sc.CALLBACK_PATH, sc.FLOW_TTL_SECONDS, allow_dynamic=True)
+        self.assertEqual(post.call_args.kwargs["json"]["return_to"],
+                         f"http://localhost:54321{config.API_PREFIX}{sc.CALLBACK_PATH}")
+
     def test_a_link_that_is_not_supabases_is_never_opened(self):
         with mock.patch("httpx.post", return_value=self.answer(200, {"authorize_url": "https://evil.example/login"})):
             with self.assertRaisesRegex(ValueError, "not Supabase's"):
