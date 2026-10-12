@@ -32,6 +32,7 @@ $stage = Join-Path $release 'stage\app'
 $out = Join-Path $release 'out'
 $cache = Join-Path $release 'cache'
 $version = (Get-Content (Join-Path $root 'desktop\package.json') -Raw | ConvertFrom-Json).version
+$releaseTag = 'v' + ($version -split '\.')[0]
 if (-not $Repo) {
     $Repo = 'Ravindu200232/agentforge-releases'
 }
@@ -201,7 +202,7 @@ $components = @()
 $localComponents = @()
 $appSize = (Get-Item $appZip).Length
 $appEntry = [ordered]@{ id = 'app'; title = "AgentForge $version"; version = $version; type = 'zip'; target = '.'; strip = 0;
-                        url = "https://github.com/$Repo/releases/download/v$version/" + (Split-Path $appZip -Leaf);
+                        url = "https://github.com/$Repo/releases/download/$releaseTag/" + (Split-Path $appZip -Leaf);
                         sha256 = (Get-Sha256 $appZip); size = $appSize }
 $components += $appEntry
 $localApp = [ordered]@{}; foreach ($key in $appEntry.Keys) { $localApp[$key] = $appEntry[$key] }; $localApp.url = $appZip
@@ -267,8 +268,8 @@ Step "Done"
 Get-ChildItem $out | Where-Object { -not $_.PSIsContainer } | ForEach-Object { "   {0,-40} {1,10:N1} MB" -f $_.Name, ($_.Length / 1MB) }
 
 if ($Publish) {
-    Step "Publish v$version to github.com/$Repo"
-    gh release create "v$version" (Join-Path $out 'AgentForgeSetup.exe') $appZip (Join-Path $out 'manifest.json') `
-        --repo $Repo --title "AgentForge $version" --notes "Download AgentForgeSetup.exe and run it."
+    Step "Publish $releaseTag to github.com/$Repo"
+    gh release create $releaseTag (Join-Path $out 'AgentForgeSetup.exe') $appZip (Join-Path $out 'manifest.json') `
+        --repo $Repo --title "AgentForge $releaseTag" --notes "Download AgentForgeSetup.exe and run it."
     if ($LASTEXITCODE -ne 0) { throw 'gh release create failed' }
 }

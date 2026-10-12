@@ -45,10 +45,11 @@ release\out\AgentForgeSetup.exe /manifest=release\out\manifest.local.json /dir=$
 ./release/build.ps1 -Repo Ravindu200232/agentforge-releases -Publish
 ```
 
-This creates the GitHub release `v<version>` (version from `desktop/package.json`). The installer always reads
+This creates the GitHub release `v<major>` (for example, `v1` for app version `1.0.0`). The installer always reads
 `https://github.com/<repo>/releases/latest/download/manifest.json`, so the repository it publishes to must be public.
-The source repository stays private: releases go to the public `agentforge-releases` repository. A new release needs
-a new version in `desktop/package.json`.
+The source repository stays private: releases go to the public `agentforge-releases` repository. The app version in
+`desktop/package.json` is numeric for Windows; when replacing an existing major release, remove the old GitHub release
+and tag before publishing the replacement.
 
 ## What a blank computer gets
 
