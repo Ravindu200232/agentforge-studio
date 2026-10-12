@@ -1,6 +1,9 @@
 name: macOS Release
 
 on:
+  push:
+    branches:
+      - mac-version
   workflow_dispatch:
     inputs:
       tag:
@@ -51,7 +54,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag || 'v1.1.0-mac' }}
           DMG: ${{ steps.release.outputs.dmg }}
           ZIP: ${{ steps.release.outputs.zip }}
         run: |
