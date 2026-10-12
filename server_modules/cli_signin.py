@@ -350,8 +350,10 @@ def _supabase_login(tool: str, options: dict, identity: dict | None) -> list:
     # Supabase CLI 2.120 added agent detection. AgentForge is correctly recognised as an agent, but
     # that switches the CLI to JSON output where its interactive OAuth prompt is rejected with a
     # NonInteractiveError. Force the normal terminal UI instead. The provider's pseudo-terminal
-    # answers the initial Enter prompt and the CLI opens the official browser flow itself.
-    return [tool, "login", "--agent", "no"]
+    # `--no-browser` makes the URL available to the Studio, which opens it and provides a field for
+    # the short verification code shown by Supabase. This is deterministic even when the CLI cannot
+    # launch the default browser from inside a packaged desktop process.
+    return [tool, "login", "--no-browser", "--agent", "no"]
 
 
 def _supabase_read(tool: str, options: dict) -> dict:
@@ -452,8 +454,7 @@ PROVIDERS: dict[str, Provider] = {
     "supabase": Provider("supabase", "Supabase", "supabase",
                          "brew install supabase/tap/supabase  (Windows: scoop install supabase)",
                          _supabase_identity, _supabase_login, _supabase_read,
-                         needs_terminal=True, opens_browser=True, shows_code=False,
-                         answers=((re.compile(r"(Press Enter to open browser[^.]*)", re.I), "\r"),),
+                         needs_terminal=True, shows_code=False,
                          finished=re.compile(r"You are now logged in|Finished supabase login|Happy coding", re.I)),
     # `--noBrowser`: the studio shows the code and the link itself. The first menu is "Select authentication type";
     # its first entry, a user account, is the browser sign-in. Any later question (a default organisation or project)
@@ -495,6 +496,7 @@ class Signin:
     output: list = field(default_factory=list)
     user_code: str = ""
     verification_uri: str = ""
+    prompt: str = ""
     started: float = field(default_factory=time.time)
     error: str = ""
     answered: set = field(default_factory=set)   # the prompts already answered, by title
@@ -635,6 +637,8 @@ class CliSignins:
                         flow.process.send(keys)
                 if provider.finished and not flow.done_at and provider.finished.search(line):
                     flow.done_at = time.time()
+                if "enter your verification code" in line.lower():
+                    flow.prompt = "verification_code"
                 if not flow.verification_uri:
                     url = _URL.search(line)
                     if url:
@@ -671,7 +675,24 @@ class CliSignins:
 
     def _pending(self, flow: Signin, provider: Provider) -> dict:
         return {"status": "pending", "user_code": flow.user_code, "verification_uri": flow.verification_uri,
-                "shows_code": provider.shows_code, "opens_browser": provider.opens_browser}
+                "shows_code": provider.shows_code, "opens_browser": provider.opens_browser,
+                "prompt": flow.prompt}
+
+    def send_input(self, flow_id: str, value: str) -> dict:
+        """Type a short answer into a running terminal sign-in without storing or returning it."""
+        with self._lock:
+            self._prune()
+            flow = self._flows.get(str(flow_id or ""))
+        if not flow or flow.process is None or flow.process.poll() is not None:
+            raise ValueError("That sign-in is no longer running. Start it again.")
+        answer = str(value or "").strip()
+        if not answer:
+            raise ValueError("Enter the verification code from the Supabase page.")
+        if flow.prompt != "verification_code":
+            raise ValueError("That sign-in is not waiting for a verification code.")
+        flow.prompt = ""
+        flow.process.send(answer + "\r")
+        return {"status": "accepted"}
 
     def _finish(self, flow: Signin, provider: Provider, tool: str) -> dict:
         with self._lock:
@@ -698,8 +719,10 @@ class CliSignins:
                 subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False,
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             else:
-                process.terminate()
-        except OSError:
+                stop = getattr(process, "terminate", None) or getattr(process, "kill", None)
+                if stop:
+                    stop()
+        except (AttributeError, OSError):
             pass
 
     def _why(self, provider: Provider, flow: Signin) -> str:

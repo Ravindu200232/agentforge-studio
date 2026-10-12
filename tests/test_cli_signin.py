@@ -71,8 +71,7 @@ class WhatTheToolsPrintTests(unittest.TestCase):
 
     def test_a_tool_that_opens_no_browser_is_not_told_it_did(self):
         self.assertTrue(cli_signin.PROVIDERS["aws"].opens_browser)
-        self.assertTrue(cli_signin.PROVIDERS["supabase"].opens_browser)
-        for key in ("github", "vercel", "netlify", "azure"):
+        for key in ("github", "vercel", "netlify", "azure", "supabase"):
             self.assertFalse(cli_signin.PROVIDERS[key].opens_browser, key)
         self.assertFalse(cli_signin.PROVIDERS["aws"].shows_code)          # a link to approve, no code to type
         self.assertFalse(cli_signin.PROVIDERS["supabase"].shows_code)
@@ -226,9 +225,9 @@ class LoginFlowTests(unittest.TestCase):
 
     def test_supabase_uses_its_official_browser_login_in_a_terminal_and_keeps_no_token(self):
         process = FakeProcess([
-            "Hello from Supabase! Press Enter to open browser and login automatically.",
             "Here is your login link in case browser did not open ",
             "https://supabase.com/dashboard/cli/login?session_id=temporary",
+            "Enter your verification code:",
         ])
         signed_out = {"supabase": {"identity": None}}
         with cli(), mock.patch.object(cli_signin.pty_process, "spawn", return_value=process) as spawn, \
@@ -236,14 +235,18 @@ class LoginFlowTests(unittest.TestCase):
             started = cli_signin.SIGNINS.start("supabase")
             self.wait_for_output()
             pending = cli_signin.SIGNINS.poll(started["flow_id"])
+            accepted = cli_signin.SIGNINS.send_input(started["flow_id"], "verify-123")
             process.finish()
             orgs = subprocess.CompletedProcess([], 0, '[{"id":"org-1","name":"Acme"}]', "")
             with mock.patch.object(cli_signin, "_run", return_value=orgs):
                 done = cli_signin.SIGNINS.poll(started["flow_id"])
-        self.assertEqual(spawn.call_args.args[0], ["/bin/supabase", "login", "--agent", "no"])
-        self.assertTrue(cli_signin.PROVIDERS["supabase"].opens_browser)
+        self.assertEqual(spawn.call_args.args[0],
+                         ["/bin/supabase", "login", "--no-browser", "--agent", "no"])
+        self.assertFalse(cli_signin.PROVIDERS["supabase"].opens_browser)
         self.assertFalse(cli_signin.PROVIDERS["supabase"].shows_code)
-        self.assertEqual(process.typed, ["\r"])
+        self.assertEqual(accepted, {"status": "accepted"})
+        self.assertEqual(process.typed, ["verify-123\r"])
+        self.assertEqual(pending["prompt"], "verification_code")
         self.assertEqual(pending["verification_uri"],
                          "https://supabase.com/dashboard/cli/login?session_id=temporary")
         self.assertEqual(done["values"], {
@@ -251,6 +254,13 @@ class LoginFlowTests(unittest.TestCase):
             "supabase_oauth_expires_at": 0, "supabase_oauth_via": "cli",
             "supabase_org": "Acme", "supabase_account_id": "org-1",
         })
+
+    def test_terminal_process_cleanup_uses_the_interface_pty_process_exposes(self):
+        process = mock.Mock()
+        process.pid = 4242
+        del process.terminate
+        cli_signin.SIGNINS._stop(process)
+        process.kill.assert_called_once_with()
 
     # What `atlas auth login --noBrowser` printed through a terminal (recorded from the real CLI).
     ATLAS_LOGIN = [

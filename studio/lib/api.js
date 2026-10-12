@@ -339,6 +339,7 @@ export const api = {
   // `add`: sign in as another account without leaving the one that is signed in (MongoDB Atlas profiles).
   cliSigninStart: (provider, region = '', add = false) => post('/cli-signin/start', { provider, region, add }),
   cliSigninPoll: (flowId) => post('/cli-signin/poll', { flow_id: flowId }),
+  cliSigninInput: (flowId, value) => post('/cli-signin/input', { flow_id: flowId, value }),
   cliSigninUseExisting: (provider, region = '') => post('/cli-signin/use-existing', { provider, region }),
   cliSigninCancel: (flowId) => post('/cli-signin/cancel', { flow_id: flowId }),
 

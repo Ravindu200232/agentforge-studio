@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, ExternalLink, Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
-import { Button } from './ui'
+import { Button, Input } from './ui'
 
 /**
  * Signs in to a provider through its own command line tool (`cli_signin.py`: `gh`, `vercel`,
@@ -22,6 +22,8 @@ export default function CliSignIn({ provider, onDone, region = '', label = '', a
   const [err, setErr] = useState('')
   const [copied, setCopied] = useState(false)
   const [notice, setNotice] = useState('')         // what the server says about what it kept
+  const [answer, setAnswer] = useState('')
+  const [sending, setSending] = useState(false)
   const stop = useRef(false)
   const opened = useRef('')
 
@@ -32,13 +34,13 @@ export default function CliSignIn({ provider, onDone, region = '', label = '', a
   useEffect(() => { stop.current = false; look(); return () => { stop.current = true } }, [look])
 
   async function finished(answer) {
-    setState(null); setSeen(null); setBusy(''); setNotice(answer?.note || '')
+    setState(null); setSeen(null); setBusy(''); setAnswer(''); setNotice(answer?.note || '')
     await look(true)
     onDone?.(answer)
   }
 
   async function signIn() {
-    setBusy('login'); setErr(''); setSeen(null); stop.current = false; opened.current = ''
+    setBusy('login'); setErr(''); setSeen(null); setAnswer(''); stop.current = false; opened.current = ''
     let started
     try {
       started = await api.cliSigninStart(provider, region, add)
@@ -49,8 +51,12 @@ export default function CliSignIn({ provider, onDone, region = '', label = '', a
         await new Promise(r => setTimeout(r, 2000))
         const answer = await api.cliSigninPoll(started.flow_id)
         if (answer.status === 'ready') return finished(answer)
-        if (answer.user_code || answer.verification_uri) {
-          setSeen({ code: answer.user_code || '', uri: answer.verification_uri || '' })
+        if (answer.user_code || answer.verification_uri || answer.prompt) {
+          setSeen(previous => ({
+            code: answer.user_code || previous?.code || '',
+            uri: answer.verification_uri || previous?.uri || '',
+            prompt: answer.prompt || '',
+          }))
           // The tool opens its own browser tab for some providers; for the others it is opened here, once.
           if (answer.verification_uri && !answer.opens_browser && opened.current !== answer.verification_uri) {
             opened.current = answer.verification_uri
@@ -63,7 +69,18 @@ export default function CliSignIn({ provider, onDone, region = '', label = '', a
       if (!stop.current) setErr(e.message)
     }
     if (started?.flow_id) { try { await api.cliSigninCancel(started.flow_id) } catch { } }
-    setState(null); setSeen(null); setBusy('')
+    setState(null); setSeen(null); setBusy(''); setAnswer('')
+  }
+
+  async function submitAnswer(event) {
+    event.preventDefault()
+    if (!state?.flow_id || !answer.trim() || sending) return
+    setSending(true); setErr('')
+    try {
+      await api.cliSigninInput(state.flow_id, answer.trim())
+      setAnswer('')
+      setSeen(previous => previous ? { ...previous, prompt: '' } : previous)
+    } catch (e) { setErr(e.message) } finally { setSending(false) }
   }
 
   async function useExisting() {
@@ -76,7 +93,7 @@ export default function CliSignIn({ provider, onDone, region = '', label = '', a
   async function cancel() {
     stop.current = true
     if (state?.flow_id) { try { await api.cliSigninCancel(state.flow_id) } catch { } }
-    setBusy(''); setState(null); setSeen(null)
+    setBusy(''); setState(null); setSeen(null); setAnswer('')
   }
 
   async function copyInstall() {
@@ -133,13 +150,24 @@ export default function CliSignIn({ provider, onDone, region = '', label = '', a
           {seen.code ? seen.uri : 'Open the sign-in page'} <ExternalLink className="size-2.5 shrink-0" />
         </a>
       )}
+      {seen.prompt === 'verification_code' && (
+        <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={submitAnswer}>
+          <Input className="min-w-48 flex-1" value={answer} onChange={event => setAnswer(event.target.value)}
+                 placeholder="Paste the Supabase verification code" autoComplete="one-time-code" autoFocus />
+          <Button type="submit" size="sm" variant="primary" disabled={!answer.trim() || sending}>
+            {sending && <Loader2 className="size-3 animate-spin" />} Continue
+          </Button>
+        </form>
+      )}
       {add && (
         <p className="mt-1.5 text-[10.5px] leading-snug text-muted2">
           Already signed in to another {title} account in your browser? Sign out of it there first, or open this link in
           a private window, so the new account is the one you approve.
         </p>
       )}
-      <p className="mt-2 flex items-center gap-1.5 text-[10.5px] text-muted2"><Loader2 className="size-3 animate-spin" /> Waiting for you to approve it…</p>
+      <p className="mt-2 flex items-center gap-1.5 text-[10.5px] text-muted2"><Loader2 className="size-3 animate-spin" />
+        {seen.prompt === 'verification_code' ? 'Waiting for the verification code…' : 'Waiting for you to approve it…'}
+      </p>
     </div>
   )
 
