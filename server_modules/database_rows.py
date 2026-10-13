@@ -2,7 +2,7 @@
 cluster behind the MongoDB connection.
 
 Rows are read the same way the monitors read everything else: a Supabase table through the Supabase command line
-tool (`db query --linked`, the account's token in its environment), a MongoDB collection through the project's own
+tool (`db query --db-url`, the project's saved database connection), a MongoDB collection through the project's own
 driver (`scripts/mongo-inspect.mjs`, the connection string in its environment). A table or collection is named by the
 person, so its name is checked before it goes anywhere: an identifier, quoted, never text spliced into a query.
 
@@ -95,11 +95,13 @@ def _supabase_rows(project: str, schema: str, table: str) -> dict[str, Any]:
     folder.mkdir(parents=True, exist_ok=True)
     query = folder / f"rows-{uuid.uuid4().hex[:8]}.sql"
     query.write_text(sql, encoding="utf-8")
-    env, hidden = cli_monitor._set_environment("supabase", project)  # noqa: SLF001
     try:
+        env, hidden = cli_monitor._set_environment("supabase", project)  # noqa: SLF001
+        argv, connection_secrets = cli_monitor._database_argv(  # noqa: SLF001
+            project, ["db", "query", "--linked", "--project-ref", row["ref"], "-o", "json", "-f", str(query)])
+        hidden.extend(connection_secrets)
         done = subprocess.run(
-            [supabase_connect._tool(), "db", "query", "--linked", "--project-ref", row["ref"], "-o", "json",  # noqa: SLF001
-             "-f", str(query)],
+            [supabase_connect._tool(), *argv],  # noqa: SLF001
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT,
             stdin=subprocess.DEVNULL, cwd=str(folder), env={**os.environ, "NO_COLOR": "1", **env},
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))

@@ -132,6 +132,22 @@ class EnvironmentTests(Base):
 
 
 class RowsTests(Base):
+    def test_supabase_table_rows_use_the_project_database_connection(self):
+        row = {"ref": LINKED["ref"], "db_password": "pa:ss/word"}
+        result = mock.Mock(returncode=0, stdout='{"rows":[{"sample":{"rows":[],"columns":[],"total":0}}]}', stderr="")
+        with mock.patch.object(supabase_connect, "record", return_value=row), \
+             mock.patch.object(supabase_connect, "_tool", return_value="supabase"), \
+             mock.patch.object(cli_monitor, "_set_environment", return_value=({}, [row["db_password"]])), \
+             mock.patch.object(database_rows.subprocess, "run", return_value=result) as run:
+            answer = database_rows.sample(PROJECT, {"source": "supabase", "table": "orders"})
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:4], ["supabase", "db", "query", "--db-url"])
+        self.assertNotIn("--linked", argv)
+        self.assertNotIn("--project-ref", argv)
+        self.assertIn("pa%3Ass%2Fword", argv[4])
+        self.assertEqual(answer["total"], 0)
+        self.assertEqual(list((self.record / "database").glob("rows-*.sql")), [])
+
     def test_a_table_is_named_by_quoted_identifiers_only(self):
         sql = database_rows._supabase_sql("public", "orders")
         self.assertIn('from "public"."orders" limit 20', sql)
