@@ -42,3 +42,47 @@ test('cloud chat needs an account and settles provider token usage once', async 
     assert.equal(calls.find(call => call.url.endsWith('/authorize')).options.headers.authorization, 'Bearer signed-account')
   } finally { globalThis.fetch = original }
 })
+
+test('free accounts cannot call GLM 5.3 models, while paid accounts can', async () => {
+  const original = globalThis.fetch
+  const calls = []
+  let plan = 'free'
+  let unlimited = false
+  globalThis.fetch = async (url) => {
+    calls.push(String(url))
+    if (String(url).endsWith('/api/accounts/me')) return Response.json({ account: { plan, unlimited } })
+    if (String(url).endsWith('/authorize')) return Response.json({ reservation: 'request-2' })
+    if (String(url).endsWith('/settle')) return Response.json({ ok: true })
+    if (String(url).endsWith('/api/chat')) return Response.json({ done: true, prompt_eval_count: 1, eval_count: 1 })
+    throw new Error(`Unexpected URL: ${url}`)
+  }
+  const env = { APP_TOKEN: 'app', OLLAMA_API_KEY: 'private', ACCOUNTS_URL: 'https://admin.example',
+    ENGINE_METER_SECRET: 'server-secret' }
+  const request = model => new Request('https://engine.example/api/chat', {
+    method: 'POST', headers: { authorization: 'Bearer app', 'x-agentforge-account': 'signed-account' },
+    body: JSON.stringify({ model, messages: [] }),
+  })
+  try {
+    for (const model of ['glm-5.3:cloud', 'glm-5.3-flash:cloud']) {
+      const response = await worker.fetch(request(model), env, { waitUntil() {} })
+      assert.equal(response.status, 403)
+    }
+    assert.equal(calls.filter(url => url.endsWith('/authorize')).length, 0)
+    assert.equal(calls.filter(url => url.endsWith('/api/chat')).length, 0)
+    plan = 'paid'
+    const pending = []
+    const allowed = await worker.fetch(request('glm-5.3:cloud'), env, { waitUntil(promise) { pending.push(promise) } })
+    assert.equal(allowed.status, 200)
+    await allowed.text()
+    await Promise.all(pending)
+    assert.equal(calls.filter(url => url.endsWith('/authorize')).length, 1)
+    plan = 'free'
+    unlimited = true
+    const adminPending = []
+    const admin = await worker.fetch(request('glm-5.3-flash:cloud'), env,
+      { waitUntil(promise) { adminPending.push(promise) } })
+    assert.equal(admin.status, 200)
+    await admin.text()
+    await Promise.all(adminPending)
+  } finally { globalThis.fetch = original }
+})
