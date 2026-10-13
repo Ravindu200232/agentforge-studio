@@ -7,6 +7,7 @@ explicit `encoding=` decodes with `locale.getpreferredencoding(False)`, which
 on a Windows console is commonly cp1252, not UTF-8 - while npm/Next.js/Node
 all emit UTF-8 once piped (not a TTY, exactly this case).
 """
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -72,7 +73,8 @@ class BackgroundProcessTests(unittest.TestCase):
                 "print('spawned the background process')\n", encoding="utf-8")
             tools = WorkspaceTools(root, client=None, approve=lambda _q: True)
             started = time.monotonic()
-            answer = tools.tool_run_command(f'"{sys.executable}" spawn.py')
+            python = f'& "{sys.executable}"' if os.name == "nt" else f'"{sys.executable}"'
+            answer = tools.tool_run_command(f"{python} spawn.py")
             took = time.monotonic() - started
         self.assertLess(took, 15, "the tool waited for the background process")
         self.assertIn("exit_code=0", answer)
@@ -84,7 +86,8 @@ class BackgroundProcessTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             tools = WorkspaceTools(Path(folder), client=None, approve=lambda _q: True)
-            answer = tools.tool_run_command(f'"{sys.executable}" -c "print(\'all done\')"')
+            python = f'& "{sys.executable}"' if os.name == "nt" else f'"{sys.executable}"'
+            answer = tools.tool_run_command(f'{python} -c "print(\'all done\')"')
         self.assertIn("all done", answer)
         self.assertNotIn("still holds its output open", answer)
 

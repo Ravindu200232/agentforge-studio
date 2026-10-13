@@ -266,7 +266,8 @@ class LoginFlowTests(unittest.TestCase):
         process = mock.Mock()
         process.pid = 4242
         del process.terminate
-        cli_signin.SIGNINS._stop(process)
+        with mock.patch.object(cli_signin.os, "name", "posix"):
+            cli_signin.SIGNINS._stop(process)
         process.kill.assert_called_once_with()
 
     # What `atlas auth login --noBrowser` printed through a terminal (recorded from the real CLI).

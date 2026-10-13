@@ -131,6 +131,34 @@ class LiveFolderTests(unittest.TestCase):
 
 
 class SignInCallbackTests(unittest.TestCase):
+    def test_broker_callback_uses_a_free_port_when_web_studio_owns_the_default(self):
+        with socket.socket() as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            fixed_port = occupied.getsockname()[1]
+            with mock.patch.object(config, "TRANSPORT", "stdio"), mock.patch.object(config, "API_PORT", fixed_port), \
+                 mock.patch.object(httpd, "respond", return_value=(200, b"signed in", "text/html", "")):
+                try:
+                    callback_port = oauth_listener.open_for("/supabase-oauth/callback", 10, allow_dynamic=True)
+                    self.assertNotEqual(callback_port, fixed_port)
+                    self.assertEqual(urllib.request.urlopen(
+                        f"http://127.0.0.1:{callback_port}{config.API_PREFIX}/supabase-oauth/callback?code=c&state=s",
+                        timeout=5).read(), b"signed in")
+                finally:
+                    oauth_listener.close()
+
+    def test_broker_callback_does_not_share_a_reusable_web_server_port(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler) as web_server:
+            fixed_port = web_server.server_port
+            with mock.patch.object(config, "TRANSPORT", "stdio"), mock.patch.object(config, "API_PORT", fixed_port):
+                try:
+                    callback_port = oauth_listener.open_for("/supabase-oauth/callback", 10, allow_dynamic=True)
+                    self.assertNotEqual(callback_port, fixed_port)
+                finally:
+                    oauth_listener.close()
+
     def test_the_callback_is_answered_once_then_the_port_closes(self):
         port = free_port()
         with mock.patch.object(config, "TRANSPORT", "stdio"), mock.patch.object(config, "API_PORT", port), \

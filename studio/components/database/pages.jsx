@@ -12,11 +12,11 @@ import {
   Server, ShieldCheck, SquareFunction, Table2, Timer, Users, Zap,
 } from 'lucide-react'
 
-import { Auto, Bars, Card, Facts, Note, StackedBar, Stats, Table, View, bytes, parseTable } from '../deploy/cli/parts'
+import { Auto, Bars, Card, Empty, Facts, Note, StackedBar, Stats, Table, View, bytes, parseTable } from '../deploy/cli/parts'
 import { useDatabase } from './context'
 
-/** The rows of a `supabase db query -o json` answer. */
-const sqlRows = json => (Array.isArray(json?.rows) ? json.rows : null)
+/** Supabase CLI versions return either the rows directly or an object containing them. */
+const sqlRows = json => (Array.isArray(json) ? json : Array.isArray(json?.rows) ? json.rows : null)
 const number = value => (value == null || value === '' ? '—' : Number(value).toLocaleString())
 const percent = value => (value == null || value === '' ? '—' : `${Number(value).toFixed(1)}%`)
 
@@ -72,11 +72,11 @@ function SupabaseProject({ project, item }) {
 
 function SupabaseKeys({ project, item }) {
   return (
-    <View project={project} item={item} icon={KeyRound} title="API keys" about="The keys apps use to reach this project. Secret keys are never shown here: only their names, kinds and prefixes.">
+    <View project={project} item={item} icon={KeyRound} title="API keys" about="The keys apps use to reach this project. Key values are hidden; only their names, kinds and prefixes are shown.">
       {({ json }) => Array.isArray(json) ? (
         <Table rows={json} empty="No API keys." columns={[
           { label: 'Name', key: 'name' }, { label: 'Kind', key: 'type' }, { label: 'Prefix', key: 'prefix', mono: true },
-          { label: 'Description', key: 'description' }, { label: 'Key', key: 'api_key', mono: true },
+          { label: 'Description', key: 'description' },
         ]} />
       ) : null}
     </View>
@@ -159,7 +159,7 @@ function SupabaseUsers({ project, item }) {
     <View project={project} item={item} icon={Users} wide title="Auth users" about="Who can sign in to the app: how many accounts there are, how they sign in, and the newest ones.">
       {({ json }) => {
         const users = sqlRows(json)?.[0]?.users
-        if (!users) return null
+        if (!users) return sqlRows(json) ? <Empty title="No auth users to show." /> : null
         const providers = Object.entries(users.providers || {}).map(([label, value]) => ({ label, value }))
         return (<>
           <Stats items={[
@@ -238,9 +238,9 @@ function SupabaseEdge({ project, item }) {
 
 function SupabaseSecrets({ project, item }) {
   return (
-    <View project={project} item={item} icon={Lock} title="Secrets" about="Variables the edge functions are given. Only names and fingerprints are shown, never values.">
+    <View project={project} item={item} icon={Lock} title="Secrets" about="Variables the edge functions are given. Only their names are shown, never their values.">
       {({ json }) => Array.isArray(json) ? (
-        <Table rows={json} empty="No secrets are set." columns={[{ label: 'Name', key: 'name', mono: true }, { label: 'Fingerprint', key: 'value', mono: true }]} />
+        <Table rows={json} empty="No secrets are set." columns={[{ label: 'Name', key: 'name', mono: true }]} />
       ) : null}
     </View>
   )
@@ -249,7 +249,12 @@ function SupabaseSecrets({ project, item }) {
 function SupabaseMigrations({ project, item }) {
   return (
     <View project={project} item={item} icon={GitBranch} title="Migrations" about="Schema migrations in this project's folder and on the database, side by side: a line with only one side is not applied, or not in the folder.">
-      {({ text }) => <TextTable text={text} empty="No migrations, here or on the database." />}
+      {({ json, text }) => Array.isArray(json?.migrations) ? (
+        <Table rows={json.migrations} empty="No migrations, here or on the database." columns={[
+          { label: 'Version', key: 'time', mono: true }, { label: 'Local', key: 'local' }, { label: 'Database', key: 'remote' },
+        ]} />
+      ) : json && typeof json === 'object' ? <Empty title={json.message || 'No migrations to show.'} />
+        : <TextTable text={text} empty="No migrations, here or on the database." />}
     </View>
   )
 }
@@ -278,7 +283,7 @@ function SupabaseHealth({ project, item }) {
     <View project={project} item={item} icon={Activity} title="Database health" about="The database as a whole: its size, connections, and how often reads are answered from memory.">
       {({ json }) => {
         const row = sqlRows(json)?.[0]
-        if (!row) return null
+        if (!row) return sqlRows(json) ? <Empty title="No database statistics yet." /> : null
         const hit = Number(row.cache_hit_percent)
         return (<>
           <Stats items={[
@@ -298,16 +303,62 @@ function SupabaseHealth({ project, item }) {
   )
 }
 
-const textPage = (icon, title, about, empty) => function TextPage({ project, item }) {
+const statisticsPage = (icon, title, about, empty, columns) => function StatisticsPage({ project, item }) {
   return (
     <View project={project} item={item} icon={icon} wide title={title} about={about}>
-      {({ text }) => <TextTable text={text} empty={empty} />}
+      {({ json, text }) => {
+        const rows = sqlRows(json)
+        return rows ? <Table rows={rows} empty={empty} columns={columns} /> : <TextTable text={text} empty={empty} />
+      }}
     </View>
   )
 }
 
-const SupabaseIndexes = textPage(ListTree, 'Index use', 'How often each index is used and how big it is: an unused index only slows writes down.', 'No indexes have statistics yet.')
-const SupabaseOutliers = textPage(Timer, 'Slowest queries', 'The queries that took the most total time since the statistics were reset.', 'No query statistics yet.')
+const SupabaseIndexes = statisticsPage(ListTree, 'Index use', 'How often each index is used and how big it is: an unused index only slows writes down.', 'No indexes have statistics yet.', [
+  { label: 'Index', key: 'name', mono: true }, { label: 'Table', key: 'table', mono: true }, { label: 'Columns', key: 'columns' },
+  { label: 'Size', key: 'size' }, { label: 'Used', key: 'percent_used' }, { label: 'Index scans', key: 'index_scans' },
+  { label: 'Table scans', key: 'seq_scans' }, { label: 'Unused', key: 'unused', kind: 'yesno' },
+])
+const SupabaseOutliers = statisticsPage(Timer, 'Slowest queries', 'The queries that took the most total time since the statistics were reset.', 'No query statistics yet.', [
+  { label: 'Query', key: 'query', mono: true }, { label: 'Total time', key: 'total_exec_time' },
+  { label: 'Share', key: 'prop_exec_time' }, { label: 'Calls', key: 'ncalls' }, { label: 'I/O time', key: 'sync_io_time' },
+])
+
+function SupabasePostgresConfig({ project, item }) {
+  return (
+    <View project={project} item={item} icon={Server} title="Postgres settings" about="Configuration overrides set for this project's database.">
+      {({ json }) => json && typeof json === 'object'
+        ? Object.keys(json).length ? <Auto json={json} /> : <Empty title="No custom Postgres settings." />
+        : null}
+    </View>
+  )
+}
+
+function SupabaseSsl({ project, item }) {
+  return (
+    <View project={project} item={item} icon={ShieldCheck} title="SSL enforcement" about="Whether the database requires encrypted connections.">
+      {({ json }) => json && typeof json === 'object' ? (
+        <Stats items={[
+          { label: 'Database SSL', value: json.currentConfig?.database == null ? 'Unknown' : json.currentConfig.database ? 'Required' : 'Not required', tone: json.currentConfig?.database ? 'ok' : 'warn' },
+          { label: 'Configuration', value: json.appliedSuccessfully == null ? 'Unknown' : json.appliedSuccessfully ? 'Applied' : 'Pending', tone: json.appliedSuccessfully ? 'ok' : 'warn' },
+        ]} />
+      ) : null}
+    </View>
+  )
+}
+
+function SupabaseNetwork({ project, item }) {
+  return (
+    <View project={project} item={item} icon={ShieldCheck} title="Network restrictions" about="Addresses that may connect to this project's database.">
+      {({ json }) => json && typeof json === 'object' ? (
+        <Card><Facts items={[
+          ['Status', json.status, 'status'], ['Plan access', json.entitlement],
+          ['IPv4 addresses', json.config?.dbAllowedCidrs, 'chips'], ['IPv6 addresses', json.config?.dbAllowedCidrsV6, 'chips'],
+        ]} /></Card>
+      ) : null}
+    </View>
+  )
+}
 
 // ---- MongoDB ---------------------------------------------------------------------------------------------------
 
@@ -411,6 +462,9 @@ const PAGES = {
   'supabase/database-stats': SupabaseHealth,
   'supabase/index-stats': SupabaseIndexes,
   'supabase/outliers': SupabaseOutliers,
+  'supabase/postgres-config': SupabasePostgresConfig,
+  'supabase/ssl': SupabaseSsl,
+  'supabase/network': SupabaseNetwork,
   'mongodb/mongo-overview': MongoOverview,
   'mongodb/mongo-collections': MongoCollections,
   'mongodb/mongo-indexes': MongoIndexes,

@@ -45,10 +45,11 @@ release\out\AgentForgeSetup.exe /manifest=release\out\manifest.local.json /dir=$
 ./release/build.ps1 -Repo Ravindu200232/agentforge-releases -Publish
 ```
 
-This creates the GitHub release `v<version>` (version from `desktop/package.json`). The installer always reads
+This creates the GitHub release `v<major>` (for example, `v1` for app version `1.0.0`). The installer always reads
 `https://github.com/<repo>/releases/latest/download/manifest.json`, so the repository it publishes to must be public.
-The source repository stays private: releases go to the public `agentforge-releases` repository. A new release needs
-a new version in `desktop/package.json`.
+The source repository stays private: releases go to the public `agentforge-releases` repository. The app version in
+`desktop/package.json` is numeric for Windows; when replacing an existing major release, remove the old GitHub release
+and tag before publishing the replacement.
 
 ## What a blank computer gets
 
@@ -78,8 +79,10 @@ The desktop app's backend (`server.py --stdio`) talks to the window over stdin a
 - The live feed arrives over IPC.
 - A test run's live view goes through a folder.
 
-The one exception is a short-lived `127.0.0.1:7824` listener, open only while a Supabase browser sign-in waits for
-its callback. A generated app's own preview still runs on its own `127.0.0.1` port.
+The one exception is a short-lived loopback listener, open only while a Supabase browser sign-in waits for its
+callback. It uses port 7824 when free; the built-in OAuth broker can use a free port if another Studio already owns
+7824. A person's own OAuth app still uses its registered callback port. A generated app's own preview runs on its
+own `127.0.0.1` port.
 
 ## Unsigned builds
 

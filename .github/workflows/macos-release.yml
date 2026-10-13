@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - mac-version
+      - codex/mac-release-port
   workflow_dispatch:
     inputs:
       tag:
@@ -17,7 +18,7 @@ permissions:
 jobs:
   build-and-upload:
     name: Build Apple Silicon release
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 90
 
     steps:
@@ -31,6 +32,16 @@ jobs:
 
       - name: Build the signed app, DMG, and ZIP
         run: bash release/build-mac.sh
+
+      - name: Test the packaged backend and Studio
+        env:
+          PYTHONPATH: .
+        run: |
+          PYTHON=release/out-mac/AgentForge.app/Contents/Resources/app/python/bin/python3
+          for module in test_database_panel.py test_supabase_connect.py test_cli_signin.py test_desktop_backend.py; do
+            "$PYTHON" -m unittest discover -s tests -p "$module"
+          done
+          node --test tests/test_*.mjs tests/studio/test_*.mjs
 
       - name: Verify and checksum release files
         id: release
@@ -50,7 +61,19 @@ jobs:
           echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
 
+      - name: Keep validated files for review
+        if: github.ref == 'refs/heads/codex/mac-release-port'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentforge-mac-arm64
+          path: |
+            ${{ steps.release.outputs.dmg }}
+            ${{ steps.release.outputs.zip }}
+            release/out-mac/SHA256SUMS.txt
+          retention-days: 7
+
       - name: Upload files to the GitHub Release
+        if: github.ref == 'refs/heads/mac-version' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -60,3 +83,6 @@ jobs:
         run: |
           gh release view "$RELEASE_TAG" >/dev/null
           gh release upload "$RELEASE_TAG" "$DMG" "$ZIP" release/out-mac/SHA256SUMS.txt --clobber
+          gh release edit "$RELEASE_TAG" --notes-file release/mac-release-notes.md
+          gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$RELEASE_TAG" \
+            -f sha="$GITHUB_SHA" -F force=true >/dev/null

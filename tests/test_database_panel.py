@@ -60,7 +60,7 @@ class CatalogueTests(Base):
         self.assertEqual(listing["context"]["supabase"]["ref"], LINKED["ref"])
         tables = next(item for item in listing["items"] if item["id"] == "tables")
         self.assertEqual(tables["scope"], "database")
-        self.assertEqual(tables["display"], "supabase db query --linked -f tables.sql")   # the short form, not a path
+        self.assertEqual(tables["display"], "Supabase database · tables")
         self.assertNotIn("argv", tables)
 
     def test_a_mongodb_stack_with_a_saved_connection_also_gets_the_mongodb_looks_and_its_database(self):
@@ -95,6 +95,50 @@ class CatalogueTests(Base):
 
 
 class EnvironmentTests(Base):
+    def test_supabase_keys_and_secrets_never_reach_even_the_raw_panel(self):
+        examples = {
+            "api-keys": ([{"name": "server", "type": "secret", "prefix": "sb_secret_", "api_key": "new-key-value-not-known-to-mask"}],
+                         "new-key-value-not-known-to-mask"),
+            "secrets": ([{"name": "STRIPE_TOKEN", "value": "unknown-secret-value-9876"}], "unknown-secret-value-9876"),
+        }
+        for command_id, (rows, secret) in examples.items():
+            with self.subTest(command_id=command_id):
+                command = {"id": command_id, "tool": "supabase", "timeout": 10, "follow": False}
+                script = "import json; print('Initialising login role...'); print(json.dumps(" + repr(rows) + "))"
+                job = cli_monitor.Job(PROJECT, command, [sys.executable, "-c", script], env={})
+                cli_monitor.MONITORS._run(job, str(self.workspace))
+                answer = cli_monitor.MONITORS.poll(job.id) if job.id in cli_monitor.MONITORS._jobs else job.lines
+                self.assertEqual(job.status, "done", answer)
+                shown = "\n".join(job.lines)
+                self.assertNotIn(secret, shown)
+                self.assertNotIn("api_key", shown)
+                self.assertNotIn("value", shown)
+                self.assertIn(rows[0]["name"], shown)
+
+    def test_unexpected_secret_listing_format_fails_closed(self):
+        command = {"id": "api-keys", "tool": "supabase", "timeout": 10, "follow": False}
+        job = cli_monitor.Job(PROJECT, command, [sys.executable, "-c", "print('not json: sb_secret_real-looking-key')"], env={})
+        cli_monitor.MONITORS._run(job, str(self.workspace))
+        self.assertEqual(job.status, "failed")
+        self.assertNotIn("sb_secret_real-looking-key", "\n".join(job.lines))
+
+    def test_database_views_use_the_project_connection_without_exposing_it_to_the_panel(self):
+        password = "a:b/@?# token"
+        with mock.patch.object(supabase_connect, "record", return_value={"ref": LINKED["ref"], "db_password": password}):
+            original = ["db", "query", "--linked", "--project-ref", LINKED["ref"], "--output-format", "json"]
+            argv, hidden = cli_monitor._database_argv(PROJECT, original)
+        self.assertEqual(argv[:4], ["db", "query", "--db-url",
+                          f"postgresql://postgres:a%3Ab%2F%40%3F%23%20token@db.{LINKED['ref']}.supabase.co:5432/postgres"])
+        self.assertNotIn("--project-ref", argv)
+        self.assertNotIn("--linked", argv)
+        self.assertEqual(cli_monitor._mask(f"failed: {argv[3]}", hidden), "failed: <hidden>")
+        self.assertNotIn(password, str(cli_monitor.catalogue(PROJECT, scope="database")))
+
+    def test_a_missing_project_database_password_is_reported_before_running_a_query(self):
+        with mock.patch.object(supabase_connect, "record", return_value={"ref": LINKED["ref"]}):
+            with self.assertRaisesRegex(ValueError, "no saved database connection"):
+                cli_monitor._database_argv(PROJECT, ["db", "query", "--linked"])
+
     def test_the_supabase_tool_gets_the_accounts_token_and_never_prints_it_or_the_projects_keys(self):
         stand_in = {"targets": {"supabase": ["test"]}, "sets": {"test": {"tool": "python", "title": "Supabase", "env": "supabase",
                     "commands": [{"id": "who", "group": "T", "label": "Who", "argv": [
@@ -115,6 +159,22 @@ class EnvironmentTests(Base):
 
 
 class RowsTests(Base):
+    def test_supabase_table_rows_use_the_project_database_connection(self):
+        row = {"ref": LINKED["ref"], "db_password": "pa:ss/word"}
+        result = mock.Mock(returncode=0, stdout='{"rows":[{"sample":{"rows":[],"columns":[],"total":0}}]}', stderr="")
+        with mock.patch.object(supabase_connect, "record", return_value=row), \
+             mock.patch.object(supabase_connect, "_tool", return_value="supabase"), \
+             mock.patch.object(cli_monitor, "_set_environment", return_value=({}, [row["db_password"]])), \
+             mock.patch.object(database_rows.subprocess, "run", return_value=result) as run:
+            answer = database_rows.sample(PROJECT, {"source": "supabase", "table": "orders"})
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:4], ["supabase", "db", "query", "--db-url"])
+        self.assertNotIn("--linked", argv)
+        self.assertNotIn("--project-ref", argv)
+        self.assertIn("pa%3Ass%2Fword", argv[4])
+        self.assertEqual(answer["total"], 0)
+        self.assertEqual(list((self.record / "database").glob("rows-*.sql")), [])
+
     def test_a_table_is_named_by_quoted_identifiers_only(self):
         sql = database_rows._supabase_sql("public", "orders")
         self.assertIn('from "public"."orders" limit 20', sql)

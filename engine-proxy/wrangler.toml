@@ -12,7 +12,7 @@ workers_dev = true
 
 # The client id of that Supabase OAuth app. It is public (it is in the authorize link), so it is a plain variable.
 [vars]
-SUPABASE_CLIENT_ID = ""
+SUPABASE_CLIENT_ID = "79e0dd29-031f-4583-bf88-634dcfb94fe5"
 ACCOUNTS_URL = "https://agentforge-admin.vercel.app"
 
 # At most this many requests a minute from one address: one person's agents stay well under it, a script

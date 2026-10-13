@@ -29,7 +29,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from . import cli_signin, config, deploy_vars, prompts, secrets_guard
 
@@ -216,6 +216,37 @@ def _set_environment(kind: str, project: str) -> tuple[dict[str, str], list[str]
     return {}, []
 
 
+def _database_argv(project: str, argv: list[str]) -> tuple[list[str], list[str]]:
+    """Use the project's own Postgres connection for read-only CLI looks.
+
+    Supabase's `--linked` mode creates a login role through the Management API,
+    which requires the `database_write` OAuth scope even for a SELECT. The
+    project already owns a database password; use `--db-url` instead. The URL
+    remains server-side and is masked if the CLI includes it in an error.
+    """
+    if "--linked" not in argv:
+        return argv, []
+    from . import supabase_connect
+
+    row = supabase_connect.record(project)
+    ref, password = str(row.get("ref") or ""), str(row.get("db_password") or "")
+    if not re.fullmatch(r"[a-z0-9]{20}", ref) or not password:
+        raise ValueError("This Supabase project has no saved database connection. Reconnect the project and try again.")
+    url = f"postgresql://postgres:{quote(password, safe='')}@db.{ref}.supabase.co:5432/postgres"
+    out: list[str] = []
+    skip = False
+    for index, arg in enumerate(argv):
+        if skip:
+            skip = False
+        elif arg == "--linked":
+            out.extend(("--db-url", url))
+        elif arg == "--project-ref":
+            skip = True
+        else:
+            out.append(arg)
+    return out, [url, quote(password, safe="")]
+
+
 def _context(project: str, scope: str) -> tuple[dict, list[str]]:
     """The record a scope's commands are filled from, and which of its catalogue's targets apply."""
     if scope == "database":
@@ -295,6 +326,18 @@ def _mask(text: str, hidden: list[str] | None = None) -> str:
     return secrets_guard.mask(clean)
 
 
+def _public_supabase_listing(output: str, command_id: str) -> str:
+    """Allowlist list fields before a key/secret command reaches the browser or its Raw tab."""
+    start = output.find("[")
+    if start < 0:
+        raise ValueError("no JSON list")
+    rows, _ = json.JSONDecoder().raw_decode(output[start:])
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise ValueError("not a JSON list of records")
+    fields = ("name", "type", "prefix", "description") if command_id == "api-keys" else ("name",)
+    return json.dumps([{key: row[key] for key in fields if key in row} for row in rows], indent=2)
+
+
 def _kills_everything(command: str) -> bool:
     """Ending every Node process would end the Studio itself and every preview with it."""
     lowered = command.lower()
@@ -358,7 +401,9 @@ class Monitors:
         if not exe:
             raise ValueError(f"the {item['tool']} command line tool is not installed on this computer")
         env, hidden = _set_environment(str(group.get("env") or ""), project)
-        job = Job(project, item, [exe, *item["argv"]], env=env, hidden=hidden)
+        argv, credentials = _database_argv(project, item["argv"]) if scope == "database" and group.get("env") == "supabase" \
+            else (item["argv"], [])
+        job = Job(project, item, [exe, *argv], env=env, hidden=[*hidden, *credentials])
         return self._begin(job, project)
 
     def start_shell(self, project: str, command: str) -> dict[str, Any]:
@@ -436,9 +481,30 @@ class Monitors:
 
         threading.Thread(target=watchdog, daemon=True).start()
         assert job.process.stdout is not None
-        for line in iter(job.process.stdout.readline, ""):
-            job.add(_mask(line.rstrip("\n"), job.hidden))
-        code = job.process.wait()
+        needs_reconnect = False
+        protected = job.command.get("tool") == "supabase" and job.command.get("id") in ("api-keys", "secrets")
+        if protected:
+            # The CLI can print new, previously unknown keys. Never stream or retain its unfiltered output in Job.
+            output = job.process.stdout.read()
+            code = job.process.wait()
+            needs_reconnect = "OAuth token missing required scopes" in output
+            if job.status == "running" and code == 0:
+                try:
+                    job.add(_public_supabase_listing(output, job.command["id"]))
+                except (ValueError, json.JSONDecodeError):
+                    job.add("Supabase returned an unexpected list format. Try again after updating the Supabase CLI.")
+                    code = 1
+            elif job.status == "running" and not needs_reconnect:
+                job.add("Supabase could not read this list. Check your account and retry.")
+        else:
+            for line in iter(job.process.stdout.readline, ""):
+                clean = _mask(line.rstrip("\n"), job.hidden)
+                job.add(clean)
+                if job.command.get("tool") == "supabase" and "OAuth token missing required scopes" in clean:
+                    needs_reconnect = True
+            code = job.process.wait()
+        if needs_reconnect:
+            job.add("Reconnect your Supabase account in Settings, then retry this preview to grant the new read permissions.")
         if job.status == "running":
             self._finish(job, "done" if code == 0 else "failed", code)
         else:
