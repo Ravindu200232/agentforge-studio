@@ -33,11 +33,12 @@ jobs:
       - name: Build the signed app, DMG, and ZIP
         run: bash release/build-mac.sh
 
-      - name: Test the packaged backend and Studio
+      - name: Test the staged backend and Studio
         env:
           PYTHONPATH: .
+          PYTHONDONTWRITEBYTECODE: '1'
         run: |
-          PYTHON=release/out-mac/AgentForge.app/Contents/Resources/app/python/bin/python3
+          PYTHON=release/stage/app/python/bin/python3
           for module in test_database_panel.py test_supabase_connect.py test_cli_signin.py test_desktop_backend.py; do
             "$PYTHON" -m unittest discover -s tests -p "$module"
           done
@@ -54,7 +55,7 @@ jobs:
           DMG="release/out-mac/AgentForge-${VERSION}-mac-${ARCH}.dmg"
           ZIP="release/out-mac/AgentForge-${VERSION}-mac-${ARCH}.zip"
           test "$ARCH" = arm64
-          codesign --verify --deep --strict "$APP"
+          codesign --verify --deep --strict --verbose=4 "$APP"
           hdiutil verify "$DMG"
           unzip -tq "$ZIP"
           shasum -a 256 "$DMG" "$ZIP" > release/out-mac/SHA256SUMS.txt
