@@ -71,7 +71,9 @@ JSON
 
 step "Portable CPython 3.12 and backend packages"
 METADATA="$CACHE/python-build-standalone.json"
-curl --fail --location --silent --show-error --retry 4 \
+GITHUB_HEADERS=()
+if [[ -n "${GH_TOKEN:-}" ]]; then GITHUB_HEADERS=(-H "Authorization: Bearer $GH_TOKEN"); fi
+curl --fail --location --silent --show-error --retry 4 "${GITHUB_HEADERS[@]}" \
   https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest -o "$METADATA"
 PYTHON_URL="$(node -e '
 const fs = require("node:fs");
@@ -87,7 +89,7 @@ process.stdout.write(asset.browser_download_url);
 }
 PYTHON_ARCHIVE="$CACHE/$(basename "$PYTHON_URL")"
 if [[ ! -s "$PYTHON_ARCHIVE" ]]; then
-  curl --fail --location --silent --show-error --retry 4 "$PYTHON_URL" -o "$PYTHON_ARCHIVE.part"
+  curl --fail --location --silent --show-error --retry 4 "${GITHUB_HEADERS[@]}" "$PYTHON_URL" -o "$PYTHON_ARCHIVE.part"
   mv "$PYTHON_ARCHIVE.part" "$PYTHON_ARCHIVE"
 fi
 PYTHON_TMP="$(mktemp -d)"
