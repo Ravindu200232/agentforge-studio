@@ -489,14 +489,14 @@ function AdminRequests({ shown }) {
       {included ? (
         <>
           <p className="mt-1 text-[12px] text-muted">
-            Ollama account: ${Number(included.balance).toFixed(2)} left of ${Number(included.allowance).toFixed(2)} this period
+            AgentForge account: ${Number(included.balance).toFixed(2)} left of ${Number(included.allowance).toFixed(2)} this period
           </p>
           <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-panel2">
             <div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${usedShare}%` }} />
           </div>
         </>
       ) : shown.ollama?.error ? (
-        <p className="mt-1 text-[11.5px] text-muted">Ollama account: {shown.ollama.error}</p>
+        <p className="mt-1 text-[11.5px] text-muted">AgentForge account: {shown.ollama.error}</p>
       ) : null}
       <p className="mt-1.5 text-[11px] text-muted">Admin access is unlimited</p>
     </div>
