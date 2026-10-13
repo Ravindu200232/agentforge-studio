@@ -60,7 +60,7 @@ class CatalogueTests(Base):
         self.assertEqual(listing["context"]["supabase"]["ref"], LINKED["ref"])
         tables = next(item for item in listing["items"] if item["id"] == "tables")
         self.assertEqual(tables["scope"], "database")
-        self.assertEqual(tables["display"], "supabase db query --linked -f tables.sql")   # the short form, not a path
+        self.assertEqual(tables["display"], "Supabase database · tables")
         self.assertNotIn("argv", tables)
 
     def test_a_mongodb_stack_with_a_saved_connection_also_gets_the_mongodb_looks_and_its_database(self):
@@ -95,6 +95,23 @@ class CatalogueTests(Base):
 
 
 class EnvironmentTests(Base):
+    def test_database_views_use_the_project_connection_without_exposing_it_to_the_panel(self):
+        password = "a:b/@?# token"
+        with mock.patch.object(supabase_connect, "record", return_value={"ref": LINKED["ref"], "db_password": password}):
+            original = ["db", "query", "--linked", "--project-ref", LINKED["ref"], "--output-format", "json"]
+            argv, hidden = cli_monitor._database_argv(PROJECT, original)
+        self.assertEqual(argv[:4], ["db", "query", "--db-url",
+                          f"postgresql://postgres:a%3Ab%2F%40%3F%23%20token@db.{LINKED['ref']}.supabase.co:5432/postgres"])
+        self.assertNotIn("--project-ref", argv)
+        self.assertNotIn("--linked", argv)
+        self.assertEqual(cli_monitor._mask(f"failed: {argv[3]}", hidden), "failed: <hidden>")
+        self.assertNotIn(password, str(cli_monitor.catalogue(PROJECT, scope="database")))
+
+    def test_a_missing_project_database_password_is_reported_before_running_a_query(self):
+        with mock.patch.object(supabase_connect, "record", return_value={"ref": LINKED["ref"]}):
+            with self.assertRaisesRegex(ValueError, "no saved database connection"):
+                cli_monitor._database_argv(PROJECT, ["db", "query", "--linked"])
+
     def test_the_supabase_tool_gets_the_accounts_token_and_never_prints_it_or_the_projects_keys(self):
         stand_in = {"targets": {"supabase": ["test"]}, "sets": {"test": {"tool": "python", "title": "Supabase", "env": "supabase",
                     "commands": [{"id": "who", "group": "T", "label": "Who", "argv": [

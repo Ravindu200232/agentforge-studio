@@ -29,7 +29,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from . import cli_signin, config, deploy_vars, prompts, secrets_guard
 
@@ -216,6 +216,37 @@ def _set_environment(kind: str, project: str) -> tuple[dict[str, str], list[str]
     return {}, []
 
 
+def _database_argv(project: str, argv: list[str]) -> tuple[list[str], list[str]]:
+    """Use the project's own Postgres connection for read-only CLI looks.
+
+    Supabase's `--linked` mode creates a login role through the Management API,
+    which requires the `database_write` OAuth scope even for a SELECT. The
+    project already owns a database password; use `--db-url` instead. The URL
+    remains server-side and is masked if the CLI includes it in an error.
+    """
+    if "--linked" not in argv:
+        return argv, []
+    from . import supabase_connect
+
+    row = supabase_connect.record(project)
+    ref, password = str(row.get("ref") or ""), str(row.get("db_password") or "")
+    if not re.fullmatch(r"[a-z0-9]{20}", ref) or not password:
+        raise ValueError("This Supabase project has no saved database connection. Reconnect the project and try again.")
+    url = f"postgresql://postgres:{quote(password, safe='')}@db.{ref}.supabase.co:5432/postgres"
+    out: list[str] = []
+    skip = False
+    for index, arg in enumerate(argv):
+        if skip:
+            skip = False
+        elif arg == "--linked":
+            out.extend(("--db-url", url))
+        elif arg == "--project-ref":
+            skip = True
+        else:
+            out.append(arg)
+    return out, [url, quote(password, safe="")]
+
+
 def _context(project: str, scope: str) -> tuple[dict, list[str]]:
     """The record a scope's commands are filled from, and which of its catalogue's targets apply."""
     if scope == "database":
@@ -358,7 +389,9 @@ class Monitors:
         if not exe:
             raise ValueError(f"the {item['tool']} command line tool is not installed on this computer")
         env, hidden = _set_environment(str(group.get("env") or ""), project)
-        job = Job(project, item, [exe, *item["argv"]], env=env, hidden=hidden)
+        argv, credentials = _database_argv(project, item["argv"]) if scope == "database" and group.get("env") == "supabase" \
+            else (item["argv"], [])
+        job = Job(project, item, [exe, *argv], env=env, hidden=[*hidden, *credentials])
         return self._begin(job, project)
 
     def start_shell(self, project: str, command: str) -> dict[str, Any]:
