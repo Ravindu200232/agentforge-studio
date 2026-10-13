@@ -19,6 +19,8 @@ TOKEN = "account_token"
 CACHE = "account"
 FRESH_SECONDS = 15           # how long what the admin app said about the account is believed before asking again
 TIMEOUT = httpx.Timeout(15.0, connect=8.0)
+DEFAULT_FREE_MODEL = "deepseek-v4.1-flash:cloud"
+FREE_BLOCKED_MODELS = frozenset({"glm-5.3", "glm-5.3-flash"})
 
 _on = False                  # set by the Studio's backend at start
 _asked_at = 0.0
@@ -72,6 +74,11 @@ def _remember(account: dict[str, Any]) -> dict[str, Any]:
     if isinstance(account.get("ollama"), dict):
         row["ollama"] = account["ollama"]                    # the admin is told the Ollama account's balance
     config.save_settings({CACHE: row})
+    # An existing free account may have selected GLM before this restriction.
+    # Move its saved default to one it can actually use when the account refreshes.
+    if (config.engine() == "built-in" and _free(row)
+            and restricted_model(config.setting("model", ""))):
+        config.save_settings({"model": DEFAULT_FREE_MODEL})
     _asked_at = time.time()
     bus.transient({"type": "account_usage", **row})
     return row
@@ -148,7 +155,23 @@ def status(fresh: bool = False) -> dict[str, Any]:
             **(status_of(row) if row else {})}
 
 
-def check() -> None:
+def _free(row: dict[str, Any]) -> bool:
+    return bool(row) and not row.get("unlimited") and (row.get("plan") or "free") == "free"
+
+
+def free_plan() -> bool:
+    """Whether the signed-in built-in-engine account has the free model catalog."""
+    return enabled() and _free(current())
+
+
+def restricted_model(model: str) -> bool:
+    name = str(model or "").strip().lower()
+    if name.endswith(":cloud") or name.endswith("-cloud"):
+        name = name[:-6]
+    return name.split(":", 1)[0] in FREE_BLOCKED_MODELS
+
+
+def check(model: str = "") -> None:
     """Give a fast local error; the engine proxy makes the authoritative budget decision."""
     if not enabled() or config.engine() != "built-in":
         return
@@ -159,6 +182,8 @@ def check() -> None:
         raise NotAllowed("Your AgentForge account is inactive. Contact the admin.")
     if row.get("unlimited"):
         return                                               # the admin uses the Ollama account in full
+    if _free(row) and restricted_model(model):
+        raise NotAllowed("GLM 5.3 models are unavailable on the free plan. Choose another model.")
     if float(row.get("remainingUsd") or 0) <= 0:
         raise NotAllowed("Your cloud credit is used up. Switch to local Ollama or buy a paid plan.")
 

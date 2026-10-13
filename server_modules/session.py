@@ -361,7 +361,7 @@ class RetryingClient:
         # The signed-in AgentForge account may make this call (approved, requests left), and it is counted as one request.
         from . import accounts
 
-        accounts.check()
+        accounts.check(str(kwargs.get("model") or ""))
         if kwargs.get("stream"):
             try:
                 first = self._inner.chat(**kwargs)      # a real client only builds the stream here; nothing is sent yet

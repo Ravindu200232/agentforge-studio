@@ -55,6 +55,30 @@ function priceFor(model) {
     ? rate.map(value => value / 2) : rate
 }
 
+function freeBlockedModel(model) {
+  const name = String(model || '').trim().toLowerCase().replace(/:cloud$|-cloud$/, '').split(':')[0]
+  return name === 'glm-5.3' || name === 'glm-5.3-flash'
+}
+
+async function checkFreeModel(env, accountToken, model) {
+  if (!freeBlockedModel(model)) return null
+  if (!env.ACCOUNTS_URL) return answer(503, 'Cloud account service is unavailable.')
+  try {
+    const response = await fetch(`${env.ACCOUNTS_URL.replace(/\/$/, '')}/api/accounts/me`, {
+      headers: { authorization: `Bearer ${accountToken}` },
+    })
+    if (!response.ok) return answer(response.status, 'Cloud account could not be verified.')
+    const account = (await response.json()).account
+    if (!account) return answer(503, 'Cloud account could not be verified.')
+    if (!account.unlimited && (account.plan || 'free') === 'free') {
+      return answer(403, 'GLM 5.3 models are unavailable on the free plan. Choose another model.')
+    }
+  } catch {
+    return answer(503, 'Cloud account could not be verified.')
+  }
+  return null
+}
+
 async function meter(env, path, accountToken, payload) {
   if (!env.ACCOUNTS_URL || !env.ENGINE_METER_SECRET) throw new Error('Cloud metering is not configured')
   const response = await fetch(`${env.ACCOUNTS_URL.replace(/\/$/, '')}/api/accounts/${path}`, {
@@ -318,6 +342,8 @@ export default {
       catch { return answer(400, 'Invalid model request.') }
       rate = priceFor(model)
       if (!rate) return answer(400, 'This cloud model has no published USD rate yet.')
+      const freeModelError = await checkFreeModel(env, accountToken, model)
+      if (freeModelError) return freeModelError
       try { reservation = (await meter(env, 'authorize', accountToken, {})).reservation }
       catch (error) { return answer(error.status || 503, error.message) }
     }

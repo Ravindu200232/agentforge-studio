@@ -235,16 +235,16 @@ export default function Studio() {
           const saved = String(value || legacy).trim()
           return (saved && known.has(saved)) ? saved : fallback
         }
-        const now = useStore.getState().models
-        // A choice this engine does not have (an earlier default, a model since removed) is chosen again.
+        const state = useStore.getState()
+        const now = state.models
+        // A removed or plan-restricted model is replaced for every agent role, including older localStorage choices.
         const keep = value => value && (!known.size || known.has(value))
-        if (!(keep(now.planner) && keep(now.design) && keep(now.builder))) {
-          useStore.setState({ models: {
-            ...now,
-            planner: keep(now.planner) ? now.planner : pick(s?.planner_model),
-            design: keep(now.design) ? now.design : pick(s?.design_model),
-            builder: keep(now.builder) ? now.builder : pick(s?.builder_model),
-          } })
+        for (const role of state.ROLE_MODELS) {
+          if (!keep(now[role])) {
+            const saved = role === 'planner' ? s?.planner_model
+              : role === 'design' ? s?.design_model : role === 'builder' ? s?.builder_model : s?.agent_model
+            state.setRoleModel(role, pick(saved))
+          }
         }
         // The interview and the specification run on the saved model: never leave it empty or unknown.
         const chosen = useStore.getState().models.builder
@@ -598,6 +598,20 @@ export default function Studio() {
         onSuccess={() => {
           setAuthModalOpen(false)
           refreshProjects()
+          api.models().then(r => {
+            const choices = catalogue(r)
+            setCat(choices)
+            const allowed = new Set(choices.all.map(row => row.id))
+            if (!allowed.size) return
+            const preferred = allowed.has('deepseek-v4.1-flash:cloud')
+              ? 'deepseek-v4.1-flash:cloud' : choices.all[0].id
+            const state = useStore.getState()
+            for (const role of state.ROLE_MODELS) {
+              if (state.models[role] && !allowed.has(state.models[role])) {
+                state.setRoleModel(role, preferred)
+              }
+            }
+          }).catch(() => {})
         }}
       />
 
@@ -790,7 +804,7 @@ export default function Studio() {
               view === 'wireframe' && wireFocus ? 'hidden'
                 : mobileView === 'chat' ? 'flex w-full lg:w-auto' : 'hidden lg:flex'
             )}>
-              <AgentChat key={`${project}-${agentRole}`}
+              <AgentChat key={`${project}-${agentRole}-${user?.id || 'guest'}`}
                          projectTitle={projects.find(row => row?.name === project)?.title || ''} />
             </div>
 

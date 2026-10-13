@@ -191,6 +191,9 @@ def models(_ctx: dict) -> Any:
         cloud_models += [{"id": studio_name, "tag": "cloud", "remote": name}
                          for name in ollama_cloud.engine_names(saved)
                          if (studio_name := ollama_cloud.studio_name(name)) not in seen]
+    free_catalog = engine == "built-in" and accounts.free_plan()
+    if free_catalog:
+        cloud_models = [m for m in cloud_models if not accounts.restricted_model(m["id"])]
     return {
         "local": [m["id"] for m in local_models],
         "local_models": local_models,
@@ -200,7 +203,7 @@ def models(_ctx: dict) -> Any:
         "engine": engine,
         "ollama_ready": ready,
         "cloud_account": "",
-        "selected": saved.get("model", ""),
+        "selected": config.setting("model", "") if free_catalog else saved.get("model", ""),
     }
 
 
@@ -251,8 +254,8 @@ def _safe_mcp_servers(saved: Any) -> list[dict[str, Any]]:
 
 @route("GET", r"/settings")
 def read_settings(_ctx: dict) -> Any:
-    saved = config.settings()
     catalog = models({})
+    saved = config.settings()  # account refresh may migrate an older free-plan model choice
     deploy = {key: saved.get(key, "") for key in ("aws_profile", "aws_region", "aws_start_url", "aws_sso_region",
                                                   "github_client_id", "github_login", "azure_account",
                                                   "supabase_client_id", "supabase_org")}
@@ -319,6 +322,9 @@ def write_settings(ctx: dict) -> Any:
     for alias in ("agent_model", "planner_model", "builder_model", "design_model"):
         if patch.get(alias):
             patch["model"] = patch[alias]
+    if (patch.get("model") and config.engine({**config.settings(), **patch}) == "built-in"
+            and accounts.free_plan() and accounts.restricted_model(patch["model"])):
+        raise ValueError("GLM 5.3 models are unavailable on the free plan. Choose another model.")
     if "engine" in patch and str(patch["engine"] or "").lower() not in ("", "built-in", "cloud", "local"):
         raise ValueError("engine is built-in, cloud, local, or empty to choose itself")
     # `cloud` is never saved: config.settings() derives it from the key and `engine` every time it is read.

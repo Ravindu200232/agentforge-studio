@@ -88,7 +88,7 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
         const cloud = catalog.cloud || []
         const current = useStore.getState().models.builder
         const picked = cloud.find(row => row.id === current)?.id
-          || cloud.find(row => row.id === 'gpt-oss:120b-cloud')?.id || cloud[0]?.id
+          || cloud.find(row => row.id === 'deepseek-v4.1-flash:cloud')?.id || cloud[0]?.id
         if (picked) {
           useStore.setState(state => ({ models: { ...state.models, planner: picked, design: picked,
             builder: picked, agent: picked, qa: picked, srs: picked, deploy: picked } }))
