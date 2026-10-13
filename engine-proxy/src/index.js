@@ -101,28 +101,52 @@ function usageOf(reply, payloadSize, outputSize) {
     outputTokens: exact ? Math.max(0, output) : Math.ceil(outputSize / 4), estimated: !exact }
 }
 
-async function recordStream(stream, env, reservation, model, rate, payloadSize) {
+function meteredBody(stream, env, reservation, model, rate, payloadSize) {
   const reader = stream.getReader()
   const decoder = new TextDecoder()
   let buffer = '', final = null, bytes = 0
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      bytes += value.byteLength
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-      for (const line of lines) {
-        try { const row = JSON.parse(line); if (row.done || row.usage) final = row } catch {}
-      }
-    }
-    if (buffer.trim()) { try { final = JSON.parse(buffer) } catch {} }
-  } finally {
-    const tokens = usageOf(final, payloadSize, bytes)
-    const costMicros = Math.ceil(tokens.inputTokens * rate[0] + tokens.outputTokens * rate[1])
-    await meter(env, 'settle', '', { reservation, model, costMicros, ...tokens }).catch(() => {})
+  let settlement = null
+  function accept(line) {
+    try { const row = JSON.parse(line); if (row.done || row.usage) final = row } catch {}
   }
+  function settleOnce() {
+    if (!settlement) {
+      const tokens = usageOf(final, payloadSize, bytes)
+      const costMicros = Math.ceil(tokens.inputTokens * rate[0] + tokens.outputTokens * rate[1])
+      settlement = meter(env, 'settle', '', { reservation, model, costMicros, ...tokens })
+        .catch(error => { console.warn('Cloud settlement failed:', error.message) })
+    }
+    return settlement
+  }
+  // Settlement is part of the response stream itself. A waitUntil task can be stopped after 30 seconds,
+  // while a model is still generating; that used to leave its $0.25 reservation stuck in the account.
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read()
+        if (done) {
+          buffer += decoder.decode()
+          if (buffer.trim()) accept(buffer)
+          await settleOnce()
+          controller.close()
+          return
+        }
+        bytes += value.byteLength
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+        for (const line of lines) accept(line)
+        controller.enqueue(value)
+      } catch (error) {
+        await settleOnce()
+        controller.error(error)
+      }
+    },
+    async cancel(reason) {
+      await reader.cancel(reason).catch(() => {})
+      await settleOnce()
+    },
+  })
 }
 
 function answer(status, error) {
@@ -377,10 +401,10 @@ export default {
       if (value) out.set(name, value)
     }
     if (reservation && upstream.ok && upstream.body) {
-      const [toClient, toMeter] = upstream.body.tee()
-      ctx.waitUntil(recordStream(toMeter, env, reservation, model, rate, requestBody.byteLength))
-      return new Response(toClient, { status: upstream.status, headers: out })
+      return new Response(meteredBody(upstream.body, env, reservation, model, rate, requestBody.byteLength),
+        { status: upstream.status, headers: out })
     }
+    if (reservation && upstream.ok) ctx.waitUntil(meter(env, 'settle', '', { reservation, model, costMicros: 0 }).catch(() => {}))
     return new Response(upstream.body, { status: upstream.status, headers: out })
   },
 }
