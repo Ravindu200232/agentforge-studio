@@ -12,6 +12,7 @@ This build includes the latest AgentForge Studio changes:
 - The Design Select sample website preview fix.
 - Free AgentForge accounts use DeepSeek V4.1 Flash by default; GLM 5.3 and GLM 5.3 Flash are reserved for paid accounts.
 - Interrupted cloud model replies now resume by retrying the complete request, so incomplete JSON no longer stops SRS summaries and wireframes.
+- AgentForge Cloud sign-up sends a six-digit email code and creates the account only after the code is verified.
 
 The app bundles Python 3.12, Node.js 24, the privacy runtime, and Playwright Chromium. Supabase integration also requires the official CLI: brew install supabase/tap/supabase.
 
