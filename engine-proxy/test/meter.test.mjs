@@ -40,7 +40,9 @@ test('cloud chat needs an account and settles provider token usage once', async 
     assert.equal(data.inputTokens, 1000)
     assert.equal(data.outputTokens, 200)
     assert.equal(data.costMicros, 270)
-    assert.equal(calls.find(call => call.url.endsWith('/authorize')).options.headers.authorization, 'Bearer signed-account')
+    const authorized = calls.find(call => call.url.endsWith('/authorize'))
+    assert.equal(authorized.options.headers.authorization, 'Bearer signed-account')
+    assert.ok(JSON.parse(authorized.options.body).reserveMicros < 250_000)
   } finally { globalThis.fetch = original }
 })
 

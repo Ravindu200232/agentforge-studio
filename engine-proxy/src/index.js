@@ -368,7 +368,11 @@ export default {
       if (!rate) return answer(400, 'This cloud model has no published USD rate yet.')
       const freeModelError = await checkFreeModel(env, accountToken, model)
       if (freeModelError) return freeModelError
-      try { reservation = (await meter(env, 'authorize', accountToken, {})).reservation }
+      // USD rates are micros per token. Hold enough for the input and a generous output estimate,
+      // without tying up $0.25 for every inexpensive Flash request.
+      const reserveMicros = Math.max(10_000, Math.min(250_000,
+        Math.ceil(requestBody.byteLength / 4 * rate[0] + 16_384 * rate[1])))
+      try { reservation = (await meter(env, 'authorize', accountToken, { reserveMicros })).reservation }
       catch (error) { return answer(error.status || 503, error.message) }
     }
 
