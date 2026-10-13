@@ -7,7 +7,7 @@ import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
 
 export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 'methods', required = false }) {
-  const { login, signup, loading, error, notice, clearError } = useAuthStore()
+  const { login, signup, verifySignup, loading, error, notice, clearError } = useAuthStore()
 
   // screen: 'methods' | 'email'
   const [screen, setScreen] = useState(initialScreen)
@@ -18,6 +18,8 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
   const [formEmail, setFormEmail] = useState('')
   const [formPassword, setFormPassword] = useState('')
   const [formName, setFormName] = useState('')
+  const [verificationEmail, setVerificationEmail] = useState('')
+  const [verificationCode, setVerificationCode] = useState('')
   const [localError, setLocalError] = useState('')
 
   if (!isOpen) return null
@@ -57,11 +59,39 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
         return
       }
       const res = await signup(formLogin.trim(), formEmail.trim(), formPassword, formName.trim())
+      if (res.verificationRequired) {
+        setVerificationEmail(res.email)
+        setVerificationCode('')
+        setScreen('verify')
+        return
+      }
       if (res.ok) {
         onSuccess?.(res.user)
         handleClose()
       }
     }
+  }
+
+  async function handleVerify(e) {
+    e.preventDefault()
+    setLocalError('')
+    clearError()
+    if (!/^\d{6}$/.test(verificationCode.trim())) {
+      setLocalError('Enter the six-digit code from your email.')
+      return
+    }
+    const res = await verifySignup(verificationEmail, verificationCode.trim())
+    if (res.ok) {
+      onSuccess?.(res.user)
+      handleClose()
+    }
+  }
+
+  async function resendCode() {
+    setLocalError('')
+    clearError()
+    const res = await signup(formLogin.trim(), formEmail.trim(), formPassword, formName.trim())
+    if (res.verificationRequired) setVerificationCode('')
   }
 
   function go(next) {
@@ -161,6 +191,31 @@ export default function AuthModal({ isOpen, onClose, onSuccess, initialScreen = 
               </button>
             </div>
 
+          </div>
+        )}
+
+        {screen === 'verify' && (
+          <div className="mt-5">
+            <h2 className="text-center font-display text-[18px] font-bold text-ink">Check your email</h2>
+            <p className="mt-2 text-center text-[12.5px] text-muted">
+              We sent a six-digit code to <strong className="text-ink">{verificationEmail}</strong>. It expires in 10 minutes.
+            </p>
+            <form onSubmit={handleVerify} className="mt-5 space-y-3">
+              <label className="block text-[11.5px] font-medium text-muted" htmlFor="signup-code">Verification code</label>
+              <input id="signup-code" type="text" inputMode="numeric" autoComplete="one-time-code"
+                pattern="[0-9]{6}" maxLength={6} required autoFocus value={verificationCode}
+                onChange={e => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                placeholder="000000"
+                className="h-11 w-full rounded-xl border border-line bg-panel px-3 text-center font-mono text-[20px] tracking-[0.35em] text-ink focus:border-accent focus:outline-none" />
+              <button type="submit" disabled={loading}
+                className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-accent font-display text-[13px] font-semibold text-ink disabled:opacity-50">
+                {loading && <Loader2 className="size-4 animate-spin" />}Verify and create account
+              </button>
+            </form>
+            <div className="mt-3 flex justify-center gap-4 text-[12px]">
+              <button type="button" disabled={loading} onClick={resendCode} className="text-accent hover:underline disabled:opacity-50">Send a new code</button>
+              <button type="button" onClick={() => { clearError(); setScreen('email') }} className="text-muted hover:underline">Change email</button>
+            </div>
           </div>
         )}
 

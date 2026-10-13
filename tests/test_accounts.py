@@ -106,12 +106,18 @@ class AccountsTest(unittest.TestCase):
         self.assertTrue(httpd.account_checkout({})["ok"])
         self.assertEqual(self.calls[-1], ("POST", "/api/accounts/checkout", {}, "account-token"))
 
-    def test_signup_receives_free_credit_and_signs_in_immediately(self):
-        self.replies["/api/accounts/signup"] = (201, {"token": "new-token", "account": self.approved(usedUsd=0, remainingUsd=8)})
+    def test_signup_waits_for_emailed_code_before_creating_an_account(self):
+        self.replies["/api/accounts/signup"] = (200, {"verificationRequired": True, "email": "nimal@example.com"})
         result = httpd.auth_signup({"username": "nimal", "email": "nimal@example.com", "password": "password"})
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["verificationRequired"])
+        self.assertEqual(config.setting(accounts.TOKEN, ""), "")
+        self.replies["/api/accounts/signup/verify"] = (201, {"token": "new-token", "account": self.approved(usedUsd=0, remainingUsd=8)})
+        result = httpd.auth_signup_verify({"email": "nimal@example.com", "code": "123456"})
         self.assertTrue(result["ok"])
         self.assertEqual(config.setting(accounts.TOKEN), "new-token")
         self.assertEqual(result["user"]["account"]["remainingUsd"], 8)
+        self.assertEqual(self.calls[-1][2], {"email": "nimal@example.com", "code": "123456"})
 
 
 if __name__ == "__main__":
