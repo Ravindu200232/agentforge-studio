@@ -116,8 +116,13 @@ class LiveFolderTests(unittest.TestCase):
             channel = live.channel_for("prj_live_test")
             folder = Path(channel["AGENTFORGE_LIVE_DIR"])
             self.assertNotIn("AGENTFORGE_LIVE_URL", channel)
-            (folder / "000000000000001-0000000.json").write_text(json.dumps({"kind": "event", "n": 1}), encoding="utf-8")
-            (folder / "000000000000002-0000001.json").write_text(json.dumps({"kind": "end"}), encoding="utf-8")
+            # The real producer writes a .part file and renames it atomically.
+            # Writing .json directly lets the watcher read and discard it mid-write.
+            for name, body in (("000000000000001-0000000", {"kind": "event", "n": 1}),
+                               ("000000000000002-0000001", {"kind": "end"})):
+                aside = folder / f"{name}.part"
+                aside.write_text(json.dumps(body), encoding="utf-8")
+                aside.rename(folder / f"{name}.json")
             end = time.time() + 5
             while time.time() < end and handle.call_count < 2:
                 time.sleep(0.05)
