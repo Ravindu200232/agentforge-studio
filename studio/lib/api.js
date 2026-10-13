@@ -119,6 +119,7 @@ export const api = {
   health: () => req('/health'),
   auth: {
     signup: (data) => post('/auth/signup', data),
+    verifySignup: (data) => post('/auth/signup/verify', data),
     login: (data) => post('/auth/login', data),
     me: () => req('/auth/me'),
     logout: () => post('/auth/logout', {}),

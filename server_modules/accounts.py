@@ -89,8 +89,19 @@ def signup(username: str, email: str, password: str, name: str = "") -> dict[str
                                                           "name": name})
     if status >= 400:
         return {"ok": False, "error": str(data.get("error") or "The account could not be created.")}
+    if data.get("verificationRequired"):
+        return {"ok": False, "verificationRequired": True, "email": str(data.get("email") or email)}
     if not data.get("token"):
-        return {"ok": False, "error": "The account was created, but sign-in could not be completed."}
+        return {"ok": False, "error": "The verification email could not be sent."}
+    config.save_settings({TOKEN: str(data["token"])})
+    row = _remember(data.get("account") or {})
+    return {"ok": True, "user": user_of(row), "token": "account"}
+
+
+def verify_signup(email: str, code: str) -> dict[str, Any]:
+    status, data = _call("POST", "/api/accounts/signup/verify", {"email": email, "code": code})
+    if status >= 400 or not data.get("token"):
+        return {"ok": False, "error": str(data.get("error") or "The code could not be verified.")}
     config.save_settings({TOKEN: str(data["token"])})
     row = _remember(data.get("account") or {})
     return {"ok": True, "user": user_of(row), "token": "account"}

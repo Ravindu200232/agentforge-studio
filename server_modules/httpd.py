@@ -132,6 +132,16 @@ def auth_signup(ctx: dict) -> Any:
         return {"ok": False, "error": str(exc)}
 
 
+@route("POST", r"/auth/signup/verify")
+def auth_signup_verify(ctx: dict) -> Any:
+    if not accounts.enabled() or config.engine() == "local":
+        return {"ok": False, "error": "Email verification is for AgentForge Cloud accounts."}
+    try:
+        return accounts.verify_signup(str(ctx.get("email") or "").strip(), str(ctx.get("code") or "").strip())
+    except ConnectionError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def auth_local(ctx: dict) -> Any:
     name = str(ctx.get("name") or ctx.get("username") or "").strip()
     user = {**LOCAL_USER, **({"name": name} if name else {}),

@@ -65,11 +65,35 @@ export const useAuthStore = create((set, get) => ({
         connect()
         return { ok: true, user: res.user }
       }
+      if (res?.verificationRequired) {
+        set({ loading: false, error: '' })
+        return { ok: false, verificationRequired: true, email: res.email || email }
+      }
       const err = res?.error || 'Registration failed'
       set({ loading: false, error: err })
       return { ok: false, error: err }
     } catch (e) {
       const err = e?.message || 'Registration failed'
+      set({ loading: false, error: err })
+      return { ok: false, error: err }
+    }
+  },
+
+  verifySignup: async (email, code) => {
+    set({ loading: true, error: '' })
+    try {
+      const res = await api.auth.verifySignup({ email, code })
+      if (res?.ok && res?.token) {
+        setAuthToken(res.token)
+        set({ user: res.user, token: res.token, loading: false, error: '' })
+        connect()
+        return { ok: true, user: res.user }
+      }
+      const err = res?.error || 'The code could not be verified.'
+      set({ loading: false, error: err })
+      return { ok: false, error: err }
+    } catch (e) {
+      const err = e?.message || 'The code could not be verified.'
       set({ loading: false, error: err })
       return { ok: false, error: err }
     }
