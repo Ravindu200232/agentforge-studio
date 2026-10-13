@@ -168,6 +168,8 @@ def _stream_chat(chat: Callable[..., Any], kwargs: dict[str, Any],
             thinking.append(delta.thinking)
         if delta.tool_calls:
             calls.extend(delta.tool_calls)
+    if final is None or getattr(final, "done", None) is False:
+        raise ConnectionError("The model stream ended before its final response.")
     if final is not None and on_usage is not None:
         on_usage(final)
     return ollama.Message(role="assistant", content="".join(content),

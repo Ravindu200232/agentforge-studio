@@ -293,7 +293,9 @@ class Agent:
             if tool_calls:
                 calls.extend(tool_calls)
         if final is None:
-            raise RuntimeError("the model stream ended without a response")
+            raise ConnectionError("The model stream ended without a response")
+        if getattr(final, "done", None) is False:
+            raise ConnectionError("The model stream ended before its final response.")
         return SimpleNamespace(
             message=ollama.Message(role="assistant", content="".join(content),
                                    thinking="".join(thinking) or None,

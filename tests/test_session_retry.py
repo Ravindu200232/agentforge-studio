@@ -8,9 +8,11 @@ transport exceptions are not subclasses of Python's ConnectionError/OSError/
 TimeoutError, so `_transient()` never saw them as retryable.
 """
 import ssl
+import json
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -41,6 +43,9 @@ class TransientClassificationTests(unittest.TestCase):
         # retry fixes.
         self.assertFalse(session._transient(httpx.DecodingError("bad body")))
         self.assertFalse(session._transient(httpx.TooManyRedirects("loop")))
+
+    def test_a_truncated_ollama_stream_line_is_transient(self):
+        self.assertTrue(session._transient(json.JSONDecodeError("Unterminated string", '{"model":"', 9)))
 
     def test_the_original_built_in_exceptions_still_count(self):
         self.assertTrue(session._transient(ConnectionError("x")))
@@ -121,6 +126,34 @@ class StreamedReplyTests(unittest.TestCase):
         with patch.object(session.time, "sleep"):
             self.assertEqual(list(client.chat(model="m", messages=[], stream=True)), ["a", "b"])
         self.assertEqual(len(calls), 3)
+
+    def test_a_malformed_stream_line_before_the_first_chunk_is_asked_for_again(self):
+        broken = json.JSONDecodeError("Unterminated string", '{"model":"', 9)
+        client, calls = self._client([lambda: _opening_fails(broken, None), lambda: iter(["complete"])])
+        with patch.object(session.time, "sleep"):
+            self.assertEqual(list(client.chat(model="m", messages=[], stream=True)), ["complete"])
+        self.assertEqual(len(calls), 2)
+
+    def test_the_agent_retries_an_incomplete_model_reply_without_duplicating_words(self):
+        broken = json.JSONDecodeError("Unterminated string", '{"model":"', 9)
+
+        def partial():
+            yield SimpleNamespace(message=SimpleNamespace(content="partial", thinking=None, tool_calls=None))
+            raise broken
+
+        def complete():
+            yield SimpleNamespace(message=SimpleNamespace(content="complete", thinking=None, tool_calls=None),
+                                  done=True)
+
+        client, calls = self._client([partial, complete])
+        agent = session.Agent.__new__(session.Agent)
+        agent.cloud = True
+        agent.model = "m"
+        agent.client = client
+        with patch.object(session.time, "sleep"):
+            reply = agent._chat_response({"model": "m", "messages": []})
+        self.assertEqual(reply.message.content, "complete")
+        self.assertEqual(len(calls), 2)
 
     def test_an_error_status_on_opening_the_stream_is_asked_for_again(self):
         busy = httpx.HTTPStatusError("bad gateway", request=httpx.Request("POST", "http://x"),
