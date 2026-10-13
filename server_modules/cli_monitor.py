@@ -469,9 +469,15 @@ class Monitors:
 
         threading.Thread(target=watchdog, daemon=True).start()
         assert job.process.stdout is not None
+        needs_reconnect = False
         for line in iter(job.process.stdout.readline, ""):
-            job.add(_mask(line.rstrip("\n"), job.hidden))
+            clean = _mask(line.rstrip("\n"), job.hidden)
+            job.add(clean)
+            if job.command.get("tool") == "supabase" and "OAuth token missing required scopes" in clean:
+                needs_reconnect = True
         code = job.process.wait()
+        if needs_reconnect:
+            job.add("Reconnect your Supabase account in Settings, then retry this preview to grant the new read permissions.")
         if job.status == "running":
             self._finish(job, "done" if code == 0 else "failed", code)
         else:
