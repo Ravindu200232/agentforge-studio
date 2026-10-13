@@ -146,6 +146,18 @@ if (Want 'python') {
     if ($LASTEXITCODE -ne 0) { throw 'pip install failed' }
     & $hostPython -m pip install --disable-pip-version-check --target $site --no-deps $PrivacyModel
     if ($LASTEXITCODE -ne 0) { throw 'pip install of the privacy filter model failed' }
+
+    # spaCy/thinc's Windows extensions import MSVCP140.dll by its ordinary
+    # name. Python's embeddable ZIP includes VCRUNTIME, but not this C++ DLL;
+    # on a clean PC the privacy filter fails while importing numpy_ops.
+    # NumPy's wheel already ships the matching x64 runtime under a hashed
+    # name for its own extensions. Make that same packaged binary available
+    # by the name thinc requests, next to python.exe (app-local DLL search).
+    $cppRuntime = @(Get-ChildItem (Join-Path $site 'numpy.libs') -Filter 'msvcp140-*.dll')
+    if ($cppRuntime.Count -ne 1) { throw 'Expected one NumPy-bundled MSVCP140.dll for the privacy filter' }
+    Copy-Item $cppRuntime[0].FullName (Join-Path $python 'MSVCP140.dll') -Force
+    & (Join-Path $python 'python.exe') -c 'import spacy, thinc.backends.numpy_ops, presidio_analyzer, presidio_anonymizer'
+    if ($LASTEXITCODE -ne 0) { throw 'Packaged privacy filter failed to import' }
 }
 
 if (Want 'package') {

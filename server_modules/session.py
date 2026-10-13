@@ -114,7 +114,12 @@ def _transient(exc: Exception) -> bool:
     # sending a response") are not Python's own ConnectionError/OSError/
     # TimeoutError — a real one slipped through here uncaught on a live run
     # (see commit history), which is exactly the "bad minute" this exists for.
-    return isinstance(exc, (ConnectionError, TimeoutError, OSError, httpx.TransportError))
+    # Ollama reads streamed NDJSON one line at a time. If the service or proxy
+    # closes mid-line, its json.loads(line) raises JSONDecodeError even though
+    # the fault is a truncated transport response. The callers that assemble
+    # a whole model reply can safely retry that request from the beginning.
+    return isinstance(exc, (ConnectionError, TimeoutError, OSError, httpx.TransportError,
+                            json.JSONDecodeError))
 
 
 HOLD_SECONDS = 1800        # how long a run holds still for "Try again" before it gives up

@@ -95,6 +95,11 @@ def _build() -> dict[str, Any]:
         from presidio_analyzer.predefined_recognizers import PhoneRecognizer
         from presidio_anonymizer import AnonymizerEngine
     except ImportError as exc:
+        if "DLL load failed" in str(exc):
+            raise NotSent(
+                "The privacy filter's Windows runtime could not load, so nothing you type is sent to the model. "
+                "Update or reinstall AgentForge, then try again. "
+                f"({exc})") from exc
         raise NotSent(
             "The privacy filter (Microsoft Presidio) is not installed, so nothing you type is sent to the model. "
             f"Run studio.bat again (it installs what is missing), or install it with `{INSTALL}`, or turn the filter off in the "

@@ -304,6 +304,43 @@ class CutOffReplyTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(len(started), 2, "a caller that shows the words starts them over")
 
+    def test_a_truncated_json_stream_line_retries_the_whole_reply(self):
+        import json
+
+        def broken():
+            def stream():
+                yield FakeChunk("partial answer")
+                raise json.JSONDecodeError("Unterminated string", '{"model":"', 9)
+            return stream()
+
+        client, calls = self.client([broken, self.whole])
+        started = []
+        with mock.patch("server_modules.session.time.sleep"):
+            message = llm_tools.run_chat(client.chat, {"model": "m", "messages": [], "stream": True}, None,
+                                         on_stream_start=lambda: started.append(1))
+        self.assertEqual(message.content, "the whole answer")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(started), 2)
+
+    def test_a_stream_without_its_final_done_chunk_retries_whole_reply(self):
+        def incomplete():
+            chunk = FakeChunk("looks complete but is not")
+            chunk.done = False
+            return iter([chunk])
+
+        client, calls = self.client([incomplete, self.whole])
+        with mock.patch("server_modules.session.time.sleep"):
+            message = llm_tools.run_chat(client.chat, {"model": "m", "messages": [], "stream": True}, None)
+        self.assertEqual(message.content, "the whole answer")
+        self.assertEqual(len(calls), 2)
+
+    def test_an_empty_stream_is_retried(self):
+        client, calls = self.client([lambda: iter(()), self.whole])
+        with mock.patch("server_modules.session.time.sleep"):
+            message = llm_tools.run_chat(client.chat, {"model": "m", "messages": [], "stream": True}, None)
+        self.assertEqual(message.content, "the whole answer")
+        self.assertEqual(len(calls), 2)
+
     def test_it_is_asked_for_again_through_a_whole_run_of_bad_minutes_and_not_forever(self):
         from server_modules import session
 
