@@ -326,6 +326,18 @@ def _mask(text: str, hidden: list[str] | None = None) -> str:
     return secrets_guard.mask(clean)
 
 
+def _public_supabase_listing(output: str, command_id: str) -> str:
+    """Allowlist list fields before a key/secret command reaches the browser or its Raw tab."""
+    start = output.find("[")
+    if start < 0:
+        raise ValueError("no JSON list")
+    rows, _ = json.JSONDecoder().raw_decode(output[start:])
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise ValueError("not a JSON list of records")
+    fields = ("name", "type", "prefix", "description") if command_id == "api-keys" else ("name",)
+    return json.dumps([{key: row[key] for key in fields if key in row} for row in rows], indent=2)
+
+
 def _kills_everything(command: str) -> bool:
     """Ending every Node process would end the Studio itself and every preview with it."""
     lowered = command.lower()
@@ -470,12 +482,27 @@ class Monitors:
         threading.Thread(target=watchdog, daemon=True).start()
         assert job.process.stdout is not None
         needs_reconnect = False
-        for line in iter(job.process.stdout.readline, ""):
-            clean = _mask(line.rstrip("\n"), job.hidden)
-            job.add(clean)
-            if job.command.get("tool") == "supabase" and "OAuth token missing required scopes" in clean:
-                needs_reconnect = True
-        code = job.process.wait()
+        protected = job.command.get("tool") == "supabase" and job.command.get("id") in ("api-keys", "secrets")
+        if protected:
+            # The CLI can print new, previously unknown keys. Never stream or retain its unfiltered output in Job.
+            output = job.process.stdout.read()
+            code = job.process.wait()
+            needs_reconnect = "OAuth token missing required scopes" in output
+            if job.status == "running" and code == 0:
+                try:
+                    job.add(_public_supabase_listing(output, job.command["id"]))
+                except (ValueError, json.JSONDecodeError):
+                    job.add("Supabase returned an unexpected list format. Try again after updating the Supabase CLI.")
+                    code = 1
+            elif job.status == "running" and not needs_reconnect:
+                job.add("Supabase could not read this list. Check your account and retry.")
+        else:
+            for line in iter(job.process.stdout.readline, ""):
+                clean = _mask(line.rstrip("\n"), job.hidden)
+                job.add(clean)
+                if job.command.get("tool") == "supabase" and "OAuth token missing required scopes" in clean:
+                    needs_reconnect = True
+            code = job.process.wait()
         if needs_reconnect:
             job.add("Reconnect your Supabase account in Settings, then retry this preview to grant the new read permissions.")
         if job.status == "running":

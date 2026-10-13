@@ -95,6 +95,33 @@ class CatalogueTests(Base):
 
 
 class EnvironmentTests(Base):
+    def test_supabase_keys_and_secrets_never_reach_even_the_raw_panel(self):
+        examples = {
+            "api-keys": ([{"name": "server", "type": "secret", "prefix": "sb_secret_", "api_key": "new-key-value-not-known-to-mask"}],
+                         "new-key-value-not-known-to-mask"),
+            "secrets": ([{"name": "STRIPE_TOKEN", "value": "unknown-secret-value-9876"}], "unknown-secret-value-9876"),
+        }
+        for command_id, (rows, secret) in examples.items():
+            with self.subTest(command_id=command_id):
+                command = {"id": command_id, "tool": "supabase", "timeout": 10, "follow": False}
+                script = "import json; print('Initialising login role...'); print(json.dumps(" + repr(rows) + "))"
+                job = cli_monitor.Job(PROJECT, command, [sys.executable, "-c", script], env={})
+                cli_monitor.MONITORS._run(job, str(self.workspace))
+                answer = cli_monitor.MONITORS.poll(job.id) if job.id in cli_monitor.MONITORS._jobs else job.lines
+                self.assertEqual(job.status, "done", answer)
+                shown = "\n".join(job.lines)
+                self.assertNotIn(secret, shown)
+                self.assertNotIn("api_key", shown)
+                self.assertNotIn("value", shown)
+                self.assertIn(rows[0]["name"], shown)
+
+    def test_unexpected_secret_listing_format_fails_closed(self):
+        command = {"id": "api-keys", "tool": "supabase", "timeout": 10, "follow": False}
+        job = cli_monitor.Job(PROJECT, command, [sys.executable, "-c", "print('not json: sb_secret_real-looking-key')"], env={})
+        cli_monitor.MONITORS._run(job, str(self.workspace))
+        self.assertEqual(job.status, "failed")
+        self.assertNotIn("sb_secret_real-looking-key", "\n".join(job.lines))
+
     def test_database_views_use_the_project_connection_without_exposing_it_to_the_panel(self):
         password = "a:b/@?# token"
         with mock.patch.object(supabase_connect, "record", return_value={"ref": LINKED["ref"], "db_password": password}):
