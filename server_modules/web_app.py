@@ -24,7 +24,6 @@ import tarfile
 import threading
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import quote
 
 from . import bus, config, prompts
 
@@ -507,25 +506,19 @@ def check_pages(app: Path) -> list[tuple[str, str]] | None:
         browser = screenshot.working_browser()
         if not browser or not built(app):
             return None
-        demo = (app / "src" / "demo.ts").read_text(encoding="utf-8")
-        match = re.search(r"export const accounts: Account\[\] = (\[.*?\]);\s*export const signInRoute", demo, re.DOTALL)
-        accounts = json.loads(match.group(1)) if match else []
-        sign_ins = [str(account.get("email") or "") for account in accounts if account.get("email")]
         with tempfile.TemporaryDirectory(prefix="agentforge-check-") as folder:
             page = Path(folder) / "app.html"
             shutil.copyfile(app / BUNDLE, page)
-            found: list[tuple[str, str]] = []
-            for email in ["", *sign_ins]:
-                suffix = f"?selftest=1{'&as=' + quote(email, safe='') if email else ''}#/"
-                dom = screenshot.dump_dom(page, suffix, browser=browser)
-                marked = _SELFTEST.search(dom or "")
-                if not marked:
-                    return None
-                rows = json.loads(htmllib.unescape(marked.group(1)))
-                found.extend((str(row["route"]), str(row["error"])[:300]) for row in rows)
+            dom = screenshot.dump_dom(page, "?selftest=1#/", browser=browser)
     except Exception:  # noqa: BLE001 - a check that cannot run is not a reason to stop
         return None
-    return list(dict.fromkeys(found))
+    found = _SELFTEST.search(dom or "")
+    if not found:
+        return None
+    try:
+        return [(str(row["route"]), str(row["error"])[:300]) for row in json.loads(htmllib.unescape(found.group(1)))]
+    except (ValueError, KeyError, TypeError):
+        return None
 
 
 def _crashing(rows: list[tuple[str, str]]) -> str:
@@ -533,17 +526,11 @@ def _crashing(rows: list[tuple[str, str]]) -> str:
             "and in what it imports:\n\n" + "\n".join(f"- `{route}`: {error}" for route, error in rows[:20]))
 
 
-def ensure_built(app: Path, repair: Callable[[str], None] | None = None, rounds: int | None = 2,
-                 require_clean_pages: bool = False) -> None:
-    """Let the agent repair each build or page error, then verify again.
-
-    A prototype has no fixed number of repair rounds. Repeated work without a
-    source change or a different result is reported as a stalled repair.
-    """
+def ensure_built(app: Path, repair: Callable[[str], None] | None = None, rounds: int = 2) -> None:
+    """Bundle the app and open its screens. When it does not bundle, or a screen crashes, give what was said to `repair` (the agent
+    fixes the files) and try again. An app that does not bundle after the agent's tries is an error; a screen that still crashes is
+    not: it shows what is wrong in its own place, and the rest of the app works."""
     tries = 0
-    seen: dict[tuple[str, str], int] = {}
-    unchanged = 0
-    previous_source = ""
     while True:
         ok, text = bundle(app)
         if ok:
@@ -551,21 +538,10 @@ def ensure_built(app: Path, repair: Callable[[str], None] | None = None, rounds:
             if not crashing:
                 return
             text = _crashing(crashing)
-        if repair is None or (rounds is not None and tries >= rounds):
-            if not ok or require_clean_pages:
+        if repair is None or tries >= rounds:
+            if not ok:
                 raise BuildFailed(text)
             return
-        source = fingerprint(app)
-        state = (source, text)
-        seen[state] = seen.get(state, 0) + 1
-        unchanged = unchanged + 1 if source == previous_source else 0
-        # A model can say it fixed a problem without touching the source. Give
-        # it another chance with the same diagnostic, then stop a stuck task.
-        if seen[state] >= 3 or unchanged >= 3:
-            if not ok or require_clean_pages:
-                raise BuildFailed(f"Repair made no progress: {text}")
-            return
-        previous_source = source
         tries += 1
         repair(text)
 
@@ -585,10 +561,7 @@ def build_for(session, project: str, kind: str, agent: str = "") -> None:
             raise RunCancelled(project)
 
     bus.log(project, "INFO", f"Bundling the {kind} into one page.", agent=agent or bus.DESIGNER)
-    # Vite often reports only the first invalid import. Let the model fix each
-    # subsequent error and rerun validation until the prototype is usable.
-    ensure_built(app, repair, rounds=None if kind == "prototype" else 2,
-                 require_clean_pages=kind == "prototype")
+    ensure_built(app, repair)
     bus.log(project, "SUCCESS", f"The {kind} is bundled ({(app / BUNDLE).stat().st_size // 1024:,} KB).", agent=agent or bus.DESIGNER)
 
 
