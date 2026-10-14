@@ -87,8 +87,9 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
         const catalog = await api.models()
         const cloud = catalog.cloud || []
         const current = useStore.getState().models.builder
-        const picked = cloud.find(row => row.id === current)?.id
-          || cloud.find(row => row.id === 'deepseek-v4.1-flash:cloud')?.id || cloud[0]?.id
+        const picked = cloud.find(row => row.id === current && !row.locked)?.id
+          || cloud.find(row => row.id === 'deepseek-v4.1-flash:cloud' && !row.locked)?.id
+          || cloud.find(row => !row.locked)?.id
         if (picked) {
           useStore.setState(state => ({ models: { ...state.models, planner: picked, design: picked,
             builder: picked, agent: picked, qa: picked, srs: picked, deploy: picked } }))
@@ -439,7 +440,10 @@ function AccountRequests() {
   const limit = Number(shown.limitUsd) || 0
   const used = Number(shown.usedUsd) || 0
   const left = Math.max(0, Number(shown.remainingUsd) || 0)
-  const share = limit ? Math.min(100, Math.round((used / limit) * 100)) : 100
+  const balance = Math.max(0, Number(shown.balanceUsd ?? (limit - used)) || 0)
+  const held = Math.max(0, Number(shown.reservedUsd ?? (balance - left)) || 0)
+  const usedShare = limit ? Math.min(100, (used / limit) * 100) : 100
+  const heldShare = limit ? Math.min(100 - usedShare, (held / limit) * 100) : 0
   const low = !limit || left / limit < 0.1
   return (
     <div className="rounded-2xl border border-line bg-panel px-4 py-4">
@@ -448,14 +452,16 @@ function AccountRequests() {
         <span className="text-[11px] text-muted2">{shown.email}</span>
       </div>
       <p className={`mt-2 font-display text-[22px] font-black tabular-nums ${low ? 'text-bad' : 'text-ink'}`}>
-        ${left.toFixed(2)} <span className="text-[12px] font-semibold text-muted">left of ${limit.toFixed(2)}</span>
+        ${left.toFixed(2)} <span className="text-[12px] font-semibold text-muted">available of ${limit.toFixed(2)}</span>
       </p>
-      <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-panel2">
-        <div className={`h-full rounded-full transition-all duration-500 ${low ? 'bg-bad' : 'bg-accent'}`} style={{ width: `${share}%` }} />
+      <div className="mt-2 flex h-2 w-full overflow-hidden rounded-full bg-panel2">
+        <div className={`h-full transition-all duration-500 ${low ? 'bg-bad' : 'bg-accent'}`} style={{ width: `${usedShare}%` }} />
+        <div className="h-full bg-amber-400 transition-all duration-500" style={{ width: `${heldShare}%` }} />
       </div>
       <p className="mt-1.5 text-[11px] text-muted">
-        ${used.toFixed(2)} used · local Ollama does not spend this credit
+        ${used.toFixed(2)} spent{held > 0 ? ` · $${held.toFixed(2)} temporarily held for active AI requests` : ''}
       </p>
+      <p className="text-[11px] text-muted">${balance.toFixed(2)} unspent in total · local Ollama does not spend this credit</p>
       {shown.weekResetsAt && <p className="text-[11px] text-muted">Resets {new Date(shown.weekResetsAt).toLocaleString()}</p>}
       {shown.plan !== 'paid' && <button type="button" disabled={!shown.checkoutAvailable}
         className="mt-3 rounded-xl bg-accent px-3 py-2 text-[12px] font-semibold text-ink disabled:opacity-50"

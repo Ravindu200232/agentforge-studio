@@ -20,7 +20,7 @@ CACHE = "account"
 FRESH_SECONDS = 15           # how long what the admin app said about the account is believed before asking again
 TIMEOUT = httpx.Timeout(15.0, connect=8.0)
 DEFAULT_FREE_MODEL = "deepseek-v4.1-flash:cloud"
-FREE_BLOCKED_MODELS = frozenset({"glm-5.3", "glm-5.3-flash"})
+FREE_MODELS = frozenset({"deepseek-v4.1-flash", "gemma4:31b"})
 
 _on = False                  # set by the Studio's backend at start
 _asked_at = 0.0
@@ -68,14 +68,14 @@ def _call(method: str, path: str, body: dict[str, Any] | None = None, token: str
 def _remember(account: dict[str, Any]) -> dict[str, Any]:
     global _asked_at
     row = {key: account.get(key) for key in ("id", "email", "name", "username", "status", "plan",
-                                           "limitUsd", "usedUsd", "remainingUsd", "weekResetsAt", "paidUntil",
+                                           "limitUsd", "usedUsd", "reservedUsd", "balanceUsd", "remainingUsd",
+                                           "weekResetsAt", "paidUntil",
                                            "weeklyPriceUsd", "checkoutAvailable")}
     row["unlimited"] = bool(account.get("unlimited"))         # the admin: never limited
     if isinstance(account.get("ollama"), dict):
         row["ollama"] = account["ollama"]                    # the admin is told the Ollama account's balance
     config.save_settings({CACHE: row})
-    # An existing free account may have selected GLM before this restriction.
-    # Move its saved default to one it can actually use when the account refreshes.
+    # Move an older free account's Pro model choice to one it can use.
     if (config.engine() == "built-in" and _free(row)
             and restricted_model(config.setting("model", ""))):
         config.save_settings({"model": DEFAULT_FREE_MODEL})
@@ -130,6 +130,8 @@ def user_of(row: dict[str, Any]) -> dict[str, Any]:
 def status_of(row: dict[str, Any]) -> dict[str, Any]:
     out = {"status": row.get("status") or "", "plan": row.get("plan") or "free",
            "limitUsd": float(row.get("limitUsd") or 0), "usedUsd": float(row.get("usedUsd") or 0),
+           "reservedUsd": float(row.get("reservedUsd") or 0),
+           "balanceUsd": float(row.get("balanceUsd") or 0),
            "remainingUsd": float(row.get("remainingUsd") or 0), "weekResetsAt": row.get("weekResetsAt"),
            "paidUntil": row.get("paidUntil"), "weeklyPriceUsd": float(row.get("weeklyPriceUsd") or 21),
            "checkoutAvailable": bool(row.get("checkoutAvailable")), "unlimited": bool(row.get("unlimited"))}
@@ -177,9 +179,11 @@ def free_plan() -> bool:
 
 def restricted_model(model: str) -> bool:
     name = str(model or "").strip().lower()
-    if name.endswith(":cloud") or name.endswith("-cloud"):
+    if name.endswith(":cloud"):
         name = name[:-6]
-    return name.split(":", 1)[0] in FREE_BLOCKED_MODELS
+    elif name.endswith("-cloud"):
+        name = name[:-6]
+    return bool(name) and name not in FREE_MODELS
 
 
 def check(model: str = "") -> None:
@@ -194,7 +198,7 @@ def check(model: str = "") -> None:
     if row.get("unlimited"):
         return                                               # the admin uses the Ollama account in full
     if _free(row) and restricted_model(model):
-        raise NotAllowed("GLM 5.3 models are unavailable on the free plan. Choose another model.")
+        raise NotAllowed("Buy Pro to use this cloud model. Free accounts can use DeepSeek V4.1 Flash and Gemma 4 31B.")
     if float(row.get("remainingUsd") or 0) <= 0:
         raise NotAllowed("Your cloud credit is used up. Switch to local Ollama or buy a paid plan.")
 

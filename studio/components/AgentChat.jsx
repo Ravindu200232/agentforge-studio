@@ -486,7 +486,12 @@ function ChatModelControls({ project, agentRole, busy }) {
 
   useEffect(() => {
     let alive = true
-    api.models().then(result => { if (alive) setCatalog(result || {}) })
+    api.models().then(result => {
+      if (!alive) return
+      setCatalog(result || {})
+      if (result?.cloud?.some(row => row.id === current && row.locked) && result.selected)
+        setRoleModel(role, result.selected)
+    })
       .catch(() => { if (alive) setCatalog({}) })
     return () => { alive = false }
   }, [])
@@ -504,6 +509,7 @@ function ChatModelControls({ project, agentRole, busy }) {
 
   function chooseModel(next) {
     if (!next || next === current) return
+    if (catalog?.cloud?.some(row => row.id === next && row.locked)) return
     setRoleModel(role, next)
     save(next, thinkingLevel)
   }
@@ -546,11 +552,12 @@ function ChatModelControls({ project, agentRole, busy }) {
                   const id = row.id || row
                   const picked = id === current
                   return (
-                    <button key={id} type="button" onClick={() => chooseModel(id)} disabled={saving}
+                    <button key={id} type="button" onClick={() => chooseModel(id)} disabled={saving || !!row.locked}
                             aria-pressed={picked}
                             className={cn('flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] transition-colors disabled:opacity-45',
                               picked ? 'bg-accent/55 text-ink' : 'text-ink hover:bg-panel2')}>
                       <span className="min-w-0 flex-1 truncate">{modelLabel(row) || id}</span>
+                      {row.locked && <span className="shrink-0 text-[9px] font-semibold text-amber-600">Buy Pro</span>}
                       {seeing.vision.has(id) && <VisionBadge />}
                       {picked && <Check className="size-3 shrink-0" />}
                     </button>
