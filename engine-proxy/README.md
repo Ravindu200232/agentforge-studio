@@ -4,10 +4,10 @@ A Cloudflare Worker that stands between AgentForge and ollama.com, so the ollama
 It is also the broker for "Sign in with Supabase" (below), so nobody who installs AgentForge registers an OAuth app.
 
 ```
-AgentForge app  --(app token)-->  this Worker  --(ollama.com key)-->  ollama.com
+AgentForge app  --(app token)-->  this Worker  --(private server call)-->  Vercel admin  -->  ollama.com
 ```
 
-- The key is the Worker secret `OLLAMA_API_KEY`. It is set in Cloudflare and stored only there.
+- The key is the Worker secret `OLLAMA_API_KEY`. For model calls the Worker sends it to the authenticated Vercel admin service over HTTPS; neither the key nor the metering secret reaches the desktop app.
 - Every copy of the app sends `APP_TOKEN`. The app keeps the same value in `server_modules/engine.json`.
   - The token ships with the app, so it only keeps out callers who do not have the app.
   - Each address is also rate limited (`wrangler.toml`).
@@ -20,17 +20,13 @@ The production Worker is `agentforge-engine` at
 `https://agentforge-engine.engine-proxy.workers.dev`. Installed desktop apps already use this URL. Deploying this Worker
 updates those apps without rebuilding or changing their configuration.
 
-For chat and generation, the Worker forwards each upstream byte unchanged. It keeps only the last 8 KB for the final
-usage record and schedules credit settlement when the response stream finishes. It does not parse every token fragment
-or wait for the credit service before closing the model reply. Keep settlement tied to the response stream: moving the
-stream reader into a `waitUntil` task can leave reservations open on long replies. If the final provider usage record is
-missing, the Worker releases the reservation instead of estimating tokens from NDJSON framing bytes. The admin service
-recovers any abandoned reservations.
+For chat and generation, the Worker authenticates the app, rate limits the request, and streams bytes to and from the
+Vercel admin service. Vercel checks account credit and the permitted model, reserves credit, calls Ollama, then reads
+the final provider token counts and settles the charge. The Worker no longer parses the model request or reads model
+reply chunks in JavaScript. The admin service releases a stale reservation if a model stream ends unexpectedly.
 
-On the current Workers Free plan, a very long response can outlive the background accounting task. The model reply
-still reaches the app; the admin service releases a leftover reservation when account status is read after 15 minutes.
-Exact metering for these unusually long calls requires a separate meter with a longer execution budget or a Workers
-Paid plan. The Free plan's 10 ms CPU limit is too small for a JavaScript wrapper around every chunk of a large reply.
+Vercel's function duration limit still applies to a single long model call; monitor this before increasing model
+output or context limits. The public Worker URL stays unchanged for installed apps.
 
 Before deploying, run `node --test test/meter.test.mjs` and `node ../tests/test_engine_proxy_oauth.mjs`. After deploying,
 verify a long streamed model reply, account credit settlement, and the Supabase OAuth callback at the existing URL.
