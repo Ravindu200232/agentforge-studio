@@ -10,8 +10,9 @@ This build includes the latest AgentForge Studio changes:
 - Formatted Supabase tables, migrations, statistics, and settings instead of printed JSON.
 - API key and edge-function secret values hidden from both formatted and Raw preview views.
 - The Design Select sample website preview fix.
-- Free AgentForge accounts use DeepSeek V4.1 Flash by default; GLM 5.3 and GLM 5.3 Flash are reserved for paid accounts.
-- Interrupted cloud model replies now resume by retrying the complete request, so incomplete JSON no longer stops SRS summaries and wireframes.
+- Free AgentForge accounts receive $20 in one-time cloud credit. DeepSeek V4.1 Flash and Gemma 4 31B are available; other cloud models are shown as Buy Pro.
+- Settings explains spent credit, temporarily held credit for active requests, and the amount available now.
+- If a cloud model stream contains incomplete JSON, the app retries that model with a complete response without showing a misleading connection warning.
 - AgentForge Cloud sign-up sends a six-digit email code and creates the account only after the code is verified.
 
 The app bundles Python 3.12, Node.js 24, the privacy runtime, and Playwright Chromium. Supabase integration also requires the official CLI: brew install supabase/tap/supabase.
