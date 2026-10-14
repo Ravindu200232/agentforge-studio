@@ -7,7 +7,7 @@ import {
   ArrowDown, Check, CheckCircle2, ChevronDown, ChevronRight, CircleAlert, CircleCheck, Clock, Copy, ExternalLink, FileCode2, FlaskConical, ListChecks, Loader2,
   MessageCircleQuestion, MessageSquare, MousePointerClick, Palette, Paperclip, Pencil, Plug, RefreshCw, Search,
   Send, SkipForward, Sparkles,
-  Square, Terminal, Wifi, WifiOff, Wrench, X,
+  Square, Terminal, WifiOff, Wrench, X,
 } from 'lucide-react'
 
 import { API, api } from '@/lib/api'
@@ -899,22 +899,10 @@ function Thinking({ reasoning = false, state = '', detail = '' }) {
   )
 }
 
-/**
- * The model service is not answering. While the run asks again by itself this counts down to the next try, with a button to
- * ask at once; once it has asked as many times as it will, the run holds still here - nothing is lost - and the same button
- * continues it from this very request.
- */
+/** Show an action only after automatic model retries are exhausted. */
 function ConnectionNotice({ connection, project }) {
-  const [mark, setMark] = useState(() => Date.now())
-  const [now, setNow] = useState(() => Date.now())
   const [pressed, setPressed] = useState(false)
-  useEffect(() => { setMark(Date.now()); setPressed(false) }, [connection.at, connection.state])
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 500)
-    return () => clearInterval(timer)
-  }, [])
-  const waiting = connection.state === 'waiting'
-  const left = Math.min(connection.pause, Math.max(0, Math.ceil((mark + connection.pause * 1000 - now) / 1000)))
+  useEffect(() => { setPressed(false) }, [connection.at])
   const press = async () => {
     if (pressed) return
     setPressed(true)
@@ -932,21 +920,17 @@ function ConnectionNotice({ connection, project }) {
           <WifiOff className="size-4" />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-[12.5px] font-semibold text-ink">
-            {waiting ? 'Disconnected from the model service' : 'The connection to the model service was interrupted'}
-          </p>
+          <p className="text-[12.5px] font-semibold text-ink">Disconnected from the model service</p>
           {connection.detail && (
             <p className="mt-0.5 break-words font-mono text-[10.5px] text-muted2">{connection.detail}</p>
           )}
           <p className="mt-1 text-[11px] leading-relaxed text-muted">
-            {waiting
-              ? `It was asked ${connection.of} times and still does not answer. The run is paused at this request and nothing is lost — press Try again to continue from here, or Stop.`
-              : `Try ${connection.failed} of ${connection.of} failed${connection.pause ? ` · asking again in ${left}s` : ''}`}
+            It was asked {connection.of} times and still does not answer. The run is paused at this request and nothing is lost — press Try again to continue from here, or Stop.
           </p>
           <button type="button" onClick={press} disabled={pressed}
                   className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-ink px-3 py-1.5 text-[11.5px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60">
             <RefreshCw className={cn('size-3', pressed && 'animate-spin')} />
-            {pressed ? 'Asking…' : waiting ? 'Try again' : 'Try again now'}
+            {pressed ? 'Asking…' : 'Try again'}
           </button>
         </div>
       </div>
@@ -1285,18 +1269,6 @@ const Turn = memo(function Turn({ turn, live }) {
             </p>
           </div>
         </div>
-      </div>
-    )
-  }
-
-  if (turn.role === 'connection') {
-    return (
-      <div className="my-1 flex items-center gap-2 rounded-lg border border-ok/30 bg-ok-tint/50 px-3 py-2 text-[11.5px] text-ink">
-        <Wifi className="size-3.5 shrink-0 text-ok" />
-        <span>
-          Connected to the model service again
-          {turn.failed ? ` after ${turn.failed} failed ${turn.failed === 1 ? 'try' : 'tries'}` : ''} — carrying on.
-        </span>
       </div>
     )
   }

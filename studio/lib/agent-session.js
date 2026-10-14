@@ -48,17 +48,12 @@ export function reduceSession(session, event) {
     case 'agent_state':
       next.agentState = event.state || ''; next.agentDetail = event.detail || ''; next.reasoning = Boolean(event.thinking); break
     case 'memory': next.runStats = event; break
-    // The model service stopped answering (or answers again): one notice at the end of the chat, with "Try again" while the
-    // run waits, and one line in the stream when it is back. It is about now, so a reload does not bring it back.
+    // Automatic retries are internal work. Show a card only when the run has
+    // exhausted them and needs the person's "Try again" to continue.
     case 'connection':
-      if (event.state === 'ok') {
-        if (s.connection) chat({ role: 'connection', state: 'back', failed: s.connection.failed || 0 })
-        next.connection = null
-      } else {
-        next.connection = { state: event.state === 'waiting' ? 'waiting' : 'retrying', failed: Number(event.failed) || s.connection?.failed || 0,
-          of: Number(event.of) || 0, pause: Number(event.pause) || 0, detail: event.detail || '',
-          hold: Boolean(event.hold), at, since: s.connection?.since || at }
-      }
+      next.connection = event.state === 'waiting'
+        ? { state: 'waiting', of: Number(event.of) || 0, detail: event.detail || '', at }
+        : null
       break
     case 'step': next.steps = { ...s.steps, [event.step]: event.status }; break
     case 'progress': next.progress = advance(s.progress, event.step, event.pct, at); break
