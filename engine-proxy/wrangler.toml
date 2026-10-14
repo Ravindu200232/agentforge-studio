@@ -8,6 +8,7 @@
 name = "agentforge-engine"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
+compatibility_flags = ["enable_request_signal"]
 workers_dev = true
 
 # The client id of that Supabase OAuth app. It is public (it is in the authorize link), so it is a plain variable.

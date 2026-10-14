@@ -14,6 +14,27 @@ AgentForge app  --(app token)-->  this Worker  --(ollama.com key)-->  ollama.com
 - Only the calls the app makes are passed through: chat, model details and list, web search and web fetch, and the
   account balance (`GET /api/balance`), which the AgentForge admin app shows.
 
+## Streaming replies and credit
+
+The production Worker is `agentforge-engine` at
+`https://agentforge-engine.engine-proxy.workers.dev`. Installed desktop apps already use this URL. Deploying this Worker
+updates those apps without rebuilding or changing their configuration.
+
+For chat and generation, the Worker forwards each upstream byte unchanged. It keeps only the last 8 KB for the final
+usage record and schedules credit settlement when the response stream finishes. It does not parse every token fragment
+or wait for the credit service before closing the model reply. Keep settlement tied to the response stream: moving the
+stream reader into a `waitUntil` task can leave reservations open on long replies. If the final provider usage record is
+missing, the Worker releases the reservation instead of estimating tokens from NDJSON framing bytes. The admin service
+recovers any abandoned reservations.
+
+On the current Workers Free plan, a very long response can outlive the background accounting task. The model reply
+still reaches the app; the admin service releases a leftover reservation when account status is read after 15 minutes.
+Exact metering for these unusually long calls requires a separate meter with a longer execution budget or a Workers
+Paid plan. The Free plan's 10 ms CPU limit is too small for a JavaScript wrapper around every chunk of a large reply.
+
+Before deploying, run `node --test test/meter.test.mjs` and `node ../tests/test_engine_proxy_oauth.mjs`. After deploying,
+verify a long streamed model reply, account credit settlement, and the Supabase OAuth callback at the existing URL.
+
 ## Set up (once)
 
 From this folder:

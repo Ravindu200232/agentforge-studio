@@ -90,61 +90,66 @@ async function meter(env, path, accountToken, payload) {
   return data
 }
 
-function usageOf(reply, payloadSize, outputSize) {
+function usageOf(reply) {
   const usage = reply?.usage || reply || {}
   const prompt = Number(usage.prompt_eval_count ?? usage.prompt_tokens ?? usage.input_tokens)
   const output = Number(usage.eval_count ?? usage.completion_tokens ?? usage.output_tokens)
   const exact = Number.isFinite(prompt) && Number.isFinite(output)
-  return { inputTokens: exact ? Math.max(0, prompt) : Math.ceil(payloadSize / 4),
-    outputTokens: exact ? Math.max(0, output) : Math.ceil(outputSize / 4), estimated: !exact }
+  // NDJSON includes framing overhead on every token. Its byte count is not a
+  // token count; an interrupted response must release its reservation instead
+  // of charging a many-times-too-large guess.
+  return { inputTokens: exact ? Math.max(0, prompt) : 0,
+    outputTokens: exact ? Math.max(0, output) : 0, estimated: !exact }
 }
 
-function meteredBody(stream, env, reservation, model, rate, payloadSize) {
-  const reader = stream.getReader()
-  const decoder = new TextDecoder()
-  let buffer = '', final = null, bytes = 0
-  let settlement = null
-  function accept(line) {
-    try { const row = JSON.parse(line); if (row.done || row.usage) final = row } catch {}
-  }
-  function settleOnce() {
-    if (!settlement) {
-      const tokens = usageOf(final, payloadSize, bytes)
-      const costMicros = Math.ceil(tokens.inputTokens * rate[0] + tokens.outputTokens * rate[1])
-      settlement = meter(env, 'settle', '', { reservation, model, costMicros, ...tokens })
-        .catch(error => { console.warn('Cloud settlement failed:', error.message) })
-    }
-    return settlement
-  }
-  // Settlement is part of the response stream itself. A waitUntil task can be stopped after 30 seconds,
-  // while a model is still generating; that used to leave its $0.25 reservation stuck in the account.
-  return new ReadableStream({
-    async pull(controller) {
+function meteredBody(stream, request, env, ctx, reservation, model, rate) {
+  // Cloudflare can proxy the client branch natively. The accounting branch
+  // reads while that streamed response keeps the invocation alive. Do not put
+  // the whole long read in waitUntil: its 30-second grace can end before the
+  // model does. Only the final, short credit write belongs in waitUntil.
+  const [toClient, toMeter] = stream.tee()
+  const reader = toMeter.getReader()
+  const tail = []
+  let tailBytes = 0, final = null
+  function readFinalUsage() {
+    const joined = new Uint8Array(tailBytes)
+    let offset = 0
+    for (const part of tail) { joined.set(part, offset); offset += part.byteLength }
+    const lines = new TextDecoder().decode(joined).trim().split('\n')
+    for (let i = lines.length - 1; i >= 0; i--) {
       try {
+        const row = JSON.parse(lines[i])
+        if (row.done || row.usage) { final = row; return }
+      } catch {}
+    }
+  }
+  const onAbort = () => { reader.cancel('client disconnected').catch(() => {}) }
+  request.signal?.addEventListener('abort', onAbort, { once: true })
+  const accounting = (async () => {
+    try {
+      while (true) {
         const { done, value } = await reader.read()
         if (done) {
-          buffer += decoder.decode()
-          if (buffer.trim()) accept(buffer)
-          await settleOnce()
-          controller.close()
-          return
+          readFinalUsage()
+          break
         }
-        bytes += value.byteLength
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-        for (const line of lines) accept(line)
-        controller.enqueue(value)
-      } catch (error) {
-        await settleOnce()
-        controller.error(error)
+        const piece = value.byteLength > 8192 ? value.slice(-8192) : value
+        tail.push(piece)
+        tailBytes += piece.byteLength
+        while (tailBytes > 8192 && tail.length > 1) tailBytes -= tail.shift().byteLength
       }
-    },
-    async cancel(reason) {
-      await reader.cancel(reason).catch(() => {})
-      await settleOnce()
-    },
-  })
+    } catch (error) {
+      console.warn('Cloud usage stream ended early:', error?.message || String(error))
+    } finally {
+      request.signal?.removeEventListener('abort', onAbort)
+      const tokens = usageOf(final)
+      const costMicros = Math.ceil(tokens.inputTokens * rate[0] + tokens.outputTokens * rate[1])
+      ctx.waitUntil(meter(env, 'settle', '', { reservation, model, costMicros, ...tokens })
+        .catch(error => { console.warn('Cloud settlement failed:', error.message) }))
+    }
+  })()
+  accounting.catch(error => { console.warn('Cloud usage accounting stopped:', error?.message || String(error)) })
+  return toClient
 }
 
 function answer(status, error) {
@@ -403,7 +408,7 @@ export default {
       if (value) out.set(name, value)
     }
     if (reservation && upstream.ok && upstream.body) {
-      return new Response(meteredBody(upstream.body, env, reservation, model, rate, requestBody.byteLength),
+      return new Response(meteredBody(upstream.body, request, env, ctx, reservation, model, rate),
         { status: upstream.status, headers: out })
     }
     if (reservation && upstream.ok) ctx.waitUntil(meter(env, 'settle', '', { reservation, model, costMicros: 0 }).catch(() => {}))

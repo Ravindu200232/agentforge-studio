@@ -32,7 +32,7 @@ test('cloud chat needs an account and settles provider token usage once', async 
     }), env, { waitUntil(promise) { pending.push(promise) } })
     assert.equal(response.status, 200)
     await response.text()
-    assert.equal(pending.length, 0, 'completed model streams must settle with the response, not a short-lived waitUntil task')
+    assert.equal(pending.length, 1, 'the completed stream must schedule one settlement')
     await Promise.all(pending)
     const settlement = calls.find(call => call.url.endsWith('/settle'))
     assert.ok(settlement)
@@ -63,15 +63,22 @@ test('a canceled model response releases its cloud reservation', async () => {
   const env = { APP_TOKEN: 'app', OLLAMA_API_KEY: 'private', ACCOUNTS_URL: 'https://admin.example',
     ENGINE_METER_SECRET: 'server-secret' }
   try {
+    const pending = []
+    const aborter = new AbortController()
     const response = await worker.fetch(new Request('https://engine.example/api/chat', {
       method: 'POST', headers: { authorization: 'Bearer app', 'x-agentforge-account': 'signed-account' },
       body: JSON.stringify({ model: 'gpt-oss:120b', messages: [] }),
-    }), env, { waitUntil() {} })
+      signal: aborter.signal,
+    }), env, { waitUntil(promise) { pending.push(promise) } })
     const reader = response.body.getReader()
     await reader.read()
+    aborter.abort()
     await reader.cancel()
+    await Promise.all(pending)
     const settlement = calls.find(call => call.url.endsWith('/settle'))
-    assert.equal(JSON.parse(settlement.options.body).reservation, 'canceled-request')
+    const data = JSON.parse(settlement.options.body)
+    assert.equal(data.reservation, 'canceled-request')
+    assert.equal(data.costMicros, 0, 'an incomplete response must not be charged from NDJSON byte size')
   } finally { globalThis.fetch = original }
 })
 
@@ -98,16 +105,84 @@ test('metering preserves every upstream NDJSON byte across arbitrary chunk bound
     throw new Error(`Unexpected URL: ${url}`)
   }
   try {
+    const pending = []
     const response = await worker.fetch(new Request('https://engine.example/api/chat', {
       method: 'POST', headers: { authorization: 'Bearer app', 'x-agentforge-account': 'signed-account' },
       body: JSON.stringify({ model: 'deepseek-v4.1-flash:cloud', messages: [] }),
     }), { APP_TOKEN: 'app', OLLAMA_API_KEY: 'private', ACCOUNTS_URL: 'https://admin.example',
-      ENGINE_METER_SECRET: 'server-secret' }, { waitUntil() {} })
+      ENGINE_METER_SECRET: 'server-secret' }, { waitUntil(promise) { pending.push(promise) } })
     const actual = new Uint8Array(await response.arrayBuffer())
+    await Promise.all(pending)
     assert.deepEqual(actual, wire)
     assert.equal(settlement.inputTokens, 12)
     assert.equal(settlement.outputTokens, 34)
   } finally { globalThis.fetch = original }
+})
+
+test('a slow credit service cannot hold the model reply open', async () => {
+  const original = globalThis.fetch
+  let finishSettlement
+  const settlementGate = new Promise(resolve => { finishSettlement = resolve })
+  const pending = []
+  let settled = false
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/authorize')) return Response.json({ reservation: 'slow-settlement' })
+    if (String(url).endsWith('/settle')) {
+      await settlementGate
+      settled = true
+      return Response.json({ ok: true })
+    }
+    if (String(url).endsWith('/api/chat')) return new Response(
+      '{"message":{"content":"complete"},"done":false}\n{"done":true,"prompt_eval_count":3,"eval_count":2}\n')
+    throw new Error(`Unexpected URL: ${url}`)
+  }
+  try {
+    const response = await worker.fetch(new Request('https://engine.example/api/chat', {
+      method: 'POST', headers: { authorization: 'Bearer app', 'x-agentforge-account': 'signed-account' },
+      body: JSON.stringify({ model: 'deepseek-v4.1-flash', messages: [] }),
+    }), { APP_TOKEN: 'app', OLLAMA_API_KEY: 'private', ACCOUNTS_URL: 'https://admin.example',
+      ENGINE_METER_SECRET: 'server-secret' }, { waitUntil(promise) { pending.push(promise) } })
+    assert.match(await response.text(), /"done":true/)
+    assert.equal(settled, false, 'the response must close before credit settlement finishes')
+    assert.equal(pending.length, 1)
+    finishSettlement()
+    await Promise.all(pending)
+    assert.equal(settled, true)
+  } finally { globalThis.fetch = original; finishSettlement() }
+})
+
+test('long streams are forwarded without parsing every token fragment', async () => {
+  const originalFetch = globalThis.fetch
+  const originalParse = JSON.parse
+  let parses = 0
+  let settlement
+  const middle = Array.from({ length: 5000 }, (_, n) =>
+    JSON.stringify({ message: { content: `word-${n}` }, done: false })).join('\n')
+  const body = `${middle}\n{"done":true,"prompt_eval_count":800,"eval_count":5000}\n`
+  globalThis.fetch = async (url, options = {}) => {
+    if (String(url).endsWith('/authorize')) return Response.json({ reservation: 'long-reply' })
+    if (String(url).endsWith('/settle')) {
+      settlement = originalParse(options.body)
+      return Response.json({ ok: true })
+    }
+    if (String(url).endsWith('/api/chat')) return new Response(body)
+    throw new Error(`Unexpected URL: ${url}`)
+  }
+  const pending = []
+  try {
+    JSON.parse = (...args) => { parses++; return originalParse(...args) }
+    const response = await worker.fetch(new Request('https://engine.example/api/chat', {
+      method: 'POST', headers: { authorization: 'Bearer app', 'x-agentforge-account': 'signed-account' },
+      body: JSON.stringify({ model: 'deepseek-v4.1-flash', messages: [] }),
+    }), { APP_TOKEN: 'app', OLLAMA_API_KEY: 'private', ACCOUNTS_URL: 'https://admin.example',
+      ENGINE_METER_SECRET: 'server-secret' }, { waitUntil(promise) { pending.push(promise) } })
+    assert.equal(pending.length, 0, 'long stream accounting must remain within the response lifetime')
+    assert.equal(await response.text(), body)
+    assert.equal(pending.length, 1, 'settlement starts only after the final response chunk')
+    await Promise.all(pending)
+    assert.equal(settlement.outputTokens, 5000)
+    assert.ok(parses < 20, `parsed ${parses} JSON fragments instead of just the final usage row`)
+  } finally { JSON.parse = originalParse; globalThis.fetch = originalFetch }
 })
 
 test('free accounts can use only DeepSeek V4.1 Flash and Gemma 4 31B', async () => {
