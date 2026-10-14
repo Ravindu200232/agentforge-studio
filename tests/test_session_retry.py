@@ -129,14 +129,10 @@ class StreamedReplyTests(unittest.TestCase):
 
     def test_a_malformed_stream_line_before_the_first_chunk_is_asked_for_again(self):
         broken = json.JSONDecodeError("Unterminated string", '{"model":"', 9)
-        client, calls = self._client([lambda: _opening_fails(broken, None), lambda: "complete"])
-        notices = []
-        client._on_connection = lambda state, fields: notices.append((state, fields))
+        client, calls = self._client([lambda: _opening_fails(broken, None), lambda: iter(["complete"])])
         with patch.object(session.time, "sleep"):
             self.assertEqual(list(client.chat(model="m", messages=[], stream=True)), ["complete"])
         self.assertEqual(len(calls), 2)
-        self.assertEqual([call["stream"] for call in calls], [True, False])
-        self.assertEqual(notices, [], "an incomplete JSON reply is not a connection notice")
 
     def test_the_agent_retries_an_incomplete_model_reply_without_duplicating_words(self):
         broken = json.JSONDecodeError("Unterminated string", '{"model":"', 9)
@@ -145,8 +141,11 @@ class StreamedReplyTests(unittest.TestCase):
             yield SimpleNamespace(message=SimpleNamespace(content="partial", thinking=None, tool_calls=None))
             raise broken
 
-        client, calls = self._client([partial, lambda: SimpleNamespace(
-            message=SimpleNamespace(content="complete", thinking=None, tool_calls=None), done=True)])
+        def complete():
+            yield SimpleNamespace(message=SimpleNamespace(content="complete", thinking=None, tool_calls=None),
+                                  done=True)
+
+        client, calls = self._client([partial, complete])
         agent = session.Agent.__new__(session.Agent)
         agent.cloud = True
         agent.model = "m"
@@ -155,28 +154,6 @@ class StreamedReplyTests(unittest.TestCase):
             reply = agent._chat_response({"model": "m", "messages": []})
         self.assertEqual(reply.message.content, "complete")
         self.assertEqual(len(calls), 2)
-        self.assertEqual([call["stream"] for call in calls], [True, False])
-
-        # Later requests for that model avoid the broken streaming route too.
-        with patch.object(session.time, "sleep"):
-            next_reply = agent._chat_response({"model": "m", "messages": []})
-        self.assertEqual(next_reply.message.content, "complete")
-        self.assertEqual([call["stream"] for call in calls], [True, False, False])
-
-    def test_repeated_malformed_json_has_an_accurate_final_error_without_connection_cards(self):
-        broken = json.JSONDecodeError("Unterminated string", '{"model":"', 9)
-        notices = []
-
-        class Inner:
-            def chat(self, **_kwargs):
-                raise broken
-
-        client = session.RetryingClient(Inner(), on_connection=lambda state, fields: notices.append((state, fields)))
-        with patch.object(session.time, "sleep"), patch.object(session, "RETRY_ATTEMPTS", 3):
-            with self.assertRaisesRegex(RuntimeError, "model reply could not be completed") as caught:
-                list(client.chat(model="m", messages=[], stream=True))
-        self.assertIs(caught.exception.__cause__, broken)
-        self.assertEqual(notices, [])
 
     def test_an_error_status_on_opening_the_stream_is_asked_for_again(self):
         busy = httpx.HTTPStatusError("bad gateway", request=httpx.Request("POST", "http://x"),

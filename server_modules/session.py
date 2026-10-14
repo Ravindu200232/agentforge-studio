@@ -166,10 +166,6 @@ class RetryingClient:
         self._presses = presses
         self._hold = hold
         self._incident = False         # the service has failed and has not answered since
-        # A truncated NDJSON line can recur on the same streamed model route.
-        # Ollama supports stream=False for chat; after one malformed stream,
-        # read complete replies for this model instead of repeating that route.
-        self._unstreamed_models: set[str] = set()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -327,14 +323,6 @@ class RetryingClient:
     def _next_attempt(self, exc: Exception, attempt: int) -> int:
         """What to do after a failed request: the number of the next attempt, or raise when it is not worth asking again."""
         self._raise_if_cancelled()
-        if isinstance(exc, json.JSONDecodeError):
-            # This is a broken model reply, not evidence that the user's
-            # connection is down. Retry it without a connection card or a raw
-            # parser exception in the chat. A bounded failure is still honest.
-            if attempt >= RETRY_ATTEMPTS - 1:
-                raise RuntimeError("The model reply could not be completed after several attempts. Please try again.") from exc
-            self._pause(min(RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)], 5))
-            return attempt + 1
         if not _transient(exc):
             raise exc
         if attempt >= RETRY_ATTEMPTS - 1:
@@ -355,16 +343,10 @@ class RetryingClient:
         first attempt.
         """
         attempt = 0
-        model = str(kwargs.get("model") or "")
         while True:
             self._raise_if_cancelled()
             started = False
             try:
-                if model in self._unstreamed_models:
-                    answer = self._interruptible(lambda: self._inner.chat(**{**kwargs, "stream": False}))
-                    self._recovered()
-                    yield answer
-                    return
                 stream, first = (first if first is not None else self._inner.chat(**kwargs)), None
                 for chunk in self._interruptible_stream(stream):
                     if not started:
@@ -375,8 +357,6 @@ class RetryingClient:
             except RunCancelled:
                 raise
             except Exception as exc:  # noqa: BLE001 - re-raised below when it is not worth asking again
-                if isinstance(exc, json.JSONDecodeError):
-                    self._unstreamed_models.add(model)
                 if started:
                     self._raise_if_cancelled()
                     raise
@@ -388,13 +368,10 @@ class RetryingClient:
 
         accounts.check(str(kwargs.get("model") or ""))
         if kwargs.get("stream"):
-            first = None
-            if str(kwargs.get("model") or "") not in self._unstreamed_models:
-                try:
-                    first = self._inner.chat(**kwargs)  # a real client only builds the stream here; nothing is sent yet
-                except Exception as exc:  # noqa: BLE001 - asked again, and judged, by the retrying read below
-                    if isinstance(exc, json.JSONDecodeError):
-                        self._unstreamed_models.add(str(kwargs.get("model") or ""))
+            try:
+                first = self._inner.chat(**kwargs)      # a real client only builds the stream here; nothing is sent yet
+            except Exception:  # noqa: BLE001 - asked again, and judged, by the retrying read below
+                first = None
             if first is not None and not hasattr(first, "__iter__"):
                 accounts.record()
                 return first                            # not a stream after all: handed back as it is
