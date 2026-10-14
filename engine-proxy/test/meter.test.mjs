@@ -31,6 +31,7 @@ test('cloud chat needs an account and settles provider token usage once', async 
     }), env, { waitUntil(promise) { pending.push(promise) } })
     assert.equal(response.status, 200)
     await response.text()
+    assert.equal(pending.length, 0, 'completed model streams must settle with the response, not a short-lived waitUntil task')
     await Promise.all(pending)
     const settlement = calls.find(call => call.url.endsWith('/settle'))
     assert.ok(settlement)
@@ -39,7 +40,36 @@ test('cloud chat needs an account and settles provider token usage once', async 
     assert.equal(data.inputTokens, 1000)
     assert.equal(data.outputTokens, 200)
     assert.equal(data.costMicros, 270)
-    assert.equal(calls.find(call => call.url.endsWith('/authorize')).options.headers.authorization, 'Bearer signed-account')
+    const authorized = calls.find(call => call.url.endsWith('/authorize'))
+    assert.equal(authorized.options.headers.authorization, 'Bearer signed-account')
+    assert.ok(JSON.parse(authorized.options.body).reserveMicros < 250_000)
+  } finally { globalThis.fetch = original }
+})
+
+test('a canceled model response releases its cloud reservation', async () => {
+  const original = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), options })
+    if (String(url).endsWith('/authorize')) return Response.json({ reservation: 'canceled-request' })
+    if (String(url).endsWith('/settle')) return Response.json({ ok: true })
+    if (String(url).endsWith('/api/chat')) return new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode('{"message":{"content":"partial"}}\n')) },
+    }))
+    throw new Error(`Unexpected URL: ${url}`)
+  }
+  const env = { APP_TOKEN: 'app', OLLAMA_API_KEY: 'private', ACCOUNTS_URL: 'https://admin.example',
+    ENGINE_METER_SECRET: 'server-secret' }
+  try {
+    const response = await worker.fetch(new Request('https://engine.example/api/chat', {
+      method: 'POST', headers: { authorization: 'Bearer app', 'x-agentforge-account': 'signed-account' },
+      body: JSON.stringify({ model: 'gpt-oss:120b', messages: [] }),
+    }), env, { waitUntil() {} })
+    const reader = response.body.getReader()
+    await reader.read()
+    await reader.cancel()
+    const settlement = calls.find(call => call.url.endsWith('/settle'))
+    assert.equal(JSON.parse(settlement.options.body).reservation, 'canceled-request')
   } finally { globalThis.fetch = original }
 })
 

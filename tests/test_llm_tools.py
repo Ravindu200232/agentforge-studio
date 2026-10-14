@@ -313,13 +313,15 @@ class CutOffReplyTests(unittest.TestCase):
                 raise json.JSONDecodeError("Unterminated string", '{"model":"', 9)
             return stream()
 
-        client, calls = self.client([broken, self.whole])
+        client, calls = self.client([broken, lambda: FakeChunk("the whole answer")])
         started = []
         with mock.patch("server_modules.session.time.sleep"):
             message = llm_tools.run_chat(client.chat, {"model": "m", "messages": [], "stream": True}, None,
                                          on_stream_start=lambda: started.append(1))
         self.assertEqual(message.content, "the whole answer")
         self.assertEqual(len(calls), 2)
+        self.assertEqual([call["stream"] for call in calls], [True, False],
+                         "a malformed stream switches this model to a complete response")
         self.assertEqual(len(started), 2)
 
     def test_a_stream_without_its_final_done_chunk_retries_whole_reply(self):
@@ -402,7 +404,7 @@ class WebToolsTests(unittest.TestCase):
                  mock.patch("ollama_terminal.tools.inspect_local_page", return_value={"title": "Preview"}) as inspect:
                 result = tools.call("browser_inspect", {"viewport": "mobile"})
         self.assertIn("Preview", result)
-        inspect.assert_called_once_with(Path(folder).resolve(), "http://127.0.0.1:3001/", "mobile")
+        inspect.assert_called_once_with(Path(folder), "http://127.0.0.1:3001/", "mobile")
 
 
 class EffortLevelTests(unittest.TestCase):
