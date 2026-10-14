@@ -75,6 +75,41 @@ test('a canceled model response releases its cloud reservation', async () => {
   } finally { globalThis.fetch = original }
 })
 
+test('metering preserves every upstream NDJSON byte across arbitrary chunk boundaries', async () => {
+  const original = globalThis.fetch
+  const enc = new TextEncoder()
+  const wire = enc.encode(
+    '{"message":{"content":"one"},"done":false}\n'
+    + '{"message":{"content":"two €"},"done":false}\n'
+    + '{"done":true,"prompt_eval_count":12,"eval_count":34}\n',
+  )
+  const chunks = [wire.slice(0, 7), wire.slice(7, 47), wire.slice(47, 65),
+    wire.slice(65, 67), wire.slice(67, wire.length - 2), wire.slice(wire.length - 2)]
+  let settlement
+  globalThis.fetch = async (url, options = {}) => {
+    if (String(url).endsWith('/authorize')) return Response.json({ reservation: 'split-reply' })
+    if (String(url).endsWith('/settle')) {
+      settlement = JSON.parse(options.body)
+      return Response.json({ ok: true })
+    }
+    if (String(url).endsWith('/api/chat')) return new Response(new ReadableStream({
+      start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close() },
+    }), { headers: { 'content-type': 'application/x-ndjson' } })
+    throw new Error(`Unexpected URL: ${url}`)
+  }
+  try {
+    const response = await worker.fetch(new Request('https://engine.example/api/chat', {
+      method: 'POST', headers: { authorization: 'Bearer app', 'x-agentforge-account': 'signed-account' },
+      body: JSON.stringify({ model: 'deepseek-v4.1-flash:cloud', messages: [] }),
+    }), { APP_TOKEN: 'app', OLLAMA_API_KEY: 'private', ACCOUNTS_URL: 'https://admin.example',
+      ENGINE_METER_SECRET: 'server-secret' }, { waitUntil() {} })
+    const actual = new Uint8Array(await response.arrayBuffer())
+    assert.deepEqual(actual, wire)
+    assert.equal(settlement.inputTokens, 12)
+    assert.equal(settlement.outputTokens, 34)
+  } finally { globalThis.fetch = original }
+})
+
 test('free accounts can use only DeepSeek V4.1 Flash and Gemma 4 31B', async () => {
   const original = globalThis.fetch
   const calls = []

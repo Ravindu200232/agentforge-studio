@@ -37,6 +37,10 @@ class RunCancelled(Exception):
     """Raised inside a run when the studio asked for it to stop."""
 
 
+class IncompleteModelStream(ConnectionError):
+    """The model's streamed wire reply was incomplete or malformed."""
+
+
 PHASE_REPAIRS = 2            # how many times a phase that is not finished is asked for again
 
 
@@ -114,12 +118,10 @@ def _transient(exc: Exception) -> bool:
     # sending a response") are not Python's own ConnectionError/OSError/
     # TimeoutError — a real one slipped through here uncaught on a live run
     # (see commit history), which is exactly the "bad minute" this exists for.
-    # Ollama reads streamed NDJSON one line at a time. If the service or proxy
-    # closes mid-line, its json.loads(line) raises JSONDecodeError even though
-    # the fault is a truncated transport response. The callers that assemble
-    # a whole model reply can safely retry that request from the beginning.
-    return isinstance(exc, (ConnectionError, TimeoutError, OSError, httpx.TransportError,
-                            json.JSONDecodeError))
+    # A JSONDecodeError outside the SDK's stream reader can instead mean that
+    # the model wrote invalid application JSON. Only errors caught while
+    # reading the wire stream are wrapped as IncompleteModelStream below.
+    return isinstance(exc, (ConnectionError, TimeoutError, OSError, httpx.TransportError))
 
 
 HOLD_SECONDS = 1800        # how long a run holds still for "Try again" before it gives up
@@ -323,6 +325,13 @@ class RetryingClient:
     def _next_attempt(self, exc: Exception, attempt: int) -> int:
         """What to do after a failed request: the number of the next attempt, or raise when it is not worth asking again."""
         self._raise_if_cancelled()
+        if isinstance(exc, IncompleteModelStream):
+            # A broken NDJSON reply is not evidence that this computer lost its
+            # connection. Retry the whole reply without a false connection card.
+            if attempt >= RETRY_ATTEMPTS - 1:
+                raise RuntimeError("The model reply stayed incomplete after several attempts. Please try again.") from exc
+            self._pause(min(RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)], 5))
+            return attempt + 1
         if not _transient(exc):
             raise exc
         if attempt >= RETRY_ATTEMPTS - 1:
@@ -346,17 +355,28 @@ class RetryingClient:
         while True:
             self._raise_if_cancelled()
             started = False
+            last = None
             try:
                 stream, first = (first if first is not None else self._inner.chat(**kwargs)), None
                 for chunk in self._interruptible_stream(stream):
-                    if not started:
-                        started = True
-                        self._recovered()
+                    started = True
+                    last = chunk
                     yield chunk
+                # A first token is not a successful reply. The SDK may fail
+                # later on a partial NDJSON line; wait for the terminal chunk.
+                if last is not None and getattr(last, "done", None) is not False:
+                    self._recovered()
                 return
             except RunCancelled:
                 raise
             except Exception as exc:  # noqa: BLE001 - re-raised below when it is not worth asking again
+                if isinstance(exc, json.JSONDecodeError):
+                    incomplete = IncompleteModelStream("The model stream contained an incomplete JSON line.")
+                    if started:
+                        self._raise_if_cancelled()
+                        raise incomplete from exc
+                    attempt = self._next_attempt(incomplete, attempt)
+                    continue
                 if started:
                     self._raise_if_cancelled()
                     raise
@@ -386,6 +406,9 @@ class RetryingClient:
                 return answer
             except RunCancelled:
                 raise
+            except json.JSONDecodeError as exc:
+                attempt = self._next_attempt(
+                    IncompleteModelStream("The model returned an incomplete JSON response."), attempt)
             except Exception as exc:  # noqa: BLE001 - raised by `_next_attempt` when it is not worth asking again
                 attempt = self._next_attempt(exc, attempt)
 
