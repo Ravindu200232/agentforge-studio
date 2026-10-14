@@ -7,6 +7,7 @@ test('cloud chat needs an account and settles provider token usage once', async 
   const calls = []
   globalThis.fetch = async (url, options = {}) => {
     calls.push({ url: String(url), options })
+    if (String(url).endsWith('/api/accounts/me')) return Response.json({ account: { plan: 'paid' } })
     if (String(url).endsWith('/authorize')) return Response.json({ reservation: 'request-1' })
     if (String(url).endsWith('/settle')) return Response.json({ ok: true })
     if (String(url).endsWith('/api/chat')) return new Response(
@@ -51,6 +52,7 @@ test('a canceled model response releases its cloud reservation', async () => {
   const calls = []
   globalThis.fetch = async (url, options = {}) => {
     calls.push({ url: String(url), options })
+    if (String(url).endsWith('/api/accounts/me')) return Response.json({ account: { plan: 'paid' } })
     if (String(url).endsWith('/authorize')) return Response.json({ reservation: 'canceled-request' })
     if (String(url).endsWith('/settle')) return Response.json({ ok: true })
     if (String(url).endsWith('/api/chat')) return new Response(new ReadableStream({
@@ -73,7 +75,7 @@ test('a canceled model response releases its cloud reservation', async () => {
   } finally { globalThis.fetch = original }
 })
 
-test('free accounts cannot call GLM 5.3 models, while paid accounts can', async () => {
+test('free accounts can use only DeepSeek V4.1 Flash and Gemma 4 31B', async () => {
   const original = globalThis.fetch
   const calls = []
   let plan = 'free'
@@ -93,19 +95,25 @@ test('free accounts cannot call GLM 5.3 models, while paid accounts can', async 
     body: JSON.stringify({ model, messages: [] }),
   })
   try {
-    for (const model of ['glm-5.3:cloud', 'glm-5.3-flash:cloud']) {
+    for (const model of ['glm-5.3:cloud', 'glm-5.3-flash:cloud', 'gpt-oss:120b-cloud', 'deepseek-v4-pro:cloud']) {
       const response = await worker.fetch(request(model), env, { waitUntil() {} })
       assert.equal(response.status, 403)
     }
     assert.equal(calls.filter(url => url.endsWith('/authorize')).length, 0)
     assert.equal(calls.filter(url => url.endsWith('/api/chat')).length, 0)
+    for (const model of ['deepseek-v4.1-flash:cloud', 'gemma4:31b-cloud']) {
+      const response = await worker.fetch(request(model), env, { waitUntil() {} })
+      assert.equal(response.status, 200)
+      await response.text()
+    }
+    assert.equal(calls.filter(url => url.endsWith('/authorize')).length, 2)
     plan = 'paid'
     const pending = []
     const allowed = await worker.fetch(request('glm-5.3:cloud'), env, { waitUntil(promise) { pending.push(promise) } })
     assert.equal(allowed.status, 200)
     await allowed.text()
     await Promise.all(pending)
-    assert.equal(calls.filter(url => url.endsWith('/authorize')).length, 1)
+    assert.equal(calls.filter(url => url.endsWith('/authorize')).length, 3)
     plan = 'free'
     unlimited = true
     const adminPending = []

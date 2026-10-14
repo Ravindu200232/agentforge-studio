@@ -203,7 +203,9 @@ def models(_ctx: dict) -> Any:
                          if (studio_name := ollama_cloud.studio_name(name)) not in seen]
     free_catalog = engine == "built-in" and accounts.free_plan()
     if free_catalog:
-        cloud_models = [m for m in cloud_models if not accounts.restricted_model(m["id"])]
+        cloud_models = [{**m, "locked": accounts.restricted_model(m["id"]),
+                         "upgrade": "Buy Pro" if accounts.restricted_model(m["id"]) else ""}
+                        for m in cloud_models]
     return {
         "local": [m["id"] for m in local_models],
         "local_models": local_models,
@@ -334,7 +336,7 @@ def write_settings(ctx: dict) -> Any:
             patch["model"] = patch[alias]
     if (patch.get("model") and config.engine({**config.settings(), **patch}) == "built-in"
             and accounts.free_plan() and accounts.restricted_model(patch["model"])):
-        raise ValueError("GLM 5.3 models are unavailable on the free plan. Choose another model.")
+        raise ValueError("Buy Pro to use this cloud model. Free accounts can use DeepSeek V4.1 Flash and Gemma 4 31B.")
     if "engine" in patch and str(patch["engine"] or "").lower() not in ("", "built-in", "cloud", "local"):
         raise ValueError("engine is built-in, cloud, local, or empty to choose itself")
     # `cloud` is never saved: config.settings() derives it from the key and `engine` every time it is read.

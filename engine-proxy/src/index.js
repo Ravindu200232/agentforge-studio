@@ -55,13 +55,11 @@ function priceFor(model) {
     ? rate.map(value => value / 2) : rate
 }
 
-function freeBlockedModel(model) {
-  const name = String(model || '').trim().toLowerCase().replace(/:cloud$|-cloud$/, '').split(':')[0]
-  return name === 'glm-5.3' || name === 'glm-5.3-flash'
-}
+const FREE_MODELS = new Set(['deepseek-v4.1-flash', 'gemma4:31b'])
 
 async function checkFreeModel(env, accountToken, model) {
-  if (!freeBlockedModel(model)) return null
+  const name = String(model || '').trim().toLowerCase().replace(/:cloud$|-cloud$/, '')
+  if (FREE_MODELS.has(name)) return null
   if (!env.ACCOUNTS_URL) return answer(503, 'Cloud account service is unavailable.')
   try {
     const response = await fetch(`${env.ACCOUNTS_URL.replace(/\/$/, '')}/api/accounts/me`, {
@@ -71,7 +69,7 @@ async function checkFreeModel(env, accountToken, model) {
     const account = (await response.json()).account
     if (!account) return answer(503, 'Cloud account could not be verified.')
     if (!account.unlimited && (account.plan || 'free') === 'free') {
-      return answer(403, 'GLM 5.3 models are unavailable on the free plan. Choose another model.')
+      return answer(403, 'Buy Pro to use this cloud model. Free accounts can use DeepSeek V4.1 Flash and Gemma 4 31B.')
     }
   } catch {
     return answer(503, 'Cloud account could not be verified.')

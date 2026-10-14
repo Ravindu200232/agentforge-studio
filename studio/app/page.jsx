@@ -225,7 +225,7 @@ export default function Studio() {
       setCat(c)
 
       const cur = useStore.getState().models
-      const known = new Set([...c.cloud, ...(c.local || [])].map(m => m.id))
+      const known = new Set([...c.cloud, ...(c.local || [])].filter(m => !m.locked).map(m => m.id))
       api.settings().then(s => {
         const legacy = String(s?.agent_model || '').trim()
         // A first run has nothing saved: a model this engine really has, preferring the usual default.
@@ -601,10 +601,10 @@ export default function Studio() {
           api.models().then(r => {
             const choices = catalogue(r)
             setCat(choices)
-            const allowed = new Set(choices.all.map(row => row.id))
+            const allowed = new Set(choices.all.filter(row => !row.locked).map(row => row.id))
             if (!allowed.size) return
             const preferred = allowed.has('deepseek-v4.1-flash:cloud')
-              ? 'deepseek-v4.1-flash:cloud' : choices.all[0].id
+              ? 'deepseek-v4.1-flash:cloud' : choices.all.find(row => !row.locked)?.id
             const state = useStore.getState()
             for (const role of state.ROLE_MODELS) {
               if (state.models[role] && !allowed.has(state.models[role])) {
