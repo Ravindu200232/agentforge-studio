@@ -112,8 +112,9 @@ class Harness(unittest.TestCase):
         return mock.patch("server_modules.llm.complete_json", side_effect=complete_json)
 
 
-    def _next_round(self, project, session, agent, done, remaining, where, title):
+    def _next_round(self, project, session, agent, done, remaining, where, title, **kwargs):
         """The person's answer to "Run round N?": what the test queued in `self.round_answers`, else No."""
+        self.assertTrue(kwargs.get("continue_plan"))
         self.rounds_asked = getattr(self, "rounds_asked", [])
         self.rounds_asked.append((done, remaining, where))
         answers = getattr(self, "round_answers", [])

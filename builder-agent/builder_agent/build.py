@@ -484,6 +484,9 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
             e2e_review.run(project, session)
         if session.cancelled:
             raise RunCancelled(project)
+        if ran.get("status") in {"passed", "failed"}:
+            bus.agent_msg(project, "E2E review is complete. Continuing the build plan with the final report and preview.",
+                          title="Build continuing", kind="narration")
         return _finish_run(project, session, build_result, build_result.get("plan") or "")
     except RunCancelled:
         raise

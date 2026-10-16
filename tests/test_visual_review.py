@@ -468,7 +468,7 @@ class NextRoundTests(unittest.TestCase):
         args = {"done": 1, "remaining": 3, "where": "2 screens"} | overrides
         with mock.patch.object(bus, "ask_and_wait", return_value=reply) as asked:
             answer = screen_review.next_round("p", self.session, "designer", args["done"], args["remaining"], args["where"],
-                                              "Visual review")
+                                              "Visual review", continue_plan=args.get("continue_plan", False))
         return answer, asked
 
     def test_yes_in_any_of_its_forms_runs_the_next_round(self):
@@ -504,3 +504,23 @@ class NextRoundTests(unittest.TestCase):
 
         with self.assertRaises(RunCancelled):
             self.ask(None)
+
+    def test_build_review_yes_or_enough_continues_plan_without_another_round(self):
+        for reply in ("Yes", "ඇති", "", "You decide"):
+            answer, asked = self.ask(reply, continue_plan=True)
+            self.assertFalse(answer, reply)
+            self.assertIn("continuing the build plan", self.said[-1])
+            self.assertIn("continue the build plan", asked.call_args.args[2])
+            self.assertEqual(asked.call_args.kwargs["assumption"],
+                             "record what remains and continue the build plan")
+
+    def test_build_review_no_or_not_enough_requests_another_round(self):
+        for reply in ("No", "මදි", "madi", "නෑ"):
+            answer, asked = self.ask(reply, continue_plan=True)
+            self.assertTrue(answer, reply)
+            self.assertIn("round 2", asked.call_args.args[2])
+
+    def test_build_review_with_no_problems_does_not_ask(self):
+        answer, asked = self.ask("No", remaining=0, continue_plan=True)
+        self.assertFalse(answer)
+        asked.assert_not_called()

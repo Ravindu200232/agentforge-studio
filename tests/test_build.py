@@ -161,6 +161,18 @@ class RunStraightThroughTests(StraightThroughCase):
         self.assertEqual(self.finished_runs, [(outcome, "the plan")])
         self.assertEqual(self.session.failed, [])
 
+    def test_build_finishes_plan_after_e2e_review_leaves_problems_recorded(self):
+        outcome = {"status": "complete", "text": "done", "plan": "the plan"}
+        self.session.results.append(outcome)
+        with mock.patch("qa_agent.e2e_run.run", return_value={"status": "passed"}) as e2e, \
+                mock.patch("qa_agent.e2e_review.run", return_value={"status": "done", "remaining": ["overlap"]}) as review:
+            result = build.run(RUN_PROJECT)
+        self.assertEqual(result, {"status": "complete"})
+        e2e.assert_called_once()
+        review.assert_called_once_with(RUN_PROJECT, self.session)
+        self.assertEqual(self.finished_runs, [(outcome, "the plan")])
+        self.assertEqual(self.session.failed, [])
+
     def test_a_blocked_build_is_a_failure_with_its_own_words_never_a_question(self):
         self.session.results.append({"status": "blocked", "text": "the database refused the migration"})
         with self.assertRaisesRegex(ValueError, "the database refused the migration"):

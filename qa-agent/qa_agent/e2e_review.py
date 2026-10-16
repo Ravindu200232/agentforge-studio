@@ -213,7 +213,7 @@ def _review(project: str, session: Any, model: str, groups: list[dict[str, Any]]
                if any(d["severity"] in screen_review.FIX_SEVERITIES for d in f["defects"])}
         if not count_now or (rounds and not screen_review.next_round(
                 project, session, bus.DEVELOPER, len(rounds), count_now, plural(len(bad), "test screen"),
-                "Screenshot review")):
+                "Screenshot review", continue_plan=True)):
             break
         if session.cancelled:
             raise RunCancelled(project)
