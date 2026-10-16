@@ -146,7 +146,8 @@ for (const [label, group] of groups) {
         const landed = new URL(page.url()).pathname
         testInfo.annotations.push({ type: 'opened', description: `${url} ${label}${landed !== url ? `, landed on ${landed}` : ''}` })
         const file = testInfo.outputPath('page.png')
-        await page.screenshot({ path: file, fullPage: true, animations: 'disabled' })
+        // One pixel per CSS pixel: a phone's 2.6x screen made a page 1082 x 10973, too tall for a model to read.
+        await page.screenshot({ path: file, fullPage: true, animations: 'disabled', scale: 'css' })
         await testInfo.attach('screenshot', { path: file, contentType: 'image/png' })
         expect(response?.status() ?? 200, `${url} answered`).toBeLessThan(500)
         expect(problems, 'the page reported problems').toEqual([])
