@@ -47,6 +47,26 @@ def _entity_words(text: str) -> tuple[str, ...]:
                  re.split(r"[^a-z0-9]+", str(text).lower()) if word)
 
 
+def planned_table_name(label: str) -> str:
+    """The conventional table name for an approved record label.
+
+    Some plurals (for example SKU -> skus) also look like singular words
+    ending in ``us``. Keep the surface name as well as normalized words when
+    checking the table generated from the plan.
+    """
+    words = list(_entity_words(label))
+    if not words:
+        return "records"
+    last = words[-1]
+    if last.endswith("y") and len(last) > 1 and last[-2] not in "aeiou":
+        words[-1] = last[:-1] + "ies"
+    elif last.endswith(("s", "x", "ch", "sh")):
+        words[-1] = last + "es"
+    else:
+        words[-1] = last + "s"
+    return "_".join(words)
+
+
 def _covered(needle: str, haystacks: list[str]) -> bool:
     """Whether some requirement plausibly speaks to this plan item.
 
@@ -105,14 +125,15 @@ def page_coverage(doc: dict, plan: dict) -> list[str]:
 
 def table_coverage(doc: dict, plan: dict) -> list[str]:
     """Records the plan promised that the database design does not have."""
-    tables = {_entity_words(str(t.get("table_name") or ""))
-              for t in _dig(doc, "database_design.tables")}
+    names = [str(t.get("table_name") or "") for t in _dig(doc, "database_design.tables")]
+    tables = {_entity_words(name) for name in names}
+    surface_names = {name.lower() for name in names}
     gaps = []
     for record in (plan.get("records") or []):
         name = _entity_words(str(record.get("name") or ""))
         if not name:
             continue
-        if name not in tables:
+        if name not in tables and planned_table_name(str(record.get("name") or "")) not in surface_names:
             gaps.append(f"the plan's record {record.get('name')!r} has no table in database_design")
     return gaps
 

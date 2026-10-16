@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from server_modules import bus, config, journeys, llm, mermaid, prompts, reference_staging, store, web_app
+from server_modules import bus, config, journeys, llm, mermaid, prompts, reference_staging, stage_evidence, store, web_app
 from server_modules.session import ProjectSession, RunCancelled, session_for
 from server_modules.validation import completeness, json_edits
 from server_modules.validation import corpus as corpus_rules
@@ -726,6 +726,20 @@ def generate(project: str) -> dict[str, Any]:
         raise ValueError("approve the plan before generating the specification")
 
     session = session_for(project)
+    previous = stage_evidence.last(project, "srs") or {}
+    draft = None
+    if previous.get("status") in {"failed", "running"}:
+        draft_path = session.record.joinpath(*DOCUMENT)
+        plan_path = session.record / "plan.json"
+        if (draft_path.is_file() and plan_path.is_file()
+                and draft_path.stat().st_mtime_ns >= plan_path.stat().st_mtime_ns):
+            candidate = session.read_record(*DOCUMENT, fallback=None)
+            if isinstance(candidate, dict) and isinstance(candidate.get("srs_document"), dict):
+                try:
+                    srs_schema.srs_validator(candidate)
+                    draft = candidate
+                except (ValueError, TypeError, KeyError):
+                    pass  # An unusable checkpoint gets a fresh model draft.
     session.begin("srs", role=bus.DEVELOPER)
     # The studio blurs the SRS tab and shows the generating animation for as
     # long as this says the specification is being written.
@@ -734,9 +748,14 @@ def generate(project: str) -> dict[str, Any]:
     started = time.time()
 
     try:
-        bus.agent_msg(project, "Writing the specification from the approved plan and interview answers.",
-                      title="SRS generation", kind="narration")
-        envelope = _write_document(session, project, record, approved)
+        if draft is None:
+            bus.agent_msg(project, "Writing the specification from the approved plan and interview answers.",
+                          title="SRS generation", kind="narration")
+            envelope = _write_document(session, project, record, approved)
+        else:
+            bus.agent_msg(project, "Continuing the saved specification draft after the interrupted run.",
+                          title="SRS generation", kind="narration")
+            envelope = draft
         doc = envelope["srs_document"]
         # The document record embeds every rendered SVG. Sending that entire
         # record through the live file-event channel can fill a browser's
@@ -837,17 +856,7 @@ def _slug_words(value: str) -> list[str]:
 
 def _new_table_name(label: str) -> str:
     """Turn an approved record label into a conventional plural table name."""
-    words = list(completeness._entity_words(label))
-    if not words:
-        return "records"
-    last = words[-1]
-    if last.endswith("y") and len(last) > 1 and last[-2] not in "aeiou":
-        words[-1] = last[:-1] + "ies"
-    elif last.endswith(("s", "x", "ch", "sh")):
-        words[-1] = last + "es"
-    else:
-        words[-1] = last + "s"
-    return "_".join(words)
+    return completeness.planned_table_name(label)
 
 
 def _next_requirement_id(requirements: list[dict]) -> str:
@@ -916,12 +925,14 @@ def _synchronize_plan_contract(envelope: dict, approved: dict) -> dict[str, int]
     tables = database.setdefault("tables", [])
     existing_entities = {completeness._entity_words(row.get("table_name") or "")
                          for row in tables}
+    existing_names = {str(row.get("table_name") or "").casefold() for row in tables}
     for record in approved.get("records") or []:
         if not isinstance(record, dict):
             continue
         label = str(record.get("name") or "").strip()
         entity = completeness._entity_words(label)
-        if not entity or entity in existing_entities:
+        table_name = _new_table_name(label)
+        if not entity or entity in existing_entities or table_name.casefold() in existing_names:
             continue
         fields = [{"name": "id", "type": "uuid", "primary_key": True,
                    "nullable": False, "unique": True}]
@@ -939,11 +950,11 @@ def _synchronize_plan_contract(envelope: dict, approved: dict) -> dict[str, int]
                           "string")
             fields.append({"name": field_name, "type": field_type,
                            "nullable": True})
-        table_name = _new_table_name(label)
         tables.append({"table_name": table_name,
                        "description": f"Approved plan record: {label}.",
                        "fields": fields})
         existing_entities.add(entity)
+        existing_names.add(table_name.casefold())
         added["tables"] += 1
 
     # The workflow list is part of the approved plan. Copy only missing

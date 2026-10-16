@@ -689,6 +689,25 @@ class CompletenessTests(unittest.TestCase):
         ]})
         self.assertEqual(completeness.table_coverage(doc, plan), [])
 
+    def test_short_record_names_match_their_generated_plural_tables(self):
+        plan = a_plan(records=[{"name": "SKU", "keeps": ["Code"]},
+                               {"name": "Bus", "keeps": ["Route"]}])
+        doc = a_document(database_design={"tables": [
+            {"table_name": srs_document._new_table_name("SKU")},
+            {"table_name": srs_document._new_table_name("Bus")},
+        ]})
+        self.assertEqual(completeness.table_coverage(doc, plan), [])
+
+    def test_plan_synchronization_does_not_duplicate_a_short_record_table(self):
+        plan = a_plan(records=[{"name": "SKU", "keeps": ["Code"]}])
+        envelope = {"srs_document": a_document(database_design={"tables": [
+            {"table_name": "skus", "description": "The product catalog", "fields": []},
+        ]})}
+        added = srs_document._synchronize_plan_contract(envelope, plan)
+        self.assertEqual(added["tables"], 0)
+        self.assertEqual([row["table_name"] for row in
+                          envelope["srs_document"]["database_design"]["tables"]], ["skus"])
+
     def test_main_srs_gate_does_not_require_diagrams_before_they_are_drawn(self):
         doc = a_document(diagrams=[])
         self.assertEqual(completeness.check_document(doc, a_plan()), [])
