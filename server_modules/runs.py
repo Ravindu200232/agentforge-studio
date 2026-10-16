@@ -509,7 +509,8 @@ def _review_screens(project: str, what: str, fix: bool, model: str = "") -> None
             outcomes.append(f"journeys: {prototyper.journeys(project, fix=fix, model=model).get('status')}")
         if what in ("tests", "both"):
             session.begin("review", role=bus.DEVELOPER)
-            outcomes.append(f"tests: {e2e_review.run(project, session, fix=fix, model=model, force=True).get('status')}")
+            # The app's pages, photographed now: the journeys are never run to take pictures.
+            outcomes.append(f"pages: {e2e_review.run(project, session, fix=fix, model=model, force=True, kind='pages').get('status')}")
         session.finish("Screens reviewed (" + "; ".join(outcomes) + ").")
     except RunCancelled:
         raise

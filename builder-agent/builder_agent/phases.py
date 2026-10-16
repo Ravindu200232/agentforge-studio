@@ -76,8 +76,9 @@ def plan(routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
          "routes": [], "status": "pending"},
         {"id": "tests", "kind": "tests", "title": "Unit tests",
          "detail": "Reading the finished application and writing its unit tests.", "routes": [], "status": "pending"},
-        {"id": "checks", "kind": "checks", "title": "Final checks and the reports",
-         "detail": "Running the end-to-end journeys and the final product checks, and writing the reports.",
+        {"id": "checks", "kind": "checks", "title": "The journey tests",
+         "detail": "Writing the end-to-end test of every saved journey. The Studio then checks every page, runs the journeys "
+                   "once, and asks for the final checks.",
          "routes": [], "status": "pending"}]
     return phases
 
@@ -100,7 +101,7 @@ def request_for(phase: dict[str, Any], number: int, total: int, routes: list[dic
     elif kind == "tests":
         task = "## What this phase is: the unit tests\n\n" + (section(request, 2) or "Write the unit tests of the finished application.")
     else:
-        task = "## What this phase is: the final checks\n\n" + (section(request, 3) or "Run the final product checks and write the reports.")
+        task = "## What this phase is: the journey tests\n\n" + (section(request, 3) or "Write the end-to-end test of every saved journey.")
     return prompts.load("builder/phase", number=number, total=total, title=phase["title"], task=task).strip()
 
 

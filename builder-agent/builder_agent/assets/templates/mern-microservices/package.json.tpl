@@ -14,7 +14,7 @@
     "test": "vitest run --reporter=default --reporter=json --outputFile=test-report.json",
     "test:coverage": "vitest run --coverage",
     "start:all": "node scripts/start-all.mjs",
-    "test:e2e": "playwright test --project=desktop --grep-invert \"@visual|@a11y\"",
+    "test:e2e": "playwright test --project=desktop --grep-invert \"@visual|@a11y|@pages\"",
     "test:visual": "playwright test --project=desktop --grep @visual --update-snapshots=missing",
     "test:a11y": "playwright test --project=desktop --grep @a11y",
     "test:perf": "lhci collect && lhci assert",

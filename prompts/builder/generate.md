@@ -106,7 +106,7 @@ Only after Phase 1 is complete, reread the implemented business modules, server 
 
 Write only the focused business tests the completed app needs. Run that focused unit suite once. If a business test fails because of a real defect, fix only the affected production code and rerun only the affected test file; do not restart the build or the whole test suite. Save the real Vitest JSON at `.agentforge/qa/vitest.json`, and merge the real command, exit code and focused results into `.agentforge/build/report.json` without removing Phase 1 evidence.
 
-## Phase 3 — reread the sources and run final product checks
+## Phase 3 — reread the sources and write the journey tests
 
 Only after Phase 2 is complete, reread all of these before writing any E2E journey:
 
@@ -115,8 +115,6 @@ Only after Phase 2 is complete, reread all of these before writing any E2E journ
 - the completed output application's actual routes, components, forms, API handlers, selectors, roles and authentication flow;
 - the Phase 1–2 results already recorded on disk.
 
-Derive E2E selectors, roles, setup and expected outcomes from the saved user-journey contract, the sources above and the current working app. Do not invent routes, labels, selectors or navigation. Write the journey test of every saved business journey and run each one's own file (the Studio runs the whole suite after this phase), then representative UI/visual, accessibility, performance, security and dependency checks using the scaffold's existing runners. Keep all existing Testing-screen artifact paths unchanged: `test-results/results.json`, screenshots under `test-results` or `e2e/__screenshots__`, `.lighthouseci/summary.json`, `.agentforge/qa/zap/summary.json`, and `.agentforge/qa/routes.json` when produced.
+Derive E2E selectors, roles, setup and expected outcomes from the saved user-journey contract, the sources above and the current working app. Do not invent routes, labels, selectors or navigation. Write the journey test of every saved business journey, one spec file per journey named by its id (`e2e/journeys/UJ-001.spec.js`), and run each one's own file while you write it — never the whole suite. Write `e2e/routes.json` from the app's real pages, each with the `roles` that may open it.
 
-Run each planned layer once. If a check finds a real product defect, repair only the affected code and rerun only that affected check. Never loop through the whole plan again. When a tool is unavailable, do not keep trying to install or rerun it: record it honestly as an `"unavailable"` gap, as above, and carry on.
-
-Then reopen `{{report_template}}` and fill both report files from it: `.agentforge/build/report.json` from its `build` section, preserving all earlier evidence, and `.agentforge/qa/report.json` from its `qa` section. Take every count from the runners' own output on disk, not from memory. Mark the QA report complete only after every planned layer has one honest recorded outcome. Finish the single plan after Phase 3.
+Do not run the visual, accessibility, performance, security or dependency checks in this phase, and do not fill `.agentforge/qa/report.json`. After this phase the Studio takes over, in this order: it photographs every page and has what looks wrong fixed; it runs the whole journey suite once; then it asks you for those checks and the reports. Record this phase in `.agentforge/build/report.json`, preserving all earlier evidence. Finish the single plan after Phase 3.

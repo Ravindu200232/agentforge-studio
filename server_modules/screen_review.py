@@ -133,46 +133,33 @@ def said_yes(reply: str | None) -> bool:
 
 
 def next_round(project: str, session: Any, agent: str, done: int, remaining: int, where: str, title: str,
-               continue_plan: bool = False) -> bool:
-    """After round `done`, with `remaining` problems still on `where`: whether to run round `done + 1`. The run holds still
-    for the answer on a Yes/No card in the chat (typing it works too). For build E2E reviews, Yes means the review is
-    enough and the build continues; No requests another round. "You decide" continues the build without another round.
-    Other reviews keep their existing Yes-to-repeat behavior. Stop cancels the run."""
+               continue_plan: bool = False, left: str = "") -> bool:
+    """After round `done`, with `remaining` problems still on `where` (or what `left` says is still wrong): whether to run
+    round `done + 1`. The run holds still for the answer on a Yes/No card in the chat (typing it works too). Yes runs the next
+    round. No, "You decide" and reaching `MAX_ROUNDS` end the rounds: inside a build or a testing run (`continue_plan`) the
+    run then goes on to its next step, else the review stops there. Stop ends the run."""
     from .session import RunCancelled
 
     if remaining <= 0:
         return False
+    left = left or f"{plural(remaining, 'problem')} still {'shows' if remaining == 1 else 'show'} on {where}"
+    after = "moving on to the next step" if continue_plan else "the review stops here"
     if done >= MAX_ROUNDS:
-        ending = "continuing the build plan" if continue_plan else "the review stops here"
-        bus.agent_msg(project, f"{plural(remaining, 'problem')} still on {where} after {done} rounds; {ending}.",
-                      title=title, kind="narration", agent=agent)
+        bus.agent_msg(project, f"{title}: {left} after {done} rounds; {after}.", title=title, kind="narration", agent=agent)
         return False
-    if continue_plan:
-        question = (f"{title}: round {done} is done and {plural(remaining, 'problem')} still "
-                    f"{'shows' if remaining == 1 else 'show'} on {where}. Is this enough to continue the build plan? "
-                    f"Yes records what remains and moves to the next step. No fixes and checks them in round {done + 1}.")
-        assumption = "record what remains and continue the build plan"
-    else:
-        question = (f"{title}: round {done} is done and {plural(remaining, 'problem')} still "
-                    f"{'shows' if remaining == 1 else 'show'} on {where}. "
-                    f"Run round {done + 1} (fix {'it' if remaining == 1 else 'them'} and check again)?")
-        assumption = "stop here and list what is left"
     reply = bus.ask_and_wait(
-        project, "question", question,
+        project, "question",
+        f"{title}: round {done} is done and {left}. Run round {done + 1} (fix {'it' if remaining == 1 else 'them'} and check "
+        f"again)?" + (" No moves on to the next step." if continue_plan else ""),
         options=[{"id": "1", "label": "Yes"}, {"id": "2", "label": "No"}], agent=agent,
         cancelled=lambda: bool(getattr(session, "cancelled", False)), quick=True,
-        why="Each round fixes only what is still wrong, then looks at those screens again.",
-        assumption=assumption)
+        why="Each round fixes only what is still wrong, then checks only that again.",
+        assumption="move on to the next step and list what is left" if continue_plan else "stop here and list what is left")
     if reply is None:
         raise RunCancelled(project)
-    if continue_plan:
-        if _first_word(reply) in {"no", "n", "madi", "මදි", "තව", "more", "again", "නෑ", "නැහැ", "naha"}:
-            return True
-        bus.agent_msg(project, f"Round {done} is enough. {plural(remaining, 'problem')} recorded; continuing the build plan.",
-                      title=title, kind="narration", agent=agent)
-        return False
     if said_yes(reply):
         return True
-    bus.agent_msg(project, f"Stopped after round {done}: {plural(remaining, 'problem')} left as they are, listed below.",
+    bus.agent_msg(project, (f"After round {done}: {left}, listed below; {after}." if continue_plan
+                            else f"Stopped after round {done}: {plural(remaining, 'problem')} left as they are, listed below."),
                   title=title, kind="narration", agent=agent)
     return False

@@ -64,6 +64,7 @@ class RunSession:
         self.stages: list[str] = []
         self.finished: list[str] = []
         self.failed: list[str] = []
+        self.unplanned: list[str] = []
         self._agent = Agent()
 
     def begin(self, stage, role=None, run_id=""):
@@ -93,6 +94,10 @@ class RunSession:
         self.requests.append(request)
         self.task_options.append(options)
         return self.results.pop(0)
+
+    def run_unplanned(self, request, model=""):
+        self.unplanned.append(request)
+        return {"status": "complete", "text": ""}
 
     def finish(self, text=""):
         self.finished.append(text)
@@ -125,6 +130,8 @@ class StraightThroughCase(unittest.TestCase):
             mock.patch("srs_agent.document.has_document", return_value=True),
             mock.patch("srs_agent.document.document", return_value={"srs_document": {}}),
             mock.patch("prototype_agent.design.approved_customization", return_value={}),
+            # A scaffold copied for real has Playwright and specs: no unit test starts a real `npm run build` for them.
+            mock.patch("qa_agent.e2e_run.runnable", return_value=False),
         ):
             self.enterContext(patch)
 
@@ -161,17 +168,35 @@ class RunStraightThroughTests(StraightThroughCase):
         self.assertEqual(self.finished_runs, [(outcome, "the plan")])
         self.assertEqual(self.session.failed, [])
 
-    def test_build_finishes_plan_after_e2e_review_leaves_problems_recorded(self):
+    def test_the_pages_are_looked_at_first_then_the_journeys_run_once_then_the_final_checks(self):
         outcome = {"status": "complete", "text": "done", "plan": "the plan"}
         self.session.results.append(outcome)
-        with mock.patch("qa_agent.e2e_run.run", return_value={"status": "passed"}) as e2e, \
-                mock.patch("qa_agent.e2e_review.run", return_value={"status": "done", "remaining": ["overlap"]}) as review:
+        order = mock.Mock()
+        order.review.return_value = {"status": "done", "remaining": ["overlap"]}
+        order.journeys.return_value = {"status": "passed"}
+        order.fixes.return_value = ("", [])
+        with mock.patch("qa_agent.e2e_review.run", order.review), mock.patch("qa_agent.e2e_run.run", order.journeys),                 mock.patch("qa_agent.e2e_run.fix_request", order.fixes),                 mock.patch("qa_agent.sequence.after_changes", order.runtime):
             result = build.run(RUN_PROJECT)
         self.assertEqual(result, {"status": "complete"})
-        e2e.assert_called_once()
-        review.assert_called_once_with(RUN_PROJECT, self.session)
+        self.assertEqual([c[0] for c in order.mock_calls if c[0] in {"review", "journeys", "runtime"}],
+                         ["review", "journeys", "runtime"])
+        self.assertEqual(order.review.call_args.kwargs, {"kind": "pages", "continue_plan": True})
+        self.assertEqual(order.journeys.call_count, 1)                    # once: every journey passed, nothing asked
+        self.assertEqual(len(self.session.unplanned), 1)
+        self.assertIn("The final checks, after the journeys", self.session.unplanned[0])
+        self.assertIn("never checked with the journeys", self.session.unplanned[0])
         self.assertEqual(self.finished_runs, [(outcome, "the plan")])
         self.assertEqual(self.session.failed, [])
+
+    def test_final_checks_already_done_on_this_app_are_not_asked_for_again(self):
+        self.session.results.append({"status": "complete", "text": "done", "plan": "the plan"})
+        from qa_agent import e2e_run
+        self.session.write_record("build", "final-checks.json",
+                                  data={"fingerprint": e2e_run.fingerprint(self.session.workspace)})
+        with mock.patch("qa_agent.sequence.screens_then_journeys"), mock.patch("qa_agent.sequence.after_changes") as runtime:
+            build.run(RUN_PROJECT)
+        self.assertEqual(self.session.unplanned, [])
+        runtime.assert_not_called()
 
     def test_a_blocked_build_is_a_failure_with_its_own_words_never_a_question(self):
         self.session.results.append({"status": "blocked", "text": "the database refused the migration"})

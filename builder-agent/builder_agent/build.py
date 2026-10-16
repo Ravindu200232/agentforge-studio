@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -467,32 +468,51 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
             request += f"\n\n## What the customer asked for on top of that\n\n{direction.strip()}"
 
         # The end-to-end screenshots are copied as the tests take them: the next test run empties Playwright's output folder.
-        from qa_agent import e2e_review, e2e_run, screen_keeper
+        from qa_agent import screen_keeper, sequence
         with screen_keeper.Keeper(session.workspace):
             build_result = _build_in_phases(project, session, stack, request, direction)
         if build_result.get("status") == "blocked":
             raise ValueError(build_result.get("text") or "the build was blocked")
-        # The agent wrote the journeys; the Studio runs the whole suite now, once (not again when the app is exactly what
-        # the last run tested, as when a stopped build is carried on with nothing left to do).
+        # The agent wrote the journeys. The Studio tests the app now, in this order (`qa_agent/sequence.py`): every page
+        # looked at and fixed, round by round; the journeys once, round by round on the ones that fail; then the final checks,
+        # whose changes are checked with the runtime test, never the journeys. A stopped build carried on repeats none of it
+        # that was already done on the app exactly as it is.
         with screen_keeper.Keeper(session.workspace):
-            ran = e2e_run.run(project, session, reason="build")
+            sequence.screens_then_journeys(project, session, reason="build")
+            _final_checks(project, session, guide_paths)
         if session.cancelled:
             raise RunCancelled(project)
-        # A model that can look at pictures looks at the screenshots of that run, round by round, asking before each round
-        # after the first. Whatever keeps it from looking is said in the chat, and the screens are shown either way.
-        if ran.get("status") in {"passed", "failed"}:
-            e2e_review.run(project, session)
-        if session.cancelled:
-            raise RunCancelled(project)
-        if ran.get("status") in {"passed", "failed"}:
-            bus.agent_msg(project, "E2E review is complete. Continuing the build plan with the final report and preview.",
-                          title="Build continuing", kind="narration")
         return _finish_run(project, session, build_result, build_result.get("plan") or "")
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001
         session.fail(str(exc))
         raise
+
+
+FINAL_CHECKS = ("build", "final-checks.json")
+
+
+def _final_checks(project: str, session: Any, guide_paths: list[str]) -> None:
+    """After the journeys: the agent runs the remaining checks (visual, accessibility, performance, security, dependencies)
+    and fills the reports; whatever it changed is checked with the runtime test, not the journeys. Not again when it already
+    ran on the app exactly as it is now (a stopped build carried on)."""
+    from qa_agent import e2e_run, sequence
+
+    done = session.read_record(*FINAL_CHECKS, fallback=None)
+    if isinstance(done, dict) and done.get("fingerprint") == e2e_run.fingerprint(session.workspace):
+        return
+    bus.phase(project, "build:checks", "Final checks",
+              detail="Visual, accessibility, performance, security and dependencies; then the reports.")
+    request = prompts.load("builder/final-checks", report_template=build_report.stage_template(session.workspace))
+    if guide_paths:
+        request += "\n\n## Stack build guides\n\n" + reference_staging.as_bullets(guide_paths)
+    session.run_unplanned(request)
+    if session.cancelled:
+        raise RunCancelled(project)
+    sequence.after_changes(project, session)
+    session.write_record(*FINAL_CHECKS, data={"fingerprint": e2e_run.fingerprint(session.workspace), "at": time.time()})
+    bus.phase(project, "build:checks", "Final checks", status="complete")
 
 
 def _finish_update(project: str, session: Any, result: dict[str, Any]) -> dict[str, Any]:

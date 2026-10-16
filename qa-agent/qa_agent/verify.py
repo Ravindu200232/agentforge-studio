@@ -127,34 +127,36 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
                    + reference_staging.as_bullets(guide_paths))
         if direction.strip():
             request += f"\n\n## What the customer asked you to check\n\n{direction.strip()}"
-        # The end-to-end journeys are the Studio's to run (`e2e_run.py`), once: reused while the app is what they last ran on,
-        # run again only when the person asks for it.
-        from . import e2e_run
+        # The Studio's order (`sequence.py`): when the app changed since the journeys last ran (or the person asked for them),
+        # every page is looked at and fixed first, then the journeys run once; the agent's layers come after them, and a change
+        # those make is checked with the runtime test, never the journeys. An app the journeys already ran on keeps their run.
+        from . import e2e_run, sequence
+        from .screen_keeper import Keeper
         rerun = rerun_asked(direction)
-        request += "\n\n" + prompts.load(
-            "testing/journeys-reused" if e2e_run.current(session.workspace) and not rerun else "testing/journeys-studio").strip()
+        if rerun or not e2e_run.current(session.workspace):
+            # The journeys' screenshots are copied as the tests take them: the next test run empties Playwright's output folder.
+            with Keeper(session.workspace):
+                sequence.screens_then_journeys(project, session, reason="test", force=rerun)
+            if session.cancelled:
+                raise RunCancelled(project)
+        journeys_done = e2e_run.current(session.workspace)
+        request += "\n\n" + prompts.load("testing/journeys-reused" if journeys_done else "testing/journeys-studio").strip()
 
         # The plan already runs and records every requested layer. A second
         # agent audit repeats expensive builds/browser runs without adding UI
         # evidence, so finish from the runner-owned JSON instead.
-        # The journeys' screenshots are copied as the tests take them: the next test run empties Playwright's output folder.
-        from .screen_keeper import Keeper
         with Keeper(session.workspace):
             result = session.run_task(request, audit=False)
         stop_feed.set()
         watcher.join(timeout=2)
         _publish(session, project, published[0])
 
-        # The journeys, run by the Studio: not again when this exact app already ran them, unless the person asked.
         with Keeper(session.workspace):
-            ran = e2e_run.run(project, session, reason="test", force=rerun)
-        if session.cancelled:
-            raise RunCancelled(project)
-        # A model that can look at pictures looks at the screenshots of a run that really happened (a reused one was looked
-        # at when it ran), round by round, asking before each round after the first.
-        from . import e2e_review
-        if ran.get("status") in {"passed", "failed"}:
-            e2e_review.run(project, session)
+            if journeys_done:
+                sequence.after_changes(project, session, why="the testing run's repairs")
+            else:
+                # The journeys could not run before the agent's work (the app did not build, say): once, now.
+                sequence.screens_then_journeys(project, session, reason="test", force=rerun)
         if session.cancelled:
             raise RunCancelled(project)
 

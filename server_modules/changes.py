@@ -721,10 +721,19 @@ def _run_fixed_journeys(project: str, session: Any, journeys: list[str]) -> None
     text = (f"Ran {', '.join(journeys)} again: " + (f"{', '.join(fixed)} now pass" if fixed else "none of them passes yet")
             + (f"; {', '.join(j for j in journeys if j in still)} still fail" if any(j in still for j in journeys) else "") + ".")
     if still:
-        bus.agent_msg(project, text + " They are not run again by themselves.", title="Journeys run again",
+        # Round by round while some still fail, each round asked for: Yes fixes them and runs only them again, No stops.
+        from qa_agent import sequence
+
+        bus.agent_msg(project, text, title="Journeys run again", kind="narration")
+        sequence.journey_rounds(project, session, outcome)
+        still = [row["id"] for row in e2e_run.failures(session.workspace)]
+        text = ""
+    if still:
+        bus.agent_msg(project, f"{', '.join(still)} still {'fails' if len(still) == 1 else 'fail'}. They are not run again "
+                               "by themselves.", title="Journeys that failed",
                       actions=[{"label": "Fix the failing journeys", "prompt": "fix the failing journeys"}])
     else:
-        bus.agent_msg(project, text + " Every journey now passes.", title="Journeys run again")
+        bus.agent_msg(project, (text + " " if text else "") + "Every journey now passes.", title="Journeys run again")
         from .qa_report import summary_counts
 
         saved = session.read_record("qa", "report.json", fallback=None)

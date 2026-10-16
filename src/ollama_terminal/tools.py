@@ -52,7 +52,9 @@ _RELEASE_COMMAND = re.compile(r"(?:^|[;&|(]\s*|\bnpx\s+)(?:netlify\s+deploy\b|ve
                               r"|npm\s+run\s+build\b|next\s+build\b)", re.I)
 # A run of the whole end-to-end suite. The Studio runs it itself, once (`qa_agent/e2e_run.py`); an agent runs one journey's
 # spec file, or a --grep of a few, while it writes or fixes them.
-_E2E_SUITE = re.compile(r"\b(?:qa:e2e|test:e2e|playwright\s+test)\b", re.I)
+# Playwright's own entry script counts too (`node node_modules/@playwright/test/cli.js test`): one build ran the whole suite
+# through it six times while the plain command was refused.
+_E2E_SUITE = re.compile(r"\b(?:qa:e2e|test:e2e|playwright(?:/test)?(?:/cli(?:\.[cm]?js)?)?\s+test)\b", re.I)
 _E2E_NARROWED = re.compile(r"\.spec\.[cm]?[jt]sx?\b|\.test\.[cm]?[jt]sx?\b|(?:^|\s)(?:--grep|-g)(?:[\s=]|$)|--last-failed\b|--list\b"
                            r"|(?:^|\s)e2e/[\w./-]+", re.I)
 E2E_SUITE_REFUSED = ("The Studio runs the whole end-to-end suite itself, once, after this work (and again only when the person "
