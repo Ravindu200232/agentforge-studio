@@ -155,12 +155,15 @@ class RetryingClient:
                  cancelled: Callable[[], bool] | None = None,
                  wait_for_cancel: Callable[[float], bool] | None = None,
                  on_connection: Callable[[str, dict[str, Any]], None] | None = None,
-                 presses: Callable[[], int] | None = None, hold: bool | Callable[[], bool] = False):
+                 presses: Callable[[], int] | None = None, hold: bool | Callable[[], bool] = False,
+                 project: str | Callable[[], str] = ""):
         """`on_connection(state, fields)` is told when the service stops answering ("retrying", "waiting") and when it answers
         again ("ok"), for the chat to show. `presses()` counts the person's presses of "Try again": a wait ends at once when
         the count moves. `hold`: when it has asked as many times as it will on its own, wait for the person instead of
-        giving up (a function says so per request)."""
+        giving up (a function says so per request). `project`: whose personal data is kept from the model
+        (`privacy_vault`): hidden in every request, put back in every answer."""
         self._inner = inner
+        self._project = project
         self._announce = announce
         self._cancelled = cancelled
         self._wait_for_cancel = wait_for_cancel
@@ -382,11 +385,24 @@ class RetryingClient:
                     raise
                 attempt = self._next_attempt(exc, attempt)
 
+    def _kept_from_model(self) -> str:
+        """The project whose personal data this request must not carry ("" when there is nothing to keep)."""
+        from . import privacy, privacy_vault
+
+        project = self._project() if callable(self._project) else self._project
+        project = str(project or "")
+        return project if project and privacy.enabled() and privacy_vault.active(project) else ""
+
     def chat(self, **kwargs: Any) -> Any:
         # The signed-in AgentForge account may make this call (approved, requests left), and it is counted as one request.
-        from . import accounts
+        from . import accounts, privacy_vault
 
         accounts.check(str(kwargs.get("model") or ""))
+        # Every model call comes through here: the project's personal data is swapped for placeholders on the way out and
+        # back for the real values on the way in, so the model never sees it and what it writes carries it.
+        kept = self._kept_from_model()
+        if kept:
+            kwargs = privacy_vault.hide_request(kept, kwargs)
         if kwargs.get("stream"):
             try:
                 first = self._inner.chat(**kwargs)      # a real client only builds the stream here; nothing is sent yet
@@ -394,8 +410,9 @@ class RetryingClient:
                 first = None
             if first is not None and not hasattr(first, "__iter__"):
                 accounts.record()
-                return first                            # not a stream after all: handed back as it is
-            return _counted(self._retried_stream(kwargs, first))
+                return privacy_vault.reveal_response(kept, first) if kept else first   # not a stream after all
+            stream = _counted(self._retried_stream(kwargs, first))
+            return privacy_vault.reveal_stream(kept, stream) if kept else stream
         attempt = 0
         while True:
             self._raise_if_cancelled()
@@ -403,7 +420,7 @@ class RetryingClient:
                 answer = self._interruptible(lambda: self._inner.chat(**kwargs))
                 self._recovered()
                 accounts.record()
-                return answer
+                return privacy_vault.reveal_response(kept, answer) if kept else answer
             except RunCancelled:
                 raise
             except json.JSONDecodeError as exc:
@@ -673,7 +690,8 @@ class ProjectSession:
                               cancelled=lambda: self.cancelled,
                               wait_for_cancel=self._cancel.wait,
                               on_connection=lambda state, fields: bus.connection(self.project, state, agent=self.role, **fields),
-                              presses=lambda: connection.presses(self.project), hold=True)
+                              presses=lambda: connection.presses(self.project), hold=True,
+                              project=lambda: self.project)
 
     def _announce(self, line: str) -> None:
         """What the engine narrates, as the studio's own log and state."""

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -12,7 +13,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 for folder in (".", "src", "srs-agent", "builder-agent", "prototype-agent", "qa-agent", ".deps/py312"):
     sys.path.insert(0, str(ROOT / folder))
 
-from server_modules import bus, config, httpd, permissions, privacy, routes_srs, runs  # noqa: E402
+from server_modules import bus, config, httpd, permissions, privacy, privacy_vault, routes_srs, runs  # noqa: E402
 from support import forget_project, isolate_workspaces  # noqa: E402
 
 PROJECT = "prj_privacy_test"
@@ -145,19 +146,27 @@ class FilterTests(unittest.TestCase):
         self.assertEqual(privacy.describe({"PERSON": 1}), "1 name")
 
 
-def fake_scrub(text):
+def fake_scrub(text, keep=()):
     clean = str(text).replace("kamal@gmail.com", "<EMAIL_ADDRESS>")
-    return privacy.Scrubbed(clean, {"EMAIL_ADDRESS": 1} if clean != text else {})
+    found = clean != text
+    return privacy.Scrubbed(clean, {"EMAIL_ADDRESS": 1} if found else {}, original=str(text),
+                            values=[("EMAIL_ADDRESS", "kamal@gmail.com")] if found else [])
 
 
 class EntryPointTests(unittest.TestCase):
-    """Everything typed reaches the next step with its personal data already hidden."""
+    """Everything typed reaches the next step as it was typed, and its personal data is kept for the project, so that every
+    model request carries a placeholder instead (`privacy_vault`) and what the model writes gets the real value back."""
 
     def setUp(self):
         self.events: list[dict] = []
         self.addCleanup(bus.subscribe(self.events.append))
         self.addCleanup(forget_project, PROJECT)
+        self.state = tempfile.TemporaryDirectory()
+        self.addCleanup(self.state.cleanup)
+        privacy_vault._cache.clear()
+        self.addCleanup(privacy_vault._cache.clear)
         for patch in (mock.patch.object(privacy, "scrub", fake_scrub),
+                      mock.patch.object(config, "STATE", Path(self.state.name)),
                       mock.patch.object(permissions, "start_project", return_value="plan")):      # the projects here are not in the store
             patch.start()
             self.addCleanup(patch.stop)
@@ -166,29 +175,38 @@ class EntryPointTests(unittest.TestCase):
         """What the chat was told under this title (the subscriber hears each event twice: once live, once from the log)."""
         return sorted({e["text"] for e in self.events if e.get("title") == title})
 
-    def test_a_chat_message_is_planned_without_the_address_and_the_chat_says_so(self):
+    def kept(self, project=PROJECT):
+        """What a model request of the project carries in place of the address."""
+        return privacy_vault.hide(project, "write to kamal@gmail.com")
+
+    def test_a_chat_message_is_planned_as_typed_and_the_address_is_kept_from_the_model(self):
         with mock.patch.object(runs.changes, "applies", return_value=True), \
                 mock.patch.object(runs.changes, "submit", return_value={"ok": True}) as submit:
             runs.agent_update({"project": PROJECT, "prompt": "mail kamal@gmail.com when it is done"})
-        self.assertEqual(submit.call_args.args[1], "mail <EMAIL_ADDRESS> when it is done")
-        self.assertEqual(len(self.said("Privacy filter")), 1)
-        self.assertNotIn("kamal@gmail.com", json.dumps(self.events))
+        self.assertEqual(submit.call_args.args[1], "mail kamal@gmail.com when it is done")
+        self.assertEqual(self.kept(), "write to <EMAIL_ADDRESS_1>")
+        said = self.said("Privacy filter")
+        self.assertEqual(len(said), 1)
+        self.assertNotIn("kamal@gmail.com", said[0])
 
-    def test_a_direct_change_reaches_the_agent_with_the_address_hidden(self):
+    def test_a_direct_change_reaches_the_agent_as_typed(self):
         with mock.patch.object(runs, "_in_background") as started, \
                 mock.patch.object(runs.builder, "built", return_value=True), \
                 mock.patch.object(runs, "_spec_pending", return_value=False), \
                 mock.patch.object(runs, "_answer_held", return_value=None):
             runs.agent_update_direct({"project": PROJECT, "prompt": "send it to kamal@gmail.com"})
-        self.assertEqual(started.call_args.args[5], "send it to <EMAIL_ADDRESS>")
+        self.assertEqual(started.call_args.args[5], "send it to kamal@gmail.com")
+        self.assertEqual(self.kept(), "write to <EMAIL_ADDRESS_1>")
 
-    def test_in_a_pointed_edit_only_what_was_typed_is_filtered_not_the_description_of_the_page(self):
+    def test_in_a_pointed_edit_what_was_typed_is_kept_and_the_page_is_described_as_it_is(self):
         elements = [{"tag": "h2", "text": "kamal@gmail.com's orders"}]
-        with mock.patch.object(runs.changes, "applies", return_value=True),                 mock.patch.object(runs.changes, "submit", return_value={"ok": True}) as submit:
+        with mock.patch.object(runs.changes, "applies", return_value=True), \
+                mock.patch.object(runs.changes, "submit", return_value={"ok": True}) as submit:
             runs.element_edit({"project": PROJECT, "prompt": "mail kamal@gmail.com here", "route": "/orders", "elements": elements})
         sent = submit.call_args.args[1]
-        self.assertTrue(sent.startswith("mail <EMAIL_ADDRESS> here"))
-        self.assertIn("kamal@gmail.com's orders", sent)                  # the agent still finds the heading by its own words
+        self.assertTrue(sent.startswith("mail kamal@gmail.com here"))
+        self.assertIn("kamal@gmail.com's orders", sent)
+        self.assertEqual(self.kept(), "write to <EMAIL_ADDRESS_1>")
 
     def test_a_message_the_filter_could_not_read_is_not_sent_and_says_why(self):
         with mock.patch.object(privacy, "scrub", side_effect=privacy.NotSent("Presidio is not installed")), \
@@ -199,7 +217,7 @@ class EntryPointTests(unittest.TestCase):
         self.assertIn("not installed", answer["detail"])
         self.assertEqual(len(self.said("Not sent")), 1)
 
-    def test_a_build_started_from_the_first_box_hides_the_data_in_the_idea_too(self):
+    def test_a_build_started_from_the_first_box_keeps_the_idea_and_its_address_for_the_new_project(self):
         created: list[str] = []
 
         def create(idea="", **_):
@@ -208,10 +226,11 @@ class EntryPointTests(unittest.TestCase):
         with mock.patch.object(runs.store, "create", create), mock.patch.object(runs, "_in_background"), \
                 mock.patch.object(runs, "_remember_model"):
             runs.agent_build({"prompt": "a shop for kamal@gmail.com"})
-        self.assertEqual(created, ["a shop for <EMAIL_ADDRESS>"])
+        self.assertEqual(created, ["a shop for kamal@gmail.com"])
+        self.assertEqual(self.kept(), "write to <EMAIL_ADDRESS_1>")
         self.assertEqual(len(self.said("Privacy filter")), 1)
 
-    def test_a_new_project_keeps_only_the_hidden_idea(self):
+    def test_a_new_project_keeps_the_idea_as_typed_and_its_address_from_the_model(self):
         saved: list[str] = []
 
         def create(idea="", **_):
@@ -219,10 +238,11 @@ class EntryPointTests(unittest.TestCase):
             return {"id": PROJECT, "name": "x", "stack": "", "language": "", "status": "new"}
         with mock.patch.object(routes_srs.store, "create", create):
             routes_srs.dispatch("POST", "/projects", {"idea": "a clinic for kamal@gmail.com"})
-        self.assertEqual(saved, ["a clinic for <EMAIL_ADDRESS>"])
+        self.assertEqual(saved, ["a clinic for kamal@gmail.com"])
+        self.assertEqual(self.kept(), "write to <EMAIL_ADDRESS_1>")
         self.assertEqual(len(self.said("Privacy filter")), 1)
 
-    def test_an_interview_answer_a_plan_revision_and_a_wireframe_request_are_hidden_before_they_are_used(self):
+    def test_an_interview_answer_a_plan_revision_and_a_wireframe_request_are_kept_from_the_model(self):
         seen: dict[str, object] = {}
         with mock.patch.object(routes_srs.interview, "record_answer", lambda project, body: seen.update(answer=body)), \
                 mock.patch.object(routes_srs.plan, "draft", lambda project, revision="", answers=None: seen.update(plan=(revision, answers))), \
@@ -234,21 +254,24 @@ class EntryPointTests(unittest.TestCase):
                                 {"revision": "ask kamal@gmail.com", "answers": {"Who?": "kamal@gmail.com"}})
             routes_srs.dispatch("POST", f"/projects/{PROJECT}/wireframes/edit", {"prompt": "show kamal@gmail.com", "route": "/"})
             routes_srs.dispatch("POST", f"/projects/{PROJECT}/prototype/edit", {"prompt": "show kamal@gmail.com"})
-        self.assertEqual(seen["answer"]["text"], "mail <EMAIL_ADDRESS>")
-        self.assertEqual(seen["answer"]["custom"], "<EMAIL_ADDRESS>")
+        self.assertEqual(seen["answer"]["text"], "mail kamal@gmail.com")
+        self.assertEqual(seen["answer"]["custom"], "kamal@gmail.com")
         self.assertEqual(seen["answer"]["selected"], ["x"])
-        self.assertEqual(seen["plan"], ("ask <EMAIL_ADDRESS>", {"Who?": "<EMAIL_ADDRESS>"}))
-        self.assertEqual((seen["wire"], seen["proto"]), ("show <EMAIL_ADDRESS>", "show <EMAIL_ADDRESS>"))
+        self.assertEqual(seen["plan"], ("ask kamal@gmail.com", {"Who?": "kamal@gmail.com"}))
+        self.assertEqual((seen["wire"], seen["proto"]), ("show kamal@gmail.com", "show kamal@gmail.com"))
+        self.assertEqual(self.kept(), "write to <EMAIL_ADDRESS_1>")
 
-    def test_a_reply_to_a_question_and_feedback_on_a_plan_are_hidden(self):
+    def test_a_reply_to_a_question_and_feedback_on_a_plan_are_kept_from_the_model(self):
         asked = bus.ask(PROJECT, "question", "Who should be told?", options=[{"id": "1", "label": "Someone"}])
         with mock.patch.object(httpd.runs, "agent_update_direct") as direct:
             httpd.decide({"id": asked, "decision": "answer", "reply": "tell kamal@gmail.com"})
-        self.assertEqual(direct.call_args.args[0]["prompt"], "tell <EMAIL_ADDRESS>")
-        with mock.patch.object(httpd.changes, "decide", return_value={"ok": True}) as decide,                 mock.patch.object(httpd, "_project", return_value=PROJECT):
+        self.assertEqual(direct.call_args.args[0]["prompt"], "tell kamal@gmail.com")
+        with mock.patch.object(httpd.changes, "decide", return_value={"ok": True}) as decide, \
+                mock.patch.object(httpd, "_project", return_value=PROJECT):
             httpd.change_decide({"project": PROJECT, "decision": "revise", "feedback": "also kamal@gmail.com",
                                  "_match": mock.Mock(group=lambda name: "chg-1")})
-        self.assertEqual(decide.call_args.args[3], "also <EMAIL_ADDRESS>")
+        self.assertEqual(decide.call_args.args[3], "also kamal@gmail.com")
+        self.assertEqual(self.kept(), "write to <EMAIL_ADDRESS_1>")
 
     def test_a_private_value_typed_into_a_question_is_not_touched_by_the_filter(self):
         """A password the person was asked for is saved by name and never reaches a model: the filter must not alter it."""
@@ -258,6 +281,7 @@ class EntryPointTests(unittest.TestCase):
                 mock.patch.object(bus, "resolve", return_value=None):
             httpd.decide({"id": "d1", "decision": "answer", "reply": "kamal@gmail.com"})
         self.assertEqual(accept.call_args.args[1], "kamal@gmail.com")
+        self.assertEqual(privacy_vault.entries(PROJECT), [])
 
 
 class InstallTests(unittest.TestCase):

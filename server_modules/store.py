@@ -145,6 +145,10 @@ def delete(project_id: str) -> None:
         data = _read()
         data.pop(project_id, None)
         _write(data)
+    # The personal data kept from the model for this project goes with it.
+    from . import privacy_vault
+
+    privacy_vault.forget(project_id)
 
 
 def exists(project_id: str) -> bool:

@@ -55,8 +55,8 @@ def create_project(_project: str, body: dict) -> Any:
     idea = str(body.get("idea") or "").strip()
     if not idea:
         raise ValueError("describe what you want built")
-    hidden = privacy.scrub(idea) if privacy.enabled() else privacy.Scrubbed(idea)       # NotSent (a ValueError) when it cannot run
-    idea = hidden.text
+    hidden = privacy.scrub(idea, privacy.keep_terms()) if privacy.enabled() else privacy.Scrubbed(idea)       # NotSent (a ValueError) when it cannot run
+    idea = hidden.original
     # The model picked beside the first input: the interview, the plan and the specification all run on the
     # saved model, so it is saved here, before any of them starts.
     chosen = str(body.get("model") or "").strip()
@@ -72,7 +72,7 @@ def create_project(_project: str, body: dict) -> Any:
                           language=str(body.get("language") or ""),
                           stack=str(body.get("stack") or ""),
                           workspace_path=str(body.get("workspace_path") or ""))
-    privacy.tell(record["id"], hidden.found)
+    privacy.keep_for(record["id"], hidden)
     permissions.start_project(record["id"], str(body.get("permission_mode") or ""))
     return {"project": {"id": record["id"], "name": record["name"],
                         "stack": record["stack"], "language": record["language"],

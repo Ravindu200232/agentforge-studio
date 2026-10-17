@@ -182,7 +182,7 @@ def client() -> Any:
         from .session import RetryingClient
         _local.client = RetryingClient(inner, cancelled=_stopped, wait_for_cancel=_wait_for_stop,
                                        on_connection=_connection_report, presses=_connection_presses,
-                                       hold=_hold_for_person)
+                                       hold=_hold_for_person, project=lambda: getattr(_local, "project", ""))
         _local.key = key
     return _local.client
 

@@ -89,6 +89,7 @@ DEFAULTS: dict[str, Any] = {
     "privacy_filter": True,            # everything typed goes through Microsoft Presidio first: personal data reaches no model (privacy.py)
     "privacy_model": "en_core_web_sm", # the spaCy model Presidio finds names with (without it: patterns only, no names)
     "privacy_entities": [],            # which kinds of personal data are hidden; empty is privacy.DEFAULT_ENTITIES
+    "privacy_keep": [],                # words never hidden: business, brand and product names that look like a person's
     "diagram_visual_review": True,     # the specification's diagrams are photographed and looked at by a vision model, two rounds at most
     "supabase_oauth_via": "",       # "broker" (the engine's OAuth app) or "own" (one this person registered)
     "supabase_account_id": "",      # the active account's organisation id

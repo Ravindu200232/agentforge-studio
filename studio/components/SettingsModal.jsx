@@ -243,6 +243,7 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
                   in the Settings list.
                 </p>
                 <MongoState mongo={meta?.mongo} />
+                <PrivacyKeep />
                 <WorkspaceActions project={project} folderRef={folderRef} onImport={onImport}
                                   onZip={onZip} onOpenInNewTab={onOpenInNewTab} onLogout={onLogout} />
               </div>
@@ -286,6 +287,7 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
                     Save Settings
                   </button>
                 </div>
+                <PrivacyKeep />
                 <WorkspaceActions project={project} folderRef={folderRef} onImport={onImport}
                                   onZip={onZip} onOpenInNewTab={onOpenInNewTab} onLogout={onLogout} />
               </div>
@@ -421,6 +423,75 @@ function EngineChoice({ value, onChange, host, onHost }) {
         className="mt-1 block w-full rounded-xl border border-line bg-panel2 px-3 py-2 text-[12px] text-ink" />
     </label>}
   </div>
+}
+
+const NL = String.fromCharCode(10)
+
+/** The privacy filter: whether it runs, and the names it must never hide - a business, a brand or a product name that looks
+ * like a person's (`privacy_keep`). What it does hide is kept on this computer and put back in what the model writes. */
+function PrivacyKeep() {
+  const [status, setStatus] = useState(null)
+  const [text, setText] = useState('')
+  const [saved, setSaved] = useState('')
+  const [state, setState] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    api.privacy().then(s => { if (alive) setStatus(s) }).catch(() => {})
+    api.settings().then(s => {
+      if (!alive) return
+      const rows = Array.isArray(s?.privacy_keep) ? s.privacy_keep.join(NL) : String(s?.privacy_keep || '')
+      setText(rows)
+      setSaved(rows)
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+
+  async function save() {
+    setState('saving')
+    try {
+      const rows = text.split(NL).map(r => r.trim()).filter(Boolean)
+      await api.saveSettings({ privacy_keep: rows })
+      setSaved(rows.join(NL))
+      setText(rows.join(NL))
+      setState('saved')
+    } catch (e) {
+      setState(e.message || 'could not save')
+    }
+  }
+
+  const on = status?.enabled
+  return (
+    <div className="rounded-2xl border border-line bg-panel px-4 py-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-[13px] font-semibold text-ink">Privacy</h3>
+        <span className={cn('text-[11px]', on && status?.ready ? 'text-ok' : 'text-muted')}>
+          {!status ? 'Checking…' : !on ? 'Filter off' : status.ready ? 'Personal data is kept from the model' : 'Filter not ready'}
+        </span>
+      </div>
+      <p className="mt-1.5 text-[11.5px] leading-relaxed text-muted">
+        Names, email addresses and phone numbers you type are replaced with placeholders before they reach the model, and put
+        back on this computer in the specification and the app. Names below are never hidden — your business, brand or
+        product names that look like a person's.
+      </p>
+      <textarea
+        value={text}
+        onChange={e => { setText(e.target.value); setState('') }}
+        rows={3}
+        placeholder={['Sunil Hardware', 'Clean Mate'].join(NL)}
+        className="mt-2.5 w-full resize-y rounded-xl border border-line bg-panel2/60 px-3 py-2 text-[12.5px] text-ink outline-none placeholder:text-muted/40 focus:border-accent focus:ring-1 focus:ring-accent"
+      />
+      <div className="mt-2 flex items-center gap-3">
+        <button type="button" onClick={save} disabled={state === 'saving' || text === saved}
+          className="rounded-xl bg-accent px-3.5 py-1.5 text-[12px] font-semibold text-ink disabled:opacity-50">
+          {state === 'saving' ? 'Saving…' : 'Save names'}
+        </button>
+        {state && state !== 'saving' && (
+          <span className={cn('text-[11px]', state === 'saved' ? 'text-ok' : 'text-bad')}>{state === 'saved' ? 'Saved' : state}</span>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function AccountRequests() {
