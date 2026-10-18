@@ -792,6 +792,7 @@ def generate(project: str) -> dict[str, Any]:
         drawn = llm.in_lanes(
             list(DIAGRAM_KINDS),
             lambda kind: _draw_diagram(session, project, doc, kind),
+            lanes=diagram_look.DIAGRAM_LANES,
             on_error=lambda kind, exc: {"id": f"DIA-{kind}", "kind": kind,
                                         "title": kind.replace("_", " ").title(),
                                         "format": "mermaid", "source": "",
@@ -1475,6 +1476,7 @@ def redraw_diagrams(project: str, *, deep: bool = False,
             drawn = llm.in_lanes(
                 list(requested),
                 lambda kind: _draw_diagram(session, project, doc, kind),
+                lanes=diagram_look.DIAGRAM_LANES,
                 on_error=lambda kind, exc: {
                     "id": f"DIA-{kind}", "kind": kind,
                     "title": kind.replace("_", " ").title(),

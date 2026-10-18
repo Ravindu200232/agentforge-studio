@@ -32,7 +32,7 @@ $stage = Join-Path $release 'stage\app'
 $out = Join-Path $release 'out'
 $cache = Join-Path $release 'cache'
 $version = (Get-Content (Join-Path $root 'desktop\package.json') -Raw | ConvertFrom-Json).version
-$releaseTag = 'v' + ($version -split '\.')[0]
+$releaseTag = "v$version"
 if (-not $Repo) {
     $Repo = 'Ravindu200232/agentforge-releases'
 }
