@@ -155,21 +155,26 @@ def _pages_of(doc: dict) -> list[dict]:
 
 
 def _wireframe_pages(doc: dict, approved: dict) -> list[dict]:
-    """Every specified route, including a plan screen omitted by a draft SRS."""
-    pages = list(_pages_of(doc))
-    known = {str(p.get("route") or "").rstrip("/") or "/" for p in pages}
+    """Every specified route, including a plan screen omitted by a draft SRS; a route that is another's in a different letter
+    case is the same page, drawn once."""
+    pages, known = [], set()
+    for page in _pages_of(doc):
+        key = completeness.route_key(page.get("route") or "")
+        if key not in known:
+            known.add(key)
+            pages.append(page)
     for screen in approved.get("screens") or []:
         if not isinstance(screen, dict) or not str(screen.get("route") or "").strip():
             continue
         route = str(screen["route"]).rstrip("/") or "/"
-        if route in known:
+        if completeness.route_key(route) in known:
             continue
         pages.append({"route": route, "page_name": screen.get("name") or route,
                       "sections": [screen.get("purpose")] if screen.get("purpose") else [],
                       "functions": screen.get("functions") or [],
                       "allowed_roles": screen.get("who") or [],
                       "plan_screen": screen})
-        known.add(route)
+        known.add(completeness.route_key(route))
     return pages
 
 
@@ -894,15 +899,17 @@ def _synchronize_plan_contract(envelope: dict, approved: dict) -> dict[str, int]
              "traceability": 0}
 
     # The plan's routes are authoritative. Keep the model's richer page details
-    # when present; only fill routes it omitted.
+    # when present; only fill routes it omitted. A route in another letter case is
+    # the same page, never a second one.
+    completeness.dedupe_pages(doc)
     page_lists = (doc.setdefault("public_pages", []), doc.setdefault("protected_pages", []))
-    existing_routes = {str(page.get("route") or "").rstrip("/") or "/"
+    existing_routes = {completeness.route_key(page.get("route") or "")
                       for rows in page_lists for page in rows}
     for screen in approved.get("screens") or []:
         if not isinstance(screen, dict):
             continue
         route = str(screen.get("route") or "").strip()
-        if not route or (route.rstrip("/") or "/") in existing_routes:
+        if not route or completeness.route_key(route) in existing_routes:
             continue
         roles = [str(role) for role in screen.get("who") or [] if str(role).strip()]
         public = not roles or any(role.casefold() == "visitor" for role in roles)
@@ -916,7 +923,7 @@ def _synchronize_plan_contract(envelope: dict, approved: dict) -> dict[str, int]
             "functions": [str(screen.get("purpose") or "")],
         }
         page_lists[0 if public else 1].append(page)
-        existing_routes.add(route.rstrip("/") or "/")
+        existing_routes.add(completeness.route_key(route))
         added["pages"] += 1
 
     # Match normalized singular entity names, so e.g. "Booking History Entry"

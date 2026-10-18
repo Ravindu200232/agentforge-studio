@@ -111,6 +111,22 @@ def current(project: str) -> dict[str, Any]:
             "can_approve": ok, "reason": reason, "markdown": _markdown(plan)}
 
 
+def _one_screen_per_route(plan: dict[str, Any]) -> None:
+    """A screen whose route is another's in a different letter case is the same screen: only the first is kept."""
+    from server_modules.validation import completeness
+
+    seen: set[str] = set()
+    kept = []
+    for screen in plan.get("screens") or []:
+        key = completeness.route_key(screen.get("route") or "") if isinstance(screen, dict) else ""
+        if key and key in seen:
+            continue
+        seen.add(key)
+        kept.append(screen)
+    if isinstance(plan.get("screens"), list):
+        plan["screens"] = kept
+
+
 def draft(project: str, revision: str = "", answers: dict[str, str] | None = None) -> dict[str, Any]:
     """Write the plan, or revise the one that exists."""
     record = store.require(project)
@@ -144,6 +160,7 @@ def draft(project: str, revision: str = "", answers: dict[str, str] | None = Non
         if not isinstance(proposed, dict):
             raise ValueError("the plan must be a JSON object")
         merged = _merge(previous, proposed)
+        _one_screen_per_route(merged)
         plan_rules.plan_validator(plan_rules.archetype_pack(merged))(merged)
         return merged
 

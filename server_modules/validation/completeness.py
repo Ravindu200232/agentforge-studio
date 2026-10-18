@@ -108,9 +108,59 @@ def requirement_coverage(doc: dict, plan: dict) -> list[str]:
     return gaps
 
 
+def route_key(route: str) -> str:
+    """A route as the Studio compares routes: its letter case, a trailing slash and the names of its parameters do not make it
+    another page (`/Admin/branches/[branchId]/` is `/admin/branches/[id]`). One specification listed `/admin/branches` and
+    `/Admin/branches` as two pages, 46 times over, and its wireframe had 117 pages for 71 screens."""
+    path = str(route or "").strip().rstrip("/") or "/"
+    return re.sub(r"\[[^\]]*\]|:[A-Za-z_]\w*", "[]", path).lower()
+
+
+def dedupe_pages(doc: dict) -> dict[str, str]:
+    """Remove the pages whose route is another page's in a different case or spelling of its parameters, keeping the first,
+    and point every reference to a removed route (journeys, role access, traceability) at the kept one. Returns
+    {removed route: kept route}."""
+    kept: dict[str, str] = {}
+    moved: dict[str, str] = {}
+    for name in ("public_pages", "protected_pages"):
+        rows = doc.get(name)
+        if not isinstance(rows, list):
+            continue
+        keep = []
+        for page in rows:
+            route = str(page.get("route") or "") if isinstance(page, dict) else ""
+            key = route_key(route) if route.strip() else ""
+            if key and key in kept:
+                if route != kept[key]:
+                    moved[route] = kept[key]
+                continue
+            if key:
+                kept[key] = route
+            keep.append(page)
+        doc[name] = keep
+    if not moved:
+        return moved
+    swap = lambda value: moved.get(value, value) if isinstance(value, str) else value  # noqa: E731
+    for flow in doc.get("business_workflows") or []:
+        if isinstance(flow, dict) and isinstance(flow.get("step_routes"), list):
+            flow["step_routes"] = [swap(r) for r in flow["step_routes"]]
+    for row in doc.get("role_access_matrix") or []:
+        for field in ("allowed_pages", "restricted_pages"):
+            if isinstance(row, dict) and isinstance(row.get(field), list):
+                row[field] = list(dict.fromkeys(swap(r) for r in row[field]))
+    for row in doc.get("requirement_traceability_matrix") or []:
+        if isinstance(row, dict) and isinstance(row.get("pages"), list):
+            row["pages"] = list(dict.fromkeys(swap(r) for r in row["pages"]))
+    auth = doc.get("authentication_requirement")
+    if isinstance(auth, dict):
+        for field in ("sign_in_route", "sign_up_route"):
+            auth[field] = swap(auth.get(field))
+    return moved
+
+
 def page_coverage(doc: dict, plan: dict) -> list[str]:
     """Screens the plan promised that the specification does not have."""
-    routes = {str(p.get("route") or "").rstrip("/") or "/"
+    routes = {route_key(p.get("route") or "")
               for p in _dig(doc, "public_pages") + _dig(doc, "protected_pages")}
     names = {str(p.get("page_name") or "").lower()
              for p in _dig(doc, "public_pages") + _dig(doc, "protected_pages")}
@@ -118,7 +168,7 @@ def page_coverage(doc: dict, plan: dict) -> list[str]:
     for screen in (plan.get("screens") or []):
         route = str(screen.get("route") or "").rstrip("/") or "/"
         name = str(screen.get("name") or "")
-        if route not in routes and name.lower() not in names:
+        if route_key(route) not in routes and name.lower() not in names:
             gaps.append(f"the plan's screen {name!r} ({route}) is not in the specification's pages")
     return gaps
 
