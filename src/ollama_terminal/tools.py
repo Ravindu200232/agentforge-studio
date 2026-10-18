@@ -26,6 +26,17 @@ from .mcp_client import MCPManager
 MAX_OUTPUT = 24_000
 MAX_READ = 32_000
 MAX_COMMAND_SECONDS = 600
+# What a text search never walks into: installed packages, build and test output, Playwright's trace frames and the Studio's
+# kept copies of the test pictures. One search of a built app ("/api/health" in ".") went through 58,000 saved test frames and
+# the packages of three apps, and took sixteen minutes; the deployment plan it was part of took thirty-seven.
+SEARCH_SKIP_DIRS = {".git", ".venv", ".deps", "__pycache__", "node_modules", ".next", ".turbo", ".vercel", ".netlify",
+                    ".cache", ".svelte-kit", ".nuxt", ".output", ".lighthouseci", "coverage", "test-results",
+                    "playwright-report", "blob-report"}
+SEARCH_SKIP_PATHS = {".agentforge/qa/screens"}
+SEARCH_SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico", ".bmp", ".woff", ".woff2", ".ttf", ".otf",
+                        ".eot", ".zip", ".gz", ".tgz", ".pdf", ".mp4", ".webm", ".mp3", ".wav", ".exe", ".dll", ".node",
+                        ".wasm", ".sqlite", ".db", ".map"}
+SEARCH_SECONDS = 20
 # A command that has finished but left a background process holding its output open (a server started with `Start-Process`, say)
 # is not waited for after this long: the output is only for the model to read, and waiting for the pipe to close would wait for
 # as long as that server runs.
@@ -467,24 +478,39 @@ class WorkspaceTools:
         if not query:
             raise ValueError("Empty query")
         base = self._path(path)
-        files = [base] if base.is_file() else base.rglob("*")
+        needle = query.lower()
+        deadline = time.monotonic() + SEARCH_SECONDS
         hits = []
-        for file in files:
-            if not file.is_file() or any(part in {".git", ".venv", ".deps", "__pycache__", "node_modules"} for part in file.parts):
-                continue
-            if not file.resolve().is_relative_to(self.root):
-                continue
-            if file.stat().st_size > 1_000_000:
-                continue
+        for file in [base] if base.is_file() else self._searchable(base):
+            if time.monotonic() > deadline:
+                hits.append(f"(stopped after {SEARCH_SECONDS} seconds: search a smaller folder for the rest)")
+                break
             try:
+                if not file.resolve().is_relative_to(self.root) or file.stat().st_size > 1_000_000:
+                    continue
                 for number, line in enumerate(file.read_text(encoding="utf-8").splitlines(), 1):
-                    if query.lower() in line.lower():
+                    if needle in line.lower():
                         hits.append(f"{file.relative_to(self.root)}:{number}: {line[:300]}")
                         if len(hits) >= 100:
                             return "\n".join(hits)
             except (UnicodeError, OSError):
                 continue
         return "\n".join(hits) or "No matches"
+
+    def _searchable(self, base: Path):
+        """The files under `base` a text search reads, folder by folder: never inside `SEARCH_SKIP_DIRS`, Playwright's trace
+        frames or `SEARCH_SKIP_PATHS`, and never a picture, a font or an archive. Skipped folders are not walked at all."""
+        for folder, dirs, names in os.walk(base):
+            here = Path(folder)
+            try:
+                inside = here.relative_to(self.root).as_posix()
+            except ValueError:
+                inside = ""
+            dirs[:] = sorted(d for d in dirs if d not in SEARCH_SKIP_DIRS and not d.startswith(".playwright-artifacts")
+                             and (f"{inside}/{d}" if inside not in ("", ".") else d) not in SEARCH_SKIP_PATHS)
+            for name in sorted(names):
+                if os.path.splitext(name)[1].lower() not in SEARCH_SKIP_SUFFIXES:
+                    yield here / name
 
     def _permitted(self, action: dict[str, Any], question: str) -> str:
         """"" when the action may go ahead, else what to tell the model."""

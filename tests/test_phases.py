@@ -421,6 +421,28 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual([p["status"] for p in self.items[:3]], ["done", "done", "pending"])
         self.assertEqual(len(self.asked), 2)
 
+    def test_with_a_brief_every_phase_after_the_first_starts_a_fresh_conversation_that_begins_with_it(self):
+        shed = []
+        self.session.shed_history = lambda note="", keep_tokens=40_000: shed.append(keep_tokens) or 0
+        phased = self.phased(4)
+        phased.brief = "THE BUILD REQUEST"
+        self.run_all(phased)
+        total = len(self.items)
+        self.assertEqual(shed, [0] * (total - 1))                              # the first phase follows its own plan
+        self.assertEqual(self.asked[0][0], f"ASK 1: {self.items[0]['title']}")
+        for request, _, _ in self.asked[1:]:
+            self.assertTrue(request.startswith("THE BUILD REQUEST\n\n---\n\nASK "), request[:60])
+        # A resumed build starts its first phase fresh too.
+        shed.clear(), self.asked.clear()
+        self.items[3]["status"] = "pending"
+        self.session._run_phases(self.session.agent(), "THE PLAN", "plan/developmentplan1.md", phased, fresh_first=True)
+        self.assertEqual((shed, self.asked[0][0][:17]), ([0], "THE BUILD REQUEST"))
+
+    def test_without_a_brief_the_phases_share_one_conversation_as_before(self):
+        self.session.shed_history = lambda *a, **k: self.fail("nothing is shed without a brief")
+        self.run_all(self.phased(2))
+        self.assertTrue(all(request.startswith("ASK ") for request, _, _ in self.asked))
+
     def test_a_turn_that_fails_stops_the_build_with_its_error_and_the_phases_before_it_are_kept(self):
         phased = self.phased(2)
         self.script = ["complete", RuntimeError("the model service is down")]

@@ -105,6 +105,15 @@ def request_for(phase: dict[str, Any], number: int, total: int, routes: list[dic
     return prompts.load("builder/phase", number=number, total=total, title=phase["title"], task=task).strip()
 
 
+def brief(request: str) -> str:
+    """What a phase's fresh conversation starts with: the build request, and where the earlier phases' work is."""
+    return ("# The build this phase is part of\n\n"
+            "Each phase starts a fresh conversation, so the build request is repeated here. What the earlier phases made is on "
+            "disk: `.agentforge/build/progress.json` names each built page's files, and the shared layout, components, data "
+            "access and helpers are in the app's own folders. Read the ones this phase uses before writing; do not guess them, "
+            "and do not reread what this phase does not touch.\n\n" + request.strip())
+
+
 def repair_for(phase: dict[str, Any], number: int, total: int, problems: list[str]) -> str:
     return prompts.load("builder/phase-repair", number=number, total=total, title=phase["title"],
                         problems="\n".join(f"- {line}" for line in problems)).strip()

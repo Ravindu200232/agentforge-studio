@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from server_modules import bus, config, pointed, prompts, store, web_app
-from server_modules.session import ProjectSession, RunCancelled, session_for
+from server_modules.session import ProjectSession, RunCancelled, session_for, start_fresh
 
 from . import demo, journey_walk, visual_review
 from . import design as design_stage
@@ -221,6 +221,7 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str) -> list
                  else "None — find fitting real pictures on the web and use them by their address."),
         resume=resume)
 
+    start_fresh(session)
     result = session.run_task(request, audit=False, parallel_write_limit=4)
     if session.cancelled:
         raise RunCancelled(project)

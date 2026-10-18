@@ -99,6 +99,10 @@ class RunSession:
         self.unplanned.append(request)
         return {"status": "complete", "text": ""}
 
+    def shed_history(self, note="", keep_tokens=40_000):
+        self.shed = getattr(self, "shed", 0) + 1
+        return 0
+
     def finish(self, text=""):
         self.finished.append(text)
 

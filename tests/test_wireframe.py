@@ -219,6 +219,60 @@ class GeneratingTests(Scratch):
         self.assertEqual(wireframe.bus.agent_msg.call_args_list[0].kwargs["title"], "Wireframe toolkit")
 
 
+MANY = [{"route": f"/page-{n}", "page_name": f"Page {n}"} for n in range(1, 13)]
+
+
+class DrawingAtTheSameTimeTests(Scratch):
+    """A big app: the project's agent draws the shared parts and the first pages, then several agents draw the rest at once."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(wireframe.document, "screens", return_value=MANY)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.lanes: list[list[tuple[str, str]]] = []
+        self.unplanned: list[str] = []
+        self.session.run_lanes = lambda work, parallel_write_limit=1: self.lanes.append(work) or [
+            {"status": "complete", "text": "", "rounds": 1}] * len(work)
+        self.session.run_unplanned = lambda request, model="": self.unplanned.append(request) or {"status": "complete"}
+
+    def write(self, *numbers):
+        pages = self.app / "src" / "pages"
+        pages.mkdir(parents=True, exist_ok=True)
+        for n in numbers:
+            (pages / f"page-{n}.tsx").write_text("export default function P() { return null }", encoding="utf-8")
+
+    def test_the_first_pages_then_the_rest_split_between_the_agents_in_order(self):
+        self.session.agent = lambda session: self.write(*range(1, 13))
+        wireframe.generate(PROJECT)
+        first = self.session.tasks[0]
+        self.assertIn("This app has 12 pages", first)
+        self.assertIn("- `/page-3` — Page 3", first.split("## This run")[1])
+        self.assertNotIn("`/page-4`", first.split("## This run")[1])
+        self.assertIn("- `/page-12`", first.split("## This run")[0])            # the site map is whole
+        work = self.lanes[0]
+        self.assertEqual(len(work), 3)
+        mine = [[line.split("`")[1] for line in plan.splitlines() if line.startswith("- `")] for _, plan in work]
+        self.assertEqual(mine, [["/page-4", "/page-5", "/page-6"], ["/page-7", "/page-8", "/page-9"],
+                                ["/page-10", "/page-11", "/page-12"]])
+        self.assertIn("do not edit a file you did not create", work[0][0])
+        self.assertEqual(self.unplanned, [])                                   # every page was written
+
+    def test_a_page_the_agents_did_not_write_is_written_by_the_project_agent(self):
+        self.session.agent = lambda session: self.write(*range(1, 11))
+        wireframe.generate(PROJECT)
+        self.assertEqual(len(self.unplanned), 1)
+        self.assertIn("`/page-11`", self.unplanned[0])
+        self.assertIn("`/page-12`", self.unplanned[0])
+        self.assertNotIn("`/page-10`", self.unplanned[0])
+
+    def test_a_small_app_is_drawn_by_one_agent_as_before(self):
+        with mock.patch.object(wireframe.document, "screens", return_value=MANY[:9]):
+            wireframe.generate(PROJECT)
+        self.assertEqual(self.lanes, [])
+        self.assertNotIn("## This run", self.session.tasks[0])
+
+
 class RunningTests(Scratch):
     def test_a_whole_run_reports_how_many_pages_are_ready(self):
         self.session.agent = writes_pages

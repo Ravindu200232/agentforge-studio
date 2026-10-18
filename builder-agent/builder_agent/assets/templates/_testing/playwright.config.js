@@ -40,7 +40,8 @@ export default defineConfig({
   use: {
     baseURL: process.env.BASE_URL || 'http://localhost:3000',
     screenshot: 'on',
-    trace: 'retain-on-failure',
+    // A trace is recorded only when a test is tried again: recording one for every test slowed every run.
+    trace: 'on-first-retry',
     // AGENTFORGE_LIVE_SLOWMO=250 slows every browser action by that many ms, to watch a run in the
     // Studio's preview at a human pace (the default is full speed).
     launchOptions: {

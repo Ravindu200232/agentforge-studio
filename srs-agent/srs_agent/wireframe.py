@@ -14,7 +14,7 @@ import shutil
 from typing import Any
 
 from server_modules import bus, pointed, prompts, web_app
-from server_modules.session import RunCancelled, session_for
+from server_modules.session import RunCancelled, session_for, start_fresh
 
 from . import document
 
@@ -22,6 +22,9 @@ KIND = "wireframe"
 MAX_REQUEST = 4000
 # What starting the wireframes asks for: the first line of `prompts/wireframe/generate.md`. The studio sends the same words.
 APPROVAL_PROMPT = "Generate low-fidelity wireframes."
+# An app with this many pages or more is drawn by several agents at once (`_draw_in_lanes`), after the first FIRST_PAGES.
+LANE_MIN_PAGES = 10
+FIRST_PAGES = 3
 
 
 def app_path(project: str):
@@ -44,6 +47,39 @@ def routes_text(rows: list[dict[str, Any]]) -> str:
         lines.append(f"- `{row['route']}` — {row['name']}" + (f" (signed in: {who or 'any role'})" if row.get("signedIn") else "")
                      + f" — `src/pages/{row['file']}.tsx`")
     return "\n".join(lines)
+
+
+def _written(app, row: dict[str, Any]) -> bool:
+    return any((app / "src" / "pages" / f"{row['file']}{ext}").is_file() for ext in (".tsx", ".jsx"))
+
+
+def _draw_in_lanes(session, project: str, ask: str, rows: list[dict[str, Any]], app) -> dict[str, Any]:
+    """A big app drawn in two steps: the project's agent writes the shared parts and the first pages, then `session.LANES`
+    agents write the rest at the same time, each its own pages (`session.run_lanes`). One agent drawing 117 pages one after
+    another took an hour and a half. A page still missing at the end is written by the project's agent."""
+    from server_modules import session as sessions
+
+    first, rest = rows[:FIRST_PAGES], rows[FIRST_PAGES:]
+    lanes = max(1, min(sessions.LANES, len(rest)))
+    relative = _relative(project)
+    result = session.run_task(ask + "\n\n" + prompts.load("wireframe/lanes-first", count=str(len(rows)), app=relative,
+                                                          pages=routes_text(first), lanes=str(lanes)),
+                              audit=False, parallel_write_limit=4)
+    if session.cancelled:
+        raise RunCancelled(project)
+    size = -(-len(rest) // lanes)                       # neighbouring pages (one section of the site map) go to one agent
+    groups = [rest[start:start + size] for start in range(0, len(rest), size)]
+    bus.agent_msg(project, f"The shared layout and the first {len(first)} page(s) are drawn. The other {len(rest)} are drawn "
+                           f"by {len(groups)} agents at the same time.", title="Wireframes", kind="narration", agent=bus.DESIGNER)
+    session.run_lanes([(ask + "\n\n" + prompts.load("wireframe/lanes-pages", app=relative, pages=routes_text(group)),
+                        "Write exactly these pages, each in full:\n" + routes_text(group)) for group in groups],
+                      parallel_write_limit=4)
+    left = [row for row in rows if not _written(app, row)]
+    if left:
+        bus.log(project, "WARN", f"{len(left)} page(s) were not written by the agents drawing at the same time; "
+                                 "writing them now.", agent=bus.DESIGNER)
+        session.run_unplanned(prompts.load("wireframe/lanes-missing", pages=routes_text(left)))
+    return result
 
 
 def _remember(session, **state: Any) -> None:
@@ -88,10 +124,13 @@ def generate(project: str, request: str = "", fresh: bool = True) -> dict[str, A
               agent=bus.DESIGNER)
     resume = (f"The app already has pages from a run that stopped: read what is in `{_relative(project)}/src/pages`, keep it, "
               "and write the pages that are still missing." if carrying_on else "")
-    result = session.run_task(
-        prompts.load("wireframe/generate", request=request or APPROVAL_PROMPT, skill=skill, shadcn=shadcn, app=_relative(project),
-                     routes=routes_text(rows), resume=resume),
-        audit=False, parallel_write_limit=4)
+    ask = prompts.load("wireframe/generate", request=request or APPROVAL_PROMPT, skill=skill, shadcn=shadcn, app=_relative(project),
+                       routes=routes_text(rows), resume=resume)
+    start_fresh(session)
+    if carrying_on or len(rows) < LANE_MIN_PAGES:
+        result = session.run_task(ask, audit=False, parallel_write_limit=4)
+    else:
+        result = _draw_in_lanes(session, project, ask, rows, app)
     if session.cancelled:
         raise RunCancelled(project)
     if result.get("status") not in (None, "complete") and result.get("text"):

@@ -9,7 +9,7 @@ from typing import Any
 from server_modules import (auth_guide, bus, changes, config, deploy_vars, mongo_connect, plugins, prompts, reference_staging,
                             screen_review, store, supabase_connect, web_app)
 from server_modules.qa_report import summary_counts
-from server_modules.session import Phases, RunCancelled, session_for
+from server_modules.session import Phases, RunCancelled, session_for, start_fresh
 from server_modules.validation import build_report
 
 from . import phases as build_phases
@@ -386,7 +386,8 @@ def _build_in_phases(project: str, session: Any, stack: str, request: str, direc
         request_for=lambda number, phase: build_phases.request_for(phase, number, len(items), routes, request),
         repair_for=lambda number, phase, problems: build_phases.repair_for(phase, number, len(items), problems),
         verify=lambda phase: build_phases.problems(session.workspace, phase), save=save,
-        summary=lambda phase: build_phases.summary(session.workspace, phase))
+        summary=lambda phase: build_phases.summary(session.workspace, phase),
+        brief=build_phases.brief(request))
     if saved:
         plan_file = str(saved["plan_file"])
         return session.resume_phases((session.workspace / plan_file).read_text(encoding="utf-8", errors="replace"),
@@ -418,6 +419,7 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         preflight.ensure(project, stack, cancelled=lambda: bool(session.cancelled))
         # The stack's guides are staged first: the model reads them to judge whether anything needs the customer.
         reference_staging.stage(session.workspace, GUIDES_DIR, scaffold.build_guide_files(stack))
+        start_fresh(session)
         decided = _decide(project, session, stack, direction)
         # A stack that uses Supabase (the Supabase-database ones, and the MongoDB ones that keep uploads in a bucket) gets
         # this project's own Supabase project: kept if it is already linked, otherwise created now. A later build finds the
@@ -507,6 +509,7 @@ def _final_checks(project: str, session: Any, guide_paths: list[str]) -> None:
     request = prompts.load("builder/final-checks", report_template=build_report.stage_template(session.workspace))
     if guide_paths:
         request += "\n\n## Stack build guides\n\n" + reference_staging.as_bullets(guide_paths)
+    session.shed_history()                     # the checks read the app on disk; the build's conversation would only slow them
     session.run_unplanned(request)
     if session.cancelled:
         raise RunCancelled(project)

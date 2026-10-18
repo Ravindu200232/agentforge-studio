@@ -42,6 +42,16 @@ class IncompleteModelStream(ConnectionError):
 
 
 PHASE_REPAIRS = 2            # how many times a phase that is not finished is asked for again
+LANES = 3                    # agents working at once in `run_lanes` (the model service's own limit is near this)
+_ARCHIVE_LOCK = threading.Lock()   # agents working at once archive their conversations into the one file
+
+
+def start_fresh(session: Any, note: str = "") -> int:
+    """A stage starts from a small conversation, not from everything the stages before it said (`ProjectSession.shed_history`):
+    what it needs is on disk. The build of one project began with 672,000 tokens of the wireframes' and the prototype's
+    conversation, sent again with every call. A stand-in session without the method sheds nothing."""
+    shed = getattr(session, "shed_history", None)
+    return int(shed(note) or 0) if callable(shed) else 0
 
 
 @dataclass
@@ -56,6 +66,8 @@ class Phases:
     verify: Callable[[dict[str, Any]], list[str]] = field(default=lambda phase: [])
     save: Callable[[str], None] = field(default=lambda plan_file: None)
     summary: Callable[[dict[str, Any]], str] = field(default=lambda phase: "")     # what a finished phase delivered, in words
+    # With a brief, each phase starts from a fresh conversation that begins with it (`ProjectSession._run_phases`).
+    brief: str = ""
 
 
 class EngineUnavailable(RuntimeError):
@@ -753,6 +765,82 @@ class ProjectSession:
         agent.base_system = self._system(level)
         agent.messages[0]["content"] = agent._system_message()
 
+    def _make_agent(self, model: str, level: str, saved: dict[str, Any], mcp: bool = True) -> Agent:
+        """An agent working in this project's workspace with the Studio's tools, permissions and Stop, and a new conversation."""
+        client = self._client()
+        agent = Agent(
+            client=client,
+            model=model,
+            workspace=self.workspace,
+            approve=lambda _question: not self.cancelled,
+            context=int(saved.get("context") or 0) or None,
+            cloud=bool(saved.get("cloud")),
+            max_steps=int(saved.get("max_steps") or 40),
+            announce=self._announce,
+            web_host=saved.get("ollama_host") or "http://localhost:11434",
+            protected_app_root=config.ROOT,
+            mcp_servers=(saved.get("mcp_servers") or None) if mcp else None,
+            on_summarize=self._archive_summary,
+        )
+        agent.tools = StudioTools(
+            self.workspace, client,
+            lambda _question: not self.cancelled,
+            web_host=saved.get("ollama_host") or "http://localhost:11434",
+            use_local_web=not bool(saved.get("cloud")),
+            protected_app_root=config.ROOT,
+            project=self.project,
+            role_of=lambda: self.role,
+            mcp=agent.mcp,
+        )
+        # What the agent may do without asking is the project's permission mode (permissions.py).
+        agent.tools.permission = permissions.gate_for(self.project, lambda: self.cancelled, lambda: self.role)
+        # A command running when Stop is pressed is stopped with its process tree, not waited for.
+        agent.tools.stop_requested = lambda: self.cancelled
+        # Whether the model in use can look at the screenshots its tool takes (Ollama says so: vision.py).
+        agent.tools.sees_pictures = lambda: vision.supports(agent.model) is True
+        self._apply_effort(agent, level)
+        return agent
+
+    def run_lanes(self, work: list[tuple[str, str]], parallel_write_limit: int = 1) -> list[dict[str, Any]]:
+        """Carry out several independent parts of a stage at the same time, each by its own agent in a conversation of its own.
+
+        `work` is (request, plan) pairs, each a part no other part touches (the pages of a wireframe, say). One agent writing
+        a hundred pages one after another took an hour and a half; three at once take a third of that. What each part made
+        is on disk; its conversation is archived, not kept. Returns each part's {"status", "text", "rounds"}; a part whose
+        turn failed is {"status": "failed", "text": <why>}, and the others still finish."""
+        if self.cancelled:
+            raise RunCancelled(self.project)
+        main = self.agent()
+        saved = config.settings()
+
+        def part(pair: tuple[str, str]) -> dict[str, Any]:
+            agent = self._make_agent(main.model, self._thinking_level or config.thinking(saved), saved, mcp=False)
+            agent.memory_summary = main.memory_summary
+            agent.messages[0]["content"] = agent._system_message()
+            try:
+                result = agent.execute_plan(pair[0], pair[1], audit=False, parallel_write_limit=parallel_write_limit)
+                return {"status": result.status, "text": result.text, "rounds": result.rounds}
+            except RunCancelled:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one part failing leaves the others to finish
+                return {"status": "failed", "text": str(exc), "rounds": 0}
+            finally:
+                self._archive_summary(agent.messages[1:])
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=max(1, min(LANES, len(work))), thread_name_prefix=f"lane:{self.project}") as pool:
+            futures = [pool.submit(part, pair) for pair in work]
+            results = []
+            for future in futures:
+                try:
+                    results.append(future.result())
+                except RunCancelled:
+                    results.append({"status": "cancelled", "text": "", "rounds": 0})
+        if self.cancelled:
+            raise RunCancelled(self.project)
+        return results
+
     def agent(self, model: str = "", thinking_level: str = "") -> Agent:
         """The single agent for this project, created once and then reused."""
         saved = config.settings()
@@ -767,39 +855,7 @@ class ProjectSession:
 
         with self.lock:
             if self._agent is None:
-                client = self._client()
-                context = int(saved.get("context") or 0) or None
-                self._agent = Agent(
-                    client=client,
-                    model=wanted,
-                    workspace=self.workspace,
-                    approve=lambda _question: not self.cancelled,
-                    context=context,
-                    cloud=bool(saved.get("cloud")),
-                    max_steps=int(saved.get("max_steps") or 40),
-                    announce=self._announce,
-                    web_host=saved.get("ollama_host") or "http://localhost:11434",
-                    protected_app_root=config.ROOT,
-                    mcp_servers=saved.get("mcp_servers") or None,
-                    on_summarize=self._archive_summary,
-                )
-                self._agent.tools = StudioTools(
-                    self.workspace, client,
-                    lambda _question: not self.cancelled,
-                    web_host=saved.get("ollama_host") or "http://localhost:11434",
-                    use_local_web=not bool(saved.get("cloud")),
-                    protected_app_root=config.ROOT,
-                    project=self.project,
-                    role_of=lambda: self.role,
-                    mcp=self._agent.mcp,
-                )
-                # What the agent may do without asking is the project's permission mode (permissions.py).
-                self._agent.tools.permission = permissions.gate_for(self.project, lambda: self.cancelled, lambda: self.role)
-                # A command running when Stop is pressed is stopped with its process tree, not waited for.
-                self._agent.tools.stop_requested = lambda: self.cancelled
-                # Whether the model in use can look at the screenshots its tool takes (Ollama says so: vision.py).
-                self._agent.tools.sees_pictures = lambda: vision.supports(self._agent.model) is True
-                self._apply_effort(self._agent, level)
+                self._agent = self._make_agent(wanted, level, saved)
                 self._model = wanted
                 self._thinking_level = level
                 self._restore_context()
@@ -884,7 +940,7 @@ class ProjectSession:
             self._archive_path().parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps({"at": time.time(), "stage": self.stage, "model": self._model,
                                "messages": old}, ensure_ascii=False, default=str)
-            with self._archive_path().open("a", encoding="utf-8") as handle:
+            with _ARCHIVE_LOCK, self._archive_path().open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
         except (OSError, TypeError, ValueError):
             # Same posture as save_context(): a line that cannot be written is not a
@@ -1242,30 +1298,42 @@ class ProjectSession:
             self.report_memory()
             self.save_context()
 
-    def _run_phases(self, agent: Agent, plan: str, plan_file: str, phases: Phases, parallel_write_limit: int = 1) -> dict[str, Any]:
+    def _run_phases(self, agent: Agent, plan: str, plan_file: str, phases: Phases, parallel_write_limit: int = 1,
+                    fresh_first: bool = False) -> dict[str, Any]:
         """Carry out a plan one numbered phase at a time, each in full.
 
         A phase is given to the model with only its own work in it; what it delivered is checked (`phases.verify`), and one that is
         not finished is asked for again up to `PHASE_REPAIRS` times, with what is missing written out. A phase that is still not
         finished is recorded as such and the build goes on to the next, so the tests and the checks still run; what is left undone is
         for the build's own gate to refuse, by name, never to report as the application. Phases already done are skipped, which is how
-        a stopped build carries on."""
+        a stopped build carries on.
+
+        With `phases.brief`, every phase after the first (and the first too with `fresh_first`, a resumed build) starts from a
+        fresh conversation that begins with the brief: one conversation carried through every phase reached 900,000 tokens,
+        sent again with every call, and a call at that size took four times as long as one at 50,000. What the earlier phases
+        made is on disk, and the conversation they had is archived (`shed_history`)."""
         total = len(phases.items)
         pointer = (f"The approved plan is saved at {plan_file}. Read the parts of it this phase needs, once; do not reread all of it."
                    if plan_file else plan[:6000])
         rounds, last = 0, ""
+        fresh = fresh_first
         for number, phase in enumerate(phases.items, start=1):
             if phase.get("status") == "done":
                 continue
             if self.cancelled:
                 raise RunCancelled(self.project)
+            ask = phases.request_for(number, phase)
+            if phases.brief and fresh:
+                self.shed_history(keep_tokens=0)
+                ask = phases.brief.strip() + "\n\n---\n\n" + ask
+            fresh = True
             key, title = f"build:phase-{number}", f"Phase {number} of {total} · {phase['title']}"
             bus.phase(self.project, key, title, detail=str(phase.get("detail") or ""), number=number, agent=self.role)
             if phase.get("detail"):
                 bus.agent_msg(self.project, str(phase["detail"]), title=f"Phase {number} of {total}", kind="narration",
                               agent=self.role)
             bus.agent_state(self.project, "building", agent=self.role)
-            result = self._phase_turn(agent, phases.request_for(number, phase), pointer, parallel_write_limit)
+            result = self._phase_turn(agent, ask, pointer, parallel_write_limit)
             rounds += result.rounds
             last = result.text or last
             if result.status == "blocked":
@@ -1307,7 +1375,7 @@ class ProjectSession:
                       title="Build resumed", kind="narration", agent=self.role)
         bus.agent_state(self.project, "building", agent=self.role)
         try:
-            finished = self._run_phases(agent, plan, plan_file, phases)
+            finished = self._run_phases(agent, plan, plan_file, phases, fresh_first=True)
         finally:
             bus.agent_state(self.project, "", agent=self.role)
             self.report_memory()
