@@ -225,6 +225,12 @@ def keep_terms(project: str = "") -> list[str]:
 def _keep(entity: str, value: str, text: str = "", start: int = 0, keep: tuple[str, ...] | list[str] = ()) -> bool:
     """Whether what was found is not personal data after all: sample data, an address of this computer or network, or - for a
     name - a business, a product, a town or a word the person said to keep."""
+    from . import privacy_vault
+
+    # A capitalised word of the trade ("Email", "Admin", "Docker") is not a name; only what may be kept is hidden.
+    if entity in {"PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER"} and not privacy_vault.admissible(
+            entity, privacy_vault.name_of(entity, value)):
+        return True
     if entity == "EMAIL_ADDRESS":
         return bool(_EXAMPLE_EMAIL.search(value.strip()))
     if entity == "IP_ADDRESS":

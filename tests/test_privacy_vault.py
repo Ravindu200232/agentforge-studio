@@ -38,8 +38,8 @@ class VaultCase(unittest.TestCase):
 
 class TheVaultTests(VaultCase):
     def test_a_value_keeps_its_placeholder_for_the_whole_project_and_a_new_one_is_numbered_on(self):
-        again = privacy_vault.remember(PROJECT, [("PERSON", "nimal  perera"), ("PERSON", "Kamala Silva")])
-        self.assertEqual(again, {"nimal perera": "<PERSON_1>", "Kamala Silva": "<PERSON_2>"})
+        again = privacy_vault.remember(PROJECT, [("PERSON", "Nimal  Perera"), ("PERSON", "Kamala Silva")])
+        self.assertEqual(again, {"Nimal Perera": "<PERSON_1>", "Kamala Silva": "<PERSON_2>"})
         self.assertEqual(privacy_vault.remember("prj_other", [("PERSON", "Kamala Silva")]), {"Kamala Silva": "<PERSON_1>"})
 
     def test_the_values_are_kept_encrypted_and_go_with_a_deleted_project(self):
@@ -53,16 +53,61 @@ class TheVaultTests(VaultCase):
         self.assertFalse(kept.exists())
         self.assertEqual(privacy_vault.entries(PROJECT), [])
 
-    def test_hiding_finds_a_name_as_a_whole_word_in_any_case_and_revealing_puts_it_back(self):
-        text = "Owner Nimal Perera (nimal@shop.lk, 0771234567); NIMAL PERERA signs. nimalperera stays."
+    def test_hiding_finds_a_name_as_written_or_in_capitals_and_revealing_puts_it_back(self):
+        text = "Owner Nimal Perera (NIMAL@shop.lk, 0771234567); NIMAL PERERA signs. nimalperera and nimal perera stay."
         hidden = privacy_vault.hide(PROJECT, text)
-        self.assertEqual(hidden, "Owner <PERSON_1> (<EMAIL_ADDRESS_1>, <PHONE_NUMBER_1>); <PERSON_1> signs. nimalperera stays.")
+        self.assertEqual(hidden, "Owner <PERSON_1> (<EMAIL_ADDRESS_1>, <PHONE_NUMBER_1>); <PERSON_1> signs. "
+                                 "nimalperera and nimal perera stay.")
         self.assertEqual(privacy_vault.reveal(PROJECT, hidden),
-                         "Owner Nimal Perera (nimal@shop.lk, 0771234567); Nimal Perera signs. nimalperera stays.")
+                         "Owner Nimal Perera (nimal@shop.lk, 0771234567); Nimal Perera signs. nimalperera and nimal perera stay.")
 
     def test_a_placeholder_written_into_html_comes_back_too_and_an_unknown_one_is_left(self):
         self.assertEqual(privacy_vault.reveal(PROJECT, "<p>Mail &lt;EMAIL_ADDRESS_1&gt; or <PERSON_9></p>"),
                          "<p>Mail nimal@shop.lk or <PERSON_9></p>")
+
+
+class OnlyRealNamesAreKeptTests(VaultCase):
+    """The small English model took "Docker", "Admin", "Require" and "si.json" in a specification for people's names. Kept and
+    hidden in every message, they took `require("fs")` and `role === "admin"` out of the code the agent read, it wrote
+    `<PERSON_3>("fs")` back, and a wireframe of 117 pages stopped at 2."""
+
+    WORDS = ["Docker", "Admin", "Supplier", "Require", "Password", "Button", "Format", "NAVIGATION", "Atlas", "Email",
+             "si.json", "Head Office", "Admin User", "Sri Lanka", "Japan Main Branch", "nimal perera", "A B"]
+
+    def test_words_of_the_trade_are_not_names_and_real_names_are(self):
+        for word in self.WORDS:
+            self.assertFalse(privacy_vault.admissible("PERSON", word), word)
+        for name in ("Nimal Perera", "R.M.K.N. Gunasena", "Roy Dissanayake", "Maria de Silva", "Mary-Jane O'Neil",
+                     "Ewan McDonald"):
+            self.assertTrue(privacy_vault.admissible("PERSON", name), name)
+        self.assertFalse(privacy_vault.admissible("EMAIL_ADDRESS", "Email"))
+        self.assertFalse(privacy_vault.admissible("PHONE_NUMBER", "2026"))
+
+    def test_a_role_or_a_title_around_a_name_is_not_kept_with_it(self):
+        given = privacy_vault.remember(PROJECT, [("PERSON", "Cashier Saman Kumara"), ("PERSON", "Dr. Kasun Silva"),
+                                                 ("PERSON", "Require"), ("PERSON", "Admin")])
+        self.assertEqual(given, {"Saman Kumara": "<PERSON_2>", "Kasun Silva": "<PERSON_3>"})
+
+    def test_code_keeps_its_words_and_a_name_inside_it_is_still_hidden(self):
+        code = 'const fs = require("fs"); if (user.role === "admin") send(Email, "Owner: Nimal Perera");'
+        self.assertEqual(privacy_vault.hide(PROJECT, code),
+                         'const fs = require("fs"); if (user.role === "admin") send(Email, "Owner: <PERSON_1>");')
+
+    def test_a_vault_written_before_the_rule_drops_its_words_and_keeps_its_names_numbered(self):
+        privacy_vault._save(PROJECT, {"entries": [
+            {"entity": "PERSON", "number": 1, "value": "Require"}, {"entity": "PERSON", "number": 2, "value": "Nimal Perera"},
+            {"entity": "PERSON", "number": 3, "value": "si.json"}, {"entity": "PERSON", "number": 4, "value": "Docker"}]})
+        privacy_vault._cache.clear()
+        self.assertEqual([(e["number"], e["value"]) for e in privacy_vault.entries(PROJECT)], [(2, "Nimal Perera")])
+        self.assertEqual(privacy_vault.hide(PROJECT, 'require("fs") for Nimal Perera'), 'require("fs") for <PERSON_2>')
+        self.assertEqual(privacy_vault.remember(PROJECT, [("PERSON", "Kamala Silva")]), {"Kamala Silva": "<PERSON_3>"})
+        privacy_vault._cache.clear()
+        self.assertEqual(len(privacy_vault.entries(PROJECT)), 2)          # the healed vault was saved
+
+    def test_the_filter_does_not_take_a_word_of_the_trade_out_of_a_request(self):
+        self.assertTrue(privacy._keep("PERSON", "Supplier", "Supplier approves shipments", 0, ()))
+        self.assertTrue(privacy._keep("PERSON", "Admin User", "Admin User signs in", 0, ()))
+        self.assertTrue(privacy._keep("EMAIL_ADDRESS", "Email", "Email field", 0, ()))
 
 
 def reply(content="", thinking="", calls=()):

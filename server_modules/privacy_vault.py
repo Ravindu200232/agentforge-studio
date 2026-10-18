@@ -33,7 +33,69 @@ LOCAL_TOOLS = {"write_file", "replace_text", "run_command", "read_file", "search
                "screenshot"}
 _PLACEHOLDER = re.compile(r"(?:<|&lt;)([A-Z][A-Z_]*?)_(\d+)(?:>|&gt;)")
 _PARTIAL = re.compile(r"(?:<|&(?:l(?:t(?:;[A-Z_\d]*)?)?)?)[A-Z_\d]*$")      # what may be the start of a placeholder, at the end
-_WORDY = {"PERSON"}                                                         # matched as whole words; the rest as written
+_WORDY = {"PERSON"}                                                         # matched as whole words, exactly as written
+
+# What may be kept as a person's name. The small English model takes many capitalised words of a software specification for
+# names ("Email", "Admin", "Supplier", "Docker", "Require", even "si.json"): kept and hidden in every message, they took
+# `require`, `admin` and `email` out of the code the agent read and wrote, and a wireframe of 117 pages ended with 2. So a name
+# is two or more name-shaped words (or initials and a surname), none of them a word of the trade, and it is matched exactly as
+# written - never a word inside code.
+_NAME_WORD = re.compile(r"^(?:Ma?c[A-Z][a-z]+|[A-Z]'[A-Z][a-z]+|[A-Z][a-z]+)(?:[-'][A-Z]?[a-z]+)*$")
+_INITIALS = re.compile(r"^(?:[A-Z]\.){1,6}[A-Z]?\.?$")
+_PARTICLES = {"de", "da", "di", "du", "del", "dos", "das", "van", "von", "der", "den", "bin", "binti", "bint", "al", "el",
+              "la", "le", "mc", "ibn", "abu"}
+_NOT_NAMES = {w.casefold() for w in (
+    "Admin", "Administrator", "Email", "Mail", "Password", "Button", "Docker", "Atlas", "Supplier", "Suppliers", "Format",
+    "Navigation", "Require", "User", "Users", "Customer", "Customers", "Client", "Manager", "Owner", "Cashier", "Staff",
+    "Member", "Members", "Guest", "Login", "Logout", "Sign", "Dashboard", "Report", "Reports", "Order", "Orders", "Product",
+    "Products", "Branch", "Branches", "Head", "Office", "Inventory", "Shipment", "Shipments", "Invoice", "Invoices",
+    "Payment", "Payments", "Settings", "Profile", "Home", "Page", "Form", "Table", "Field", "Status", "Role", "Roles",
+    "Account", "Accounts", "Support", "Service", "Services", "Team", "Main", "Store", "Shop", "Mongo", "Mongodb",
+    "Supabase", "Vercel", "Netlify", "Github", "Google", "Gmail", "React", "Next", "Node", "Json", "Api", "App", "Web",
+    "Mobile", "Desktop", "Phone", "Number", "Address", "Name", "Date", "Time", "Total", "Price", "Stock", "Item", "Items",
+    "Category", "Categories", "Sale", "Sales", "Point", "Approve", "Approval", "Request", "Requests", "Pending", "Active",
+    "Modal", "Dialog", "Card", "Header", "Footer", "Sidebar", "Navbar", "Menu", "Tab", "Tabs", "Badge", "Alert", "Toast",
+    "Chart", "Search", "Filter", "Export", "Import", "Upload", "Download", "Save", "Cancel", "Delete", "Edit", "Create",
+    "Update", "View", "Detail", "Details", "List", "New", "Super", "Company", "Business", "System", "Admin's", "Hq",
+    "Warehouse", "Delivery", "Courier", "Driver", "Vendor", "Employee", "Employees", "Worker", "Workers", "Sri", "Lanka",
+    "Japan", "Colombo", "Kandy", "Galle", "Tokyo", "Main", "Local", "Global", "General", "Public", "Private", "Default")}
+
+
+_TITLES = {"mr", "mrs", "ms", "miss", "dr", "prof", "sir", "madam", "rev"}
+
+
+def name_of(entity: str, value: str) -> str:
+    """The name in what the filter found: a role or a title before or after it ("Cashier Saman Kumara", "Dr. Nimal Perera")
+    is not part of it."""
+    text = " ".join(str(value or "").split())
+    if str(entity).upper() != "PERSON":
+        return text
+    words = text.split(" ")
+    drop = lambda w: w.casefold().rstrip(".,:") in _NOT_NAMES | _TITLES  # noqa: E731
+    while words and drop(words[0]):
+        words.pop(0)
+    while words and drop(words[-1]):
+        words.pop()
+    return " ".join(words)
+
+
+def admissible(entity: str, value: str) -> bool:
+    """Whether a value found by the filter may be kept (and so hidden in every message): a real name, address or number,
+    never a word the application's own text and code are made of."""
+    text = " ".join(str(value or "").split())
+    entity = str(entity).upper()
+    if entity == "PERSON":
+        words = text.split(" ")
+        if not 2 <= len(words) <= 5 or any(w.casefold().strip("'") in _NOT_NAMES for w in words):
+            return False
+        named = [w for w in words if _NAME_WORD.match(w)]
+        return all(_NAME_WORD.match(w) or _INITIALS.match(w) or w.casefold() in _PARTICLES for w in words) and bool(named) \
+            and (len(named) >= 2 or any(_INITIALS.match(w) for w in words)) and any(len(w) >= 3 for w in named)
+    if entity == "EMAIL_ADDRESS":
+        return re.fullmatch(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}", text) is not None
+    if entity == "PHONE_NUMBER":
+        return len(re.sub(r"\D", "", text)) >= 7
+    return len(text) >= 4
 
 _lock = threading.Lock()
 _cache: dict[str, dict[str, Any]] = {}
@@ -63,6 +125,15 @@ def _load(project: str) -> dict[str, Any]:
             data = json.loads(_cipher().decrypt(path.read_bytes()).decode("utf-8"))
         except (InvalidToken, ValueError, OSError):
             data = {"entries": []}
+    # A vault written before the admission rule may hold words that are not names: they are dropped, and stay numbered as
+    # they were so the placeholders of the values that remain do not move.
+    kept = [e for e in data.get("entries") or [] if admissible(e.get("entity", ""), e.get("value", ""))]
+    if len(kept) != len(data.get("entries") or []):
+        data = {**data, "entries": kept}
+        try:
+            _save(project, data)
+        except OSError:
+            pass
     _cache[project] = data
     return data
 
@@ -88,8 +159,9 @@ def remember(project: str, values: Iterable[tuple[str, str]]) -> dict[str, str]:
         entries = data["entries"]
         changed = False
         for entity, value in values:
-            entity, text = str(entity).upper(), " ".join(str(value).split())
-            if len(text) < 2:
+            entity = str(entity).upper()
+            text = name_of(entity, value)
+            if not admissible(entity, text):
                 continue
             found = next((e for e in entries if e["entity"] == entity and _key(entity, e["value"]) == _key(entity, text)), None)
             if found is None:
@@ -135,8 +207,14 @@ def _hider(project: str):
         group = f"v{index}"
         names[group] = f"<{row['entity']}_{row['number']}>"
         body = re.escape(row["value"]).replace(r"\ ", r"\s+")
-        parts.append(f"(?P<{group}>{r'(?<![\w@.])' + body + r'(?![\w@])' if row['entity'] in _WORDY else body})")
-    pattern = re.compile("|".join(parts), re.IGNORECASE)
+        # A name as written or in capitals (never a word in code); an address or a number in any case.
+        if row["entity"] in _WORDY:
+            shout = re.escape(row["value"].upper()).replace(r"\ ", r"\s+")
+            body = r"(?<![\w@.])(?:" + body + "|" + shout + r")(?![\w@])"
+        else:
+            body = "(?i:" + body + ")"
+        parts.append(f"(?P<{group}>{body})")
+    pattern = re.compile("|".join(parts))
     return lambda text: pattern.sub(lambda m: names[m.lastgroup], text)
 
 
