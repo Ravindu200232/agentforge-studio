@@ -450,6 +450,10 @@ class MongoDatabaseBuildTests(StraightThroughCase):
         self.found = {"status": "ready", "database": "shop_build", "reason": ""}
         self.made = mock.Mock(side_effect=lambda project, log=None: self.found)
         self.enterContext(mock.patch.object(build.mongo_connect, "ensure_for_project", self.made))
+        self.mongo_uri = "mongodb+srv://agentforge_test:password@cluster.example.test/shop"
+        self.enterContext(mock.patch.object(
+            build.config, "setting",
+            side_effect=lambda name, default=None: self.mongo_uri if name == "deploy_mongodb_uri" else default))
         self.cluster = (True, "")                                              # whether the connected cluster answers
         self.enterContext(mock.patch.object(build.deploy_vars, "cluster_answers", lambda uri: self.cluster))
         build.deploy_vars._noted.clear()

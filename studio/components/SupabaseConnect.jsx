@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ExternalLink, Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import AccountList from './AccountList'
+import CliSignIn from './CliSignIn'
 import { Button, Input } from './ui'
 
 const Field = ({ label, hint, children }) => (
@@ -15,13 +16,10 @@ const Field = ({ label, hint, children }) => (
 )
 
 /**
- * Supabase has no device-flow CLI sign-in the way GitHub/Vercel/Netlify/Azure do (see
- * cli_signin.py's own docstring on why it isn't there - tried live, `supabase login` refuses
- * outside a real terminal). So this drives the real OAuth thing instead: a genuine "click, approve
- * in the browser" sign-in, like "Sign in with Google". The OAuth app behind it is the publisher's,
- * one for everyone, kept by the engine server (`status.broker`; supabase_connect.py), so the person
- * registers nothing and types no client id or callback URL. Only a copy with no engine server (a
- * development checkout) still asks for an OAuth app of the person's own, below.
+ * Supabase CLI now has its own browser OAuth flow. New desktop connections use that official flow
+ * through CliSignIn, so they work without an AgentForge OAuth broker and the credential remains in
+ * Supabase's native credential store. Existing broker/own-app sessions still use the OAuth controls
+ * below, which preserves refresh and multi-account support for people who already connected that way.
  */
 export default function SupabaseConnect({ onDone }) {
   const [status, setStatus] = useState(null)
@@ -98,6 +96,27 @@ export default function SupabaseConnect({ onDone }) {
 
   if (!status) {
     return <p className="flex items-center gap-1.5 text-[10.5px] text-muted2"><Loader2 className="size-3 animate-spin" /> Checking Supabase…</p>
+  }
+
+  if (!status.connected || status.via === 'cli') {
+    return (
+      <div className="space-y-2">
+        <p className="text-[11px] text-muted">
+          {status.connected
+            ? <>Connected through the official Supabase CLI{status.org ? <> as <b className="text-ink">{status.org}</b></> : ''}.</>
+            : 'Connect through the official Supabase CLI: approve the browser sign-in and return here.'}
+        </p>
+        <CliSignIn provider="supabase" label="Supabase command line tool"
+                   onDone={async answer => { await look(); onDone?.(answer) }} />
+        {status.connected && status.active && (
+          <Button size="sm" variant="ghost" disabled={Boolean(busy)}
+                  onClick={() => change('remove', status.active)}>
+            Disconnect from AgentForge
+          </Button>
+        )}
+        {err && <p className="text-[10.5px] text-bad">{err}</p>}
+      </div>
+    )
   }
 
   if (!status.app_registered) {

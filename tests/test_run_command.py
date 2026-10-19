@@ -72,7 +72,7 @@ class BackgroundProcessTests(unittest.TestCase):
                 "print('spawned the background process')\n", encoding="utf-8")
             tools = WorkspaceTools(root, client=None, approve=lambda _q: True)
             started = time.monotonic()
-            answer = tools.tool_run_command("python spawn.py")
+            answer = tools.tool_run_command(f'"{sys.executable}" spawn.py')
             took = time.monotonic() - started
         self.assertLess(took, 15, "the tool waited for the background process")
         self.assertIn("exit_code=0", answer)
@@ -84,7 +84,7 @@ class BackgroundProcessTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             tools = WorkspaceTools(Path(folder), client=None, approve=lambda _q: True)
-            answer = tools.tool_run_command("python -c \"print('all done')\"")
+            answer = tools.tool_run_command(f'"{sys.executable}" -c "print(\'all done\')"')
         self.assertIn("all done", answer)
         self.assertNotIn("still holds its output open", answer)
 

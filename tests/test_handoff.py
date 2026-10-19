@@ -97,7 +97,9 @@ class BuilderMdTests(unittest.TestCase):
 class WritingTheHandoffTests(unittest.TestCase):
     def test_the_idea_and_the_interview_reach_app_md_and_both_files_are_written(self):
         with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
+            # macOS exposes the same temporary folder through both /var and /private/var. Resolve the workspace too so
+            # a resolved record path remains relative to it on every platform.
+            workspace = Path(tmp).resolve()
             session = SimpleNamespace(
                 workspace=workspace,
                 record_path=lambda *parts: (workspace / ".agentforge" / Path(*parts)).resolve(),

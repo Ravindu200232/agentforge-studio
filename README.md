@@ -10,6 +10,23 @@ that say "no" to a model are the validation rules ported from `RP-SE-009`.
 
 ## Running it
 
+### macOS desktop app
+
+The macOS release is a normal Apple Silicon application with its own Python and
+Node.js runtimes. Build it on an Apple Silicon Mac with:
+
+```bash
+./release/build-mac.sh
+```
+
+The signed-local (ad-hoc), non-notarized `AgentForge.app`, DMG and ZIP are
+written to `release/out-mac`. Drag the app from the DMG to Applications. The
+first locally distributed build may require Control-click → Open because it is
+not signed with an Apple Developer ID or notarized by Apple. See
+`release/MACOS.md` for build and distribution details.
+
+### Windows / development server
+
 ```powershell
 ./studio.bat
 ```

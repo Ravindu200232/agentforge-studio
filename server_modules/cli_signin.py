@@ -1,4 +1,4 @@
-"""Signing in to GitHub, AWS, Vercel, Netlify, Azure and MongoDB Atlas through their own command line tools.
+"""Signing in to deployment providers through their own command line tools.
 
 Each of these tools has a `login` that completes a sign-in in the browser and keeps the credential
 where it always does (GitHub's keyring, AWS's login cache, Vercel's and Netlify's config files,
@@ -20,13 +20,10 @@ MongoDB partners, so this studio has no app of its own to sign in with.) Its `lo
 interactive menu and exits at once without a terminal, so it is the one provider run in a pseudo-terminal
 (`pty_process.py`) and answered where it asks (`Provider.answers`).
 
-Supabase does not belong here, on purpose, not by oversight: its CLI's `login` refuses to run at all
-outside a real interactive terminal ("Cannot use automatic login flow inside non-TTY environments"),
-which every provider above works around by having a device- or browser-code flow that needs no TTY.
-Supabase has none - its only non-interactive path is a pasted personal access token
-(`SUPABASE_ACCESS_TOKEN` / `supabase login --token`). That one credential is handled in
-`supabase_connect.py` instead, the same paste-and-verify shape `DeployAccounts.jsx`'s
-`HostedCredential` already uses for Netlify's and Azure's own tokens.
+Supabase CLI 2.120 and later also has browser OAuth. It insists on a terminal, so it runs through the
+same pseudo-terminal as Atlas with `--no-browser`; the Studio opens the link that the CLI prints. The
+credential stays in Supabase's native credential store. AgentForge records only which organisation was
+adopted and tells `supabase_connect.py` to let future CLI commands read that native credential.
 """
 from __future__ import annotations
 
@@ -334,6 +331,50 @@ def _azure_read(tool: str, options: dict) -> dict:
     return {"azure_account": json.dumps(who)} if who else {}
 
 
+def _supabase_identity(tool: str) -> dict | None:
+    """The CLI's current user, plus its first visible organisation when one exists.
+
+    CLI 2.120 exposes `whoami`; unlike the organisation list it still identifies a newly signed-in
+    user who has no organisations yet. Older CLIs fall back to the organisation response.
+    """
+    shown = _run([tool, "whoami", "--output-format", "json"], timeout=35)
+    user = _json_of(shown.stdout) if shown.returncode == 0 else {}
+    user = user if isinstance(user, dict) else {}
+    user_id = str(user.get("id") or "")
+    user_account = str(user.get("email") or user.get("username") or user_id)
+
+    done = _run([tool, "orgs", "list", "--output", "json"], timeout=35)
+    rows = _json_list(done.stdout) if done.returncode == 0 else []
+    first = rows[0] if rows and isinstance(rows[0], dict) else {}
+    org_id, name = str(first.get("id") or ""), str(first.get("name") or "")
+    account = user_account or name or org_id
+    return {"account": account, "org": name or account, "id": org_id or user_id or account} if account else None
+
+
+def _supabase_login(tool: str, options: dict, identity: dict | None) -> list:
+    # Supabase CLI 2.120 added agent detection. AgentForge is correctly recognised as an agent, but
+    # that switches the CLI to JSON output where its interactive OAuth prompt is rejected with a
+    # NonInteractiveError. Force the normal terminal UI instead. The provider's pseudo-terminal
+    # `--no-browser` makes the URL available to the Studio, which opens it and provides a field for
+    # the short verification code shown by Supabase. This is deterministic even when the CLI cannot
+    # launch the default browser from inside a packaged desktop process.
+    return [tool, "login", "--no-browser", "--agent", "no"]
+
+
+def _supabase_read(tool: str, options: dict) -> dict:
+    who = _supabase_identity(tool)
+    if not who:
+        return {}
+    return {
+        "supabase_oauth_access_token": "",
+        "supabase_oauth_refresh_token": "",
+        "supabase_oauth_expires_at": 0,
+        "supabase_oauth_via": "cli",
+        "supabase_org": who["org"],
+        "supabase_account_id": who["id"],
+    }
+
+
 ATLAS_PROFILE_SETTING = "mongodb_atlas_profile"
 
 
@@ -415,6 +456,11 @@ PROVIDERS: dict[str, Provider] = {
     "azure": Provider("azure", "Azure", "az", "winget install Microsoft.AzureCLI  (or: brew install azure-cli)",
                       _azure_identity, lambda tool, options, identity: [tool, "login", "--use-device-code"],
                       _azure_read),
+    "supabase": Provider("supabase", "Supabase", "supabase",
+                         "brew install supabase/tap/supabase  (Windows: scoop install supabase)",
+                         _supabase_identity, _supabase_login, _supabase_read,
+                         needs_terminal=True, shows_code=False,
+                         finished=re.compile(r"You are now logged in|Finished supabase login|Happy coding", re.I)),
     # `--noBrowser`: the studio shows the code and the link itself. The first menu is "Select authentication type";
     # its first entry, a user account, is the browser sign-in. Any later question (a default organisation or project)
     # takes its default: every command run afterwards names its project explicitly.
@@ -455,6 +501,7 @@ class Signin:
     output: list = field(default_factory=list)
     user_code: str = ""
     verification_uri: str = ""
+    prompt: str = ""
     started: float = field(default_factory=time.time)
     error: str = ""
     answered: set = field(default_factory=set)   # the prompts already answered, by title
@@ -595,6 +642,8 @@ class CliSignins:
                         flow.process.send(keys)
                 if provider.finished and not flow.done_at and provider.finished.search(line):
                     flow.done_at = time.time()
+                if "enter your verification code" in line.lower():
+                    flow.prompt = "verification_code"
                 if not flow.verification_uri:
                     url = _URL.search(line)
                     if url:
@@ -631,7 +680,24 @@ class CliSignins:
 
     def _pending(self, flow: Signin, provider: Provider) -> dict:
         return {"status": "pending", "user_code": flow.user_code, "verification_uri": flow.verification_uri,
-                "shows_code": provider.shows_code, "opens_browser": provider.opens_browser}
+                "shows_code": provider.shows_code, "opens_browser": provider.opens_browser,
+                "prompt": flow.prompt}
+
+    def send_input(self, flow_id: str, value: str) -> dict:
+        """Type a short answer into a running terminal sign-in without storing or returning it."""
+        with self._lock:
+            self._prune()
+            flow = self._flows.get(str(flow_id or ""))
+        if not flow or flow.process is None or flow.process.poll() is not None:
+            raise ValueError("That sign-in is no longer running. Start it again.")
+        answer = str(value or "").strip()
+        if not answer:
+            raise ValueError("Enter the verification code from the Supabase page.")
+        if flow.prompt != "verification_code":
+            raise ValueError("That sign-in is not waiting for a verification code.")
+        flow.prompt = ""
+        flow.process.send(answer + "\r")
+        return {"status": "accepted"}
 
     def _finish(self, flow: Signin, provider: Provider, tool: str) -> dict:
         with self._lock:
@@ -658,8 +724,10 @@ class CliSignins:
                 subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False,
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             else:
-                process.terminate()
-        except OSError:
+                stop = getattr(process, "terminate", None) or getattr(process, "kill", None)
+                if stop:
+                    stop()
+        except (AttributeError, OSError):
             pass
 
     def _why(self, provider: Provider, flow: Signin) -> str:

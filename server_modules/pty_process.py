@@ -57,6 +57,9 @@ class PtyProcess:
         except OSError:
             pass
 
+    # Match subprocess.Popen's interface so shared cleanup code can stop either kind of process.
+    terminate = kill
+
     # Called by the reader thread with raw terminal output; the end of the output is None.
     def _feed(self, pending: str, text: str | None) -> str:
         if text is None:
@@ -97,6 +100,7 @@ def spawn(command: list[str], env: dict[str, str] | None = None) -> PtyProcess:
 def _spawn_posix(command: list[str], env: dict[str, str]) -> PtyProcess:
     import fcntl
     import pty
+    import signal
     import struct
     import termios
 
@@ -107,7 +111,12 @@ def _spawn_posix(command: list[str], env: dict[str, str]) -> PtyProcess:
                                  start_new_session=True, close_fds=True)
     finally:
         os.close(slave)
-    process = PtyProcess(child.pid, child.poll, lambda data: os.write(master, data), child.kill)
+    def kill_group() -> None:
+        # The Supabase CLI can leave a helper running after its immediate process exits. Because the command
+        # starts a new session, its PID is also the process-group ID; end the whole terminal session on Cancel.
+        os.killpg(child.pid, signal.SIGKILL)
+
+    process = PtyProcess(child.pid, child.poll, lambda data: os.write(master, data), kill_group)
     threading.Thread(target=_reader, args=(process, lambda: os.read(master, 4096)), daemon=True).start()
     return process
 

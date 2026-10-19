@@ -484,6 +484,11 @@ def cli_signin_poll(ctx: dict) -> Any:
     return _keep_signin(cli_signin.SIGNINS.poll(str(ctx.get("flow_id") or "")))
 
 
+@route("POST", r"/cli-signin/input")
+def cli_signin_input(ctx: dict) -> Any:
+    return cli_signin.SIGNINS.send_input(str(ctx.get("flow_id") or ""), str(ctx.get("value") or ""))
+
+
 @route("POST", r"/cli-signin/use-existing")
 def cli_signin_use_existing(ctx: dict) -> Any:
     """Keep the account a tool is already signed in as, without another browser round trip."""
