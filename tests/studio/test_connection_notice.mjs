@@ -1,4 +1,5 @@
-// The model service stops answering: the chat says so, with "Try again", and says when it is back.
+// The model service stops answering. Automatic retries are internal work and stay out of the chat; only when the run has
+// asked as many times as it will and holds still for the person does the chat show a card, with "Try again".
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
@@ -10,46 +11,30 @@ const { emptySession, reduceSession } = await import(`data:text/javascript;base6
 const feed = (events, start = emptySession()) => events.reduce(reduceSession, start)
 const running = { type: 'run_state', status: 'running', run_id: 'r1' }
 
-// A failed request: the notice, with how far along the tries are.
+// A failed request that is being asked again by itself: nothing in the chat.
 let s = feed([running, { type: 'connection', state: 'retrying', failed: 2, of: 10, pause: 4, detail: 'Internal Server Error (status code: 500)' }])
-assert.equal(s.connection.state, 'retrying')
-assert.equal(s.connection.failed, 2)
-assert.equal(s.connection.of, 10)
-assert.equal(s.connection.pause, 4)
-assert.match(s.connection.detail, /500/)
+assert.equal(s.connection, null)
 assert.equal(s.busy, true)
 
-// The next failure replaces it; it is one notice, and it remembers when it began.
-const began = s.connection.since
-s = feed([{ type: 'connection', state: 'retrying', failed: 3, of: 10, pause: 8, detail: 'x', at: s.connection.at + 5000 }], s)
-assert.equal(s.connection.failed, 3)
-assert.equal(s.connection.since, began)
-
-// Asked as many times as it will be: the run holds still for the person.
+// Asked as many times as it will be: the run holds still for the person, and the card says so.
 s = feed([{ type: 'connection', state: 'waiting', of: 10, hold: true, detail: 'Internal Server Error' }], s)
 assert.equal(s.connection.state, 'waiting')
-assert.equal(s.connection.hold, true)
+assert.equal(s.connection.of, 10)
+assert.match(s.connection.detail, /Internal Server Error/)
 
-// It answers again: the notice goes, and one line in the stream says how many tries it took.
-const lines = before => before.chat.filter(row => row.role === 'connection')
-const failedTries = s.connection.failed
-assert.equal(failedTries, 3)                 // the count of tries is kept through the wait for the person
+// It answers again: the card goes, and the stream gets no recovery line.
 s = feed([{ type: 'connection', state: 'ok' }], s)
 assert.equal(s.connection, null)
-assert.equal(lines(s).length, 1)
-assert.equal(lines(s)[0].state, 'back')
-assert.equal(lines(s)[0].failed, failedTries)
+assert.equal(s.chat.filter(row => row.role === 'connection').length, 0)
 
-// "ok" with nothing wrong says nothing.
-s = feed([{ type: 'connection', state: 'ok' }], s)
-assert.equal(lines(s).length, 1)
-
-// A run that ends - done, failed, stopped - takes the notice with it.
+// A run that ends - done, failed, stopped, idle - takes the card with it.
 for (const type of ['done', 'error', 'cancelled']) {
   const held = feed([running, { type: 'connection', state: 'waiting', of: 10, hold: true }])
   assert.ok(held.connection)
   assert.equal(feed([{ type }], held).connection, null, type)
 }
+const held = feed([running, { type: 'connection', state: 'waiting', of: 10, hold: true }])
+assert.equal(feed([{ type: 'run_state', status: 'idle' }], held).connection, null)
 
 // Stop clears every streaming/testing overlay and is shown as a saved pause,
 // rather than a failed run.
@@ -67,18 +52,15 @@ assert.equal(stopped.tests.running, false)
 assert.equal(stopped.e2eParallel.active, false)
 assert.equal(stopped.workflowStatus, 'paused')
 assert.equal(stopped.chat.at(-1).tone, 'info')
-const held = feed([running, { type: 'connection', state: 'retrying', failed: 1, of: 10, pause: 2 }])
-assert.equal(feed([{ type: 'run_state', status: 'idle' }], held).connection, null)
 
 // A session starts without one, and it is part of what a session keeps per project.
 assert.equal(emptySession().connection, null)
 
-// The chat shows it and the button asks the server; the server answers the route.
+// The chat shows the card while the run is busy and the button asks the server; the server answers the route.
 const chat = await readFile(new URL('../../studio/components/AgentChat.jsx', import.meta.url), 'utf8')
 assert.match(chat, /<ConnectionNotice connection=\{connection\} project=\{project\}/)
 assert.match(chat, /api\.connectionRetry\(project\)/)
-assert.match(chat, /turn\.role === 'connection'/)
-assert.match(chat, /'Try again now'/)
+assert.match(chat, /'Try again'/)
 const api = await readFile(new URL('api.js', lib), 'utf8')
 assert.match(api, /connectionRetry: \(project\) => post\('\/connection\/retry', \{ project \}\)/)
 
