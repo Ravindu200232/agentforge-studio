@@ -387,7 +387,7 @@ def _build_in_phases(project: str, session: Any, stack: str, request: str, direc
         repair_for=lambda number, phase, problems: build_phases.repair_for(phase, number, len(items), problems),
         verify=lambda phase: build_phases.problems(session.workspace, phase), save=save,
         summary=lambda phase: build_phases.summary(session.workspace, phase),
-        brief=build_phases.brief(request))
+        brief=build_phases.brief(request), together=build_phases.together)
     if saved:
         plan_file = str(saved["plan_file"])
         return session.resume_phases((session.workspace / plan_file).read_text(encoding="utf-8", errors="replace"),

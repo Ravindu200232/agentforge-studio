@@ -310,7 +310,11 @@ def browser_runs(workspace: Path) -> dict | None:
         row["index"] = at
     count = lambda s: sum(1 for t in tests if t["status"] == s)  # noqa: E731
     seconds = [r["seconds"] for r in used.values() if r.get("seconds")]
-    return {"total": len(tests), "passed": count("passed"), "failed": count("failed"),
+    # A journey is proved on the desktop browser; the same journey failing at phone width is a warning, as in the journey
+    # coverage (`journeys.e2e_coverage`), never a failed test of the app.
+    phone = sum(1 for t in tests if t["status"] == "failed" and re.search(r"mobile|phone", str(t.get("project")), re.I)
+                and re.search(r"\bUJ-\d+", f"{t.get('suite') or ''} {t.get('title') or ''}"))
+    return {"total": len(tests), "passed": count("passed"), "failed": count("failed") - phone, "phoneWarnings": phone,
             "flaky": count("flaky"), "skipped": count("skipped"),
             "seconds": round(sum(seconds), 1) if seconds else None, "tests": tests,
             "source": ", ".join(sorted(used)), "sources": sorted(used),
@@ -705,6 +709,10 @@ def derive(workspace: Path, have: dict) -> dict:
         journey_coverage = journey_contracts.e2e_coverage(workspace, [])
     if journey_coverage is not None:
         out.setdefault("report", {}).setdefault("e2e", {})["journeyCoverage"] = journey_coverage
+        if runs and build.get("requirements"):
+            # Met or not is the Studio's reading of the journey results, never what the builder wrote before testing.
+            from . import requirement_proof
+            requirement_proof.apply(workspace, build, journey_coverage, newest_tests(workspace))
 
     if lh:
         results = _rows(lh.get("results"))

@@ -21,6 +21,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import httpx
@@ -68,6 +69,8 @@ class Phases:
     summary: Callable[[dict[str, Any]], str] = field(default=lambda phase: "")     # what a finished phase delivered, in words
     # With a brief, each phase starts from a fresh conversation that begins with it (`ProjectSession._run_phases`).
     brief: str = ""
+    # Phases next to one another with the same non-empty group are built at the same time (needs a brief).
+    together: Callable[[dict[str, Any]], str] | None = None
 
 
 class EngineUnavailable(RuntimeError):
@@ -845,7 +848,8 @@ class ProjectSession:
         """The single agent for this project, created once and then reused."""
         saved = config.settings()
         saved_model, saved_level = self._saved_context_preferences() if self._agent is None else ("", "")
-        wanted = (model or (saved_model if self._agent is None else "") or saved.get("model") or "").strip()
+        wanted = (model or (saved_model if self._agent is None else "") or saved.get("model")
+                  or (self._model if self._agent is not None else "") or "").strip()
         requested_level = str(thinking_level or "").strip().lower()
         level = (requested_level if requested_level in config.THINKING_LEVELS
                  else (saved_level if self._agent is None and saved_level else config.thinking(saved)))
@@ -1317,29 +1321,44 @@ class ProjectSession:
                    if plan_file else plan[:6000])
         rounds, last = 0, ""
         fresh = fresh_first
-        for number, phase in enumerate(phases.items, start=1):
+        together: dict[int, Any] = {}           # phase number -> its turn, for phases built at the same time
+        items = phases.items
+        for number, phase in enumerate(items, start=1):
             if phase.get("status") == "done":
                 continue
             if self.cancelled:
                 raise RunCancelled(self.project)
-            ask = phases.request_for(number, phase)
-            if phases.brief and fresh:
-                self.shed_history(keep_tokens=0)
-                ask = phases.brief.strip() + "\n\n---\n\n" + ask
-            fresh = True
+            if number not in together and self._may_run_together(phases, phase):
+                batch = [(n, p) for n, p in enumerate(items, start=1) if n >= number]
+                batch = [(n, p) for i, (n, p) in enumerate(batch)
+                         if all(q.get("status") != "done" and phases.together(q) == phases.together(phase) for _, q in batch[:i + 1])]
+                if len(batch) > 1:
+                    together.update(self._phases_at_once(batch, phases, pointer, total, parallel_write_limit))
+                    fresh = True
             key, title = f"build:phase-{number}", f"Phase {number} of {total} · {phase['title']}"
-            bus.phase(self.project, key, title, detail=str(phase.get("detail") or ""), number=number, agent=self.role)
-            if phase.get("detail"):
-                bus.agent_msg(self.project, str(phase["detail"]), title=f"Phase {number} of {total}", kind="narration",
-                              agent=self.role)
-            bus.agent_state(self.project, "building", agent=self.role)
-            result = self._phase_turn(agent, ask, pointer, parallel_write_limit)
+            apart = number in together                # built by an agent of its own: its repair starts fresh, with the brief
+            if apart:
+                result = together.pop(number)
+            else:
+                ask = phases.request_for(number, phase)
+                if phases.brief and fresh:
+                    self.shed_history(keep_tokens=0)
+                    ask = phases.brief.strip() + "\n\n---\n\n" + ask
+                fresh = True
+                bus.phase(self.project, key, title, detail=str(phase.get("detail") or ""), number=number, agent=self.role)
+                if phase.get("detail"):
+                    bus.agent_msg(self.project, str(phase["detail"]), title=f"Phase {number} of {total}", kind="narration",
+                                  agent=self.role)
+                bus.agent_state(self.project, "building", agent=self.role)
+                result = self._phase_turn(agent, ask, pointer, parallel_write_limit)
             rounds += result.rounds
             last = result.text or last
-            if result.status == "blocked":
+            if result.status in {"blocked", "failed"}:
                 phase["note"] = str(result.text or "")[:300]
-                bus.log(self.project, "WARN", f"{title} ended blocked: {phase['note']}", agent=self.role)
+                bus.log(self.project, "WARN", f"{title} ended {result.status}: {phase['note']}", agent=self.role)
             problems = phases.verify(phase)
+            if problems and apart:
+                self.shed_history(keep_tokens=0)
             for attempt in range(1, PHASE_REPAIRS + 1):
                 if not problems:
                     break
@@ -1349,7 +1368,10 @@ class ProjectSession:
                               + (f" (and {len(problems) - 2} more)" if len(problems) > 2 else "")
                               + f". Finishing it ({attempt} of {PHASE_REPAIRS}).",
                               title=f"Phase {number} of {total}", kind="narration", agent=self.role)
-                result = self._phase_turn(agent, phases.repair_for(number, phase, problems), pointer, parallel_write_limit)
+                repair = phases.repair_for(number, phase, problems)
+                if apart and attempt == 1:
+                    repair = phases.brief.strip() + "\n\n---\n\n" + repair
+                result = self._phase_turn(agent, repair, pointer, parallel_write_limit)
                 rounds += result.rounds
                 last = result.text or last
                 problems = phases.verify(phase)
@@ -1364,6 +1386,29 @@ class ProjectSession:
         unfinished = [phase["title"] for phase in phases.items if phase.get("status") != "done"]
         return {"status": "incomplete" if unfinished else "complete", "text": last, "rounds": rounds,
                 "phases": phases.items}
+
+    @staticmethod
+    def _may_run_together(phases: Phases, phase: dict[str, Any]) -> bool:
+        return bool(phases.brief and phases.together and phases.together(phase))
+
+    def _phases_at_once(self, batch: list[tuple[int, dict[str, Any]]], phases: Phases, pointer: str, total: int,
+                        parallel_write_limit: int) -> dict[int, Any]:
+        """Phases that do not depend on one another (the pages, a few at a time; the unit tests and the journey tests) built
+        by `LANES` agents at the same time, each in a conversation of its own that begins with the brief. Returns each
+        phase's turn by number; what each delivered is checked, and repaired, by the caller as for any phase."""
+        numbers = [n for n, _ in batch]
+        bus.agent_msg(self.project, f"Phases {numbers[0]}–{numbers[-1]} of {total} do not depend on one another: "
+                                    f"{min(LANES, len(batch))} agents build them at the same time.",
+                      title="Build", kind="narration", agent=self.role)
+        for number, phase in batch:
+            bus.phase(self.project, f"build:phase-{number}", f"Phase {number} of {total} · {phase['title']}",
+                      detail=str(phase.get("detail") or ""), number=number, agent=self.role)
+        work = [(phases.brief.strip() + "\n\n---\n\n" + phases.request_for(number, phase)
+                 + "\n\n" + prompts.load("builder/phase-together").strip(), pointer) for number, phase in batch]
+        done = self.run_lanes(work, parallel_write_limit=parallel_write_limit)
+        return {number: SimpleNamespace(status=row.get("status") or "complete", text=row.get("text") or "",
+                                        rounds=int(row.get("rounds") or 0))
+                for (number, _), row in zip(batch, done)}
 
     def resume_phases(self, plan: str, plan_file: str, phases: Phases, model: str = "") -> dict[str, Any]:
         """Carry on with a plan already made and the phases not done yet: what a stopped build does, instead of planning again."""

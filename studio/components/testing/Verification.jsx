@@ -207,7 +207,7 @@ function BrowserTests({ runs }) {
     if (!groups.has(key)) groups.set(key, { file: t.file, project: t.project, rows: [] })
     groups.get(key).rows.push(t)
   }
-  const hint = `${runs.passed}/${runs.total} passed${runs.failed ? ` · ${runs.failed} failed` : ''}${runs.flaky ? ` · ${runs.flaky} flaky` : ''}${runs.skipped ? ` · ${runs.skipped} skipped` : ''}${runs.seconds ? ` · ${Math.round(runs.seconds)}s` : ''} · from ${runs.source}${runs.at ? ' · ' + when(runs.at) : ''}`
+  const hint = `${runs.passed}/${runs.total} passed${runs.failed ? ` · ${runs.failed} failed` : ''}${runs.phoneWarnings ? ` · ${runs.phoneWarnings} journeys failed only at phone width (warnings)` : ''}${runs.flaky ? ` · ${runs.flaky} flaky` : ''}${runs.skipped ? ` · ${runs.skipped} skipped` : ''}${runs.seconds ? ` · ${Math.round(runs.seconds)}s` : ''} · from ${runs.source}${runs.at ? ' · ' + when(runs.at) : ''}`
   return <Section title="Browser tests (Playwright — journeys, accessibility, visual)" hint={hint}
                   right={<Badge tone={runs.failed ? 'bad' : runs.passed === runs.total ? 'ok' : 'warn'}>{runs.failed ? `${runs.failed} failed` : runs.passed === runs.total ? 'all passed' : 'partial'}</Badge>}>
     <div className="space-y-2">{[...groups.values()].map((g, i) => {
@@ -381,7 +381,9 @@ export default function Verification({ qa }) {
         {unit && <Tile label="Unit tests" value={`${unit.passed}/${unit.total}`} sub={`${unit.files} files`} bad={unit.failed > 0} />}
         {units.length > 0 && <Tile label="Units with a test" value={`${unitsTested}/${units.length}`} sub="pages, routes, components" bad={unitsTested < units.length} />}
         {raw.codeCoverage?.lines != null && <Tile label="Line coverage" value={`${raw.codeCoverage.lines}%`} sub="measured by the unit tests" />}
-        {runs && <Tile label="Browser tests" value={`${runs.passed}/${runs.total}`} sub={runs.failed ? `${runs.failed} failed` : 'desktop + mobile'} bad={runs.failed > 0} />}
+        {runs && <Tile label="Browser tests" value={`${runs.passed}/${runs.total}`}
+                       sub={runs.failed ? `${runs.failed} failed` : runs.phoneWarnings ? `${runs.phoneWarnings} phone-width warnings` : 'desktop + mobile'}
+                       bad={runs.failed > 0} />}
         {reqs.length > 0 && <Tile label="Requirements" value={`${met}/${reqs.length}`} sub="met" bad={met < reqs.length} />}
         {probe && <Tile label="Route checks" value={`${matched}/${list(probe.results).length}`} sub="as specified" bad={matched < list(probe.results).length} />}
         {lh.length > 0 && <Tile label="Lighthouse (lowest)" value={Math.min(...Object.values(lh[0].scores || { x: 0 }))} sub={Object.entries(lh[0].scores || {}).map(([k, v]) => `${k.replace('best-practices', 'practices')} ${v}`).join(' · ')} />}
