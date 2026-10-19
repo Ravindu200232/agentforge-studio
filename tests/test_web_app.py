@@ -359,6 +359,20 @@ class CheckingThePagesTests(Scratch):
             web_app.ensure_built(app, told.append)          # bundled; the page shows its own error
         self.assertEqual(len(told), 2)
 
+    def test_a_crash_fix_that_breaks_the_bundle_still_gets_its_own_repairs(self):
+        # A fix of `incomeRows is not defined` took out the page's <AppShell opening tag: the bundle stopped building, and
+        # with the tries the crash had used up, the journey test ended. The bundle has its own tries.
+        app = self.made()
+        told = []
+        bundles = iter([(True, ""), (True, ""), (False, "dashboard.tsx:239:6: ERROR: Expected"), (True, "")])
+        pages = iter([[("/dashboard", "ReferenceError: incomeRows is not defined")],
+                      [("/dashboard", "ReferenceError: expenseRows is not defined")], []])
+        with mock.patch.object(web_app, "bundle", side_effect=lambda a: next(bundles)), \
+                mock.patch.object(web_app, "check_pages", side_effect=lambda a: next(pages)):
+            web_app.ensure_built(app, told.append)
+        self.assertEqual(len(told), 3)
+        self.assertIn("Expected", told[2])
+
     def test_an_app_that_cannot_be_checked_is_taken_as_it_is(self):
         told = []
         with mock.patch.object(web_app, "bundle", return_value=(True, "")), mock.patch.object(web_app, "check_pages", return_value=None):

@@ -920,6 +920,7 @@ def _run(project: str, session: Any, model: str, rows: list[dict[str, Any]], acc
     stopped = ""
     rounds: list[dict[str, Any]] = []
     found = 0
+    fixing = fix                  # off once a fix leaves the app not bundling: the other journeys are still walked
     for number, journey in enumerate(journeys, start=1):
         if session.cancelled:
             raise RunCancelled(project)
@@ -927,7 +928,7 @@ def _run(project: str, session: Any, model: str, rows: list[dict[str, Any]], acc
         result = _walk_all(project, session, model, sees, root, rows, accounts_doc, [journey], label)[0]
         found += len(result["problems"])
         tries = 0
-        while fix and _worth_fixing(result["problems"]) and tries < MAX_FIXES:
+        while fixing and _worth_fixing(result["problems"]) and tries < MAX_FIXES:
             tries += 1
             request, count = _fix_request([(journey, result["problems"])])
             bus.agent_msg(project, f"{journey['id']}: {count} problem{'s' if count != 1 else ''} worth fixing. Fixing "
@@ -937,8 +938,10 @@ def _run(project: str, session: Any, model: str, rows: list[dict[str, Any]], acc
                                             bus.DESIGNER, "Journey test") or stopped
             if journey["id"] not in fixed:
                 fixed.append(journey["id"])
-            if rebuild:
-                rebuild()
+            if rebuild and not screen_review.rebuilt(project, rebuild, bus.DESIGNER, "Journey test"):
+                fixing = False
+                rounds.append({"journey": journey["id"], "fix": tries, "fixing": count, "bundle_failed": True})
+                break
             result = _walk_all(project, session, model, sees, root, rows, accounts_doc, [journey], f"{label}, again")[0]
             rounds.append({"journey": journey["id"], "fix": tries, "fixing": count,
                            "left": len(_worth_fixing(result["problems"]))})

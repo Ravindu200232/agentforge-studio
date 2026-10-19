@@ -1044,6 +1044,24 @@ class RunTests(Harness):
         self.assertIn("the model service dropped", result["fix_stopped"])
         self.assertIn("The fix stopped before it was finished", self.messages[-1]["text"])
 
+    def test_a_fix_that_leaves_the_app_not_bundling_ends_the_fixes_not_the_test(self):
+        # A fix took out a page's opening tag; the bundle failed, and the whole journey test used to stop there.
+        self.pages["/"] = {"heading": "Home", "elements": [link("Sign in", "/login")]}
+        bundles = []
+
+        def rebuild():
+            bundles.append(1)
+            raise RuntimeError("Build failed in 956ms\ndashboard.tsx:239:6: ERROR: Expected")
+
+        session = self.session(fix=lambda root: None)
+        with self.models():
+            result = self.run_test(session, rebuild=rebuild)
+        self.assertEqual(result["status"], "done")
+        self.assertEqual(len(bundles), 2)                                     # repaired once more, then left
+        self.assertEqual(len(session.requests), 1)                            # no more fixes after it
+        self.assertEqual(result["journeys"], 2)                               # and the other journey is still walked
+        self.assertTrue(any("not bundling" in m["text"] for m in self.messages))
+
     def test_the_journey_on_screen_is_shown_live_one_journey_at_a_time(self):
         with mock.patch.object(bus, "viewers", lambda: 1), self.models():
             self.run_test(fix=False)
