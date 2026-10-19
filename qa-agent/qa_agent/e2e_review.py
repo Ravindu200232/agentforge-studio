@@ -1,4 +1,11 @@
-"""After the end-to-end tests finish, a model that can look at pictures reviews their screenshots, and what it finds is fixed.
+"""A model that can look at pictures reviews screenshots of the real application, and what it finds is fixed.
+
+In a build and a testing run the pages come first (`kind="pages"`): every page is photographed whole, at desktop and mobile
+width, signed in as a role that may open it (`e2e_run.pages`, the Studio's `e2e/pages.spec.js`); what looks wrong is fixed,
+and only the pages that had problems are photographed again - round by round, each round after the first asked for. The
+journeys run after that, once, and are never run again to take pictures.
+
+The older review of the end-to-end tests' own screenshots (`kind="tests"`) is described below.
 
 Playwright keeps a screenshot of the screen each test ended on, at desktop and at mobile width. Those pictures are shown to the
 model, test by test, journeys first: it says what is visibly wrong with the real application (an error shown to the person,
@@ -32,7 +39,10 @@ from . import build_evidence
 
 PHASE = "qa:review"
 REPORT = ".agentforge/qa/visual-review.json"
+PAGES_REPORT = ".agentforge/qa/page-review.json"
+PAGES_FILE = "pages.spec.js"
 MAX_TESTS = 18
+MAX_PAGES = 60
 REVIEW_SECONDS = 300            # the longest the model has to look at the pictures of one test
 # Playwright's projects, and the width each is shown to the model as.
 VIEWPORT_OF = {"desktop": "desktop", "mobile": "mobile"}
@@ -47,27 +57,39 @@ def enabled() -> bool:
     return bool(config.setting("e2e_visual_review", True))
 
 
-def screens(workspace: Path) -> list[dict[str, Any]]:
-    """The newest screenshot of every end-to-end test, as one entry per test with a picture per browser:
-    {"file", "title", "status", "pictures": {"desktop": path, "mobile": path}}, user journeys first.
+def screens(workspace: Path, kind: str = "tests") -> list[dict[str, Any]]:
+    """The newest screenshot of every end-to-end test (`kind="tests"`, user journeys first) or of every page (`"pages"`), as
+    one entry per test with a picture per browser: {"file", "title", "suite", "status", "pictures": {"desktop", "mobile"}}.
 
     Playwright overwrites its results on every run and a re-run may cover only a few tests, so each test's newest run
-    speaks for it, whichever run that was."""
+    speaks for it, whichever run that was. A skipped test's picture is of nothing, and is left out."""
+    pages = kind == "pages"
     latest: dict[tuple[str, str, str], dict[str, Any]] = {}
     for run in sorted(build_evidence._runs_found(workspace), key=lambda r: (str(r.get("at") or ""), r.get("rank", 0))):  # noqa: SLF001
         for test in run.get("tests") or []:
             project = str(test.get("project") or "")
-            if (test.get("screenshot") and project in VIEWPORT_OF and not _SKIP_SPECS.search(str(test.get("file") or ""))
+            file = str(test.get("file") or "")
+            if pages != (file == PAGES_FILE) or test.get("status") == "skipped":
+                continue
+            if (test.get("screenshot") and project in VIEWPORT_OF and not _SKIP_SPECS.search(file)
                     and not _SKIP_TITLES.search(str(test.get("title") or ""))):
-                latest[(str(test.get("file") or ""), str(test.get("title") or ""), project)] = test
+                latest[(file, str(test.get("title") or ""), project)] = test
     groups: dict[tuple[str, str], dict[str, Any]] = {}
     for (file, title, project), test in latest.items():
-        group = groups.setdefault((file, title), {"file": file, "title": title, "status": "passed", "pictures": {}})
+        group = groups.setdefault((file, title), {"file": file, "title": title, "suite": str(test.get("suite") or ""),
+                                                  "kind": kind, "status": "passed", "pictures": {}})
         group["pictures"][VIEWPORT_OF[project]] = str(test["screenshot"])
         if test.get("status") in {"failed", "flaky"}:
             group["status"] = test["status"]
+    if pages:
+        return sorted(groups.values(), key=lambda g: (g["suite"], g["title"]))[:MAX_PAGES]
     ordered = sorted(groups.values(), key=lambda g: (0 if _JOURNEY.match(g["title"]) else 1, g["file"], g["title"]))
     return ordered[:MAX_TESTS]
+
+
+def _opened_as(group: dict[str, Any]) -> str:
+    """How a page was opened, from its describe block (`@pages as Staff`): "as Staff", or "signed out"."""
+    return re.sub(r"^@pages\s*", "", str(group.get("suite") or "")).strip() or "signed out"
 
 
 def _digest(workspace: Path, group: dict[str, Any]) -> str:
@@ -92,10 +114,18 @@ def _review_group(project: str, model: str, workspace: Path, group: dict[str, An
     data, thumbs, widths = _pictures(workspace, group)
     if not data:
         return None
+    pictures = " and ".join(f"picture {i + 1} is the {name} browser" for i, name in enumerate(widths)) + "."
+    if group.get("kind") == "pages":
+        who = _opened_as(group)
+        request = prompts.load("testing/page-review", page=group["title"], who=who, pictures=pictures,
+                               status=" — it reported an error while it opened" if group["status"] == "failed" else "")
+        answer = llm.within(REVIEW_SECONDS, llm.complete_json, screen_review.SYSTEM, request, screen_review.clean,
+                            label="page review", model=model, images=data, project=project, role=bus.DEVELOPER)
+        return {"file": group["file"], "title": group["title"], "name": group["title"], **answer, "thumbs": thumbs,
+                "heading": f"### {group['title']} — opened {who} ({' and '.join(widths)})"}
     spec = group["file"] if "/" in group["file"] else f"e2e/{group['file']}"      # the report names the file, not its folder
     request = prompts.load(
-        "testing/visual-review", test=group["title"], spec=spec,
-        pictures=" and ".join(f"picture {i + 1} is the {name} browser" for i, name in enumerate(widths)) + ".",
+        "testing/visual-review", test=group["title"], spec=spec, pictures=pictures,
         status=" — this test FAILED, so the screen shows where it stopped" if group["status"] == "failed"
         else (" — this test was flaky (it passed only on a retry)" if group["status"] == "flaky" else " — this test passed"))
     # Not longer than REVIEW_SECONDS: a model that stopped answering leaves this test unreviewed, never the review stuck.
@@ -136,49 +166,93 @@ def _show(project: str, workspace: Path, groups: list[dict[str, Any]], why: str)
                       title=f"{group['title']} · {group['status']}", kind="visual_review", agent=bus.DEVELOPER, images=thumbs)
 
 
-def run(project: str, session: Any, fix: bool = True, model: str = "", force: bool = False) -> dict[str, Any]:
-    """Review the end-to-end screenshots with a vision model and fix what it finds (`fix`: false only looks and reports).
-    `model` is the one this run chose, else the project's; `force` runs it even when the setting turns it off, because it
-    was asked for. Always returns a result, never raises, and never ends without saying in the chat why it did not look."""
+# The words each kind of review is told in.
+_WORDS = {
+    "tests": {"one": "test screen", "title": "Screenshot review", "phase": "Checking the test screenshots with a vision model",
+              "detail": "looks at the screen each end-to-end test ended on.", "fix": "testing/visual-fix",
+              "again": "running those tests again", "looking": "Looking at the test screenshots",
+              "what": "end-to-end test", "report": REPORT},
+    "pages": {"one": "page", "title": "Page review", "phase": "Checking every page with a vision model",
+              "detail": "looks at every page, whole, at desktop and mobile width.", "fix": "testing/page-fix",
+              "again": "photographing those pages again", "looking": "Looking at the pages",
+              "what": "page", "report": PAGES_REPORT},
+}
+
+
+def last_review(workspace: Path, kind: str = "pages") -> dict[str, Any]:
+    try:
+        saved = json.loads((workspace / _WORDS[kind]["report"]).read_text(encoding="utf-8"))
+    except (OSError, ValueError, KeyError):
+        return {}
+    return saved if isinstance(saved, dict) else {}
+
+
+def run(project: str, session: Any, fix: bool = True, model: str = "", force: bool = False, kind: str = "tests",
+        continue_plan: bool = False) -> dict[str, Any]:
+    """Review screenshots with a vision model and fix what it finds (`fix`: false only looks and reports): every page,
+    photographed now (`kind="pages"`), or the end-to-end tests' own screenshots (`"tests"`). `model` is the one this run
+    chose, else the project's; `force` runs it even when the setting turns it off, because it was asked for, and looks at
+    pages already looked at. `continue_plan`: inside a build or a testing run, where No to another round moves on to the
+    next step. Always returns a result, never raises but for Stop, and never ends without saying in the chat why it did not
+    look."""
+    words = _WORDS["pages" if kind == "pages" else "tests"]
     if not enabled() and not force:
-        bus.agent_msg(project, "The end-to-end screenshots were not looked at: the screenshot review is turned off "
-                               "(the e2e_visual_review setting).", title="Screenshot review skipped", kind="narration",
+        bus.agent_msg(project, f"The {words['what']}s were not looked at: the screenshot review is turned off "
+                               "(the e2e_visual_review setting).", title=f"{words['title']} skipped", kind="narration",
                       agent=bus.DEVELOPER)
         return {"status": "off"}
     try:
-        groups = screens(session.workspace)
+        workspace = session.workspace
+        if kind == "pages":
+            from . import e2e_run
+
+            last = last_review(workspace, "pages")
+            if not force and last.get("fingerprint") and last["fingerprint"] == e2e_run.fingerprint(workspace):
+                bus.agent_msg(project, "Every page was already looked at on the app exactly as it is now, so it is not "
+                                       "photographed again.", title=words["title"], kind="narration", agent=bus.DEVELOPER)
+                return {"status": "reused"}
+            shot = e2e_run.pages(project, session)
+            if shot.get("status") != "done":
+                bus.agent_msg(project, f"The pages were not looked at: {shot.get('reason') or 'no page could be photographed'}.",
+                              title=f"{words['title']} skipped", kind="narration", agent=bus.DEVELOPER)
+                return {"status": "skipped", "reason": shot.get("reason") or shot.get("status")}
+        groups = screens(workspace, kind)
         if not groups:
-            bus.agent_msg(project, f"There are no end-to-end screenshots to look at: {_why_none(session.workspace)}. "
-                                   "Run the end-to-end tests (`npm run qa:e2e`), then ask for this review again.",
-                          title="Screenshot review skipped", kind="narration", agent=bus.DEVELOPER)
-            return {"status": "skipped", "reason": "the end-to-end tests left no screenshots"}
+            why = ("No page picture was left to look at" if kind == "pages"
+                   else f"There are no end-to-end screenshots to look at: {_why_none(workspace)}. Run the end-to-end tests "
+                        "(`npm run qa:e2e`), then ask for this review again")
+            bus.agent_msg(project, why + ".", title=f"{words['title']} skipped", kind="narration", agent=bus.DEVELOPER)
+            return {"status": "skipped", "reason": why}
         model = str(session.agent(model).model)
         ok, why = screen_review.can_review(model)
         if not ok:
-            _show(project, session.workspace, groups, why)
+            _show(project, workspace, groups, why)
             return {"status": "skipped", "reason": why}
-        return _review(project, session, model, groups, fix)
+        return _review(project, session, model, groups, fix, kind, continue_plan)
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001 - a review is never a reason to fail the testing
-        bus.phase(project, PHASE, "Checking the test screenshots with a vision model", status="failed",
-                  detail=str(exc)[:300], agent=bus.DEVELOPER)
-        bus.log(project, "WARN", f"The screenshot review stopped: {str(exc)[:300]}", agent=bus.DEVELOPER)
+        bus.phase(project, PHASE, words["phase"], status="failed", detail=str(exc)[:300], agent=bus.DEVELOPER)
+        bus.log(project, "WARN", f"The {words['title'].lower()} stopped: {str(exc)[:300]}", agent=bus.DEVELOPER)
         return {"status": "failed", "reason": str(exc)[:300]}
 
 
-def _review(project: str, session: Any, model: str, groups: list[dict[str, Any]], fix: bool = True) -> dict[str, Any]:
+def _review(project: str, session: Any, model: str, groups: list[dict[str, Any]], fix: bool = True, kind: str = "tests",
+            continue_plan: bool = False) -> dict[str, Any]:
+    from . import e2e_run
+
     workspace = session.workspace
     plural = screen_review.plural
-    bus.phase(project, PHASE, "Checking the test screenshots with a vision model",
-              detail=f"{model} looks at the screen each end-to-end test ended on.", agent=bus.DEVELOPER)
-    bus.agent_msg(project, f"Looking at the screenshots of {plural(len(groups), 'end-to-end test')} with {model}.",
-                  title="Screenshot review", kind="narration", agent=bus.DEVELOPER)
+    words = _WORDS["pages" if kind == "pages" else "tests"]
+    one, title = words["one"], words["title"]
+    bus.phase(project, PHASE, words["phase"], detail=f"{model} {words['detail']}", agent=bus.DEVELOPER)
+    bus.agent_msg(project, f"Looking at {plural(len(groups), words['what'])} with {model}.", title=title, kind="narration",
+                  agent=bus.DEVELOPER)
 
     def look(items: list[dict[str, Any]], label: str) -> list[dict[str, Any]]:
         counted = [0]
 
-        def one(group: dict[str, Any]) -> dict[str, Any] | None:
+        def one_screen(group: dict[str, Any]) -> dict[str, Any] | None:
             if session.cancelled:
                 raise RunCancelled(project)
             result = _review_group(project, model, workspace, group)
@@ -188,14 +262,14 @@ def _review(project: str, session: Any, model: str, groups: list[dict[str, Any]]
                 screen_review.tell(project, result, bus.DEVELOPER)
             return result
 
-        found = llm.in_lanes(items, one, on_error=lambda group, exc: {
+        found = llm.in_lanes(items, one_screen, on_error=lambda group, exc: {
             "file": group["file"], "title": group["title"], "name": group["title"], "looks_ok": False, "summary": "",
             "defects": [], "error": str(exc)[:200], "thumbs": [], "heading": ""})
         if session.cancelled:
             raise RunCancelled(project)
         return [f for f in found if f]
 
-    first = look(groups, "Looking at the test screenshots")
+    first = look(groups, words["looking"])
     problems = sum(len(f["defects"]) for f in first)
     unreviewed = [f["name"] for f in first if f.get("error")]
 
@@ -205,62 +279,69 @@ def _review(project: str, session: Any, model: str, groups: list[dict[str, Any]]
     fix_stopped = ""
     count = 0
     rounds: list[dict[str, Any]] = []
-    # Round by round: fix what the screens still show, run only those tests again, look at their new screens. The first round
-    # runs by itself; each one after it is asked for.
+    # Round by round: fix what the screens still show, take only those pictures again, look at them. The first round runs by
+    # itself; each one after it is asked for: Yes runs it, No ends the rounds.
     while fix:
         request, count_now = screen_review.fix_request(list(final.values()))
         bad = {(f["file"], f["title"]) for f in final.values()
                if any(d["severity"] in screen_review.FIX_SEVERITIES for d in f["defects"])}
         if not count_now or (rounds and not screen_review.next_round(
-                project, session, bus.DEVELOPER, len(rounds), count_now, plural(len(bad), "test screen"),
-                "Screenshot review")):
+                project, session, bus.DEVELOPER, len(rounds), count_now, plural(len(bad), one), title,
+                continue_plan=continue_plan)):
             break
         if session.cancelled:
             raise RunCancelled(project)
         count = count or count_now
         number = len(rounds) + 1
         bus.agent_msg(project, (f"Round {number}: " if number > 1 else "")
-                      + f"{plural(count_now, 'problem')} worth fixing found on {plural(len(bad), 'test screen')}. "
-                      "Fixing them in the application, then running those tests again.",
-                      title="Screenshot review", kind="narration", agent=bus.DEVELOPER)
-        shown = {(g["file"], g["title"]): g for g in screens(workspace)}
+                      + f"{plural(count_now, 'problem')} worth fixing found on {plural(len(bad), one)}. "
+                      f"Fixing them in the application, then {words['again']}.", title=title, kind="narration",
+                      agent=bus.DEVELOPER)
+        shown = {(g["file"], g["title"]): g for g in screens(workspace, kind)}
         before = {key: _digest(workspace, shown[key]) for key in bad if key in shown}
-        fix_stopped = screen_review.run_fix(project, session, prompts.load("testing/visual-fix", defects=request), model,
-                                            bus.DEVELOPER, "Screenshot review") or fix_stopped
-        # The agent does not run the tests: the Studio runs only the ones whose screens had problems, for their new pictures.
-        from . import e2e_run
-        e2e_run.run(project, session, grep=sorted({title for (_file, title) in bad}), reason="screenshot review")
+        fix_stopped = screen_review.run_fix(project, session, prompts.load(words["fix"], defects=request), model,
+                                            bus.DEVELOPER, title) or fix_stopped
+        # The agent takes no pictures: the Studio takes only the ones that had problems again. For pages, that is the pages
+        # alone - the journeys are never run to take pictures.
+        titles = sorted({name for (_file, name) in bad})
+        if kind == "pages":
+            e2e_run.pages(project, session, titles=titles)
+        else:
+            e2e_run.run(project, session, grep=titles, reason="screenshot review")
         if session.cancelled:
             raise RunCancelled(project)
-        now = {(g["file"], g["title"]): g for g in screens(workspace)}
-        # Only the tests that had problems, and whose screenshots are new, are looked at again.
+        now = {(g["file"], g["title"]): g for g in screens(workspace, kind)}
+        # Only the screens that had problems, and whose pictures are new, are looked at again.
         again = [now[key] for key in sorted(bad) if key in now and _digest(workspace, now[key]) != before.get(key)]
         seen_again = {(g["file"], g["title"]) for g in again}
-        not_rerun = [title for (_file, title) in sorted(bad) if (_file, title) not in seen_again]
+        not_rerun = [name for (_file, name) in sorted(bad) if (_file, name) not in seen_again]
         rechecked += [g["title"] for g in again if g["title"] not in rechecked]
         if not again:
             rounds.append({"round": number, "fixing": count_now, "looked_again": 0})
             break
-        bus.agent_msg(project, f"Looking again at {plural(len(again), 'test screen')} that ran again.",
-                      title="Screenshot review", kind="narration", agent=bus.DEVELOPER)
-        second = look(again, "Looking at the new test screenshots")
+        bus.agent_msg(project, f"Looking again at {plural(len(again), one)} "
+                               f"{'photographed' if kind == 'pages' else 'that ran'} again.",
+                      title=title, kind="narration", agent=bus.DEVELOPER)
+        second = look(again, f"{words['looking']} again")
         final.update({(f["file"], f["title"]): f for f in second if not f.get("error")})
         rounds.append({"round": number, "fixing": count_now, "looked_again": len(again),
                        "left": sum(1 for f in final.values() for d in f["defects"]
                                    if d["severity"] in screen_review.FIX_SEVERITIES)})
-    bus.progress(project, "Looking at the test screenshots", 100, agent=bus.DEVELOPER)
+    bus.progress(project, words["looking"], 100, agent=bus.DEVELOPER)
 
     remaining = [(f, d) for f in final.values() for d in f["defects"] if d["severity"] in screen_review.FIX_SEVERITIES]
-    report = {"model": model, "tests": len(groups), "problems_found": problems, "rechecked": rechecked,
+    report = {"model": model, "kind": kind, "tests": len(groups), "problems_found": problems, "rechecked": rechecked,
               "not_rechecked": not_rerun, "fix_stopped": fix_stopped, "tests_not_reviewed": unreviewed, "rounds": rounds,
               "remaining": [{"test": f["title"], "file": f["file"], **d} for f, d in remaining]}
+    if kind == "pages":
+        report["fingerprint"] = e2e_run.fingerprint(workspace)       # the app these pages were looked at on
     try:
-        target = workspace / REPORT
+        target = workspace / words["report"]
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError:
         pass
-    summary = f"Looked at the screenshots of {plural(len(groups), 'end-to-end test')} with {model}: "
+    summary = f"Looked at {plural(len(groups), words['what'])} with {model}: "
     if not problems:
         summary += "no problems found."
     elif not fix:
@@ -268,17 +349,19 @@ def _review(project: str, session: Any, model: str, groups: list[dict[str, Any]]
     else:
         summary += f"{plural(problems, 'problem')} found"
         if count:
-            summary += (f"; {plural(len(rechecked), 'test screen')} looked at again after the fix"
+            summary += (f"; {plural(len(rechecked), one)} looked at again after the fix"
                         + (f", {plural(len(remaining), 'problem')} still visible." if remaining else ", none left that matters."))
             if not_rerun:
-                summary += (f" {plural(len(not_rerun), 'test')} did not run again, so "
-                            f"{'its' if len(not_rerun) == 1 else 'their'} fix was not checked by looking: {', '.join(not_rerun[:6])}.")
+                summary += (f" {plural(len(not_rerun), one)} {'was' if len(not_rerun) == 1 else 'were'} not "
+                            f"{'photographed' if kind == 'pages' else 'run'} again, so "
+                            f"{'its' if len(not_rerun) == 1 else 'their'} fix was not checked by looking: "
+                            f"{', '.join(not_rerun[:6])}.")
         else:
             summary += "; none that needed fixing."
     if fix_stopped:
         summary += f" The fix stopped before it was finished ({fix_stopped})."
     if unreviewed:
         summary += f" Could not be reviewed: {', '.join(unreviewed)}."
-    bus.agent_msg(project, summary, title="Screenshot review", kind="narration", agent=bus.DEVELOPER)
-    bus.phase(project, PHASE, "Checking the test screenshots with a vision model", status="complete", agent=bus.DEVELOPER)
+    bus.agent_msg(project, summary, title=title, kind="narration", agent=bus.DEVELOPER)
+    bus.phase(project, PHASE, words["phase"], status="complete", agent=bus.DEVELOPER)
     return {"status": "done", **report}

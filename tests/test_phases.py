@@ -114,7 +114,7 @@ class RequestTests(unittest.TestCase):
         self.assertIn("`/rooms` — Rooms — prototype page `.agentforge/prototype/rooms.html` — roles: Guest, Staff", text)
         self.assertIn("`/book` — Book — prototype page `.agentforge/prototype/book.html`", text)
         self.assertNotIn("`/page-5`", text)                                 # the next phase's
-        self.assertIn(".agentforge/build/progress.json", text)
+        self.assertIn(".agentforge/build/progress/pages-1.json", text)
         self.assertIn('{"routes": {"/the/route"', text)
 
     def test_the_foundation_builds_no_pages_and_the_wiring_carries_the_plans_first_phase(self):
@@ -420,6 +420,63 @@ class ExecutionTests(unittest.TestCase):
             self.run_all(phased)
         self.assertEqual([p["status"] for p in self.items[:3]], ["done", "done", "pending"])
         self.assertEqual(len(self.asked), 2)
+
+    def test_with_a_brief_every_phase_after_the_first_starts_a_fresh_conversation_that_begins_with_it(self):
+        shed = []
+        self.session.shed_history = lambda note="", keep_tokens=40_000: shed.append(keep_tokens) or 0
+        phased = self.phased(4)
+        phased.brief = "THE BUILD REQUEST"
+        self.run_all(phased)
+        total = len(self.items)
+        self.assertEqual(shed, [0] * (total - 1))                              # the first phase follows its own plan
+        self.assertEqual(self.asked[0][0], f"ASK 1: {self.items[0]['title']}")
+        for request, _, _ in self.asked[1:]:
+            self.assertTrue(request.startswith("THE BUILD REQUEST\n\n---\n\nASK "), request[:60])
+        # A resumed build starts its first phase fresh too.
+        shed.clear(), self.asked.clear()
+        self.items[3]["status"] = "pending"
+        self.session._run_phases(self.session.agent(), "THE PLAN", "plan/developmentplan1.md", phased, fresh_first=True)
+        self.assertEqual((shed, self.asked[0][0][:17]), ([0], "THE BUILD REQUEST"))
+
+    def test_pages_phases_are_built_at_the_same_time_and_each_is_still_checked_and_repaired(self):
+        shed, lanes = [], []
+        self.session.shed_history = lambda note="", keep_tokens=40_000: shed.append(keep_tokens) or 0
+
+        def run_lanes(work, parallel_write_limit=1):
+            lanes.append([request for request, _ in work])
+            return [{"status": "complete", "text": "built", "rounds": 1} for _ in work]
+
+        self.session.run_lanes = run_lanes
+        verified = {"pages-2": 0}
+
+        def verify(phase):
+            if phase["id"] == "pages-2" and verified["pages-2"] == 0:
+                verified["pages-2"] += 1
+                return ["`/page-5` is not recorded"]
+            return []
+
+        phased = self.phased(10, verify=verify)
+        phased.brief = "THE BUILD REQUEST"
+        phased.together = phases.together
+        result = self.run_all(phased)
+        kinds = [p["kind"] for p in self.items]
+        pages = kinds.count("pages")
+        self.assertEqual(len(lanes), 2)                                         # the pages, then the unit and journey tests
+        self.assertEqual(len(lanes[0]), pages)
+        self.assertEqual(len(lanes[1]), 2)
+        self.assertTrue(all(r.startswith("THE BUILD REQUEST") and "## Built at the same time as other phases" in r
+                            for r in lanes[0]))
+        alone = [a[0] for a in self.asked]
+        self.assertEqual(len([a for a in alone if "ASK " in a]), len(self.items) - pages - 2)   # the foundation and the wiring
+        repairs = [a for a in alone if "REPAIR" in a]
+        self.assertEqual(len(repairs), 1)
+        self.assertTrue(repairs[0].startswith("THE BUILD REQUEST"))               # a repair of a phase built apart has the brief
+        self.assertEqual(result["status"], "complete")
+
+    def test_without_a_brief_the_phases_share_one_conversation_as_before(self):
+        self.session.shed_history = lambda *a, **k: self.fail("nothing is shed without a brief")
+        self.run_all(self.phased(2))
+        self.assertTrue(all(request.startswith("ASK ") for request, _, _ in self.asked))
 
     def test_a_turn_that_fails_stops_the_build_with_its_error_and_the_phases_before_it_are_kept(self):
         phased = self.phased(2)

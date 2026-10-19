@@ -8,6 +8,7 @@ here as they appear, under the same path inside `KEPT`, and a screenshot whose o
 """
 from __future__ import annotations
 
+import os
 import shutil
 import threading
 import time
@@ -37,10 +38,12 @@ def sweep(workspace: Path, settled: bool = True) -> int:
     `settled`: leave a file touched in the last moment for the next sweep (the final sweep takes everything)."""
     source = workspace / ARTIFACTS
     copied = 0
-    try:
-        files = [p for p in source.rglob("*") if p.suffix.lower() in SUFFIXES] if source.is_dir() else []
-    except OSError:
-        return 0
+    files: list[Path] = []
+    # Playwright records each test's trace as hundreds of frames in `.playwright-artifacts-N`: they are not the tests'
+    # screenshots, and copying them (58,000 in one project) made every later search and sync of the project crawl.
+    for folder, dirs, names in os.walk(source):
+        dirs[:] = [d for d in dirs if not d.startswith(".playwright-artifacts")]
+        files.extend(Path(folder) / name for name in names if os.path.splitext(name)[1].lower() in SUFFIXES)
     now = time.time()
     for path in files:
         try:
@@ -68,6 +71,9 @@ class Keeper:
         self._thread: threading.Thread | None = None
 
     def _loop(self) -> None:
+        # Trace frames an earlier Studio kept here are no use to anything: they go.
+        for old in (self.workspace / KEPT).glob(".playwright-artifacts*"):
+            shutil.rmtree(old, ignore_errors=True)
         while not self._stop.is_set():
             try:
                 sweep(self.workspace)

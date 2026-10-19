@@ -46,6 +46,7 @@ const KINDS = [
 /** Lines that are noise in a conversation, however useful they are in a log. */
 const MUTED = [
   /^\s*\$\s/,                       // the echoed command; the "Ran …" line covers it
+  /^\s*\[retry\]\s/i,               // automatic model retries stay in the diagnostic log
   /^\s*(?:HTTP|WS|connection)\b/i,
   /^\s*type:\s/i,
   /\btool error\s*:/i,              // internal tool retries; the agent recovers or reports a real failure
@@ -239,6 +240,7 @@ export function chatTurns(logs = [], chat = []) {
   }
 
   for (const entry of chat) {
+    if (entry.role === 'connection') continue // hide recovery cards already held by an open Studio
     if (!remembered.has(entry)) {
       remembered.set(entry, { ...entry, id: `c${++counted}`,
                               role: entry.role || 'assistant' })

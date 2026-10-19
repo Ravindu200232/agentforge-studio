@@ -2,87 +2,64 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import worker from '../src/index.js'
 
-test('cloud chat needs an account and settles provider token usage once', async () => {
+const env = {
+  APP_TOKEN: 'app', OLLAMA_API_KEY: 'upstream-private-key',
+  ACCOUNTS_URL: 'https://admin.example', ENGINE_METER_SECRET: 'meter-private-key',
+}
+
+test('existing public endpoint authenticates, then forwards model traffic to Vercel unchanged', async () => {
   const original = globalThis.fetch
   const calls = []
-  globalThis.fetch = async (url, options = {}) => {
+  const answer = '{"message":{"content":"one"},"done":false}\n{"done":true,"prompt_eval_count":12,"eval_count":34}\n'
+  globalThis.fetch = async (url, options) => {
     calls.push({ url: String(url), options })
-    if (String(url).endsWith('/authorize')) return Response.json({ reservation: 'request-1' })
-    if (String(url).endsWith('/settle')) return Response.json({ ok: true })
-    if (String(url).endsWith('/api/chat')) return new Response(
-      JSON.stringify({ done: true, prompt_eval_count: 1000, eval_count: 200 }) + '\n',
-      { headers: { 'content-type': 'application/x-ndjson' } })
-    throw new Error(`Unexpected URL: ${url}`)
+    return new Response(answer, { headers: { 'content-type': 'application/x-ndjson' } })
   }
-  const env = { APP_TOKEN: 'app', OLLAMA_API_KEY: 'private', ACCOUNTS_URL: 'https://admin.example',
-    ENGINE_METER_SECRET: 'server-secret-is-never-in-the-desktop-app' }
   try {
-    const noAccount = await worker.fetch(new Request('https://engine.example/api/chat', {
-      method: 'POST', headers: { authorization: 'Bearer app' },
-      body: JSON.stringify({ model: 'gpt-oss:120b', messages: [] }),
-    }), env, { waitUntil() {} })
-    assert.equal(noAccount.status, 401)
-    assert.equal(calls.length, 0)
-
-    const pending = []
-    const response = await worker.fetch(new Request('https://engine.example/api/chat', {
-      method: 'POST', headers: { authorization: 'Bearer app', 'x-agentforge-account': 'signed-account' },
-      body: JSON.stringify({ model: 'gpt-oss:120b', messages: [] }),
-    }), env, { waitUntil(promise) { pending.push(promise) } })
-    assert.equal(response.status, 200)
-    await response.text()
-    await Promise.all(pending)
-    const settlement = calls.find(call => call.url.endsWith('/settle'))
-    assert.ok(settlement)
-    const data = JSON.parse(settlement.options.body)
-    assert.equal(data.reservation, 'request-1')
-    assert.equal(data.inputTokens, 1000)
-    assert.equal(data.outputTokens, 200)
-    assert.equal(data.costMicros, 270)
-    assert.equal(calls.find(call => call.url.endsWith('/authorize')).options.headers.authorization, 'Bearer signed-account')
+    const input = JSON.stringify({ model: 'deepseek-v4.1-flash:cloud', messages: [{ role: 'user', content: 'Hello' }] })
+      + ' '.repeat(160000)
+    const request = new Request('https://engine.example/api/chat', {
+      method: 'POST', headers: { authorization: 'Bearer app', 'x-agentforge-account': 'account-token' }, body: input,
+    })
+    const result = await worker.fetch(request, env)
+    assert.equal(result.status, 200)
+    assert.equal(result.headers.get('content-type'), 'application/x-ndjson')
+    assert.equal(await result.text(), answer)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].url, 'https://admin.example/api/engine/chat')
+    assert.equal(calls[0].options.redirect, 'manual', 'Cloudflare Workers do not support redirect: error')
+    assert.equal(calls[0].options.headers.get('x-agentforge-account'), 'account-token')
+    assert.equal(calls[0].options.headers.get('x-agentforge-upstream-key'), 'upstream-private-key')
+    assert.equal(calls[0].options.headers.get('x-agentforge-meter-secret'), 'meter-private-key')
+    assert.equal(await new Response(calls[0].options.body).text(), input)
   } finally { globalThis.fetch = original }
 })
 
-test('free accounts cannot call GLM 5.3 models, while paid accounts can', async () => {
+test('model calls without account or app token never reach Vercel', async () => {
   const original = globalThis.fetch
-  const calls = []
-  let plan = 'free'
-  let unlimited = false
-  globalThis.fetch = async (url) => {
-    calls.push(String(url))
-    if (String(url).endsWith('/api/accounts/me')) return Response.json({ account: { plan, unlimited } })
-    if (String(url).endsWith('/authorize')) return Response.json({ reservation: 'request-2' })
-    if (String(url).endsWith('/settle')) return Response.json({ ok: true })
-    if (String(url).endsWith('/api/chat')) return Response.json({ done: true, prompt_eval_count: 1, eval_count: 1 })
-    throw new Error(`Unexpected URL: ${url}`)
-  }
-  const env = { APP_TOKEN: 'app', OLLAMA_API_KEY: 'private', ACCOUNTS_URL: 'https://admin.example',
-    ENGINE_METER_SECRET: 'server-secret' }
-  const request = model => new Request('https://engine.example/api/chat', {
-    method: 'POST', headers: { authorization: 'Bearer app', 'x-agentforge-account': 'signed-account' },
-    body: JSON.stringify({ model, messages: [] }),
-  })
+  let calls = 0
+  globalThis.fetch = async () => { calls++; throw new Error('should not be called') }
   try {
-    for (const model of ['glm-5.3:cloud', 'glm-5.3-flash:cloud']) {
-      const response = await worker.fetch(request(model), env, { waitUntil() {} })
-      assert.equal(response.status, 403)
-    }
-    assert.equal(calls.filter(url => url.endsWith('/authorize')).length, 0)
-    assert.equal(calls.filter(url => url.endsWith('/api/chat')).length, 0)
-    plan = 'paid'
-    const pending = []
-    const allowed = await worker.fetch(request('glm-5.3:cloud'), env, { waitUntil(promise) { pending.push(promise) } })
-    assert.equal(allowed.status, 200)
-    await allowed.text()
-    await Promise.all(pending)
-    assert.equal(calls.filter(url => url.endsWith('/authorize')).length, 1)
-    plan = 'free'
-    unlimited = true
-    const adminPending = []
-    const admin = await worker.fetch(request('glm-5.3-flash:cloud'), env,
-      { waitUntil(promise) { adminPending.push(promise) } })
-    assert.equal(admin.status, 200)
-    await admin.text()
-    await Promise.all(adminPending)
+    const request = headers => new Request('https://engine.example/api/generate', {
+      method: 'POST', headers, body: '{"model":"gemma4:31b-cloud"}',
+    })
+    assert.equal((await worker.fetch(request({ authorization: 'Bearer wrong' }), env)).status, 401)
+    assert.equal((await worker.fetch(request({ authorization: 'Bearer app' }), env)).status, 401)
+    assert.equal(calls, 0)
+  } finally { globalThis.fetch = original }
+})
+
+test('model provider errors pass through without exposing the upstream key', async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async () => Response.json({ error: 'credit used up' }, { status: 402 })
+  try {
+    const result = await worker.fetch(new Request('https://engine.example/api/chat', {
+      method: 'POST', headers: { authorization: 'Bearer app', 'x-agentforge-account': 'account-token' },
+      body: '{"model":"gemma4:31b-cloud"}',
+    }), env)
+    assert.equal(result.status, 402)
+    const output = await result.text()
+    assert.match(output, /credit used up/)
+    assert.ok(!output.includes(env.OLLAMA_API_KEY))
   } finally { globalThis.fetch = original }
 })

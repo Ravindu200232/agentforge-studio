@@ -14,7 +14,7 @@ import shutil
 from typing import Any
 
 from server_modules import bus, pointed, prompts, web_app
-from server_modules.session import RunCancelled, session_for
+from server_modules.session import RunCancelled, session_for, start_fresh
 
 from . import document
 
@@ -22,6 +22,10 @@ KIND = "wireframe"
 MAX_REQUEST = 4000
 # What starting the wireframes asks for: the first line of `prompts/wireframe/generate.md`. The studio sends the same words.
 APPROVAL_PROMPT = "Generate low-fidelity wireframes."
+# An app with this many pages or more is drawn by several agents at once (`_draw_in_lanes`), after the first FIRST_PAGES.
+LANE_MIN_PAGES = 10
+FIRST_PAGES = 3
+MISSING_BATCH_PAGES = 4
 
 
 def app_path(project: str):
@@ -44,6 +48,49 @@ def routes_text(rows: list[dict[str, Any]]) -> str:
         lines.append(f"- `{row['route']}` — {row['name']}" + (f" (signed in: {who or 'any role'})" if row.get("signedIn") else "")
                      + f" — `src/pages/{row['file']}.tsx`")
     return "\n".join(lines)
+
+
+def _written(app, row: dict[str, Any]) -> bool:
+    return any((app / "src" / "pages" / f"{row['file']}{ext}").is_file() for ext in (".tsx", ".jsx"))
+
+
+def _complete_missing(session, project: str, rows: list[dict[str, Any]], app) -> None:
+    """Complete only unwritten pages in bounded turns and retain all finished files if a turn fails."""
+    left = [row for row in rows if not _written(app, row)]
+    if not left:
+        return
+    bus.log(project, "WARN", f"Completing {len(left)} page(s) still missing after drawing.", agent=bus.DESIGNER)
+    for start in range(0, len(left), MISSING_BATCH_PAGES):
+        batch = [row for row in left[start:start + MISSING_BATCH_PAGES] if not _written(app, row)]
+        if batch:
+            session.run_unplanned(prompts.load("wireframe/lanes-missing", pages=routes_text(batch)))
+    remaining = [row for row in rows if not _written(app, row)]
+    if remaining:
+        raise ValueError(f"{len(remaining)} wireframe page(s) are still missing; retry to continue from the pages already written")
+
+
+def _draw_in_lanes(session, project: str, ask: str, rows: list[dict[str, Any]], app) -> dict[str, Any]:
+    """A big app drawn in two steps: the project's agent writes the shared parts and the first pages, then `session.LANES`
+    agents write the rest at the same time, each its own pages (`session.run_lanes`). One agent drawing 117 pages one after
+    another took an hour and a half. A page still missing at the end is written by the project's agent."""
+    from server_modules import session as sessions
+
+    first, rest = rows[:FIRST_PAGES], rows[FIRST_PAGES:]
+    lanes = max(1, min(sessions.LANES, len(rest)))
+    relative = _relative(project)
+    result = session.run_task(ask + "\n\n" + prompts.load("wireframe/lanes-first", count=str(len(rows)), app=relative,
+                                                          pages=routes_text(first), lanes=str(lanes)),
+                              audit=False, parallel_write_limit=4)
+    if session.cancelled:
+        raise RunCancelled(project)
+    size = -(-len(rest) // lanes)                       # neighbouring pages (one section of the site map) go to one agent
+    groups = [rest[start:start + size] for start in range(0, len(rest), size)]
+    bus.agent_msg(project, f"The shared layout and the first {len(first)} page(s) are drawn. The other {len(rest)} are drawn "
+                           f"by {len(groups)} agents at the same time.", title="Wireframes", kind="narration", agent=bus.DESIGNER)
+    session.run_lanes([(ask + "\n\n" + prompts.load("wireframe/lanes-pages", app=relative, pages=routes_text(group)),
+                        "Write exactly these pages, each in full:\n" + routes_text(group)) for group in groups],
+                      parallel_write_limit=4)
+    return result
 
 
 def _remember(session, **state: Any) -> None:
@@ -76,7 +123,17 @@ def generate(project: str, request: str = "", fresh: bool = True) -> dict[str, A
         raise RuntimeError("the toolkit the wireframes are built with could not be installed: " + why[-300:])
 
     app = app_path(project)
-    carrying_on = not fresh and (app / "index.html").is_file()
+    has_app = (app / "index.html").is_file()
+    last_error = session.read_record(KIND, "state.json", fallback={}) or {}
+    if not isinstance(last_error, dict):
+        last_error = {}
+    existing_rows = web_app.route_rows(pages) if has_app else []
+    written_before = sum(_written(app, row) for row in existing_rows)
+    # A failed or interrupted build can leave dozens of good page files but no
+    # bundle. The next ordinary click must continue those files, not erase them.
+    incomplete = bool(written_before) and (written_before < len(existing_rows) or not web_app.built(app)
+                                           or bool(last_error.get("error")))
+    carrying_on = has_app and (not fresh or incomplete)
     if not carrying_on:
         web_app.remove_app(app)
     title = str((document.document(project).get("srs_document", {}).get("app_summary") or {}).get("app_name") or project)
@@ -86,14 +143,23 @@ def generate(project: str, request: str = "", fresh: bool = True) -> dict[str, A
 
     bus.phase(project, "wireframes", "Drawing the wireframes", detail=f"{len(rows)} page(s) from the approved specification.",
               agent=bus.DESIGNER)
+    missing = [row for row in rows if not _written(app, row)]
     resume = (f"The app already has pages from a run that stopped: read what is in `{_relative(project)}/src/pages`, keep it, "
-              "and write the pages that are still missing." if carrying_on else "")
-    result = session.run_task(
-        prompts.load("wireframe/generate", request=request or APPROVAL_PROMPT, skill=skill, shadcn=shadcn, app=_relative(project),
-                     routes=routes_text(rows), resume=resume),
-        audit=False, parallel_write_limit=4)
+              "and write only the pages that are still missing. Do not regenerate pages that already exist."
+              if carrying_on else "")
+    ask = prompts.load("wireframe/generate", request=request or APPROVAL_PROMPT, skill=skill, shadcn=shadcn, app=_relative(project),
+                       routes=routes_text(missing if carrying_on else rows), resume=resume)
+    if not missing:
+        result = {"status": "complete", "text": "All page files are already written."}
+    elif carrying_on or len(rows) < LANE_MIN_PAGES:
+        start_fresh(session)
+        result = session.run_task(ask, audit=False, parallel_write_limit=4)
+    else:
+        start_fresh(session)
+        result = _draw_in_lanes(session, project, ask, rows, app)
     if session.cancelled:
         raise RunCancelled(project)
+    _complete_missing(session, project, rows, app)
     if result.get("status") not in (None, "complete") and result.get("text"):
         bus.log(project, "WARN", f"The agent stopped early: {str(result['text'])[:300]}", agent=bus.DESIGNER)
 

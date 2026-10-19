@@ -468,7 +468,7 @@ class NextRoundTests(unittest.TestCase):
         args = {"done": 1, "remaining": 3, "where": "2 screens"} | overrides
         with mock.patch.object(bus, "ask_and_wait", return_value=reply) as asked:
             answer = screen_review.next_round("p", self.session, "designer", args["done"], args["remaining"], args["where"],
-                                              "Visual review")
+                                              "Visual review", continue_plan=args.get("continue_plan", False))
         return answer, asked
 
     def test_yes_in_any_of_its_forms_runs_the_next_round(self):
@@ -504,3 +504,28 @@ class NextRoundTests(unittest.TestCase):
 
         with self.assertRaises(RunCancelled):
             self.ask(None)
+
+    def test_in_a_build_yes_runs_the_next_round(self):
+        for reply in ("Yes", "ow", "ඔව්"):
+            answer, asked = self.ask(reply, continue_plan=True)
+            self.assertTrue(answer, reply)
+            self.assertIn("Run round 2", asked.call_args.args[2])
+            self.assertIn("No moves on to the next step", asked.call_args.args[2])
+
+    def test_in_a_build_no_or_you_decide_moves_on_to_the_next_step(self):
+        for reply in ("No", "You decide", ""):
+            answer, asked = self.ask(reply, continue_plan=True)
+            self.assertFalse(answer, reply)
+            self.assertIn("moving on to the next step", self.said[-1])
+            self.assertEqual(asked.call_args.kwargs["assumption"], "move on to the next step and list what is left")
+
+    def test_what_is_left_can_be_said_in_its_own_words(self):
+        with mock.patch.object(bus, "ask_and_wait", return_value="No") as asked:
+            screen_review.next_round("p", self.session, "developer", 1, 2, "", "Journeys", continue_plan=True,
+                                     left="2 journeys still fail (UJ-001, UJ-005)")
+        self.assertIn("round 1 is done and 2 journeys still fail (UJ-001, UJ-005). Run round 2", asked.call_args.args[2])
+
+    def test_build_review_with_no_problems_does_not_ask(self):
+        answer, asked = self.ask("No", remaining=0, continue_plan=True)
+        self.assertFalse(answer)
+        asked.assert_not_called()

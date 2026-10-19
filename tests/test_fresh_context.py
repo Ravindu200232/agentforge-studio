@@ -98,6 +98,23 @@ class TheDeploymentAsksForItTests(unittest.TestCase):
         self.assertLess(run.index("fresh_context(session)"), run.index("machine_facts("))
 
 
+class EveryStageStartsFreshTests(unittest.TestCase):
+    """The build of one project began with 672,000 tokens of the stages before it, sent again with every call."""
+
+    def test_the_wireframes_the_prototype_and_the_build_start_fresh_before_their_first_turn(self):
+        for path, first in (("srs-agent/srs_agent/wireframe.py", "session.run_task(ask"),
+                            ("prototype-agent/prototype_agent/prototype.py", "session.run_task(request"),
+                            ("builder-agent/builder_agent/build.py", "decided = _decide(")):
+            source = (ROOT / path).read_text(encoding="utf-8")
+            source = source[source.index("def generate(" if "wireframe" in path else "\n"):]
+            self.assertLess(source.index("start_fresh(session)"), source.index(first), path)
+
+    def test_a_session_without_the_method_sheds_nothing(self):
+        from server_modules.session import start_fresh
+        self.assertEqual(start_fresh(SimpleNamespace()), 0)
+        self.assertEqual(start_fresh(SimpleNamespace(shed_history=lambda note: 9)), 9)
+
+
 class AModelThatNeverAnswersEndsTests(unittest.TestCase):
     def test_the_bound_is_long_enough_for_a_slow_answer_and_short_enough_to_end(self):
         timeout = connection.model_timeout()

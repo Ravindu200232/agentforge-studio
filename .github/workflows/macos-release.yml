@@ -5,6 +5,7 @@ on:
     branches:
       - mac-version
       - codex/mac-release-port
+      - mac-release-*
   workflow_dispatch:
     inputs:
       tag:
@@ -31,6 +32,8 @@ jobs:
           node-version: 24
 
       - name: Build the signed app, DMG, and ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bash release/build-mac.sh
 
       - name: Test the staged backend and Studio
@@ -63,7 +66,6 @@ jobs:
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
 
       - name: Keep validated files for review
-        if: github.ref == 'refs/heads/codex/mac-release-port'
         uses: actions/upload-artifact@v4
         with:
           name: agentforge-mac-arm64

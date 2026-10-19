@@ -135,6 +135,7 @@ export const api = {
   accountCheckout: () => post('/account/checkout', {}),
   account: () => req('/account'),
   saveSettings: (s) => post('/settings', s),
+  privacy: () => req('/privacy'),
   mcpProbe: (server) => post('/mcp/probe', server),
   setPlanMode: (project, enabled) => post(`/projects/${encodeURIComponent(project)}/plan-mode`, { enabled }),
   // What the agent may do without asking (server_modules/permissions.py): the modes, the one a new project starts in, bypass on or off.

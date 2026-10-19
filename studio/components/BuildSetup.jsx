@@ -99,10 +99,11 @@ export default function BuildSetup({
                       const selected = id === model
                       return (
                         <button key={id} type="button" aria-pressed={selected}
-                                onClick={() => onModelChange(id)}
+                                disabled={!!item.locked} onClick={() => onModelChange(id)}
                                 className={cn('flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left text-[11.5px] transition-colors',
                                   selected ? 'text-accent' : 'text-ink hover:bg-panel2')}>
                           <span className="min-w-0 flex-1 truncate">{item.label || id}</span>
+                          {item.locked && <span className="shrink-0 text-[9px] font-semibold text-amber-600">Buy Pro</span>}
                           {seeing.vision.has(id) && <VisionBadge />}
                           {selected && <Check className="size-3 shrink-0 text-accent" />}
                         </button>

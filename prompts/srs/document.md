@@ -19,27 +19,27 @@ pasted in here:
 - Stack: {{stack}}
 - Document language: {{language}}
 
-## Coverage is a release gate
+## What the customer asked for, every item of it, and nothing more
 
-Completeness matters more than hitting an arbitrary count. Do not pad the SRS
-with duplicated requirements. Decompose each approved capability into atomic,
-testable requirements and cover **every item** in the approved plan before you
-return the JSON. In particular:
+The requirements are the customer's: write the ones the approved plan needs and
+no others. Cover **every item** in the plan — each feature, workflow, role
+capability, screen and record — each with as few requirements as make it
+testable. Never decompose by habit: a record gets a create, change, delete,
+search or filter requirement only when a feature or workflow of the plan does
+that to it; a page gets requirements only for the functions it has; nothing the
+customer did not ask for is written in. A shorter specification of exactly what
+was asked is the better one. In particular:
 
-1. **Authentication** — signing in, signing out, session expiry, failed
-   attempts, password rules, how accounts come to exist. One requirement each.
-2. **Authorization** — the server-side role check on every request, what a
-   signed-out visitor gets, what the wrong role gets. One requirement each.
-3. **Per role** — every distinct thing each role may do, and the things it must
-   not. One requirement per capability, not one per role.
-4. **Per stored entity** — create, read, update, delete, list, search and filter,
-   plus its own business rules. One requirement each, for each entity.
-5. **Per page** — what that page must display, what it must let a person do, and
-   what it must refuse. Two or three requirements each.
-6. **Per workflow** — the happy path, and separately each rule, exception,
+1. **Accounts** (only when the plan has sign-in) — signing in and out, failed
+   attempts, how accounts come to exist, the server-side role check, and what a
+   signed-out visitor and the wrong role get.
+2. **Each feature and role capability** — what it does, and the rules the
+   interview gave it.
+3. **Each workflow** — the happy path, and separately each rule, exception,
    cutoff, conflict and failure the interview raised.
-7. **API** — the contract each endpoint honours.
-8. **UI states** — loading, empty, error and success, where they are load-bearing.
+4. **Records** — the operations the features and workflows perform on them, and
+   their own business rules.
+5. **API** — the endpoints the screens and workflows call, and their contracts.
 
 Every requirement is one testable sentence in the form "The system shall …",
 about one thing. A requirement containing "and" that could be two requirements
@@ -56,9 +56,8 @@ exactly one traceability row with a `test_case`. These checks make the SRS
 testable without copying another product's requirements or expanding scope.
 
 Non-functional requirements follow the same rule and carry a **measurable
-threshold**: twelve to twenty of them across performance, scalability,
-availability, security, accessibility, usability, maintainability and
-observability. "Fast" is not a requirement; "responds within 200 ms at the 95th
+threshold**: eight to twelve of them, across the qualities this product needs
+(performance, availability, security, accessibility, usability and the like). "Fast" is not a requirement; "responds within 200 ms at the 95th
 percentile under 50 concurrent users" is.
 
 Every workflow in the approved plan must appear by name in

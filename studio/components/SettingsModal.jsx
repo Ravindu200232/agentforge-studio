@@ -87,8 +87,9 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
         const catalog = await api.models()
         const cloud = catalog.cloud || []
         const current = useStore.getState().models.builder
-        const picked = cloud.find(row => row.id === current)?.id
-          || cloud.find(row => row.id === 'deepseek-v4.1-flash:cloud')?.id || cloud[0]?.id
+        const picked = cloud.find(row => row.id === current && !row.locked)?.id
+          || cloud.find(row => row.id === 'deepseek-v4.1-flash:cloud' && !row.locked)?.id
+          || cloud.find(row => !row.locked)?.id
         if (picked) {
           useStore.setState(state => ({ models: { ...state.models, planner: picked, design: picked,
             builder: picked, agent: picked, qa: picked, srs: picked, deploy: picked } }))
@@ -242,6 +243,7 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
                   in the Settings list.
                 </p>
                 <MongoState mongo={meta?.mongo} />
+                <PrivacyKeep />
                 <WorkspaceActions project={project} folderRef={folderRef} onImport={onImport}
                                   onZip={onZip} onOpenInNewTab={onOpenInNewTab} onLogout={onLogout} />
               </div>
@@ -285,6 +287,7 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
                     Save Settings
                   </button>
                 </div>
+                <PrivacyKeep />
                 <WorkspaceActions project={project} folderRef={folderRef} onImport={onImport}
                                   onZip={onZip} onOpenInNewTab={onOpenInNewTab} onLogout={onLogout} />
               </div>
@@ -422,6 +425,75 @@ function EngineChoice({ value, onChange, host, onHost }) {
   </div>
 }
 
+const NL = String.fromCharCode(10)
+
+/** The privacy filter: whether it runs, and the names it must never hide - a business, a brand or a product name that looks
+ * like a person's (`privacy_keep`). What it does hide is kept on this computer and put back in what the model writes. */
+function PrivacyKeep() {
+  const [status, setStatus] = useState(null)
+  const [text, setText] = useState('')
+  const [saved, setSaved] = useState('')
+  const [state, setState] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    api.privacy().then(s => { if (alive) setStatus(s) }).catch(() => {})
+    api.settings().then(s => {
+      if (!alive) return
+      const rows = Array.isArray(s?.privacy_keep) ? s.privacy_keep.join(NL) : String(s?.privacy_keep || '')
+      setText(rows)
+      setSaved(rows)
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+
+  async function save() {
+    setState('saving')
+    try {
+      const rows = text.split(NL).map(r => r.trim()).filter(Boolean)
+      await api.saveSettings({ privacy_keep: rows })
+      setSaved(rows.join(NL))
+      setText(rows.join(NL))
+      setState('saved')
+    } catch (e) {
+      setState(e.message || 'could not save')
+    }
+  }
+
+  const on = status?.enabled
+  return (
+    <div className="rounded-2xl border border-line bg-panel px-4 py-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-[13px] font-semibold text-ink">Privacy</h3>
+        <span className={cn('text-[11px]', on && status?.ready ? 'text-ok' : 'text-muted')}>
+          {!status ? 'Checking…' : !on ? 'Filter off' : status.ready ? 'Personal data is kept from the model' : 'Filter not ready'}
+        </span>
+      </div>
+      <p className="mt-1.5 text-[11.5px] leading-relaxed text-muted">
+        Names, email addresses and phone numbers you type are replaced with placeholders before they reach the model, and put
+        back on this computer in the specification and the app. Names below are never hidden — your business, brand or
+        product names that look like a person's.
+      </p>
+      <textarea
+        value={text}
+        onChange={e => { setText(e.target.value); setState('') }}
+        rows={3}
+        placeholder={['Sunil Hardware', 'Clean Mate'].join(NL)}
+        className="mt-2.5 w-full resize-y rounded-xl border border-line bg-panel2/60 px-3 py-2 text-[12.5px] text-ink outline-none placeholder:text-muted/40 focus:border-accent focus:ring-1 focus:ring-accent"
+      />
+      <div className="mt-2 flex items-center gap-3">
+        <button type="button" onClick={save} disabled={state === 'saving' || text === saved}
+          className="rounded-xl bg-accent px-3.5 py-1.5 text-[12px] font-semibold text-ink disabled:opacity-50">
+          {state === 'saving' ? 'Saving…' : 'Save names'}
+        </button>
+        {state && state !== 'saving' && (
+          <span className={cn('text-[11px]', state === 'saved' ? 'text-ok' : 'text-bad')}>{state === 'saved' ? 'Saved' : state}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function AccountRequests() {
   const [account, setAccount] = useState(null)
   const [purchaseError, setPurchaseError] = useState('')
@@ -439,7 +511,10 @@ function AccountRequests() {
   const limit = Number(shown.limitUsd) || 0
   const used = Number(shown.usedUsd) || 0
   const left = Math.max(0, Number(shown.remainingUsd) || 0)
-  const share = limit ? Math.min(100, Math.round((used / limit) * 100)) : 100
+  const balance = Math.max(0, Number(shown.balanceUsd ?? (limit - used)) || 0)
+  const held = Math.max(0, Number(shown.reservedUsd ?? (balance - left)) || 0)
+  const usedShare = limit ? Math.min(100, (used / limit) * 100) : 100
+  const heldShare = limit ? Math.min(100 - usedShare, (held / limit) * 100) : 0
   const low = !limit || left / limit < 0.1
   return (
     <div className="rounded-2xl border border-line bg-panel px-4 py-4">
@@ -448,14 +523,16 @@ function AccountRequests() {
         <span className="text-[11px] text-muted2">{shown.email}</span>
       </div>
       <p className={`mt-2 font-display text-[22px] font-black tabular-nums ${low ? 'text-bad' : 'text-ink'}`}>
-        ${left.toFixed(2)} <span className="text-[12px] font-semibold text-muted">left of ${limit.toFixed(2)}</span>
+        ${left.toFixed(2)} <span className="text-[12px] font-semibold text-muted">available of ${limit.toFixed(2)}</span>
       </p>
-      <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-panel2">
-        <div className={`h-full rounded-full transition-all duration-500 ${low ? 'bg-bad' : 'bg-accent'}`} style={{ width: `${share}%` }} />
+      <div className="mt-2 flex h-2 w-full overflow-hidden rounded-full bg-panel2">
+        <div className={`h-full transition-all duration-500 ${low ? 'bg-bad' : 'bg-accent'}`} style={{ width: `${usedShare}%` }} />
+        <div className="h-full bg-amber-400 transition-all duration-500" style={{ width: `${heldShare}%` }} />
       </div>
       <p className="mt-1.5 text-[11px] text-muted">
-        ${used.toFixed(2)} used · local Ollama does not spend this credit
+        ${used.toFixed(2)} spent{held > 0 ? ` · $${held.toFixed(2)} temporarily held for active AI requests` : ''}
       </p>
+      <p className="text-[11px] text-muted">${balance.toFixed(2)} unspent in total · local Ollama does not spend this credit</p>
       {shown.weekResetsAt && <p className="text-[11px] text-muted">Resets {new Date(shown.weekResetsAt).toLocaleString()}</p>}
       {shown.plan !== 'paid' && <button type="button" disabled={!shown.checkoutAvailable}
         className="mt-3 rounded-xl bg-accent px-3 py-2 text-[12px] font-semibold text-ink disabled:opacity-50"

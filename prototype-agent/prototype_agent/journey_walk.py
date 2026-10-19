@@ -42,6 +42,7 @@ MAX_ACTIONS = 8
 TURNS = 3                      # times the model is asked what to do on one step (a menu or a dialog it opened is then in front of it)
 MAX_PICTURES = 10              # what one journey's review is shown
 LANES = 3
+MAX_FIXES = 2                 # fixes of one journey before the walk goes on to the next
 HOPS = 4                       # the most screens a step goes through to get to the one it happens on
 MENUS = 4                      # the most menus opened to look for a link in one
 PACE_MS = 350                  # slow enough to follow while it is shown live
@@ -912,44 +913,42 @@ def _run(project: str, session: Any, model: str, rows: list[dict[str, Any]], acc
                               f"taking a screenshot at every step. {model} cannot look at pictures, so only whether each step could be "
                               f"done is checked ({why})."),
                   title="Journey test", kind="narration", agent=bus.DESIGNER)
-    first = _walk_all(project, session, model, sees, root, rows, accounts_doc, journeys, "Clicking through the journeys")
-
-    final = {r["journey"]["id"]: r for r in first}
+    # One journey at a time: walk it, have what is wrong with it fixed and walk it again (at most MAX_FIXES times), then the
+    # next. A fix made for one journey (the shared navigation, the demo data) is in place before the journeys after it.
+    final: dict[str, dict[str, Any]] = {}
     fixed: list[str] = []
     stopped = ""
     rounds: list[dict[str, Any]] = []
-    # Round by round: fix the journeys that still have problems, walk those again. The first round runs by itself; each one
-    # after it is asked for.
-    while fix:
-        request, count = _fix_request([(r["journey"], r["problems"]) for r in final.values()])
-        again = [r["journey"] for r in final.values() if _worth_fixing(r["problems"])]
-        if not count or (rounds and not screen_review.next_round(
-                project, session, bus.DESIGNER, len(rounds), count, screen_review.plural(len(again), "journey"),
-                "Journey test")):
-            break
+    found = 0
+    for number, journey in enumerate(journeys, start=1):
         if session.cancelled:
             raise RunCancelled(project)
-        number = len(rounds) + 1
-        bus.agent_msg(project, (f"Round {number}: " if number > 1 else "")
-                      + f"{count} problem{'s' if count != 1 else ''} worth fixing found in {len(again)} journey(s). "
-                      "Fixing them in the prototype's files.", title="Journey test", kind="narration", agent=bus.DESIGNER)
-        stopped = screen_review.run_fix(project, session, prompts.load("prototype/journey-fix", defects=request), model,
-                                        bus.DESIGNER, "Journey test")
-        fixed += [j["id"] for j in again if j["id"] not in fixed]
-        if rebuild:
-            rebuild()
-        bus.agent_msg(project, f"Clicking through the {len(again)} journey{'s' if len(again) != 1 else ''} that had problems again.",
-                      title="Journey test", kind="narration", agent=bus.DESIGNER)
-        for r in _walk_all(project, session, model, sees, root, rows, accounts_doc, again, "Clicking through them again"):
-            final[r["journey"]["id"]] = r
-        rounds.append({"round": number, "fixing": count, "walked_again": len(again),
-                       "left": sum(len(_worth_fixing(r["problems"])) for r in final.values())})
+        label = f"Journey {number} of {len(journeys)}"
+        result = _walk_all(project, session, model, sees, root, rows, accounts_doc, [journey], label)[0]
+        found += len(result["problems"])
+        tries = 0
+        while fix and _worth_fixing(result["problems"]) and tries < MAX_FIXES:
+            tries += 1
+            request, count = _fix_request([(journey, result["problems"])])
+            bus.agent_msg(project, f"{journey['id']}: {count} problem{'s' if count != 1 else ''} worth fixing. Fixing "
+                                   f"{'them' if count != 1 else 'it'} ({tries} of {MAX_FIXES}), then clicking through it again.",
+                          title="Journey test", kind="narration", agent=bus.DESIGNER)
+            stopped = screen_review.run_fix(project, session, prompts.load("prototype/journey-fix", defects=request), model,
+                                            bus.DESIGNER, "Journey test") or stopped
+            if journey["id"] not in fixed:
+                fixed.append(journey["id"])
+            if rebuild:
+                rebuild()
+            result = _walk_all(project, session, model, sees, root, rows, accounts_doc, [journey], f"{label}, again")[0]
+            rounds.append({"journey": journey["id"], "fix": tries, "fixing": count,
+                           "left": len(_worth_fixing(result["problems"]))})
+        final[journey["id"]] = result
+        bus.progress(project, "Clicking through the journeys", number * 100 / len(journeys), agent=bus.DESIGNER)
     bus.progress(project, "Clicking through the journeys", 100, agent=bus.DESIGNER)
 
     remaining = [{"journey": jid, **p} for jid, r in final.items() for p in _worth_fixing(r["problems"])]
     completing = [jid for jid, r in final.items()
                   if all(s["reached"] for s in r["walked"]["steps"]) and (r["judged"]["completes"] if r["judged"] else True)]
-    found = sum(len(r["problems"]) for r in first)
     report = {"model": model, "pictures_looked_at": bool(sees), "journeys": len(journeys), "completing": len(completing),
               "problems_found": found, "fixed_journeys": fixed, "fix_stopped": stopped, "remaining": remaining, "rounds": rounds,
               "results": [{"id": jid, "name": r["journey"]["name"], "who": r["journey"]["who"],

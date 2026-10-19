@@ -973,33 +973,32 @@ class RunTests(Harness):
         self.assertTrue(any(p["problem"].startswith("no link on Home") for p in result["remaining"]))
         self.assertEqual(result["completing"], 1)        # the journey that starts from the wishlist still goes through
 
-    def test_a_journey_still_failing_after_round_one_is_asked_about_and_yes_fixes_only_it_again(self):
+    def test_a_journey_is_fixed_and_walked_again_at_once_up_to_twice_without_asking(self):
         self.pages["/"] = {"heading": "Home", "elements": [link("Sign in", "/login")]}
         fixes = []
 
         def fix(root):
             fixes.append(len(fixes) + 1)
-            if len(fixes) == 2:                       # the second round's fix is the one that works
+            if len(fixes) == 2:                       # the second fix is the one that works
                 self.pages["/"] = SHOP["/"]
 
-        self.round_answers = [True]
         session = self.session(fix=fix)
         with self.models():
             result = self.run_test(session)
         self.assertEqual(len(session.requests), 2)
-        self.assertNotIn("`UJ-002`", session.requests[1])
-        self.assertEqual([(done, where) for done, _left, where in self.rounds_asked], [(1, "1 journey")])
-        self.assertEqual([r["round"] for r in result["rounds"]], [1, 2])
+        self.assertTrue(all("`UJ-002`" not in request for request in session.requests))
+        self.assertEqual(getattr(self, "rounds_asked", []), [])                       # nothing is asked
+        self.assertEqual([(r["journey"], r["fix"]) for r in result["rounds"]], [("UJ-001", 1), ("UJ-001", 2)])
         self.assertEqual(result["completing"], 2)
 
-    def test_no_after_round_one_leaves_the_journey_reported_as_it_is(self):
+    def test_a_journey_still_wrong_after_two_fixes_is_reported_and_the_walk_goes_on(self):
         self.pages["/"] = {"heading": "Home", "elements": [link("Sign in", "/login")]}
         session = self.session(fix=lambda root: None)
         with self.models():
             result = self.run_test(session)
-        self.assertEqual(len(session.requests), 1)
-        self.assertEqual(len(self.rounds_asked), 1)
+        self.assertEqual(len(session.requests), jw.MAX_FIXES)
         self.assertTrue(result["remaining"])
+        self.assertEqual(result["journeys"], 2)                                  # the next one was walked too
 
     def test_the_problems_that_matter_are_given_to_the_agent_the_app_is_bundled_and_the_journeys_walked_again(self):
         self.pages["/"] = {"heading": "Home", "elements": [link("Sign in", "/login")]}
@@ -1045,17 +1044,17 @@ class RunTests(Harness):
         self.assertIn("the model service dropped", result["fix_stopped"])
         self.assertIn("The fix stopped before it was finished", self.messages[-1]["text"])
 
-    def test_only_the_journey_on_screen_is_shown_live_and_it_is_the_only_one_walked_at_a_time(self):
+    def test_the_journey_on_screen_is_shown_live_one_journey_at_a_time(self):
         with mock.patch.object(bus, "viewers", lambda: 1), self.models():
             self.run_test(fix=False)
-        self.assertEqual(len(self.browsers), 1)
-        self.assertTrue(self.browsers[0].args["live"])
+        self.assertEqual(len(self.browsers), 2)                               # one journey, one browser, in turn
+        self.assertTrue(all(b.args["live"] for b in self.browsers))
         self.assertTrue(callable(self.browsers[0].args["relay"]))
         states = [m["state"] for m in self.sent if m.get("kind") == "event"]
         self.assertEqual(states.count("journey_start"), 2)
         self.assertEqual(self.sent[-1], {"kind": "end"})                  # the preview is given back
 
-    def test_with_nobody_watching_the_journeys_are_walked_in_parallel_and_nothing_is_streamed(self):
+    def test_with_nobody_watching_nothing_is_streamed(self):
         with self.models():
             self.run_test(fix=False)
         self.assertEqual(len(self.browsers), 2)

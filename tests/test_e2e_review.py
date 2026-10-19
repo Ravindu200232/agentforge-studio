@@ -112,7 +112,7 @@ class Harness(unittest.TestCase):
         return mock.patch("server_modules.llm.complete_json", side_effect=complete_json)
 
 
-    def _next_round(self, project, session, agent, done, remaining, where, title):
+    def _next_round(self, project, session, agent, done, remaining, where, title, **kwargs):
         """The person's answer to "Run round N?": what the test queued in `self.round_answers`, else No."""
         self.rounds_asked = getattr(self, "rounds_asked", [])
         self.rounds_asked.append((done, remaining, where))
@@ -359,7 +359,7 @@ class ReviewTests(Harness):
             result = e2e_review.run("p", session)
         self.assertEqual(result["rechecked"], [])
         self.assertEqual(result["not_rechecked"], [JOURNEY])
-        self.assertIn("did not run again", self.messages[-1]["text"])
+        self.assertIn("not run again", self.messages[-1]["text"])
         self.assertIn(JOURNEY, self.messages[-1]["text"])
 
     def test_a_fix_that_stops_partway_does_not_end_the_review_the_tests_it_ran_again_are_looked_at_anyway(self):
@@ -452,14 +452,15 @@ class OnRequestTests(Harness):
 
 
 class WiredInTests(unittest.TestCase):
-    def test_the_testing_run_and_the_build_both_look_at_the_screenshots_after_their_end_to_end_tests(self):
+    def test_the_build_and_the_testing_run_look_at_the_pages_before_the_journeys_and_the_agents_checks(self):
         verify = (ROOT / "qa-agent/qa_agent/verify.py").read_text(encoding="utf-8")
         build = (ROOT / "builder-agent/builder_agent/build.py").read_text(encoding="utf-8")
-        for name, text, after in (("verify", verify, "result = session.run_task(request, audit=False)"),
-                                  ("build", build, "build_result = _build_in_phases(project, session, stack, request, direction)")):
-            self.assertIn("e2e_review.run(project, session)", text, name)
-            self.assertLess(text.index(after), text.index("e2e_review.run(project, session)"), name)
-        self.assertLess(build.index("e2e_review.run(project, session)"), build.index("return _finish_run(project, session, build_result"))
+        order = [build.index("build_result = _build_in_phases("), build.index("sequence.screens_then_journeys("),
+                 build.index("_final_checks(project, session, guide_paths)"), build.index("return _finish_run(project, session")]
+        self.assertEqual(order, sorted(order))
+        self.assertNotIn("e2e_review.run(project, session)", build)
+        self.assertLess(verify.index("sequence.screens_then_journeys("), verify.index("result = session.run_task(request"))
+        self.assertLess(verify.index("result = session.run_task(request"), verify.index("sequence.after_changes("))
 
     def test_the_screens_are_kept_while_the_tests_run_in_the_build_and_in_the_testing_run(self):
         verify = (ROOT / "qa-agent/qa_agent/verify.py").read_text(encoding="utf-8")

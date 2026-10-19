@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from server_modules import bus, config, journeys, llm, mermaid, prompts, reference_staging, store, web_app
+from server_modules import bus, config, journeys, llm, mermaid, prompts, reference_staging, stage_evidence, store, web_app
 from server_modules.session import ProjectSession, RunCancelled, session_for
 from server_modules.validation import completeness, json_edits
 from server_modules.validation import corpus as corpus_rules
@@ -155,28 +155,133 @@ def _pages_of(doc: dict) -> list[dict]:
 
 
 def _wireframe_pages(doc: dict, approved: dict) -> list[dict]:
-    """Every specified route, including a plan screen omitted by a draft SRS."""
-    pages = list(_pages_of(doc))
-    known = {str(p.get("route") or "").rstrip("/") or "/" for p in pages}
+    """Every specified route, including a plan screen omitted by a draft SRS; a route that is another's in a different letter
+    case is the same page, drawn once."""
+    pages, known = [], set()
+    for page in _pages_of(doc):
+        key = completeness.route_key(page.get("route") or "")
+        if key not in known:
+            known.add(key)
+            pages.append(page)
     for screen in approved.get("screens") or []:
         if not isinstance(screen, dict) or not str(screen.get("route") or "").strip():
             continue
         route = str(screen["route"]).rstrip("/") or "/"
-        if route in known:
+        if completeness.route_key(route) in known:
             continue
         pages.append({"route": route, "page_name": screen.get("name") or route,
                       "sections": [screen.get("purpose")] if screen.get("purpose") else [],
                       "functions": screen.get("functions") or [],
                       "allowed_roles": screen.get("who") or [],
                       "plan_screen": screen})
-        known.add(route)
+        known.add(completeness.route_key(route))
     return pages
 
 
 # --- writing ----------------------------------------------------------------
 
+PARTS = {
+    "frame": ["document_title", "project_name", "version", "document_language", "system_category", "prepared_for",
+              "standards_profile", "document_control", "app_summary", "app_type", "authentication_requirement", "roles",
+              "role_access_matrix", "public_pages", "protected_pages", "main_modules", "ui_ux_requirements",
+              "reporting_requirements", "integration_requirements", "notification_rules", "assumptions", "constraints",
+              "ambiguities", "risk_priority", "acceptance_criteria"],
+    "tables": ["database_design"],
+    "api": ["api_design", "validation_rules"],
+    "requirements": ["functional_requirements", "requirement_traceability_matrix"],
+    "quality": ["non_functional_requirements", "security_requirements", "business_workflows"],
+}
+
+
+# What a part cannot leave out (the joined document is validated as a whole afterwards).
+PART_NEEDS = {"frame": ["roles", "public_pages", "protected_pages"], "tables": ["database_design"], "api": ["api_design"],
+              "requirements": ["functional_requirements", "requirement_traceability_matrix"],
+              "quality": ["non_functional_requirements", "business_workflows"]}
+
+
+def _part_validator(name: str):
+    keys = PARTS[name]
+
+    def check(data: Any) -> dict:
+        doc = data.get("srs_document", data) if isinstance(data, dict) else None
+        if not isinstance(doc, dict):
+            raise ValueError('return {"srs_document": {...}} with the keys this part writes')
+        missing = [key for key in PART_NEEDS[name] if key not in doc]
+        if missing:
+            raise ValueError(f"these keys of this part are missing: {', '.join(missing)}")
+        return {key: doc[key] for key in keys if key in doc}
+
+    return check
+
+
+def _write_in_parts(session: ProjectSession, project: str, record: dict, approved: dict) -> dict:
+    """The specification in parts written at the same time (`PARTS`), joined and validated as one document.
+
+    One call writing the whole document returned about 60,000 tokens and took over two minutes; the parts take as long as
+    the largest of them; a part that does not come back is asked for once more on its own. Every part gets the plan, the interview and the same page and table names, computed here, so the
+    parts fit together. Raises when a part or the joined document does not pass: the caller then writes it in one call."""
+    from . import interview as interview_stage
+
+    routes = "\n".join(f"- `{s.get('route')}` — {', '.join(s.get('who') or []) or 'Everyone'}"
+                       for s in approved.get("screens") or [] if isinstance(s, dict) and s.get("route"))
+    tables = "\n".join(f"- `{completeness.planned_table_name(str(r.get('name') or ''))}` ({r.get('name')})"
+                       for r in approved.get("records") or [] if isinstance(r, dict) and r.get("name"))
+    memory = session.memory_digest()
+    system = prompts.load("srs/system") + (f"\n\n## What this project already knows\n\n{memory}" if memory else "")
+    base = prompts.load("srs/document", project_name=(str(approved.get("app_name") or "").strip() or record.get("name") or project),
+                        stack=record.get("stack", ""), language=record.get("language", "English"))
+    inputs = dict(routes=routes or "(none)", tables=tables or "(none)", plan=json.dumps(approved, ensure_ascii=False, indent=1),
+                  interview=interview_stage.full_transcript(project) or "(there was no interview)")
+
+    def write(name: str) -> dict:
+        keys = PARTS[name]
+        return llm.complete_json(system=system,
+                                 user=base + "\n\n" + prompts.load("srs/document-part", keys=", ".join(f"`{k}`" for k in keys),
+                                                                   **inputs),
+                                 validator=_part_validator(name), label=f"srs_document:{name}", project=project)
+
+    written: dict[str, dict] = {}
+    failed: dict[str, str] = {}
+
+    def attempt(names: list[str]) -> None:
+        failed.clear()
+        done = llm.in_lanes(names, write, lanes=len(names),
+                            on_error=lambda name, exc: failed.__setitem__(name, str(exc)[:120]))
+        written.update({name: part for name, part in zip(names, done) if part is not None and name not in failed})
+
+    attempt(list(PARTS))
+    if failed:                                  # a part that did not come back is asked for once more, on its own
+        bus.log(project, "WARN", f"Writing {', '.join(failed)} of the specification again: {'; '.join(failed.values())}")
+        attempt(list(failed))
+    if failed:
+        raise ValueError("a part could not be written (" + "; ".join(f"{k}: {v}" for k, v in failed.items()) + ")")
+    doc: dict[str, Any] = {}
+    for name in PARTS:
+        doc.update(written[name])
+    envelope = srs_schema.srs_validator({"srs_document": doc})
+    named = str((envelope["srs_document"].get("app_summary") or {}).get("app_name") or "").strip()
+    if named and str(envelope["srs_document"].get("project_name") or "").strip() in ("", project):
+        envelope["srs_document"]["project_name"] = named
+    return envelope
+
+
 def _write_document(session: ProjectSession, project: str, record: dict,
                     approved: dict) -> dict:
+    """The specification in parts written at the same time (`_write_in_parts`), or, when they do not join into a valid
+    document, in one call."""
+    bus.phase(project, "srs:document", "Writing the requirements",
+              detail=f"{len(PARTS)} parts of the specification written at the same time, then joined.")
+    try:
+        return _write_in_parts(session, project, record, approved)
+    except RunCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the one-call path is the fallback, never a failed specification
+        bus.log(project, "WARN", f"The parts did not join into a valid specification ({str(exc)[:200]}); writing it in one call.")
+    return _write_whole(session, project, record, approved)
+
+
+def _write_whole(session: ProjectSession, project: str, record: dict,
+                 approved: dict) -> dict:
     """One call for the whole specification, validated against the schema.
 
     The approved plan and the interview are on disk at `.agentforge/plan.json`
@@ -589,6 +694,41 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
     return entry
 
 
+_diagram_save_lock = threading.Lock()
+
+
+def _check_diagrams_later(project: str, session: ProjectSession) -> None:
+    """The look at the drawn diagrams (`diagram_look.run`), after the specification is done: it took a minute or more of
+    every specification while it waited for it. The corrected diagrams go into the specification as it is when the
+    check ends; nothing else in it is touched."""
+    saved = document(project).get("srs_document") or {}
+    doc = {"diagrams": copy.deepcopy(saved.get("diagrams") or [])}
+
+    def check() -> None:
+        try:
+            result = diagram_look.run(project, session, doc["diagrams"])
+            if not (isinstance(result, dict) and result.get("redrawn")):
+                return
+            fixed = {str(d.get("kind")): d for d in doc["diagrams"]}
+            with _diagram_save_lock:
+                latest = session.read_record(*DOCUMENT, fallback=None)
+                body = (latest or {}).get("srs_document") if isinstance(latest, dict) else None
+                if not isinstance(body, dict):
+                    return
+                for entry in body.get("diagrams") or []:
+                    better = fixed.get(str(entry.get("kind")))
+                    if better is not None:
+                        entry["source"], entry["svg"] = better.get("source"), better.get("svg")
+                _write_record_visible(session, project, DOCUMENT, latest)
+                _write_record_visible(session, project, (SRS_DIR, "SRS.md"), _render_markdown(body))
+        except RunCancelled:
+            return
+        except Exception as exc:  # noqa: BLE001 - a review, never a reason to doubt the finished specification
+            bus.log(project, "WARN", f"The diagram check stopped: {str(exc)[:200]}")
+
+    threading.Thread(target=check, daemon=True, name=f"diagram-look:{project}").start()
+
+
 def _write_handoff(session: ProjectSession, project: str, doc: dict, record: dict) -> dict:
     """What every later stage consumes, derived from the document it must honour."""
     from . import interview
@@ -631,16 +771,30 @@ def _write_handoff(session: ProjectSession, project: str, doc: dict, record: dic
         "requirements": doc.get("functional_requirements") or [],
         "non_functional": doc.get("non_functional_requirements") or [],
     }
-    handoff["prompt"] = llm.complete(
-        system=prompts.load("srs/system"),
-        user=("Write the single instruction the build agent works from. Name every "
-              "page, role, record, workflow and acceptance proof it must deliver, "
-              "in the order it should build them. Prose, no JSON, no preamble.\n\n"
-              + json.dumps(handoff, ensure_ascii=False)[:30000]),
-        project=project)
-    handoff["files"] = {"BUILD.md": handoff["prompt"]}
+    handoff["prompt"] = ""
+    handoff["files"] = {}
     session.write_record(*HANDOFF, data=handoff)
-    session.write_record(SRS_DIR, "BUILD.md", data=handoff["prompt"])
+
+    # The build works from app.md and builder.md. BUILD.md, a prose instruction a person or an outside agent can be
+    # handed, is written in the background: it was the last 36 seconds of every specification.
+    def build_prompt() -> None:
+        try:
+            text = llm.complete(
+                system=prompts.load("srs/system"),
+                user=("Write the single instruction the build agent works from. Name every "
+                      "page, role, record, workflow and acceptance proof it must deliver, "
+                      "in the order it should build them. Prose, no JSON, no preamble.\n\n"
+                      + json.dumps({k: v for k, v in handoff.items() if k not in ("prompt", "files")},
+                                   ensure_ascii=False)[:30000]),
+                project=project)
+        except Exception as exc:  # noqa: BLE001 - the specification is done; only this extra file is missing
+            bus.log(project, "WARN", f"BUILD.md was not written: {str(exc)[:200]}")
+            return
+        handoff["prompt"], handoff["files"] = text, {"BUILD.md": text}
+        session.write_record(*HANDOFF, data=handoff)
+        session.write_record(SRS_DIR, "BUILD.md", data=text)
+
+    threading.Thread(target=build_prompt, daemon=True, name=f"build-md:{project}").start()
     return handoff
 
 
@@ -726,6 +880,20 @@ def generate(project: str) -> dict[str, Any]:
         raise ValueError("approve the plan before generating the specification")
 
     session = session_for(project)
+    previous = stage_evidence.last(project, "srs") or {}
+    draft = None
+    if previous.get("status") in {"failed", "running"}:
+        draft_path = session.record.joinpath(*DOCUMENT)
+        plan_path = session.record / "plan.json"
+        if (draft_path.is_file() and plan_path.is_file()
+                and draft_path.stat().st_mtime_ns >= plan_path.stat().st_mtime_ns):
+            candidate = session.read_record(*DOCUMENT, fallback=None)
+            if isinstance(candidate, dict) and isinstance(candidate.get("srs_document"), dict):
+                try:
+                    srs_schema.srs_validator(candidate)
+                    draft = candidate
+                except (ValueError, TypeError, KeyError):
+                    pass  # An unusable checkpoint gets a fresh model draft.
     session.begin("srs", role=bus.DEVELOPER)
     # The studio blurs the SRS tab and shows the generating animation for as
     # long as this says the specification is being written.
@@ -734,9 +902,14 @@ def generate(project: str) -> dict[str, Any]:
     started = time.time()
 
     try:
-        bus.agent_msg(project, "Writing the specification from the approved plan and interview answers.",
-                      title="SRS generation", kind="narration")
-        envelope = _write_document(session, project, record, approved)
+        if draft is None:
+            bus.agent_msg(project, "Writing the specification from the approved plan and interview answers.",
+                          title="SRS generation", kind="narration")
+            envelope = _write_document(session, project, record, approved)
+        else:
+            bus.agent_msg(project, "Continuing the saved specification draft after the interrupted run.",
+                          title="SRS generation", kind="narration")
+            envelope = draft
         doc = envelope["srs_document"]
         # The document record embeds every rendered SVG. Sending that entire
         # record through the live file-event channel can fill a browser's
@@ -768,6 +941,7 @@ def generate(project: str) -> dict[str, Any]:
         drawn = llm.in_lanes(
             list(DIAGRAM_KINDS),
             lambda kind: _draw_diagram(session, project, doc, kind),
+            lanes=diagram_look.DIAGRAM_LANES,
             on_error=lambda kind, exc: {"id": f"DIA-{kind}", "kind": kind,
                                         "title": kind.replace("_", " ").title(),
                                         "format": "mermaid", "source": "",
@@ -780,8 +954,8 @@ def generate(project: str) -> dict[str, Any]:
                 f"{rendered} rendered to SVG."
                 + ("" if mermaid.available() else
                    " Install @mermaid-js/mermaid-cli to see them as pictures."))
-        # Each drawn diagram is photographed and looked at by a model that can see pictures, and fixed (two rounds at most).
-        diagram_look.run(project, session, doc["diagrams"])
+        # Each drawn diagram is photographed and looked at by a model that can see pictures, and fixed (two rounds at most):
+        # after the specification is done, in the background (`_check_diagrams_later`), so nobody waits for it.
 
         doc = envelope["srs_document"]
         doc["approved_plan_markdown"] = plan_stage.markdown(project)
@@ -816,6 +990,7 @@ def generate(project: str) -> dict[str, Any]:
             f"customer asked for, and the site map) and builder.md (the full specification). "
             f"Read those rather than asking for the specification again.")
         session.finish(f"Specification written in {elapsed}s.")
+        _check_diagrams_later(project, session)
         bus.sync_state(project, "clean", "Specification written",
                        source="srs", srs_status="completed")
         return {"srs": envelope, "summary": summary}
@@ -837,17 +1012,7 @@ def _slug_words(value: str) -> list[str]:
 
 def _new_table_name(label: str) -> str:
     """Turn an approved record label into a conventional plural table name."""
-    words = list(completeness._entity_words(label))
-    if not words:
-        return "records"
-    last = words[-1]
-    if last.endswith("y") and len(last) > 1 and last[-2] not in "aeiou":
-        words[-1] = last[:-1] + "ies"
-    elif last.endswith(("s", "x", "ch", "sh")):
-        words[-1] = last + "es"
-    else:
-        words[-1] = last + "s"
-    return "_".join(words)
+    return completeness.planned_table_name(label)
 
 
 def _next_requirement_id(requirements: list[dict]) -> str:
@@ -885,15 +1050,17 @@ def _synchronize_plan_contract(envelope: dict, approved: dict) -> dict[str, int]
              "traceability": 0}
 
     # The plan's routes are authoritative. Keep the model's richer page details
-    # when present; only fill routes it omitted.
+    # when present; only fill routes it omitted. A route in another letter case is
+    # the same page, never a second one.
+    completeness.dedupe_pages(doc)
     page_lists = (doc.setdefault("public_pages", []), doc.setdefault("protected_pages", []))
-    existing_routes = {str(page.get("route") or "").rstrip("/") or "/"
+    existing_routes = {completeness.route_key(page.get("route") or "")
                       for rows in page_lists for page in rows}
     for screen in approved.get("screens") or []:
         if not isinstance(screen, dict):
             continue
         route = str(screen.get("route") or "").strip()
-        if not route or (route.rstrip("/") or "/") in existing_routes:
+        if not route or completeness.route_key(route) in existing_routes:
             continue
         roles = [str(role) for role in screen.get("who") or [] if str(role).strip()]
         public = not roles or any(role.casefold() == "visitor" for role in roles)
@@ -907,7 +1074,7 @@ def _synchronize_plan_contract(envelope: dict, approved: dict) -> dict[str, int]
             "functions": [str(screen.get("purpose") or "")],
         }
         page_lists[0 if public else 1].append(page)
-        existing_routes.add(route.rstrip("/") or "/")
+        existing_routes.add(completeness.route_key(route))
         added["pages"] += 1
 
     # Match normalized singular entity names, so e.g. "Booking History Entry"
@@ -916,12 +1083,14 @@ def _synchronize_plan_contract(envelope: dict, approved: dict) -> dict[str, int]
     tables = database.setdefault("tables", [])
     existing_entities = {completeness._entity_words(row.get("table_name") or "")
                          for row in tables}
+    existing_names = {str(row.get("table_name") or "").casefold() for row in tables}
     for record in approved.get("records") or []:
         if not isinstance(record, dict):
             continue
         label = str(record.get("name") or "").strip()
         entity = completeness._entity_words(label)
-        if not entity or entity in existing_entities:
+        table_name = _new_table_name(label)
+        if not entity or entity in existing_entities or table_name.casefold() in existing_names:
             continue
         fields = [{"name": "id", "type": "uuid", "primary_key": True,
                    "nullable": False, "unique": True}]
@@ -939,11 +1108,11 @@ def _synchronize_plan_contract(envelope: dict, approved: dict) -> dict[str, int]
                           "string")
             fields.append({"name": field_name, "type": field_type,
                            "nullable": True})
-        table_name = _new_table_name(label)
         tables.append({"table_name": table_name,
                        "description": f"Approved plan record: {label}.",
                        "fields": fields})
         existing_entities.add(entity)
+        existing_names.add(table_name.casefold())
         added["tables"] += 1
 
     # The workflow list is part of the approved plan. Copy only missing
@@ -1457,6 +1626,7 @@ def redraw_diagrams(project: str, *, deep: bool = False,
             drawn = llm.in_lanes(
                 list(requested),
                 lambda kind: _draw_diagram(session, project, doc, kind),
+                lanes=diagram_look.DIAGRAM_LANES,
                 on_error=lambda kind, exc: {
                     "id": f"DIA-{kind}", "kind": kind,
                     "title": kind.replace("_", " ").title(),

@@ -16,6 +16,15 @@ that quietly lets everything through is worse than none. Turning the filter off 
 
 What is not covered: a credential is not personal data in Presidio's sense - `secrets_guard.py` refuses those before this runs -
 and files the person attaches are read by the agent as they are.
+
+What is found is not lost: the product needs the real values (the owner's name on the about page, the shop's own email on its
+contact page). `screen` keeps each value for its project (`privacy_vault.py`) under a placeholder numbered for the whole
+project, and gives back what was typed, as it was. The one place every model call goes through hides the kept values from the
+model and puts the real ones back in what the model writes, so the specification and the application are made with them.
+
+Not everything that looks like a name is a person: the product's own name, a business name ("Sunil Hardware"), the name after
+"called" or "named", a town (Kandy is read as a name), and whatever the person lists in the `privacy_keep` setting are left
+as they are.
 """
 from __future__ import annotations
 
@@ -51,6 +60,28 @@ PHONE_REGIONS = ("LK", "US", "GB", "IN", "AU", "CA", "DE", "FR", "AE", "SG")
 _EXAMPLE_EMAIL = re.compile(r"@(?:[a-z0-9-]+\.)*(?:example\.(?:com|org|net)|[a-z0-9-]+\.(?:test|invalid|localhost|example))$|@localhost$",
                             re.IGNORECASE)
 INSTALL = "python -m pip install presidio-analyzer presidio-anonymizer spacy` and `python -m spacy download en_core_web_sm"
+# A "name" that ends in, or holds, one of these is a business, a product or a place, not a person.
+_BUSINESS = re.compile(
+    r"\b(?:hardware|stores?|shops?|mart|supermarket|market|pharmacy|clinic|hospital|hotel|resort|restaurant|cafe|café|bakery|"
+    r"salon|spa|library|academy|school|college|institute|university|motors|auto|traders|trading|enterprises?|holdings|"
+    r"industries|pvt|ltd|limited|inc|llc|co|company|group|solutions|systems|technologies|tech|labs?|studios?|cent(?:er|re)|"
+    r"bank|foods?|textiles|garments|electronics|books|travels?|tours|agency|services|pos|app|apps|portal|platform|hub|"
+    r"club|gym|fitness|events|media|logistics|transport|cabs?|rentals?|realty|properties|farm|dairy|tea|spices|jewell?ers?|"
+    r"tailors?|printers?|cleaners?|cleaning|builders|construction|consultants?|associates|partners|lanka|ceylon)\b", re.IGNORECASE)
+# What comes just before a product's or a business's own name.
+_NAMED = re.compile(r"(?:\b(?:called|named|name\s+is|name\s*:|brand(?:ed)?|company|business|shop|store|app|application|"
+                    r"system|website|platform|product)\s*[:\-]?\s*[\"'“‘]?)$", re.IGNORECASE)
+# Sri Lankan districts and main towns: the small English model reads several of them as people's names.
+_PLACES = {p.casefold() for p in (
+    "Colombo", "Gampaha", "Kalutara", "Kandy", "Matale", "Nuwara Eliya", "Galle", "Matara", "Hambantota", "Jaffna", "Kilinochchi",
+    "Mannar", "Vavuniya", "Mullaitivu", "Batticaloa", "Ampara", "Trincomalee", "Kurunegala", "Puttalam", "Anuradhapura",
+    "Polonnaruwa", "Badulla", "Monaragala", "Moneragala", "Ratnapura", "Kegalle", "Negombo", "Dehiwala", "Mount Lavinia",
+    "Moratuwa", "Kotte", "Sri Jayawardenepura Kotte", "Nugegoda", "Maharagama", "Kaduwela", "Malabe", "Kadawatha", "Kelaniya",
+    "Wattala", "Ja-Ela", "Panadura", "Horana", "Avissawella", "Hatton", "Bandarawela", "Ella", "Dambulla", "Sigiriya", "Chilaw",
+    "Kuliyapitiya", "Embilipitiya", "Tangalle", "Weligama", "Hikkaduwa", "Ambalangoda", "Bentota", "Beruwala", "Kalmunai",
+    "Point Pedro", "Peradeniya", "Katunayake", "Biyagama", "Homagama", "Piliyandala", "Battaramulla", "Rajagiriya", "Wellawatte",
+    "Bambalapitiya", "Kollupitiya", "Pettah", "Borella", "Kiribathgoda", "Kurunagala", "Gampola", "Nawalapitiya", "Mawanella",
+    "Wennappuwa", "Marawila", "Minuwangoda", "Divulapitiya", "Mirigama", "Veyangoda", "Nittambuwa", "Kegalla", "Balangoda")}
 
 
 class NotSent(ValueError):
@@ -59,8 +90,14 @@ class NotSent(ValueError):
 
 @dataclass
 class Scrubbed:
-    text: str
+    text: str                                                 # with placeholders: what a model may see of it
     found: dict[str, int] = field(default_factory=dict)       # entity -> how many were hidden
+    original: str = ""                                        # as it was typed: what stays on this computer
+    values: list[tuple[str, str]] = field(default_factory=list)   # (entity, value) found, for the project's vault
+
+    def __post_init__(self) -> None:
+        if not self.original:
+            self.original = self.text
 
     @property
     def changed(self) -> bool:
@@ -169,8 +206,31 @@ def status() -> dict[str, Any]:
 
 # --- the filter ---------------------------------------------------------------------------------------------------------
 
-def _keep(entity: str, value: str) -> bool:
-    """Whether what was found is not personal data after all: sample data, or an address of this computer or network."""
+def keep_terms(project: str = "") -> list[str]:
+    """What is never hidden: the `privacy_keep` setting (a list, or one per line) and the project's own name."""
+    saved = config.setting("privacy_keep", []) or []
+    rows = saved.splitlines() if isinstance(saved, str) else [str(item) for item in saved if item]
+    if project:
+        try:
+            from . import store
+
+            name = str((store.get(project) or {}).get("name") or "").strip()
+        except Exception:  # noqa: BLE001 - a project not in the store has no name to keep
+            name = ""
+        if name and name != project:
+            rows.append(name)
+    return [row.strip() for row in rows if row.strip()]
+
+
+def _keep(entity: str, value: str, text: str = "", start: int = 0, keep: tuple[str, ...] | list[str] = ()) -> bool:
+    """Whether what was found is not personal data after all: sample data, an address of this computer or network, or - for a
+    name - a business, a product, a town or a word the person said to keep."""
+    from . import privacy_vault
+
+    # A capitalised word of the trade ("Email", "Admin", "Docker") is not a name; only what may be kept is hidden.
+    if entity in {"PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER"} and not privacy_vault.admissible(
+            entity, privacy_vault.name_of(entity, value)):
+        return True
     if entity == "EMAIL_ADDRESS":
         return bool(_EXAMPLE_EMAIL.search(value.strip()))
     if entity == "IP_ADDRESS":
@@ -179,6 +239,16 @@ def _keep(entity: str, value: str) -> bool:
         except ValueError:
             return False
         return not address.is_global
+    if entity == "PERSON":
+        words = " ".join(value.split()).casefold()
+        if words in _PLACES or _BUSINESS.search(value):
+            return True
+        if any(words == term.casefold() or words in term.casefold() for term in keep):
+            return True
+        after = text[start + len(value): start + len(value) + 40] if text else ""
+        if text and (_NAMED.search(text[max(0, start - 40): start]) or re.match(r"\s*['’]?s?\s*" + _BUSINESS.pattern, after,
+                                                                                 re.IGNORECASE)):
+            return True
     return False
 
 
@@ -198,11 +268,11 @@ def _analyse(analyzer: Any, text: str) -> list[Any]:
     return found
 
 
-def _chosen(text: str, rows: list[Any]) -> list[Any]:
-    """What is hidden: the wanted kinds, above the score, not sample data; where two overlap, the surer one."""
+def _chosen(text: str, rows: list[Any], keep: tuple[str, ...] | list[str] = ()) -> list[Any]:
+    """What is hidden: the wanted kinds, above the score, not sample data, not a word to keep; where two overlap, the surer one."""
     wanted = set(entities())
     ranked = sorted((r for r in rows if r.entity_type in wanted and r.score >= MIN_SCORE
-                     and not _keep(r.entity_type, text[r.start:r.end])),
+                     and not _keep(r.entity_type, text[r.start:r.end], text, r.start, keep)),
                     key=lambda r: (-r.score, -(r.end - r.start), r.start))
     taken: list[Any] = []
     for row in ranked:
@@ -211,17 +281,19 @@ def _chosen(text: str, rows: list[Any]) -> list[Any]:
     return sorted(taken, key=lambda r: r.start)
 
 
-def scrub(text: str) -> Scrubbed:
-    """`text` with its personal data replaced, and what was replaced. Raises `NotSent` when Presidio cannot run.
+def scrub(text: str, keep: tuple[str, ...] | list[str] = ()) -> Scrubbed:
+    """`text` with its personal data replaced, what was replaced, and the values found (`values`, for the project's vault).
+    `keep`: words that are never hidden. Raises `NotSent` when Presidio cannot run.
 
     The same value is the same placeholder through the text (`<PERSON_1>` ... `<PERSON_1>`); a kind with several different
-    values numbers them, one value is just `<PERSON>`."""
+    values numbers them, one value is just `<PERSON>`. These placeholders are this message's own; the ones a model sees are
+    numbered for the whole project by `privacy_vault`."""
     body = str(text or "")
     if not body.strip():
         return Scrubbed(body)
     engines = _engines()
     with _lock:                          # the analyzer is used by one message at a time: a message takes milliseconds
-        rows = _chosen(body, _analyse(engines["analyzer"], body))
+        rows = _chosen(body, _analyse(engines["analyzer"], body), keep)
     if not rows:
         return Scrubbed(body)
     from presidio_anonymizer.entities import OperatorConfig
@@ -241,7 +313,8 @@ def scrub(text: str) -> Scrubbed:
     found: dict[str, int] = {}
     for row in rows:
         found[row.entity_type] = found.get(row.entity_type, 0) + 1
-    return Scrubbed(done.text, found)
+    kept = [(row.entity_type, body[row.start:row.end].strip()) for row in rows]
+    return Scrubbed(done.text, found, original=body, values=kept)
 
 
 def describe(found: dict[str, int]) -> str:
@@ -254,17 +327,27 @@ def describe(found: dict[str, int]) -> str:
 
 
 def tell(project: str, found: dict[str, int]) -> None:
-    """The line in the chat saying personal data was hidden."""
+    """The line in the chat saying personal data was kept from the model."""
     if project and found:
-        bus.agent_msg(project, f"Personal details were hidden before this went to the model: {describe(found)}. "
-                               "It saw placeholders such as <EMAIL_ADDRESS> instead.", title="Privacy filter", kind="narration")
+        bus.agent_msg(project, f"Personal details are kept from the model: {describe(found)}. The model sees placeholders "
+                               "such as <PERSON_1> instead, and the specification and the app are made with the real values "
+                               "on this computer.", title="Privacy filter", kind="narration")
+
+
+def keep_for(project: str, done: Scrubbed) -> str:
+    """Keep what `scrub` found for the project (the model will see placeholders for it), say so in the chat, and give back
+    what was typed, as it was."""
+    if project and done.values:
+        from . import privacy_vault
+
+        privacy_vault.remember(project, done.values)
+    tell(project, done.found)
+    return done.original
 
 
 def screen(project: str, text: str) -> str:
-    """The text to use in place of what the person typed: the same text, personal data replaced. Said in the chat when
-    something was hidden. Raises `NotSent` when the filter is on and cannot run."""
+    """What the person typed, to use as it is: the personal data in it is kept for the project so that no model ever sees it
+    (`privacy_vault`), and the chat says so. Raises `NotSent` when the filter is on and cannot run."""
     if not enabled():
         return str(text or "")
-    done = scrub(text)
-    tell(project, done.found)
-    return done.text
+    return keep_for(project, scrub(text, keep_terms(project)))

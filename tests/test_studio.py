@@ -689,6 +689,25 @@ class CompletenessTests(unittest.TestCase):
         ]})
         self.assertEqual(completeness.table_coverage(doc, plan), [])
 
+    def test_short_record_names_match_their_generated_plural_tables(self):
+        plan = a_plan(records=[{"name": "SKU", "keeps": ["Code"]},
+                               {"name": "Bus", "keeps": ["Route"]}])
+        doc = a_document(database_design={"tables": [
+            {"table_name": srs_document._new_table_name("SKU")},
+            {"table_name": srs_document._new_table_name("Bus")},
+        ]})
+        self.assertEqual(completeness.table_coverage(doc, plan), [])
+
+    def test_plan_synchronization_does_not_duplicate_a_short_record_table(self):
+        plan = a_plan(records=[{"name": "SKU", "keeps": ["Code"]}])
+        envelope = {"srs_document": a_document(database_design={"tables": [
+            {"table_name": "skus", "description": "The product catalog", "fields": []},
+        ]})}
+        added = srs_document._synchronize_plan_contract(envelope, plan)
+        self.assertEqual(added["tables"], 0)
+        self.assertEqual([row["table_name"] for row in
+                          envelope["srs_document"]["database_design"]["tables"]], ["skus"])
+
     def test_main_srs_gate_does_not_require_diagrams_before_they_are_drawn(self):
         doc = a_document(diagrams=[])
         self.assertEqual(completeness.check_document(doc, a_plan()), [])
@@ -1217,3 +1236,45 @@ class RouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InterviewSplitTests(unittest.TestCase):
+    """A question waits only for a short call; the answer's bookkeeping runs beside it, and is in before the next answer."""
+
+    def test_the_question_is_its_own_call_and_the_bookkeeping_is_applied_in_the_background(self):
+        from server_modules import config, coverage, store
+        from server_modules.session import drop
+        from srs_agent import interview
+
+        category = next(iter(coverage.categories()))
+        calls = []
+
+        def model(system="", user="", validator=None, label="", **kwargs):
+            calls.append(label)
+            if label == "interview:fold":
+                return validator({"coverage_updates": {category: {"status": "KNOWN", "facts": ["learned it"]}}})
+            return validator({"stage": "gathering", "next": {"question": "Who approves a refund?", "answer_type": "free_text",
+                                                              "topic": "refunds"}})
+
+        with tempfile.TemporaryDirectory() as folder:
+            original_projects, original_workspaces = config.PROJECTS_FILE, config.WORKSPACES
+            config.PROJECTS_FILE = Path(folder) / "projects.json"
+            config.WORKSPACES = Path(folder) / "workspaces"
+            try:
+                project = store.create("a shop till for two branches")["id"]
+                with patch.object(interview.llm, "complete_json", model), patch.object(interview.bus, "agent_msg"):
+                    first = interview.next_question(project)["question"]
+                    interview.record_answer(project, {"key": first["id"], "selected": ["pos"], "text": "POS"})
+                    second = interview.next_question(project)["question"]
+                    interview._wait_fold(project)
+                    interview.record_answer(project, {"key": second["id"], "text": "The owner"})
+                    interview._wait_fold(project)
+                self.assertEqual(second["question"], "Who approves a refund?")
+                self.assertIn("interview:ask", calls)
+                self.assertNotIn("interview:turn", calls)
+                self.assertEqual(calls.count("interview:fold"), 2)
+                kept = interview.state(interview.session_for(project))["coverage"][category]
+                self.assertEqual((kept["status"], kept["facts"]), ("KNOWN", ["learned it"]))
+            finally:
+                drop(project)
+                config.PROJECTS_FILE, config.WORKSPACES = original_projects, original_workspaces

@@ -25,16 +25,18 @@ a screen the finished app does not have. Say the whole thing here.
 
 ## Rules
 
-- Every screen carries a `purpose` naming the job it exists for. If the only
-  honest purpose is "applications like this usually have one", do not create it.
-- There is no screen-count limit. Prefer several focused screens over one
-  overloaded screen. A list or data table normally has its own browse/manage
-  screen; create, edit, view-detail and multi-step forms normally have their own
-  screens and routes. Use a modal only for a short contextual action that can be
-  completed safely without losing the current page, such as confirm, rename,
-  change status or edit a few fields. Do not place a large table and a long form
-  on the same screen merely to reduce the page count. This separation adds no
-  new business capability; it gives the approved workflow a clear usable shape.
+- Every screen carries a `purpose` naming the job it exists for, in the
+  customer's request or a workflow. If the only honest purpose is "applications
+  like this usually have one", do not create it: no profile, settings,
+  notifications, activity log, help or reports screen the customer did not ask
+  for and no workflow passes through.
+- Make the screens the customer's request and the workflows need, and no more.
+  A record that people browse gets one screen to browse and manage it. Adding
+  and changing one are a single form screen with one route (`/products/form`,
+  opened empty to add a product or with `?id=` to change one), unless the two
+  forms really differ; a short form is a dialog on the list instead. A record
+  gets its own detail screen only when the request or a workflow looks at one of
+  them in depth. Never place a large table and a long form on the same screen.
 - Every record lists at least two things it `keeps`. A record with no fields
   becomes an empty table. Write plain labels — "Price", not "Price (money)" —
   because these become field names literally.

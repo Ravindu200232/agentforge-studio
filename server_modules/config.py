@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,7 @@ WORKSPACES = Path(os.environ.get("AGENTFORGE_WORKSPACES") or (ROOT / "workspaces
 STATE = DATA / "state" if DATA else ROOT / ".agentforge-server"
 SETTINGS_FILE = STATE / "settings.json"
 PROJECTS_FILE = STATE / "projects.json"
+_settings_lock = threading.RLock()
 # "http" (the API and feed listen on the ports below) or "stdio" (the desktop app talks over stdin/stdout and
 # nothing listens). What is reachable from a project's own commands depends on it (see live.channel_for).
 TRANSPORT = os.environ.get("AGENTFORGE_TRANSPORT", "http")
@@ -89,6 +92,7 @@ DEFAULTS: dict[str, Any] = {
     "privacy_filter": True,            # everything typed goes through Microsoft Presidio first: personal data reaches no model (privacy.py)
     "privacy_model": "en_core_web_sm", # the spaCy model Presidio finds names with (without it: patterns only, no names)
     "privacy_entities": [],            # which kinds of personal data are hidden; empty is privacy.DEFAULT_ENTITIES
+    "privacy_keep": [],                # words never hidden: business, brand and product names that look like a person's
     "diagram_visual_review": True,     # the specification's diagrams are photographed and looked at by a vision model, two rounds at most
     # "broker" (the engine OAuth app), "own" (one this person registered), or "cli" (Supabase's
     # official browser login, whose credential remains in the native CLI credential store).
@@ -140,7 +144,20 @@ def _read(path: Path, fallback: Any) -> Any:
 
 def _write(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    # A reader must see either the previous complete JSON document or the new one.
+    # Account credit refreshes and model choices can arrive from different threads.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix=path.name + ".",
+                                         suffix=".tmp", dir=path.parent, delete=False) as handle:
+            temporary = Path(handle.name)
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 ENGINE_FILE = ROOT / "server_modules" / "engine.json"
@@ -200,25 +217,26 @@ THINKING_LEVELS = ("off", "low", "high", "xhigh")
 
 
 def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
-    current = _read(SETTINGS_FILE, {})
-    if not isinstance(current, dict):
-        current = {}
-    clean = {k: v for k, v in (patch or {}).items() if k in DEFAULTS or k.endswith("_model")}
-    if "local_num_ctx" in clean:
-        try:
-            clean["context"] = max(0, int(clean["local_num_ctx"] or 0))
-            clean["local_num_ctx"] = clean["context"]
-        except (TypeError, ValueError):
-            raise ValueError("context length must be a number") from None
-    if "thinking_level" in clean:
-        if clean["thinking_level"] not in THINKING_LEVELS:
-            raise ValueError(f"thinking_level must be one of {', '.join(THINKING_LEVELS)}")
-        # A reader that still only knows the old boolean gets a coherent
-        # answer: agent_think was always "does it reason", so both high
-        # levels map to true for older readers that only understand a boolean.
-        clean["agent_think"] = clean["thinking_level"] in ("high", "xhigh")
-    current.update(clean)
-    _write(SETTINGS_FILE, current)
+    with _settings_lock:
+        current = _read(SETTINGS_FILE, {})
+        if not isinstance(current, dict):
+            current = {}
+        clean = {k: v for k, v in (patch or {}).items() if k in DEFAULTS or k.endswith("_model")}
+        if "local_num_ctx" in clean:
+            try:
+                clean["context"] = max(0, int(clean["local_num_ctx"] or 0))
+                clean["local_num_ctx"] = clean["context"]
+            except (TypeError, ValueError):
+                raise ValueError("context length must be a number") from None
+        if "thinking_level" in clean:
+            if clean["thinking_level"] not in THINKING_LEVELS:
+                raise ValueError(f"thinking_level must be one of {', '.join(THINKING_LEVELS)}")
+            # A reader that still only knows the old boolean gets a coherent
+            # answer: agent_think was always "does it reason", so both high
+            # levels map to true for older readers that only understand a boolean.
+            clean["agent_think"] = clean["thinking_level"] in ("high", "xhigh")
+        current.update(clean)
+        _write(SETTINGS_FILE, current)
     return settings()
 
 

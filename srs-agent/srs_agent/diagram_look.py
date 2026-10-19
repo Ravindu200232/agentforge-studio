@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import html
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ REVIEW_DIR = "review"
 REPORT = "report.json"
 PHASE = "srs:diagram-look"
 MAX_ROUNDS = 2
+DIAGRAM_LANES = 6
 SOURCE_LIMIT = 6000                       # of a diagram's source, shown to the reviewer
 SYSTEM = ("You are a meticulous reviewer of technical diagrams. You are shown a screenshot of one diagram and you report only "
           "what is visibly wrong with how it is drawn, as the JSON object you are asked for. You never invent a problem you "
@@ -173,17 +175,19 @@ def _review(project: str, session: Any, model: str, rows: list[dict[str, Any]], 
         bus.agent_msg(project, f"Round {number} of {MAX_ROUNDS}: taking a silent screenshot of {plural(len(pending), 'diagram')} "
                                f"for {model} to look at.", title="Diagram check", kind="narration")
         done = [0]
+        progress_lock = threading.Lock()
 
         def one(entry: dict[str, Any]) -> dict[str, Any]:
             if session.cancelled:
                 raise RunCancelled(project)
             result = _look(project, session, model, entry, number)
-            done[0] += 1
-            bus.progress(project, "Looking at the diagrams", done[0] * 100 / len(pending))
+            with progress_lock:
+                done[0] += 1
+                bus.progress(project, "Looking at the diagrams", done[0] * 100 / len(pending))
             screen_review.tell(project, result, bus.DEVELOPER, kind="diagram_review")
             return result
 
-        found = llm.in_lanes(pending, one, on_error=lambda entry, exc: {
+        found = llm.in_lanes(pending, one, lanes=DIAGRAM_LANES, on_error=lambda entry, exc: {
             "kind": entry["kind"], "name": str(entry.get("title") or entry["kind"]), "looks_ok": False, "summary": "",
             "defects": [], "error": str(exc)[:200], "thumbs": [], "picture": None})
         if session.cancelled:
@@ -210,7 +214,8 @@ def _review(project: str, session: Any, model: str, rows: list[dict[str, Any]], 
                 raise RunCancelled(project)
             return str(review["kind"]), _redraw(project, session, model, by_kind[str(review["kind"])], review)
 
-        for kind, was in llm.in_lanes(broken, mend, on_error=lambda review, exc: (str(review["kind"]), None)):
+        for kind, was in llm.in_lanes(broken, mend, lanes=DIAGRAM_LANES,
+                                      on_error=lambda review, exc: (str(review["kind"]), None)):
             if was is not None:
                 before[kind] = was
                 redrawn.append(kind)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -91,7 +92,7 @@ class Scratch(unittest.TestCase):
         self.workspace = Path(self.folder.name)
         (self.workspace / ".agentforge" / "srs" / "handoff").mkdir(parents=True)
         (self.workspace / ".agentforge" / "srs" / "handoff" / "app.md").write_text("# Bakery", encoding="utf-8")
-        self.session = FakeSession(self.workspace)
+        self.session = FakeSession(self.workspace, agent=writes_pages)
         self.kit = self.workspace / "kit"
         for patcher in (
             mock.patch.object(wireframe, "session_for", lambda project: self.session),
@@ -189,14 +190,39 @@ class GeneratingTests(Scratch):
 
     def test_a_fresh_run_starts_the_app_again_and_a_carried_on_run_keeps_the_pages(self):
         wireframe.generate(PROJECT)
-        writes_pages(self.session)
+        (self.app / "src/pages/orders.tsx").unlink()
         wireframe.generate(PROJECT, fresh=False)
         self.assertTrue((self.app / "src/pages/home.tsx").is_file())
         self.assertIn("pages from a run that stopped", self.session.tasks[1])
 
+        (self.app / "src/pages/home.tsx").write_text("old page", encoding="utf-8")
+        (self.app / "bundle.html").write_text("built", encoding="utf-8")
         wireframe.generate(PROJECT, fresh=True)
-        self.assertFalse((self.app / "src/pages/home.tsx").exists())
+        self.assertNotEqual((self.app / "src/pages/home.tsx").read_text(encoding="utf-8"), "old page")
         self.assertNotIn("run that stopped", self.session.tasks[2])
+
+    def test_an_incomplete_run_continues_without_erasing_written_pages(self):
+        web_app.create_app(self.app, "Bakery", PAGES)
+        page = self.app / "src/pages/home.tsx"
+        page.parent.mkdir(parents=True, exist_ok=True)
+        page.write_text("keep this finished page", encoding="utf-8")
+
+        def write_missing(session):
+            for name in ("orders", "orders-id"):
+                (self.app / "src/pages" / f"{name}.tsx").write_text("new page", encoding="utf-8")
+
+        self.session.agent = write_missing
+        wireframe.generate(PROJECT)
+        self.assertEqual(page.read_text(encoding="utf-8"), "keep this finished page")
+        self.assertIn("write only the pages that are still missing", self.session.tasks[0])
+        self.assertNotIn("`/` — Home", self.session.tasks[0].split("## This run")[0])
+
+    def test_a_failed_bundle_retries_without_another_model_call_when_all_pages_exist(self):
+        web_app.create_app(self.app, "Bakery", PAGES)
+        writes_pages(self.session)
+        self.session.agent = None
+        wireframe.generate(PROJECT)
+        self.assertEqual(self.session.tasks, [])
 
     def test_a_run_needs_screens_and_the_handoff(self):
         with mock.patch.object(wireframe.document, "screens", return_value=[]):
@@ -217,6 +243,81 @@ class GeneratingTests(Scratch):
         with mock.patch.object(web_app, "kit_ready", return_value=False):
             wireframe.generate(PROJECT)
         self.assertEqual(wireframe.bus.agent_msg.call_args_list[0].kwargs["title"], "Wireframe toolkit")
+
+
+MANY = [{"route": f"/page-{n}", "page_name": f"Page {n}"} for n in range(1, 13)]
+
+
+class DrawingAtTheSameTimeTests(Scratch):
+    """A big app: the project's agent draws the shared parts and the first pages, then several agents draw the rest at once."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(wireframe.document, "screens", return_value=MANY)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.lanes: list[list[tuple[str, str]]] = []
+        self.unplanned: list[str] = []
+        self.session.run_lanes = lambda work, parallel_write_limit=1: self.lanes.append(work) or [
+            {"status": "complete", "text": "", "rounds": 1}] * len(work)
+        def fill_missing(request, model=""):
+            self.unplanned.append(request)
+            self.write(*(int(n) for n in re.findall(r"src/pages/page-(\d+)\.tsx", request)))
+            return {"status": "complete"}
+        self.session.run_unplanned = fill_missing
+
+    def write(self, *numbers):
+        pages = self.app / "src" / "pages"
+        pages.mkdir(parents=True, exist_ok=True)
+        for n in numbers:
+            (pages / f"page-{n}.tsx").write_text("export default function P() { return null }", encoding="utf-8")
+
+    def test_the_first_pages_then_the_rest_split_between_the_agents_in_order(self):
+        self.session.agent = lambda session: self.write(*range(1, 13))
+        wireframe.generate(PROJECT)
+        first = self.session.tasks[0]
+        self.assertIn("This app has 12 pages", first)
+        self.assertIn("- `/page-3` — Page 3", first.split("## This run")[1])
+        self.assertNotIn("`/page-4`", first.split("## This run")[1])
+        self.assertIn("- `/page-12`", first.split("## This run")[0])            # the site map is whole
+        work = self.lanes[0]
+        self.assertEqual(len(work), 3)
+        mine = [[line.split("`")[1] for line in plan.splitlines() if line.startswith("- `")] for _, plan in work]
+        self.assertEqual(mine, [["/page-4", "/page-5", "/page-6"], ["/page-7", "/page-8", "/page-9"],
+                                ["/page-10", "/page-11", "/page-12"]])
+        self.assertIn("do not edit a file you did not create", work[0][0])
+        self.assertEqual(self.unplanned, [])                                   # every page was written
+
+    def test_a_page_the_agents_did_not_write_is_written_by_the_project_agent(self):
+        self.session.agent = lambda session: self.write(*range(1, 11))
+        wireframe.generate(PROJECT)
+        self.assertEqual(len(self.unplanned), 1)
+        self.assertIn("`/page-11`", self.unplanned[0])
+        self.assertIn("`/page-12`", self.unplanned[0])
+        self.assertNotIn("`/page-10`", self.unplanned[0])
+
+    def test_missing_pages_are_finished_in_small_batches_without_redrawing_the_first_pages(self):
+        self.session.agent = lambda session: self.write(1, 2, 3)
+        wireframe.generate(PROJECT)
+        self.assertEqual(len(self.unplanned), 3)
+        self.assertTrue(all(prompt.count("src/pages/page-") <= 4 for prompt in self.unplanned))
+        self.assertTrue(all("src/pages/page-1.tsx" not in prompt for prompt in self.unplanned))
+        self.assertEqual(len(list((self.app / "src/pages").glob("page-*.tsx"))), 12)
+
+    def test_unfinished_pages_are_reported_and_kept_for_the_next_retry(self):
+        self.session.agent = lambda session: self.write(1, 2, 3)
+        self.session.run_unplanned = lambda request, model="": {"status": "complete"}
+        with self.assertRaisesRegex(ValueError, "9 wireframe page"):
+            wireframe.generate(PROJECT)
+        self.assertTrue((self.app / "src/pages/page-1.tsx").is_file())
+        self.assertTrue((self.app / "index.html").is_file())
+
+    def test_a_small_app_is_drawn_by_one_agent_as_before(self):
+        self.session.agent = lambda session: self.write(*range(1, 10))
+        with mock.patch.object(wireframe.document, "screens", return_value=MANY[:9]):
+            wireframe.generate(PROJECT)
+        self.assertEqual(self.lanes, [])
+        self.assertNotIn("## This run", self.session.tasks[0])
 
 
 class RunningTests(Scratch):

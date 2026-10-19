@@ -156,12 +156,12 @@ def agent_build(message: dict[str, Any]) -> dict[str, Any]:
     project = str(message.get("srs_id") or message.get("project") or "").strip()
     direction = str(message.get("prompt") or "").strip()
     try:
-        hidden = privacy.scrub(direction) if privacy.enabled() else privacy.Scrubbed(direction)
+        hidden = privacy.scrub(direction, privacy.keep_terms(project)) if privacy.enabled() else privacy.Scrubbed(direction)
     except privacy.NotSent as exc:
         if project:
             bus.agent_msg(project, str(exc), title="Not sent")
         return {"ok": False, "detail": str(exc)}
-    direction = hidden.text
+    direction = hidden.original
 
     if not project:
         record = store.create(idea=direction or "See the attached files.",
@@ -175,7 +175,7 @@ def agent_build(message: dict[str, Any]) -> dict[str, Any]:
         # deleted an SRS or project.  Do not announce a ghost project (or let
         # a stale worker revive its workspace) when its record is gone.
         store.require(project)
-    privacy.tell(project, hidden.found)
+    privacy.keep_for(project, hidden)
 
     if message.get("stack"):
         store.update(project, stack=str(message["stack"]))
@@ -509,7 +509,8 @@ def _review_screens(project: str, what: str, fix: bool, model: str = "") -> None
             outcomes.append(f"journeys: {prototyper.journeys(project, fix=fix, model=model).get('status')}")
         if what in ("tests", "both"):
             session.begin("review", role=bus.DEVELOPER)
-            outcomes.append(f"tests: {e2e_review.run(project, session, fix=fix, model=model, force=True).get('status')}")
+            # The app's pages, photographed now: the journeys are never run to take pictures.
+            outcomes.append(f"pages: {e2e_review.run(project, session, fix=fix, model=model, force=True, kind='pages').get('status')}")
         session.finish("Screens reviewed (" + "; ".join(outcomes) + ").")
     except RunCancelled:
         raise

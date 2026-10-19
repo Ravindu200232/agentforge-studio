@@ -59,21 +59,27 @@ class AccountsTest(unittest.TestCase):
         accounts.current(fresh=True)
         accounts.check()
 
-    def test_free_plan_hides_glm_and_replaces_an_older_choice(self):
+    def test_free_plan_shows_pro_models_but_allows_only_two_models(self):
         self.enterContext(mock.patch.object(config, "built_in_engine", return_value={"url": "https://engine", "token": "x"}))
         config.save_settings({accounts.TOKEN: "account-token", "model": "glm-5.3-flash:cloud"})
         self.replies["/api/accounts/me"] = (200, {"account": self.approved()})
         with mock.patch.object(httpd.ollama_cloud, "engine_names",
-                               return_value=["glm-5.3", "glm-5.3-flash", "deepseek-v4.1-flash"]):
+                               return_value=["glm-5.3", "gemma4:31b", "deepseek-v4.1-flash"]):
             shown = httpd.models({})
-        self.assertEqual([row["id"] for row in shown["cloud"]], [accounts.DEFAULT_FREE_MODEL])
+        self.assertEqual([row["id"] for row in shown["cloud"]],
+                         ["glm-5.3:cloud", "gemma4:31b-cloud", accounts.DEFAULT_FREE_MODEL])
+        self.assertEqual([row["locked"] for row in shown["cloud"]], [True, False, False])
+        self.assertEqual(shown["cloud"][0]["upgrade"], "Buy Pro")
         self.assertEqual(shown["selected"], accounts.DEFAULT_FREE_MODEL)
         self.assertEqual(config.setting("model"), accounts.DEFAULT_FREE_MODEL)
-        with self.assertRaisesRegex(accounts.NotAllowed, "unavailable on the free plan"):
+        with self.assertRaisesRegex(accounts.NotAllowed, "Buy Pro"):
             accounts.check("glm-5.3:cloud")
-        with self.assertRaisesRegex(ValueError, "unavailable on the free plan"):
+        with self.assertRaisesRegex(accounts.NotAllowed, "Buy Pro"):
+            accounts.check("gpt-oss:120b-cloud")
+        with self.assertRaisesRegex(ValueError, "Buy Pro"):
             httpd.write_settings({"agent_model": "glm-5.3-flash:cloud"})
         accounts.check(accounts.DEFAULT_FREE_MODEL)
+        accounts.check("gemma4:31b-cloud")
 
     def test_paid_and_admin_accounts_keep_glm_access(self):
         self.enterContext(mock.patch.object(config, "built_in_engine", return_value={"url": "https://engine", "token": "x"}))
