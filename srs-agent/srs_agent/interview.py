@@ -380,7 +380,89 @@ def _apply_turn(data: dict[str, Any], turn: dict[str, Any], source: str) -> None
                 "basis": str(item.get("basis") or ""),
             })
 
-    data["stage"] = turn["stage"]
+    if turn.get("stage") in ("gathering", "confirming"):        # the bookkeeping call does not decide the stage
+        data["stage"] = turn["stage"]
+
+
+def _turn_request(record: dict[str, Any], session: ProjectSession, data: dict[str, Any], index: int, budget: int) -> str:
+    """The interview's picture so far, as one turn reads it."""
+    language = record.get("language", "English")
+    chosen = _chosen_app_type(data)
+    return prompts.load("interview/turn",
+                        idea=record.get("idea", ""),
+                        stack=record.get("stack", ""),
+                        language=language,
+                        attachments=_attachment_digest(session),
+                        transcript=transcript_text(data),
+                        app_type=(catalogue().get("types", {}).get(chosen) or {}).get("label") or chosen,
+                        coverage_json=json.dumps(data["coverage"], ensure_ascii=False),
+                        categories_json=json.dumps(coverage.categories(), ensure_ascii=False),
+                        open_contradictions_json=json.dumps([c for c in data["contradictions"] if not c.get("resolved")],
+                                                            ensure_ascii=False),
+                        stage=data["stage"],
+                        asked=index - 1,
+                        budget=budget)
+
+
+def _fold_validator(valid_categories: set[str]):
+    def check(payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("the result must be a JSON object")
+        updates = payload.get("coverage_updates")
+        if updates is None:
+            payload["coverage_updates"] = {}
+        elif not isinstance(updates, dict):
+            raise ValueError("coverage_updates must be an object keyed by category")
+        else:
+            bad = [k for k in updates if k not in valid_categories]
+            if bad:
+                raise ValueError(f"coverage_updates named unknown categories: {', '.join(bad)}. "
+                                 f"Only use: {', '.join(sorted(valid_categories))}")
+        return payload
+
+    return check
+
+
+_folds: dict[str, threading.Thread] = {}
+FOLD_WAIT_SECONDS = 180
+
+
+def _wait_fold(project: str) -> None:
+    """The bookkeeping of the previous answer is in before anything reads or changes the interview again."""
+    thread = _folds.get(project)
+    if thread is not None and thread.is_alive():
+        thread.join(FOLD_WAIT_SECONDS)
+
+
+def _start_fold(project: str) -> None:
+    """Fold the answer just given into the coverage in the background, while the next question is asked and answered."""
+    record = store.require(project)
+    session = session_for(project)
+    data = state(session)
+    index = len(data["order"]) + 1
+    budget = max(3, int(config.setting("interview_max_questions", 25)))
+    request = _turn_request(record, session, data, index, budget) + "\n\n" + prompts.load("interview/fold-only").strip()
+    language = record.get("language", "English")
+    workspace = session.workspace if session.read_record("attachments.json", fallback=[]) else None
+    stop = llm._stop_event()  # noqa: SLF001 - the bookkeeping ends with the run that asked for it
+
+    def fold() -> None:
+        llm.bind_stop(stop)
+        try:
+            folded = llm.complete_json(system=prompts.load("interview/system", language=language), user=request,
+                                       validator=_fold_validator(set(coverage.categories())), label="interview:fold",
+                                       project=project, workspace=workspace)
+        except Exception as exc:  # noqa: BLE001 - the transcript still has the answer; the next turn reads it
+            bus.log(project, "WARN", f"The answer was kept, but its bookkeeping did not finish: {str(exc)[:200]}")
+            return
+        with _ask_lock(project):
+            latest = state(session)
+            _apply_turn(latest, folded, source=f"answer:{index - 1}")
+            save(session, latest)
+
+    thread = threading.Thread(target=fold, daemon=True, name=f"interview-fold:{project}")
+    _folds[project] = thread
+    thread.start()
 
 
 _asking: dict[str, threading.RLock] = {}
@@ -442,33 +524,27 @@ def _next_question(project: str) -> dict[str, Any]:
     bus.agent_state(project, "asking", agent=bus.DEVELOPER)
 
     cats = coverage.categories()
-    chosen = _chosen_app_type(data)
-    app_label = (catalogue().get("types", {}).get(chosen) or {}).get("label") or chosen
-    open_contradictions = [c for c in data["contradictions"] if not c.get("resolved")]
     language = record.get("language", "English")
 
-    turn = llm.complete_json(
-        system=prompts.load("interview/system", language=language),
-        user=prompts.load("interview/turn",
-                          idea=record.get("idea", ""),
-                          stack=record.get("stack", ""),
-                          language=language,
-                          attachments=_attachment_digest(session),
-                          transcript=transcript_text(data),
-                          app_type=app_label,
-                          coverage_json=json.dumps(data["coverage"], ensure_ascii=False),
-                          categories_json=json.dumps(cats, ensure_ascii=False),
-                          open_contradictions_json=json.dumps(open_contradictions, ensure_ascii=False),
-                          stage=data["stage"],
-                          asked=index - 1,
-                          budget=budget),
-        validator=_turn_validator(set(cats)),
-        label="interview:turn",
-        # `project` reports this turn's context to the chat's meter. The read tools come only
-        # with attached files: the prompt then tells the model to read them, which it cannot
-        # do without a workspace, and a turn with nothing to read stays a fast tool-less call.
-        project=project,
-        workspace=session.workspace if session.read_record("attachments.json", fallback=[]) else None)
+    # Only the next step is asked for here: the bookkeeping of the answer (facts, coverage, contradictions, assumptions)
+    # is its own call, started when the answer came in (`_start_fold`). Writing all of it before the question took
+    # about 4,000 tokens and 20 seconds a question; the question alone is a few hundred.
+    request = _turn_request(record, session, data, index, budget) + "\n\n" + prompts.load("interview/ask-only").strip()
+    try:
+        turn = llm.complete_json(
+            system=prompts.load("interview/system", language=language), user=request,
+            validator=_turn_validator(set(cats)), label="interview:ask",
+            # `project` reports this turn's context to the chat's meter. The read tools come only
+            # with attached files: the prompt then tells the model to read them, which it cannot
+            # do without a workspace, and a turn with nothing to read stays a fast tool-less call.
+            project=project,
+            workspace=session.workspace if session.read_record("attachments.json", fallback=[]) else None)
+    except llm.LLMRepairFailed:
+        turn = llm.complete_json(
+            system=prompts.load("interview/system", language=language),
+            user=_turn_request(record, session, data, index, budget),
+            validator=_turn_validator(set(cats)), label="interview:turn", project=project,
+            workspace=session.workspace if session.read_record("attachments.json", fallback=[]) else None)
 
     _apply_turn(data, turn, source=f"turn:{index}")
 
@@ -487,7 +563,8 @@ def _next_question(project: str) -> dict[str, Any]:
 
 
 def record_answer(project: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """Store one answer and let the conversation see it."""
+    """Store one answer and let the conversation see it; its bookkeeping runs in the background (`_start_fold`)."""
+    _wait_fold(project)               # the previous answer's bookkeeping is in first (outside the lock it needs)
     with _ask_lock(project):
         session = session_for(project)
         data = state(session)
@@ -558,6 +635,7 @@ def record_answer(project: str, payload: dict[str, Any]) -> dict[str, Any]:
         # stage reads, and it already has this answer. A correction to the
         # confirmation summary re-enters the same turn loop on the next call,
         # through the ordinary path above — no special case needed here.
+        _start_fold(project)
         return view(session, data)
 
 

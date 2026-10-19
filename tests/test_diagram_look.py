@@ -288,7 +288,8 @@ class WiringTests(unittest.TestCase):
         self.assertIn("1. [high] x: y", fix)
 
     def test_drawing_the_diagrams_ends_with_the_check_and_the_deep_redraw_does_it_too(self):
-        self.assertIn('diagram_look.run(project, session, doc["diagrams"])', inspect.getsource(document.generate))
+        self.assertIn("_check_diagrams_later(project, session)", inspect.getsource(document.generate))
+        self.assertIn('diagram_look.run(project, session, doc["diagrams"])', inspect.getsource(document._check_diagrams_later))
         self.assertIn("diagram_look.run(project, session, doc[\"diagrams\"])", inspect.getsource(document.redraw_diagrams))
 
     def test_the_setting_is_on_by_default_and_the_rounds_are_capped_at_two(self):
