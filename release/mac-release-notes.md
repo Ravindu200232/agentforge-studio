@@ -1,6 +1,6 @@
-# AgentForge 1.0.2 for macOS (Apple Silicon)
+# AgentForge 1.0.3 for macOS (Apple Silicon)
 
-Download the DMG and drag AgentForge to Applications. It is the same AgentForge Studio as the Windows 1.0.2 release.
+Download the DMG and drag AgentForge to Applications. It is the same AgentForge Studio as the Windows 1.0.3 release.
 
 ## Faster from the interview to deployment
 
@@ -17,6 +17,8 @@ Download the DMG and drag AgentForge to Applications. It is the same AgentForge 
 - A journey that fails only at phone width is a warning, not a failed test.
 
 ## Also
+
+- A fix that leaves the prototype not bundling no longer stops the journey test: it is repaired again, and the other journeys are still clicked through.
 
 - The specification keeps to what you asked for: a page whose address differs only in capital letters is no longer a second page.
 - Names of people stay out of the model; words like Admin, Password or Require are never taken for names.
