@@ -174,7 +174,15 @@ ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
 DMG_STAGE="$(mktemp -d)"
 ditto "$APP" "$DMG_STAGE/AgentForge.app"
 ln -s /Applications "$DMG_STAGE/Applications"
-hdiutil create -volname AgentForge -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG"
+# On GitHub's Mac runners hdiutil sometimes answers "create failed - Resource busy" while the system still scans the files
+# just copied (1.0.3's first build failed there; the same step passed the build before). It is tried again, a few times.
+for attempt in 1 2 3 4 5; do
+  if hdiutil create -volname AgentForge -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG"; then break; fi
+  if [[ "$attempt" == 5 ]]; then echo "hdiutil could not create the DMG after $attempt tries" >&2; exit 1; fi
+  echo "hdiutil was busy (try $attempt); trying again in $((attempt * 10)) seconds" >&2
+  rm -f "$DMG"
+  sleep $((attempt * 10))
+done
 
 step "Built AgentForge $VERSION for macOS $HOST_ARCH"
 printf '%s\n%s\n%s\n' "$APP_OUT" "$DMG" "$ZIP"
