@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Build and test sequence</title>
+<!-- Drawn at 500 CSS px for IEEE single-column width (3.49 in): 1 px is about 0.5 pt. -->
+<style>
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:#fff; }
+  body { width:500px; padding:5px; font-family:"Liberation Sans", Arial, Helvetica, sans-serif; color:#111; font-size:12px; line-height:1.18; }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .head { font-weight:bold; font-size:13.5px; text-align:center; margin-bottom:4px; }
+  .step { border:1.3px solid #333; border-radius:5px; padding:3px 5px; }
+  .step b { font-size:12.5px; }
+  .d { font-size:12px; color:#222; }
+  .par { display:grid; grid-template-columns:1fr 1fr 1fr; gap:3px; }
+  .par .step { text-align:center; padding:2px 3px; }
+  .gate { border:1.4px solid #9a3412; color:#7c2d12; border-radius:10px; padding:2px 5px; font-weight:bold; font-size:12px; text-align:center; }
+  .ask { border:1.3px dotted #555; border-radius:10px; padding:2px 5px; font-size:12px; text-align:center; color:#222; }
+  .a { height:13px; position:relative; }
+  .a::before { content:""; position:absolute; left:50%; top:1px; height:7px; border-left:1.3px solid #333; }
+  .a::after { content:""; position:absolute; left:calc(50% - 4px); top:6px; border:4px solid transparent; border-top:6px solid #333; }
+  .note { font-size:12px; text-align:center; color:#222; margin-top:2px; }
+</style></head>
+<body>
+<div class="cols">
+  <div>
+    <div class="head">Build (agents write)</div>
+    <div class="step"><b>Preflight</b> <span class="d">Node.js, browser, database; all gaps in one card</span></div>
+    <div class="a"></div>
+    <div class="step"><b>Decide</b> <span class="d">at most 5 questions, then none</span></div>
+    <div class="a"></div>
+    <div class="step"><b>Scaffold</b> <span class="d">1 of 11 stack templates</span></div>
+    <div class="a"></div>
+    <div class="step"><b>Foundation</b> <span class="d">data, sign-in, roles, layout</span></div>
+    <div class="a"></div>
+    <div class="par">
+      <div class="step"><b>Pages</b><div class="d">4 each</div></div>
+      <div class="step"><b>Pages</b><div class="d">4 each</div></div>
+      <div class="step"><b>Pages</b><div class="d">4 each</div></div>
+    </div>
+    <div class="note">3 agents at once; fresh conversation per phase</div>
+    <div class="a"></div>
+    <div class="step"><b>Wiring</b> <span class="d">seed data, environment, compiles</span></div>
+    <div class="a"></div>
+    <div class="par" style="grid-template-columns:1fr 1fr">
+      <div class="step"><b>Unit tests</b></div>
+      <div class="step"><b>Journey tests</b><div class="d">written, not run</div></div>
+    </div>
+    <div class="a"></div>
+    <div class="gate">After each phase: do its named files exist? If not, repair (at most 2)</div>
+    <div class="a"></div>
+    <div class="gate">Any approved page not built? Fail the build by name</div>
+  </div>
+  <div>
+    <div class="head">Test (the Studio decides)</div>
+    <div class="step"><b>Pages photographed</b> <span class="d">desktop and mobile, signed in; vision review and fixes</span></div>
+    <div class="a"></div>
+    <div class="step"><b>Journeys, one at a time</b> <span class="d">desktop width, production build on its own port</span></div>
+    <div class="ask" style="margin-top:3px">fail → fix → rerun (at most 2), next</div>
+    <div class="a"></div>
+    <div class="step"><b>Requirement tests</b> <span class="d">pages no journey visits</span></div>
+    <div class="a"></div>
+    <div class="step"><b>Final checks</b> <span class="d">visual · axe-core · Lighthouse · ZAP · npm audit</span></div>
+    <div class="a"></div>
+    <div class="gate">Runtime check after any fix: build, every page opens</div>
+    <div class="a"></div>
+    <div class="gate">Requirement status from runner output, Eq. (1)</div>
+    <div class="a"></div>
+    <div class="step"><b>Reports</b> <span class="d">counts from runner files; a missing tool is "unavailable", never a pass</span></div>
+    <div class="ask" style="margin-top:4px">each further round of fixes is asked</div>
+  </div>
+</div>
+</body></html>
