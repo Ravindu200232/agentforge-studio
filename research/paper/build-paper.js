@@ -38,18 +38,23 @@ for (const block of body) {
   }
   if (block.figure) scan(figures[block.figure].caption)
 }
+const tableOrder = body.filter((block) => block.table).map((block) => block.table)
 const unused = Object.keys(REFERENCES).filter((k) => !order.includes(k))
 if (unused.length) throw new Error('references never cited: ' + unused.join(', '))
 
 // --- inline text: *italic*, **bold**, {cite} ------------------------------------------------------------------------
 function runs(text, base = {}) {
   const out = []
-  const parts = String(text).split(/(\*\*[^*]+\*\*|\*[^*]+\*|\{[a-z0-9]+\})/g)
+  const parts = String(text).split(/(\*\*[^*]+\*\*|\*[^*]+\*|\{[a-z0-9]+\}|\{T:[a-z]+\})/g)
   for (const part of parts) {
     if (!part) continue
     if (part.startsWith('**')) out.push(new TextRun({ ...base, text: part.slice(2, -2), bold: true }))
     else if (part.startsWith('*')) out.push(new TextRun({ ...base, text: part.slice(1, -1), italics: !base.italics }))
-    else if (/^\{[a-z0-9]+\}$/.test(part)) out.push(new TextRun({ ...base, text: '[' + cite(part.slice(1, -1)) + ']' }))
+    else if (/^\{T:[a-z]+\}$/.test(part)) {
+      const at = tableOrder.indexOf(part.slice(3, -1))
+      if (at < 0) throw new Error('unknown table ' + part)
+      out.push(new TextRun({ ...base, text: ROMAN[at] }))
+    } else if (/^\{[a-z0-9]+\}$/.test(part)) out.push(new TextRun({ ...base, text: '[' + cite(part.slice(1, -1)) + ']' }))
     else out.push(new TextRun({ ...base, text: part }))
   }
   return out

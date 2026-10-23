@@ -40,6 +40,11 @@ Every number in the paper is either a constant in the code or a measurement reco
 | Privacy: 15 entity types, vault, placeholders | `server_modules/privacy.py`, `server_modules/privacy_vault.py` |
 | Retries: 10 attempts, 2 to 30 s | `server_modules/session.py` (`RETRY_ATTEMPTS`, `RETRY_BACKOFF`) |
 | Engine proxy: 8 routes | `engine-proxy/src/index.js` (`ALLOWED`) |
+| Human in the loop: chat at any stage, plan-first changes, versions | `server_modules/changes.py`, `server_modules/versions.py`, `prompts/chat/update.md` |
+| Select, pencil and text tools on the previews | `studio/lib/picker.js`, `studio/components/AppTextEdit.jsx`, `server_modules/pointed.py` |
+| Design customiser: 32 palettes, 117 fonts, own pictures, a brief | `studio/components/DesignCustomize.jsx` |
+| Permission cards; Yes/No rounds, a typed yes in English or Sinhala | `server_modules/permissions.py`, `server_modules/screen_review.py` (`_YES`, `next_round`) |
+| Question limits: 25, 5, 3, 3 | `server_modules/config.py`, `builder-agent/builder_agent/build.py` (`QUESTIONS`), `server_modules/changes.py` and `deploy-agent/deploy_agent/deploy.py` (`MAX_QUESTIONS`) |
 | Line counts, 236 template files, 18 guides, 1,733 tests | counted from the repository at `ff5de31` (AgentForge 1.0.3) |
 | Table IV rows 2, 3 | commit `d92ca2e` |
 | Table IV rows 4, 5, 8; seven hours for the 28-page app | commit `ea5cac1`, `srs-agent/srs_agent/wireframe.py` |
