@@ -8,8 +8,8 @@ const title = 'AgentForge: Deterministic Gates for an LLM Multi-Agent Pipeline f
 
 const abstract =
   'Large language models can now write most of a web application, yet the agent’s own report that the work is ' +
-  'finished remains the weakest evidence in the process. This paper presents AgentForge, a desktop system in which five ' +
-  'LLM agent roles (requirements, prototype, build, quality assurance and deployment) carry a product idea through an ' +
+  'finished remains the weakest evidence in the process. This paper presents AgentForge, a desktop system in which four ' +
+  'LLM agent roles (requirements and design, prototype and build, quality assurance, and deployment) carry a product idea through an ' +
   'adaptive interview, an approved plan, a requirements specification with eleven kinds of diagrams, wireframes, an ' +
   'interactive prototype, a phased build, browser-level testing and a cloud deployment. The roles share one ' +
   'tool-calling engine and hand work to each other through a project record on disk. Every hand-off is checked by code ' +
@@ -42,13 +42,13 @@ const body = [
        'user asked for, and the deployed address answers. Surveys of LLM-based multi-agent systems for software ' +
        'engineering name quality assurance and evaluation as the open problems {he2025}.' },
   { p: 'AgentForge is built on one rule: a model may write anything, but code decides whether a stage is finished. ' +
-       'Five agent roles take turns on one tool-calling engine. They pass work to each other through files in the ' +
+       'Four agent roles take turns on one tool-calling engine. They pass work to each other through files in the ' +
        'project’s own record, and every stage boundary has a check that reads those files and either lets the ' +
        'project through or names what is missing. The model is used where judgement is needed (choosing the next ' +
        'interview question, writing a page, fixing a failing journey) and kept out of the decision about whether that ' +
        'work is done. The paper makes four contributions:' },
   { list: [
-    'A pipeline from a one-sentence idea to a live HTTPS address in which five agent roles share one engine and one ' +
+    'A pipeline from a one-sentence idea to a live HTTPS address in which four agent roles share one engine and one ' +
       'on-disk project record (Section III).',
     'Deterministic checks at each hand-off, including requirement status computed from test-runner output rather ' +
       'than from the agent’s report (Section III-E).',
@@ -99,8 +99,8 @@ const body = [
   { figure: 'fig1' },
   { h2: 'Architecture' },
   { p: 'The pipeline has nine stages: interview, plan, specification, wireframes, design, prototype, build, test and ' +
-       'deploy. Five agent roles own them (Table II). A role is not a separate process or a separate model. It is a set ' +
-       'of prompts, a stage of the project and a label on the events the Studio shows. All five run on the same engine ' +
+       'deploy. Four agent roles own them (Table II). A role is not a separate process or a separate model. It is a set ' +
+       'of prompts, a stage of the project and a label on the events the Studio shows. All four run on the same engine ' +
        'against the same workspace, and every instruction a model receives is a Markdown file under *prompts/*, so ' +
        'changing how a stage behaves means editing a file, not the code.' },
   { p: 'Each project has a record folder, *.agentforge/*, beside the application it builds. The interview, the plan, ' +
@@ -349,10 +349,10 @@ const tables = {
     widths: [1050, 2071, 1900],
     header: ['Role', 'Produces', 'Checked by code'],
     rows: [
-      ['Requirements', 'Interview, plan, specification, 11 diagrams, hand-off files, wireframes',
+      ['Requirements + Designer', 'Interview, plan, specification, 11 diagrams, hand-off files, wireframes, theme choice',
         'Depth floor; schema; plan coverage; evidence audit'],
-      ['Prototype', 'Theme choice, prototype app, demo account per role', 'Every screen has a page; app bundles'],
-      ['Builder', 'Application, unit and journey tests, build report', 'Phase files; named-page gate; sign-in page'],
+      ['Prototype + Builder', 'Prototype app, demo account per role, application, unit and journey tests, build report',
+        'Every screen has a page; phase files; named-page gate; sign-in page'],
       ['QA', 'Page and journey fixes, a11y, performance and security results', 'Runner output; Eq. (1); runtime check'],
       ['Deployment', 'Plan the user approves, release, run record', 'HTTPS probe by the Studio; one repair'],
     ],
@@ -399,7 +399,7 @@ const tables = {
 }
 
 const figures = {
-  fig1: { file: 'figures/fig1-architecture.png', caption: 'AgentForge architecture. Five agent roles share one engine and hand off through the project record; the checks between stages are decided by code.' },
+  fig1: { file: 'figures/fig1-architecture.png', caption: 'AgentForge architecture. Four agent roles share one engine and hand off through the project record; the checks between stages are decided by code.' },
   fig2: { file: 'figures/fig2-build-test.png', caption: 'Build and test sequence. Agents write the application and fix what fails; the Studio decides when a phase, the build and each requirement are done.' },
 }
 

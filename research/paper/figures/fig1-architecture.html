@@ -14,7 +14,8 @@
   .arrow span { position:absolute; left:calc(50% + 8px); top:2px; white-space:nowrap; }
   .pipe { border:1.3px dashed #333; border-radius:6px; padding:5px; }
   .pipe-title { font-size:12.5px; font-weight:bold; margin:0 0 4px 2px; }
-  .stage { display:grid; grid-template-columns:84px 1fr; gap:5px; margin-bottom:4px; }
+  .group { display:grid; grid-template-columns:92px 1fr; gap:5px; margin-bottom:5px; }
+  .stack { display:flex; flex-direction:column; gap:3px; }
   .who { background:#e8eef8; border:1.3px solid #2f4f86; border-radius:5px; font-size:12px; font-weight:bold; color:#2f4f86; display:flex; align-items:center; justify-content:center; text-align:center; padding:2px; }
   .what { border:1.3px solid #333; border-radius:5px; padding:3px 6px; }
   .name { font-weight:bold; font-size:13px; }
@@ -34,23 +35,26 @@
   <div class="box"><b>Backend</b> (Python): event bus · jobs · permission modes · privacy filter and vault · retrying model client · stage checkpoints</div>
   <div class="arrow"><span>one engine per project</span></div>
   <div class="pipe">
-    <div class="pipe-title">Nine stages, five agent roles</div>
-    <div class="stage"><div class="who">Requirements</div>
-      <div class="what"><span class="name">Interview → Plan</span> <span class="out">22 coverage categories; user approves the plan</span>
-        <div class="gates"><span class="g">depth floor</span></div></div></div>
-    <div class="stage"><div class="who">Requirements</div>
-      <div class="what"><span class="name">Specification + 11 diagrams</span> <span class="out">5 parts in parallel</span>
-        <div class="gates"><span class="g">schema</span><span class="g">plan coverage</span><span class="g">evidence audit</span><span class="r">standards review</span></div></div></div>
-    <div class="stage"><div class="who">Prototype</div>
-      <div class="what"><span class="name">Wireframes → Design → Prototype</span> <span class="out">React apps; 70 themes</span>
-        <div class="gates"><span class="r">screenshot review</span><span class="r">journey walk</span></div></div></div>
-    <div class="stage"><div class="who">Builder</div>
-      <div class="what"><span class="name">Build in phases</span> <span class="out">11 stacks; 3 agents on page phases</span>
-        <div class="gates"><span class="g">phase files</span><span class="g">named-page gate</span><span class="g">sign-in check</span></div></div></div>
-    <div class="stage"><div class="who">QA</div>
+    <div class="pipe-title">Nine stages, four agent roles</div>
+    <div class="group"><div class="who">Requirements<br>+ Designer</div>
+      <div class="stack">
+        <div class="what"><span class="name">Interview → Plan</span> <span class="out">22 coverage categories; user approves the plan</span>
+          <div class="gates"><span class="g">depth floor</span></div></div>
+        <div class="what"><span class="name">Specification + 11 diagrams</span> <span class="out">5 parts in parallel</span>
+          <div class="gates"><span class="g">schema</span><span class="g">plan coverage</span><span class="g">evidence audit</span><span class="r">standards review</span></div></div>
+        <div class="what"><span class="name">Wireframes → Design</span> <span class="out">low-fidelity React app from app.md; 70 themes</span></div>
+      </div></div>
+    <div class="group"><div class="who">Prototype<br>+ Builder</div>
+      <div class="stack">
+        <div class="what"><span class="name">Prototype</span> <span class="out">high-fidelity React app; demo account per role</span>
+          <div class="gates"><span class="g">every screen has a page</span><span class="r">screenshot review</span><span class="r">journey walk</span></div></div>
+        <div class="what"><span class="name">Build in phases</span> <span class="out">11 stacks; 3 agents on page phases</span>
+          <div class="gates"><span class="g">phase files</span><span class="g">named-page gate</span><span class="g">sign-in check</span></div></div>
+      </div></div>
+    <div class="group"><div class="who">QA</div>
       <div class="what"><span class="name">Test</span> <span class="out">pages, journeys, a11y, performance, security</span>
         <div class="gates"><span class="g">runner output</span><span class="g">requirement status (1)</span><span class="g">runtime check</span></div></div></div>
-    <div class="stage" style="margin-bottom:0"><div class="who">Deployment</div>
+    <div class="group" style="margin-bottom:0"><div class="who">Deployment</div>
       <div class="what"><span class="name">Deploy</span> <span class="out">plan approved by the user; provider CLI</span>
         <div class="gates"><span class="g">HTTPS probe</span><span class="g">one repair round</span></div></div></div>
   </div>
