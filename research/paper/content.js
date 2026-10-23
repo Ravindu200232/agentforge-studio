@@ -256,15 +256,105 @@ const body = [
        'project without losing the project\u2019s record.' },
 
   { h1: 'Implementation' },
-  { p: 'AgentForge 1.0.3 has about 32,300 lines of Python (backend, engine and agents), 27,800 lines of JavaScript ' +
-       '(Studio) and 19,500 lines of Markdown prompts. The backend serves its HTTP API and WebSocket feed from the Python ' +
-       'standard library and uses Pydantic, the cryptography package, Presidio and spaCy. The Studio is a Next.js 16 and ' +
-       'React 19 application; the Windows desktop app wraps it in Electron, reaches the backend over standard input and ' +
-       'output, and installs through a 150 KB online installer that checks every file against a SHA-256 manifest. ' +
-       'Generated applications come from 236 template files: the eleven stacks, a shared testing kit and 18 stack and ' +
-       'testing guides. Models are chosen by the user: the bakery project in Section V-B used gpt-oss:120b through ' +
-       'Ollama\u2019s cloud, and accounts default to DeepSeek V4.1 Flash. The repository holds 1,733 Python unit tests ' +
-       'and twelve Node test files, run against stand-in models.' },
+  { p: 'AgentForge Studio 1.0.3 has about 32,300 lines of Python in the backend, the engine and the agents, 27,800 ' +
+       'lines of JavaScript in the Studio, and 19,500 lines of Markdown prompts, including the 70 design themes and the ' +
+       'deployment skill pages. Table {T:stack} lists the technology at each layer. Three choices shape the rest. The ' +
+       'backend has no web framework; it runs on the Python standard library, so the desktop build carries an embedded ' +
+       'interpreter and seven Python packages. Every model call goes through one client, which is where retries, account ' +
+       'metering and the privacy filter live. And every artifact is a file in the project record, so any stage can be ' +
+       'stopped, inspected and resumed.' },
+  { table: 'stack' },
+  { h2: 'Backend Runtime' },
+  { p: 'The API is a ThreadingHTTPServer bound to 127.0.0.1:7824, and the live feed is an RFC 6455 WebSocket server on ' +
+       'port 7825 written on the standard library; the Studio proxies */__agentforge/api* and */__agentforge/ws* to ' +
+       'them. In the desktop app nothing listens: the window and the backend exchange one JSON object per line over ' +
+       'standard input and output, and the event feed travels the same way. Work that needs a model never runs inside a ' +
+       'request. It becomes a background job on its own thread, and the browser polls for the result, so a ' +
+       'specification that takes ten minutes holds no connection open. Every event a stage emits goes to an in-memory ' +
+       'bus and is appended to *events.jsonl*, so a browser that reconnects replays the same conversation. The ' +
+       'project’s conversation is written to *context.json* after every turn, turns removed by compaction are ' +
+       'appended verbatim to *context-archive.jsonl*, and a checkpoint at the start, end or failure of every stage ' +
+       'lets an interrupted run resume. A project only moves forward through the stage order.' },
+  { h2: 'Engine Logic' },
+  { p: 'One request to the engine is a loop of at most 40 model turns. Each turn sends the conversation with the tool ' +
+       'schemas (without the write and command tools in plan mode), executes the returned tool calls and appends their ' +
+       'results. Calls that write different files are run up to four at a time, which the wireframe and prototype ' +
+       'stages use; edits and commands stay in order. A turn ends the loop when it carries no tool call or a completion ' +
+       'marker; a plain closing sentence such as “the task is complete” is accepted when a model omits the ' +
+       'marker, unless it also says the work is incomplete.' },
+  { p: 'Context is estimated at four characters per token plus 1,500 per picture. Past 88% of the window, older turns ' +
+       'are cut into stretches of up to 100,000 characters, summarised four at a time and merged in groups until one ' +
+       'memory remains; a stretch the model will not summarise becomes a mechanical digest of the requests, commands ' +
+       'and file paths it contains. When the service rejects a request as too long, the token count it reports rescales ' +
+       'the estimate and the history is compacted again, up to three times. A screenshot is attached only while the ' +
+       'whole request stays under 2.4 MB, and older pictures are replaced by a note. Structured answers go through a ' +
+       'validator, whose error is sent back for at most three attempts, and repairs to the specification are JSON ' +
+       'edits (*set*, *add*, *remove*) addressed by path and item key, such as *functional_requirements[id=FR-012]*.' },
+  { p: 'Independent work runs in parallel lanes: five specification parts at once, six diagrams, four compaction ' +
+       'workers, and three agents for wireframe pages, page phases and test phases, each agent in a conversation of its ' +
+       'own that is archived when it ends. The interview’s bookkeeping of facts and coverage runs on a background ' +
+       'thread while the user reads the next question. Algorithm 1 shows how the build combines these parts.' },
+  { algo: {
+    title: 'Phased build with verified phases',
+    lines: [
+      '**Input:** approved routes *R*, stack *s*, the user’s direction *d*, build request *q*',
+      '*P* ← [foundation] + chunks(*R*, 4) + [wiring, unit tests, journey tests]',
+      '*f* ← SHA-256(*R*, *s*, *d*); if a saved state has fingerprint *f*, keep its done phases',
+      '**for each** phase *p* ∈ *P* not done **do**',
+      ' **if** *p* starts a run of independent phases **then** build the run in 3 parallel lanes',
+      ' **else** build *p* in a fresh conversation that begins with *q*',
+      ' **repeat** at most twice **while** problems(*p*) ≠ ∅: repair(*p*, problems(*p*))',
+      ' mark *p* done if problems(*p*) = ∅, else incomplete; save state',
+      '**if** some *r* ∈ *R* has no recorded, non-empty file **then fail** naming *r*',
+      'review pages; run journeys one by one; run final checks; set requirement status by Eq. (1)',
+    ],
+  } },
+  { h2: 'Verification Logic' },
+  { p: 'A page phase is checked against its own progress record, *build/progress/<phase>.json*, which must name files ' +
+       'that exist inside the workspace and are not empty. The Studio’s journey run is keyed by a SHA-256 ' +
+       'fingerprint over the path and content of every source file, skipping dependencies, build output, test output ' +
+       'and the record: while the fingerprint is unchanged, a later Testing run reuses the result instead of running ' +
+       'again. The runner script builds the app once, starts the production server on a free port, runs Playwright with ' +
+       'one retry and two workers, and stops only the server it started; on MongoDB stacks it creates a database named ' +
+       'within Atlas’s 38-character limit and ending in *_e2e*, and drops it afterwards. The suite has 45 minutes, ' +
+       'the page photographs 20 and the runtime check 10, and screenshots are copied out as the tests take them, ' +
+       'because the next run empties Playwright’s output folder.' },
+  { p: 'The specification checks are plain functions. Routes are compared by a key that ignores letter case and ' +
+       'parameter names, so */Admin/[branchId]* and */admin/:id* are one page; record names are matched to tables ' +
+       'through singular and plural forms. The evidence audit scores 100 times the share of its seven rules that pass, ' +
+       'capped at 50 when either requirement set is missing, and any score below 100 adds blocking findings. The ' +
+       'deployment planner must have opened the target’s skill pages with *read_file* before its plan is accepted, ' +
+       'and the live probe accepts a status range written as 200, 2xx or 200–399.' },
+  { h2: 'Safety, Privacy and Model Access' },
+  { p: 'A command is split on *&&*, *||*, *;* and *|* outside quoted strings, and the program of each part is checked ' +
+       'against the allowlist; PowerShell cmdlets pass by their Verb-Noun shape except six that run code or another ' +
+       'process. A command may run 600 s, a deployment release 1,800 s, and a server start 75 s; on Windows every process ' +
+       'starts without a window. Text search skips dependencies, build and test output and binary files and stops after ' +
+       '20 s. Before each command the files of AgentForge itself are snapshotted, and afterwards any change is undone ' +
+       'unless the repository’s HEAD moved, which marks a deliberate pull or checkout.' },
+  { p: 'Presidio analyses typed text in 50,000-character chunks and keeps matches scoring at least 0.4, with added ' +
+       'recognisers for Sri Lankan identity numbers and phone numbers in ten regions. Values go to a Fernet-encrypted ' +
+       'vault under placeholders such as <PERSON_1>. The model client replaces known values in every message, tool ' +
+       'result and earlier tool call before sending, and restores them in the reply; in a streamed reply it holds back a ' +
+       'chunk that ends with what may be the start of a placeholder until the next chunk completes it. Provider keys for ' +
+       'the 20 optional integrations are encrypted the same way.' },
+  { p: 'The client retries HTTP 408, 425, 429, 500, 502, 503, 504, 522 and 524 and broken transports up to ten times, ' +
+       'waiting 2, 4, 8, 15, 20 and then 30 s, and Stop is checked every 0.1 s, so a run never waits for a reply it no ' +
+       'longer wants. Replies from hosted models are streamed, since a single response is cut off by the service’s ' +
+       'edge after about 100 s without a byte. Whether a model can see pictures is read from its own capability list ' +
+       'and cached for a week. The Cloudflare Worker compares the app token in constant time, rate-limits each caller, ' +
+       'passes through eight routes, and doubles as the OAuth broker for Supabase sign-in, so its client secret never ' +
+       'ships with the app. Each model call is counted as one request against the limit an administrator sets for the ' +
+       'account.' },
+  { h2: 'Distribution and Tests' },
+  { p: 'The release script exports the Studio as static files, stages the backend with its Node modules and an ' +
+       'embedded Python 3.12, packages Electron, pins the command-line tools, and compiles a 150 KB online installer ' +
+       'with the C# compiler built into Windows; the installer checks every file against a SHA-256 manifest. The ' +
+       'desktop app serves the Studio from an *agentforge://* scheme, and every process it starts is its child, so ' +
+       'quitting ends them all. Models are chosen by the user: the bakery project in Section V-B used gpt-oss:120b ' +
+       'through Ollama’s cloud, and accounts default to DeepSeek V4.1 Flash. The repository holds 1,733 Python ' +
+       'unit tests and twelve Node test files, which cover the engine, every gate, the privacy filter and the ' +
+       'deployment flow with stand-in models instead of live calls.' },
 
   { h1: 'Evaluation and Preliminary Results' },
   { h2: 'Research Questions and Protocol' },
@@ -358,6 +448,27 @@ const tables = {
       ['Test', 'Choose whether another round of fixes runs; ask for failing journeys to be fixed'],
       ['Deploy', 'Approve, revise or cancel the plan; answer up to three questions; sign in to each provider'],
       ['After build', 'Request changes in chat, planned first; select or draw on the running app'],
+    ],
+    size: 7.5,
+  },
+  stack: {
+    caption: 'Technology Stack',
+    widths: [1060, 2361, 1600],
+    header: ['Layer', 'Technologies', 'Used for'],
+    rows: [
+      ['Studio', 'Next.js 16, React 19, Tailwind CSS 4, Zustand 5, Lucide, JSZip', 'Chat, stage views, previews, testing and deployment panels'],
+      ['Desktop', 'Electron 44, electron-builder 26, agentforge:// scheme, C# online installer', 'One window; backend over stdio'],
+      ['Backend', 'Python 3.10+ standard library (ThreadingHTTPServer, RFC 6455 feed, threads), Pydantic 2, httpx, cryptography (Fernet)', 'API, jobs, event bus, schema, vault'],
+      ['Engine', 'Ollama Python SDK, ten tools, MCP client (JSON-RPC 2.0 over stdio)', 'Tool-calling loop of every agent role'],
+      ['Models', 'Local Ollama; ollama.com; Cloudflare Worker proxy with accounts', 'User-chosen model; vision detected per model'],
+      ['Privacy', 'Microsoft Presidio, spaCy en_core_web_sm', '15 entity types hidden from models'],
+      ['Documents', 'Mermaid CLI; marked and Puppeteer', 'SVG diagrams; specification PDF'],
+      ['Wireframe and prototype kit', 'Vite 5, React 18, TypeScript 5, Tailwind 3.4, shadcn/ui (Radix), Recharts, vite-plugin-singlefile', 'One self-contained bundle.html per app'],
+      ['Browser', 'Playwright Chromium; Edge or Chrome in headless mode', 'Screenshots, page inspection, journey walk'],
+      ['Generated apps', 'Next.js 15; Remix 2 and Vite 6; Express 4; Supabase (supabase-js 2, @supabase/ssr); MongoDB with Mongoose 8; bcryptjs, jose', 'Eleven stack templates'],
+      ['Generated tests', 'Vitest, Testing Library, Supertest, Playwright 1.62, axe-core, Lighthouse CI, ZAP, npm audit, GitHub Actions', 'Unit, journey, visual, a11y, performance, security'],
+      ['Cloud', 'Supabase OAuth; MongoDB Atlas CLI; gh, Vercel, Netlify, Azure and AWS CLIs', 'Provisioning, sign-in, deployment'],
+      ['Integrations', '20 providers: payments, e-mail and SMS, image storage, social sign-in, maps, analytics', 'Optional features, keys encrypted'],
     ],
     size: 7.5,
   },

@@ -39,6 +39,15 @@ Every number in the paper is either a constant in the code or a measurement reco
 | Permission modes, 132 allowlisted programs, deny list | `server_modules/permissions.py`, `src/ollama_terminal/tools.py` |
 | Privacy: 15 entity types, vault, placeholders | `server_modules/privacy.py`, `server_modules/privacy_vault.py` |
 | Retries: 10 attempts, 2 to 30 s | `server_modules/session.py` (`RETRY_ATTEMPTS`, `RETRY_BACKOFF`) |
+| Implementation: servers, ports 7824/7825, stdio protocol, jobs, events.jsonl | `server.py`, `server_modules/httpd.py`, `server_modules/wsd.py`, `server_modules/stdio_bridge.py`, `server_modules/jobs.py`, `server_modules/bus.py` |
+| Engine loop: 40 turns, 4 parallel writes, 4 chars per token, 1,500 per picture, 100,000-character stretches | `server_modules/config.py` (`max_steps`), `src/ollama_terminal/agent.py` |
+| Algorithm 1 and the phase checks | `builder-agent/builder_agent/phases.py`, `server_modules/session.py` (`_run_phases`) |
+| Run fingerprint, runner, 38-character `_e2e` database, 45/20/10 min limits | `qa-agent/qa_agent/e2e_run.py`, `builder-agent/builder_agent/assets/templates/_testing/scripts/with-server.mjs` |
+| Command split, cmdlets, 600/1,800/75 s limits, 20 s search | `src/ollama_terminal/tools.py` |
+| Presidio 0.4 score, 50,000-character chunks, streamed reveal | `server_modules/privacy.py`, `server_modules/privacy_vault.py` |
+| Technology versions (Table III) | `studio/package.json`, `desktop/package.json`, `pyproject.toml`, `server_modules/web_kit/package.json`, the `package.json.tpl` of each stack template |
+| 20 integration providers | `server_modules/provider_catalog/plugins.json` |
+| Release and installer | `release/README.md`, `release/build.ps1` |
 | Engine proxy: 8 routes | `engine-proxy/src/index.js` (`ALLOWED`) |
 | Human in the loop: chat at any stage, plan-first changes, versions | `server_modules/changes.py`, `server_modules/versions.py`, `prompts/chat/update.md` |
 | Select, pencil and text tools on the previews | `studio/lib/picker.js`, `studio/components/AppTextEdit.jsx`, `server_modules/pointed.py` |
@@ -46,11 +55,11 @@ Every number in the paper is either a constant in the code or a measurement reco
 | Permission cards; Yes/No rounds, a typed yes in English or Sinhala | `server_modules/permissions.py`, `server_modules/screen_review.py` (`_YES`, `next_round`) |
 | Question limits: 25, 5, 3, 3 | `server_modules/config.py`, `builder-agent/builder_agent/build.py` (`QUESTIONS`), `server_modules/changes.py` and `deploy-agent/deploy_agent/deploy.py` (`MAX_QUESTIONS`) |
 | Line counts, 236 template files, 18 guides, 1,733 tests | counted from the repository at `ff5de31` (AgentForge 1.0.3) |
-| Table IV rows 2, 3 | commit `d92ca2e` |
-| Table IV rows 4, 5, 8; seven hours for the 28-page app | commit `ea5cac1`, `srs-agent/srs_agent/wireframe.py` |
-| Table IV rows 6, 7, 9 | commit `255dae5`, `qa-agent/qa_agent/requirement_proof.py`, `qa-agent/qa_agent/sequence.py` |
-| Table IV row 10 | commit `449fcf6` |
-| Table IV row 11 | commit `0840c4f` |
-| Table IV row 12 | `src/ollama_terminal/agent.py` (`MAX_REQUEST_BYTES`) |
-| Table IV row 1 | `builder-agent/builder_agent/phases.py` (module docstring) |
+| Table V rows 2, 3 | commit `d92ca2e` |
+| Table V rows 4, 5, 8; seven hours for the 28-page app | commit `ea5cac1`, `srs-agent/srs_agent/wireframe.py` |
+| Table V rows 6, 7, 9 | commit `255dae5`, `qa-agent/qa_agent/requirement_proof.py`, `qa-agent/qa_agent/sequence.py` |
+| Table V row 10 | commit `449fcf6` |
+| Table V row 11 | commit `0840c4f` |
+| Table V row 12 | `src/ollama_terminal/agent.py` (`MAX_REQUEST_BYTES`) |
+| Table V row 1 | `builder-agent/builder_agent/phases.py` (module docstring) |
 | Bakery: 1 to 7 diagrams, 3 to 6 requirements; gpt-oss:120b | the repository `README.md` |

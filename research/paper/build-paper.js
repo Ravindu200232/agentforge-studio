@@ -182,6 +182,42 @@ function equation(text, n) {
   })
 }
 
+let algorithmNo = 0
+const NONE = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' }
+const RULE = { style: BorderStyle.SINGLE, size: 10, color: '000000' }
+
+/** An IEEE-style algorithm box: a rule above and below, the caption under the top rule, numbered lines. */
+function algorithm(a) {
+  algorithmNo++
+  const lines = [new Paragraph({
+    spacing: { after: 40 }, keepNext: true,
+    border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: '000000', space: 2 } },
+    children: [new TextRun({ text: `Algorithm ${algorithmNo}`, bold: true, size: PT(8) }),
+      new TextRun({ text: '  ', size: PT(8) }), ...runs(a.title, { size: PT(8) })],
+  })]
+  let n = 0
+  for (const line of a.lines) {
+    const numbered = !line.startsWith('**Input:**')
+    lines.push(new Paragraph({
+      indent: { left: 300, hanging: 300 }, tabStops: [{ type: TabStopType.LEFT, position: 300 }],
+      spacing: { after: 0 }, keepNext: true,
+      children: [new TextRun({ text: numbered ? `${++n}:` : '', size: PT(8) }), new TextRun({ children: [new Tab()], size: PT(8) }),
+        ...runs(line, { size: PT(8) })],
+    }))
+  }
+  return [
+    new Paragraph({ spacing: { before: 60, after: 0 }, keepNext: true, children: [] }),
+    new Table({
+      width: { size: COLUMN, type: WidthType.DXA }, columnWidths: [COLUMN],
+      borders: { top: RULE, bottom: RULE, left: NONE, right: NONE, insideHorizontal: NONE, insideVertical: NONE },
+      rows: [new TableRow({ cantSplit: true, children: [new TableCell({
+        width: { size: COLUMN, type: WidthType.DXA }, margins: { top: 40, bottom: 60, left: 0, right: 0 }, children: lines,
+      })] })],
+    }),
+    new Paragraph({ spacing: { after: 100 }, children: [] }),
+  ]
+}
+
 // --- the document ---------------------------------------------------------------------------------------------------
 const front = [
   new Paragraph({
@@ -209,6 +245,7 @@ for (const block of body) {
   else if (block.table) columns.push(...table(block.table))
   else if (block.figure) columns.push(...figure(block.figure))
   else if (block.eq) columns.push(equation(block.eq, block.n))
+  else if (block.algo) columns.push(...algorithm(block.algo))
 }
 columns.push(heading1('References', false))
 order.forEach((key, i) => {
