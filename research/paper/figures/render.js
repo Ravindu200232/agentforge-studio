@@ -3,7 +3,7 @@
 const path = require('path')
 const { chromium } = require('playwright')
 
-const FIGURES = ['fig1-architecture', 'fig2-build-test']
+const FIGURES = ['fig1-architecture', 'fig2-build-test', 'fig3-specification', 'fig4-deployment']
 
 ;(async () => {
   const browser = await chromium.launch()

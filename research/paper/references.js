@@ -8,6 +8,8 @@ module.exports = {
   gemma2025: 'Gemma Team, “Gemma 3 technical report,” arXiv:2503.19786, 2025.',
   yao2023: 'S. Yao, J. Zhao, D. Yu, N. Du, I. Shafran, K. Narasimhan, and Y. Cao, “ReAct: Synergizing reasoning and acting in language models,” in *Proc. Int. Conf. Learn. Represent. (ICLR)*, 2023.',
   xia2024: 'C. S. Xia, Y. Deng, S. Dunn, and L. Zhang, “Agentless: Demystifying LLM-based software engineering agents,” arXiv:2407.01489, 2024.',
+  russell2021: 'S. Russell and P. Norvig, *Artificial Intelligence: A Modern Approach*, 4th ed. Hoboken, NJ, USA: Pearson, 2021.',
+  wooldridge2009: 'M. Wooldridge, *An Introduction to MultiAgent Systems*, 2nd ed. Chichester, U.K.: Wiley, 2009.',
   qian2024: 'C. Qian et al., “ChatDev: Communicative agents for software development,” in *Proc. 62nd Annu. Meeting Assoc. Comput. Linguistics (ACL)*, 2024.',
   hong2024: 'S. Hong et al., “MetaGPT: Meta programming for a multi-agent collaborative framework,” in *Proc. Int. Conf. Learn. Represent. (ICLR)*, 2024.',
   wu2023: 'Q. Wu et al., “AutoGen: Enabling next-gen LLM applications via multi-agent conversation,” arXiv:2308.08155, 2023.',
@@ -19,6 +21,7 @@ module.exports = {
   liu2024: 'N. F. Liu, K. Lin, J. Hewitt, A. Paranjape, M. Bevilacqua, F. Petroni, and P. Liang, “Lost in the middle: How language models use long contexts,” *Trans. Assoc. Comput. Linguistics*, vol. 12, pp. 157–173, 2024.',
   iso29148: '*Systems and Software Engineering—Life Cycle Processes—Requirements Engineering*, ISO/IEC/IEEE 29148:2018, 2018.',
   ferrari2017: 'A. Ferrari, G. O. Spagnolo, and S. Gnesi, “PURE: A dataset of public requirements documents,” in *Proc. IEEE 25th Int. Requirements Eng. Conf. (RE)*, 2017, pp. 502–505.',
+  lima2019: 'M. Lima, V. Valle, E. Costa, F. Lira, and B. Gadelha, \u201cSoftware engineering repositories: Expanding the PROMISE database,\u201d in *Proc. 33rd Brazilian Symp. Softw. Eng. (SBES)*, 2019.',
   giannouris2025: 'P. Giannouris, “Multi-agent LLM system for UML class diagram generation from natural language requirements,” arXiv:2511.22409, 2025.',
   ollama: 'Ollama. [Online]. Available: https://ollama.com',
   mcp: 'Anthropic, “Model Context Protocol specification.” [Online]. Available: https://modelcontextprotocol.io',
@@ -27,5 +30,6 @@ module.exports = {
   lighthouse: 'Google, “Lighthouse.” [Online]. Available: https://developer.chrome.com/docs/lighthouse',
   zap: 'ZAP by Checkmarx (formerly OWASP ZAP), “Zed Attack Proxy.” [Online]. Available: https://www.zaproxy.org',
   presidio: 'Microsoft, “Presidio: Data protection and de-identification SDK.” [Online]. Available: https://github.com/microsoft/presidio',
+  spacy: 'M. Honnibal, I. Montani, S. Van Landeghem, and A. Boyd, \u201cspaCy: Industrial-strength natural language processing in Python,\u201d 2020, doi: 10.5281/zenodo.1212303.',
   playwright: 'Microsoft, “Playwright.” [Online]. Available: https://playwright.dev',
 }

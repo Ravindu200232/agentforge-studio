@@ -39,18 +39,23 @@ for (const block of body) {
   if (block.figure) scan(figures[block.figure].caption)
 }
 const tableOrder = body.filter((block) => block.table).map((block) => block.table)
+const figureOrder = body.filter((block) => block.figure).map((block) => block.figure)
 const unused = Object.keys(REFERENCES).filter((k) => !order.includes(k))
 if (unused.length) throw new Error('references never cited: ' + unused.join(', '))
 
 // --- inline text: *italic*, **bold**, {cite} ------------------------------------------------------------------------
 function runs(text, base = {}) {
   const out = []
-  const parts = String(text).split(/(\*\*[^*]+\*\*|\*[^*]+\*|\{[a-z0-9]+\}|\{T:[a-z]+\})/g)
+  const parts = String(text).split(/(\*\*[^*]+\*\*|\*[^*]+\*|\{[a-z0-9]+\}|\{T:[a-z]+\}|\{F:[a-z0-9]+\})/g)
   for (const part of parts) {
     if (!part) continue
     if (part.startsWith('**')) out.push(new TextRun({ ...base, text: part.slice(2, -2), bold: true }))
     else if (part.startsWith('*')) out.push(new TextRun({ ...base, text: part.slice(1, -1), italics: !base.italics }))
-    else if (/^\{T:[a-z]+\}$/.test(part)) {
+    else if (/^\{F:[a-z0-9]+\}$/.test(part)) {
+      const at = figureOrder.indexOf(part.slice(3, -1))
+      if (at < 0) throw new Error('unknown figure ' + part)
+      out.push(new TextRun({ ...base, text: String(at + 1) }))
+    } else if (/^\{T:[a-z]+\}$/.test(part)) {
       const at = tableOrder.indexOf(part.slice(3, -1))
       if (at < 0) throw new Error('unknown table ' + part)
       out.push(new TextRun({ ...base, text: ROMAN[at] }))
@@ -60,7 +65,8 @@ function runs(text, base = {}) {
   return out
 }
 
-const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X']
+const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII', 'XIII', 'XIV', 'XV', 'XVI', 'XVII',
+  'XVIII', 'XIX', 'XX']
 const LETTERS = 'ABCDEFGHIJKLMNOP'
 let h1 = 0
 let h2 = 0

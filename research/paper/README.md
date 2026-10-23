@@ -1,9 +1,10 @@
 # AgentForge paper (ICAC 2026), rewritten for AgentForge 1.0.3
 
 - `AgentForge_ICAC2026_Paper.docx`: the paper, IEEE two-column, A4. Edit this one in Word.
-- `AgentForge_ICAC2026_Paper.pdf`: the same paper rendered with LibreOffice (6 pages).
+- `AgentForge_ICAC2026_Paper.pdf`: the same paper rendered with LibreOffice (13 pages, 14 tables, 4 figures).
 - `content.js`, `references.js`: the text and the references. `build-paper.js` makes the .docx from them.
-- `figures/`: Fig. 1 and Fig. 2 as HTML, and the PNGs rendered from them by `render.js`.
+- `figures/`: the four figures as HTML, and the PNGs rendered from them by `render.js` (fig1 architecture, fig3
+  specification pipeline, fig2 build and test, fig4 deployment; the build numbers them in order of appearance).
 
 ## Rebuild
 
@@ -13,7 +14,8 @@ NODE_PATH=$(npm root -g) node research/paper/build-paper.js        # .docx (docx
 soffice --headless --convert-to pdf --outdir research/paper research/paper/AgentForge_ICAC2026_Paper.docx
 ```
 
-References are numbered in order of first citation, and the build fails if one is unknown or never cited.
+References are numbered in order of first citation, and the build fails if one is unknown or never cited. Tables and
+figures are numbered in order of appearance; the text refers to them as `{T:key}` and `{F:key}`.
 
 ## Where the numbers come from
 
@@ -55,11 +57,32 @@ Every number in the paper is either a constant in the code or a measurement reco
 | Permission cards; Yes/No rounds, a typed yes in English or Sinhala | `server_modules/permissions.py`, `server_modules/screen_review.py` (`_YES`, `next_round`) |
 | Question limits: 25, 5, 3, 3 | `server_modules/config.py`, `builder-agent/builder_agent/build.py` (`QUESTIONS`), `server_modules/changes.py` and `deploy-agent/deploy_agent/deploy.py` (`MAX_QUESTIONS`) |
 | Line counts, 236 template files, 18 guides, 1,733 tests | counted from the repository at `ff5de31` (AgentForge 1.0.3) |
-| Table V rows 2, 3 | commit `d92ca2e` |
-| Table V rows 4, 5, 8; seven hours for the 28-page app | commit `ea5cac1`, `srs-agent/srs_agent/wireframe.py` |
-| Table V rows 6, 7, 9 | commit `255dae5`, `qa-agent/qa_agent/requirement_proof.py`, `qa-agent/qa_agent/sequence.py` |
-| Table V row 10 | commit `449fcf6` |
-| Table V row 11 | commit `0840c4f` |
-| Table V row 12 | `src/ollama_terminal/agent.py` (`MAX_REQUEST_BYTES`) |
-| Table V row 1 | `builder-agent/builder_agent/phases.py` (module docstring) |
+| Table XIV rows 1, 2, 21 | commit `d92ca2e` |
+| Table XIV row 3 | `srs-agent/srs_agent/document.py` (`_write_handoff`, BUILD.md comment) |
+| Table XIV row 4 | commit `449fcf6`, `server_modules/validation/completeness.py` (`route_key`) |
+| Table XIV row 5 | commit `0840c4f` |
+| Table XIV rows 6, 9, 20; seven hours for the 28-page app | commit `ea5cac1`, `srs-agent/srs_agent/wireframe.py`, `server_modules/session.py` (`_run_phases`), `src/ollama_terminal/tools.py` (`SEARCH_SKIP_DIRS`) |
+| Table XIV row 7 | `src/ollama_terminal/agent.py` (`COMPACT_WORKERS`) |
+| Table XIV row 8 | `server_modules/session.py` (`start_fresh`) |
+| Table XIV row 10 | `builder-agent/builder_agent/phases.py` (module docstring) |
+| Table XIV rows 11, 14, 16 | commit `255dae5`, `builder-agent/builder_agent/phases.py` (`together`), `qa-agent/qa_agent/sequence.py`, `qa-agent/qa_agent/requirement_proof.py` |
+| Table XIV row 12 | `builder-agent/builder_agent/preflight.py` (module docstring) |
+| Table XIV row 13 | `src/ollama_terminal/tools.py` (`_E2E_SUITE`) |
+| Table XIV row 15 | commit `a468f8b` |
+| Table XIV row 17 | commit `663c1e9` |
+| Table XIV row 18 | `src/ollama_terminal/agent.py` (`MAX_REQUEST_BYTES`) |
+| Table XIV row 19 | `src/ollama_terminal/agent.py` (`served_from_cloud`) |
+| Table XIV row 22 | `src/ollama_terminal/tools.py` (`RELEASE_COMMAND_SECONDS`) |
+| Table XIV row 23 | commit `1c66105` |
+| Tables III to VI: prompt packs, project record, tools, interview categories | `prompts/`, `README.md`, `src/ollama_terminal/tools.py` (`TOOL_SCHEMAS`), `prompts/interview/categories.json`, `prompts/interview/app-types.json` |
+| Table VII: diagram standards and Mermaid forms | `prompts/srs/diagrams/*.md` |
+| Table VIII: stacks, uploads, targets | `builder-agent/builder_agent/scaffold.py`, `prompts/deployment/stacks.json` |
+| Table IX: test layers and thresholds | `builder-agent/builder_agent/assets/templates/_testing/` (`lighthouserc.cjs`, `e2e/a11y.spec.js`, `e2e/visual.spec.js`, `scripts/zap-scan.mjs`, `.github/workflows/quality.yml`) |
+| Table X: targets, build location, time targets, monitor counts | `prompts/deployment/skills/core/SKILL.md`, `prompts/deployment/monitors.json` |
+| 97 provider monitor commands, 22 database commands | `prompts/deployment/monitors.json`, `prompts/database/monitors.json` |
+| Plan sections, account policy rules | `srs-agent/srs_agent/plan.py` (`SECTIONS`), `server_modules/validation/plan_rules.py` |
+| 35 specification sections | `server_modules/validation/srs_schema.py` (`SrsDocument`) |
+| Decisions (four answers), plain-language overview | `srs-agent/srs_agent/decisions.py`, `srs-agent/srs_agent/plain_summary.py`, commit `f805204` |
+| Journey walk constants (24, 10, 8, 3, 4, 4, 350 ms) | `prototype-agent/prototype_agent/journey_walk.py` |
+| Privacy entity types and exceptions | `server_modules/privacy.py` (`DEFAULT_ENTITIES`), commit `82b9008` |
 | Bakery: 1 to 7 diagrams, 3 to 6 requirements; gpt-oss:120b | the repository `README.md` |
