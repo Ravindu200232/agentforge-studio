@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Deployment flow</title>
+<!-- Drawn at 500 CSS px for IEEE single-column width (3.49 in): 1 px is about 0.5 pt. -->
+<style>
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:#fff; }
+  body { width:500px; padding:5px; font-family:"Liberation Sans", Arial, Helvetica, sans-serif; color:#111; font-size:12px; line-height:1.18; }
+  .step { border:1.3px solid #333; border-radius:5px; padding:3px 6px; }
+  .step b { font-size:12.5px; }
+  .d { font-size:12px; color:#222; }
+  .gate { border:1.4px solid #9a3412; color:#7c2d12; border-radius:10px; padding:2px 6px; font-weight:bold; font-size:12px; text-align:center; }
+  .user { background:#e8eef8; border:1.3px solid #2f4f86; color:#2f4f86; border-radius:5px; padding:3px 6px; font-weight:bold; font-size:12px; text-align:center; }
+  .end { border:1.6px solid #333; border-radius:12px; padding:3px 6px; font-weight:bold; text-align:center; font-size:12.5px; }
+  .ok { background:#eef7ee; border-color:#2f6b2f; color:#1f4d1f; }
+  .bad { background:#fbeeee; border-color:#8b1d1d; color:#6b1515; }
+  .a { height:13px; position:relative; }
+  .a::before { content:""; position:absolute; left:50%; top:1px; height:7px; border-left:1.3px solid #333; }
+  .a::after { content:""; position:absolute; left:calc(50% - 4px); top:6px; border:4px solid transparent; border-top:6px solid #333; }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:8px; align-items:center; }
+  .three { display:grid; grid-template-columns:1fr 1fr 1fr; gap:5px; }
+  .note { font-size:12px; color:#333; text-align:center; margin-top:2px; }
+  .states { display:flex; flex-wrap:wrap; gap:3px; justify-content:center; margin-top:3px; }
+  .s { border:1.2px solid #555; border-radius:3px; padding:0 4px; font-size:11.5px; font-family:"Liberation Mono", monospace; }
+</style></head>
+<body>
+  <div class="step"><b>Target chosen</b> <span class="d">Vercel · Netlify · Azure · AWS EC2 · AWS ECS · GitHub, as the stack allows; the provider CLI is signed in through its own login</span></div>
+  <div class="a"></div>
+  <div class="step"><b>Plan (read-only)</b> <span class="d">reads the core, target and stack skill pages and the project; at most 3 questions; every other choice a stated default</span></div>
+  <div class="gate" style="margin-top:3px">Plan accepted only if the skill pages were opened with read_file</div>
+  <div class="a"></div>
+  <div class="three">
+    <div class="user">Approve</div>
+    <div class="user">Revise → plan again</div>
+    <div class="user">Cancel</div>
+  </div>
+  <div class="a"></div>
+  <div class="step"><b>Execute</b> <span class="d">git and gh, then the provider's CLI; build once; no tests rerun; secrets only from Settings</span>
+    <div class="states"><span class="s">ANALYZING</span><span class="s">BOOTSTRAPPING</span><span class="s">CI_RUNNING</span><span class="s">DEPLOYING</span><span class="s">VALIDATING</span></div></div>
+  <div class="note">a question mid-run sets NEEDS_INPUT and waits; a database question is answered by the Studio</div>
+  <div class="a"></div>
+  <div class="step"><b>Smoke proof by the agent</b> <span class="d">at most six read-only requests: home page, health route, public routes, a protected route signed out, one database read</span></div>
+  <div class="a"></div>
+  <div class="gate">Studio probe: public HTTPS host, every recorded check in its status range; 429/502/503/504 retried after 5 s and 10 s</div>
+  <div class="a"></div>
+  <div class="two">
+    <div class="end ok">every check holds → LIVE</div>
+    <div class="step" style="text-align:center"><b>a check fails → REPAIRING</b><div class="d">once: logs read, fixes made together, one redeploy, failed checks rerun</div></div>
+  </div>
+  <div class="a"></div>
+  <div class="two">
+    <div class="end ok">probe holds → LIVE</div>
+    <div class="end bad">still fails → FAILED, with the cause</div>
+  </div>
+  <div class="note">a run can also end ROLLED_BACK or CANCELLED</div>
+</body></html>

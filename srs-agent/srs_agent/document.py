@@ -180,8 +180,108 @@ def _wireframe_pages(doc: dict, approved: dict) -> list[dict]:
 
 # --- writing ----------------------------------------------------------------
 
+PARTS = {
+    "frame": ["document_title", "project_name", "version", "document_language", "system_category", "prepared_for",
+              "standards_profile", "document_control", "app_summary", "app_type", "authentication_requirement", "roles",
+              "role_access_matrix", "public_pages", "protected_pages", "main_modules", "ui_ux_requirements",
+              "reporting_requirements", "integration_requirements", "notification_rules", "assumptions", "constraints",
+              "ambiguities", "risk_priority", "acceptance_criteria"],
+    "tables": ["database_design"],
+    "api": ["api_design", "validation_rules"],
+    "requirements": ["functional_requirements", "requirement_traceability_matrix"],
+    "quality": ["non_functional_requirements", "security_requirements", "business_workflows"],
+}
+
+
+# What a part cannot leave out (the joined document is validated as a whole afterwards).
+PART_NEEDS = {"frame": ["roles", "public_pages", "protected_pages"], "tables": ["database_design"], "api": ["api_design"],
+              "requirements": ["functional_requirements", "requirement_traceability_matrix"],
+              "quality": ["non_functional_requirements", "business_workflows"]}
+
+
+def _part_validator(name: str):
+    keys = PARTS[name]
+
+    def check(data: Any) -> dict:
+        doc = data.get("srs_document", data) if isinstance(data, dict) else None
+        if not isinstance(doc, dict):
+            raise ValueError('return {"srs_document": {...}} with the keys this part writes')
+        missing = [key for key in PART_NEEDS[name] if key not in doc]
+        if missing:
+            raise ValueError(f"these keys of this part are missing: {', '.join(missing)}")
+        return {key: doc[key] for key in keys if key in doc}
+
+    return check
+
+
+def _write_in_parts(session: ProjectSession, project: str, record: dict, approved: dict) -> dict:
+    """The specification in parts written at the same time (`PARTS`), joined and validated as one document.
+
+    One call writing the whole document returned about 60,000 tokens and took over two minutes; the parts take as long as
+    the largest of them; a part that does not come back is asked for once more on its own. Every part gets the plan, the interview and the same page and table names, computed here, so the
+    parts fit together. Raises when a part or the joined document does not pass: the caller then writes it in one call."""
+    from . import interview as interview_stage
+
+    routes = "\n".join(f"- `{s.get('route')}` — {', '.join(s.get('who') or []) or 'Everyone'}"
+                       for s in approved.get("screens") or [] if isinstance(s, dict) and s.get("route"))
+    tables = "\n".join(f"- `{completeness.planned_table_name(str(r.get('name') or ''))}` ({r.get('name')})"
+                       for r in approved.get("records") or [] if isinstance(r, dict) and r.get("name"))
+    memory = session.memory_digest()
+    system = prompts.load("srs/system") + (f"\n\n## What this project already knows\n\n{memory}" if memory else "")
+    base = prompts.load("srs/document", project_name=(str(approved.get("app_name") or "").strip() or record.get("name") or project),
+                        stack=record.get("stack", ""), language=record.get("language", "English"))
+    inputs = dict(routes=routes or "(none)", tables=tables or "(none)", plan=json.dumps(approved, ensure_ascii=False, indent=1),
+                  interview=interview_stage.full_transcript(project) or "(there was no interview)")
+
+    def write(name: str) -> dict:
+        keys = PARTS[name]
+        return llm.complete_json(system=system,
+                                 user=base + "\n\n" + prompts.load("srs/document-part", keys=", ".join(f"`{k}`" for k in keys),
+                                                                   **inputs),
+                                 validator=_part_validator(name), label=f"srs_document:{name}", project=project)
+
+    written: dict[str, dict] = {}
+    failed: dict[str, str] = {}
+
+    def attempt(names: list[str]) -> None:
+        failed.clear()
+        done = llm.in_lanes(names, write, lanes=len(names),
+                            on_error=lambda name, exc: failed.__setitem__(name, str(exc)[:120]))
+        written.update({name: part for name, part in zip(names, done) if part is not None and name not in failed})
+
+    attempt(list(PARTS))
+    if failed:                                  # a part that did not come back is asked for once more, on its own
+        bus.log(project, "WARN", f"Writing {', '.join(failed)} of the specification again: {'; '.join(failed.values())}")
+        attempt(list(failed))
+    if failed:
+        raise ValueError("a part could not be written (" + "; ".join(f"{k}: {v}" for k, v in failed.items()) + ")")
+    doc: dict[str, Any] = {}
+    for name in PARTS:
+        doc.update(written[name])
+    envelope = srs_schema.srs_validator({"srs_document": doc})
+    named = str((envelope["srs_document"].get("app_summary") or {}).get("app_name") or "").strip()
+    if named and str(envelope["srs_document"].get("project_name") or "").strip() in ("", project):
+        envelope["srs_document"]["project_name"] = named
+    return envelope
+
+
 def _write_document(session: ProjectSession, project: str, record: dict,
                     approved: dict) -> dict:
+    """The specification in parts written at the same time (`_write_in_parts`), or, when they do not join into a valid
+    document, in one call."""
+    bus.phase(project, "srs:document", "Writing the requirements",
+              detail=f"{len(PARTS)} parts of the specification written at the same time, then joined.")
+    try:
+        return _write_in_parts(session, project, record, approved)
+    except RunCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the one-call path is the fallback, never a failed specification
+        bus.log(project, "WARN", f"The parts did not join into a valid specification ({str(exc)[:200]}); writing it in one call.")
+    return _write_whole(session, project, record, approved)
+
+
+def _write_whole(session: ProjectSession, project: str, record: dict,
+                 approved: dict) -> dict:
     """One call for the whole specification, validated against the schema.
 
     The approved plan and the interview are on disk at `.agentforge/plan.json`
@@ -594,6 +694,41 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
     return entry
 
 
+_diagram_save_lock = threading.Lock()
+
+
+def _check_diagrams_later(project: str, session: ProjectSession) -> None:
+    """The look at the drawn diagrams (`diagram_look.run`), after the specification is done: it took a minute or more of
+    every specification while it waited for it. The corrected diagrams go into the specification as it is when the
+    check ends; nothing else in it is touched."""
+    saved = document(project).get("srs_document") or {}
+    doc = {"diagrams": copy.deepcopy(saved.get("diagrams") or [])}
+
+    def check() -> None:
+        try:
+            result = diagram_look.run(project, session, doc["diagrams"])
+            if not (isinstance(result, dict) and result.get("redrawn")):
+                return
+            fixed = {str(d.get("kind")): d for d in doc["diagrams"]}
+            with _diagram_save_lock:
+                latest = session.read_record(*DOCUMENT, fallback=None)
+                body = (latest or {}).get("srs_document") if isinstance(latest, dict) else None
+                if not isinstance(body, dict):
+                    return
+                for entry in body.get("diagrams") or []:
+                    better = fixed.get(str(entry.get("kind")))
+                    if better is not None:
+                        entry["source"], entry["svg"] = better.get("source"), better.get("svg")
+                _write_record_visible(session, project, DOCUMENT, latest)
+                _write_record_visible(session, project, (SRS_DIR, "SRS.md"), _render_markdown(body))
+        except RunCancelled:
+            return
+        except Exception as exc:  # noqa: BLE001 - a review, never a reason to doubt the finished specification
+            bus.log(project, "WARN", f"The diagram check stopped: {str(exc)[:200]}")
+
+    threading.Thread(target=check, daemon=True, name=f"diagram-look:{project}").start()
+
+
 def _write_handoff(session: ProjectSession, project: str, doc: dict, record: dict) -> dict:
     """What every later stage consumes, derived from the document it must honour."""
     from . import interview
@@ -636,16 +771,30 @@ def _write_handoff(session: ProjectSession, project: str, doc: dict, record: dic
         "requirements": doc.get("functional_requirements") or [],
         "non_functional": doc.get("non_functional_requirements") or [],
     }
-    handoff["prompt"] = llm.complete(
-        system=prompts.load("srs/system"),
-        user=("Write the single instruction the build agent works from. Name every "
-              "page, role, record, workflow and acceptance proof it must deliver, "
-              "in the order it should build them. Prose, no JSON, no preamble.\n\n"
-              + json.dumps(handoff, ensure_ascii=False)[:30000]),
-        project=project)
-    handoff["files"] = {"BUILD.md": handoff["prompt"]}
+    handoff["prompt"] = ""
+    handoff["files"] = {}
     session.write_record(*HANDOFF, data=handoff)
-    session.write_record(SRS_DIR, "BUILD.md", data=handoff["prompt"])
+
+    # The build works from app.md and builder.md. BUILD.md, a prose instruction a person or an outside agent can be
+    # handed, is written in the background: it was the last 36 seconds of every specification.
+    def build_prompt() -> None:
+        try:
+            text = llm.complete(
+                system=prompts.load("srs/system"),
+                user=("Write the single instruction the build agent works from. Name every "
+                      "page, role, record, workflow and acceptance proof it must deliver, "
+                      "in the order it should build them. Prose, no JSON, no preamble.\n\n"
+                      + json.dumps({k: v for k, v in handoff.items() if k not in ("prompt", "files")},
+                                   ensure_ascii=False)[:30000]),
+                project=project)
+        except Exception as exc:  # noqa: BLE001 - the specification is done; only this extra file is missing
+            bus.log(project, "WARN", f"BUILD.md was not written: {str(exc)[:200]}")
+            return
+        handoff["prompt"], handoff["files"] = text, {"BUILD.md": text}
+        session.write_record(*HANDOFF, data=handoff)
+        session.write_record(SRS_DIR, "BUILD.md", data=text)
+
+    threading.Thread(target=build_prompt, daemon=True, name=f"build-md:{project}").start()
     return handoff
 
 
@@ -805,8 +954,8 @@ def generate(project: str) -> dict[str, Any]:
                 f"{rendered} rendered to SVG."
                 + ("" if mermaid.available() else
                    " Install @mermaid-js/mermaid-cli to see them as pictures."))
-        # Each drawn diagram is photographed and looked at by a model that can see pictures, and fixed (two rounds at most).
-        diagram_look.run(project, session, doc["diagrams"])
+        # Each drawn diagram is photographed and looked at by a model that can see pictures, and fixed (two rounds at most):
+        # after the specification is done, in the background (`_check_diagrams_later`), so nobody waits for it.
 
         doc = envelope["srs_document"]
         doc["approved_plan_markdown"] = plan_stage.markdown(project)
@@ -841,6 +990,7 @@ def generate(project: str) -> dict[str, Any]:
             f"customer asked for, and the site map) and builder.md (the full specification). "
             f"Read those rather than asking for the specification again.")
         session.finish(f"Specification written in {elapsed}s.")
+        _check_diagrams_later(project, session)
         bus.sync_state(project, "clean", "Specification written",
                        source="srs", srs_status="completed")
         return {"srs": envelope, "summary": summary}

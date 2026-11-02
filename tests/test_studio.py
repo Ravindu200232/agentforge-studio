@@ -1236,3 +1236,45 @@ class RouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InterviewSplitTests(unittest.TestCase):
+    """A question waits only for a short call; the answer's bookkeeping runs beside it, and is in before the next answer."""
+
+    def test_the_question_is_its_own_call_and_the_bookkeeping_is_applied_in_the_background(self):
+        from server_modules import config, coverage, store
+        from server_modules.session import drop
+        from srs_agent import interview
+
+        category = next(iter(coverage.categories()))
+        calls = []
+
+        def model(system="", user="", validator=None, label="", **kwargs):
+            calls.append(label)
+            if label == "interview:fold":
+                return validator({"coverage_updates": {category: {"status": "KNOWN", "facts": ["learned it"]}}})
+            return validator({"stage": "gathering", "next": {"question": "Who approves a refund?", "answer_type": "free_text",
+                                                              "topic": "refunds"}})
+
+        with tempfile.TemporaryDirectory() as folder:
+            original_projects, original_workspaces = config.PROJECTS_FILE, config.WORKSPACES
+            config.PROJECTS_FILE = Path(folder) / "projects.json"
+            config.WORKSPACES = Path(folder) / "workspaces"
+            try:
+                project = store.create("a shop till for two branches")["id"]
+                with patch.object(interview.llm, "complete_json", model), patch.object(interview.bus, "agent_msg"):
+                    first = interview.next_question(project)["question"]
+                    interview.record_answer(project, {"key": first["id"], "selected": ["pos"], "text": "POS"})
+                    second = interview.next_question(project)["question"]
+                    interview._wait_fold(project)
+                    interview.record_answer(project, {"key": second["id"], "text": "The owner"})
+                    interview._wait_fold(project)
+                self.assertEqual(second["question"], "Who approves a refund?")
+                self.assertIn("interview:ask", calls)
+                self.assertNotIn("interview:turn", calls)
+                self.assertEqual(calls.count("interview:fold"), 2)
+                kept = interview.state(interview.session_for(project))["coverage"][category]
+                self.assertEqual((kept["status"], kept["facts"]), ("KNOWN", ["learned it"]))
+            finally:
+                drop(project)
+                config.PROJECTS_FILE, config.WORKSPACES = original_projects, original_workspaces

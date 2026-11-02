@@ -22,6 +22,7 @@ from server_modules import config, login_ui, prompts
 
 PAGES_PER_PHASE = 4
 PROGRESS = ("build", "progress.json")
+PROGRESS_DIR = ("build", "progress")          # one record per phase: phases built at the same time never write one file
 STATE = ("build", "phases.json")
 MIN_BYTES = 1                      # a file a page names has to exist and not be empty
 
@@ -95,7 +96,7 @@ def request_for(phase: dict[str, Any], number: int, total: int, routes: list[dic
         task = prompts.load("builder/phase-foundation").strip()
     elif kind == "pages":
         wanted = [row for row in routes if row["route"] in set(phase.get("routes") or [])]
-        task = prompts.load("builder/phase-pages", routes=_listing(wanted)).strip()
+        task = prompts.load("builder/phase-pages", routes=_listing(wanted), progress=progress_file(phase)).strip()
     elif kind == "wiring":
         task = prompts.load("builder/phase-wiring", phase1=section(request, 1)).strip()
     elif kind == "tests":
@@ -109,28 +110,47 @@ def brief(request: str) -> str:
     """What a phase's fresh conversation starts with: the build request, and where the earlier phases' work is."""
     return ("# The build this phase is part of\n\n"
             "Each phase starts a fresh conversation, so the build request is repeated here. What the earlier phases made is on "
-            "disk: `.agentforge/build/progress.json` names each built page's files, and the shared layout, components, data "
+            "disk: `.agentforge/build/progress.json` and the records in `.agentforge/build/progress/` name each built page's files, and the shared layout, components, data "
             "access and helpers are in the app's own folders. Read the ones this phase uses before writing; do not guess them, "
             "and do not reread what this phase does not touch.\n\n" + request.strip())
 
 
+def together(phase: dict[str, Any]) -> str:
+    """Which phases are built at the same time (`session.Phases.together`): the pages phases, once the foundation stands, and
+    the unit tests with the journey tests. One agent building a 31-page store's pages four at a time took 2 h 37 min."""
+    kind = phase.get("kind")
+    return "pages" if kind == "pages" else "tests" if kind in ("tests", "checks") else ""
+
+
+def progress_file(phase: dict[str, Any]) -> str:
+    """Where a phase records the pages it built: its own file, so phases built at the same time never overwrite each other."""
+    return f"{config.RECORD_DIR}/{'/'.join(PROGRESS_DIR)}/{phase.get('id') or 'phase'}.json"
+
+
 def repair_for(phase: dict[str, Any], number: int, total: int, problems: list[str]) -> str:
-    return prompts.load("builder/phase-repair", number=number, total=total, title=phase["title"],
+    return prompts.load("builder/phase-repair", number=number, total=total, title=phase["title"], progress=progress_file(phase),
                         problems="\n".join(f"- {line}" for line in problems)).strip()
 
 
 # --- what a phase delivered ---------------------------------------------------------------------------------------------
 
 def recorded(workspace: Path) -> dict[str, list[str]]:
-    """The pages the model says it built, and the files it says are theirs, from `.agentforge/build/progress.json`."""
-    try:
-        data = json.loads((workspace / config.RECORD_DIR).joinpath(*PROGRESS).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    rows = data.get("routes") if isinstance(data, dict) else None
-    if not isinstance(rows, dict):
-        return {}
-    return {str(route): [str(f) for f in files if isinstance(f, str)] for route, files in rows.items() if isinstance(files, list)}
+    """The pages the model says it built, and the files it says are theirs: `.agentforge/build/progress.json` and every
+    phase's own record in `.agentforge/build/progress/`."""
+    record = workspace / config.RECORD_DIR
+    sources = [record.joinpath(*PROGRESS)] + sorted(record.joinpath(*PROGRESS_DIR).glob("*.json"))
+    out: dict[str, list[str]] = {}
+    for source in sources:
+        try:
+            data = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        rows = data.get("routes") if isinstance(data, dict) else None
+        for route, files in (rows.items() if isinstance(rows, dict) else []):
+            if isinstance(files, list):
+                kept = out.setdefault(str(route), [])
+                kept += [str(f) for f in files if isinstance(f, str) and str(f) not in kept]
+    return out
 
 
 def _real(workspace: Path, name: str) -> bool:
@@ -176,7 +196,7 @@ def problems(workspace: Path, phase: dict[str, Any]) -> list[str]:
     found = []
     for route in phase.get("routes") or []:
         if route not in notes or not notes[route]:
-            found.append(f"`{route}` is not recorded in .agentforge/build/progress.json (a page is done when it has an entry with its files)")
+            found.append(f"`{route}` is not recorded in {progress_file(phase)} (a page is done when it has an entry with its files)")
         elif not built(workspace, route, notes):
             found.append(f"`{route}` is recorded, but none of the files it names exists: {', '.join(notes[route][:3])}")
         if any(part in route.lower() for part in ("login", "sign-in", "signin")):

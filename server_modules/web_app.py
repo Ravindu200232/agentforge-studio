@@ -529,8 +529,11 @@ def _crashing(rows: list[tuple[str, str]]) -> str:
 def ensure_built(app: Path, repair: Callable[[str], None] | None = None, rounds: int = 2) -> None:
     """Bundle the app and open its screens. When it does not bundle, or a screen crashes, give what was said to `repair` (the agent
     fixes the files) and try again. An app that does not bundle after the agent's tries is an error; a screen that still crashes is
-    not: it shows what is wrong in its own place, and the rest of the app works."""
-    tries = 0
+    not: it shows what is wrong in its own place, and the rest of the app works.
+
+    The two have their own tries: a repair of a crashing screen that breaks the bundle (one took out a page's opening tag) still
+    gets its `rounds` repairs of the bundle, rather than ending with the tries a crash had used up."""
+    crash_tries = build_tries = 0
     while True:
         ok, text = bundle(app)
         if ok:
@@ -538,11 +541,13 @@ def ensure_built(app: Path, repair: Callable[[str], None] | None = None, rounds:
             if not crashing:
                 return
             text = _crashing(crashing)
-        if repair is None or tries >= rounds:
-            if not ok:
+            if repair is None or crash_tries >= rounds:
+                return
+            crash_tries += 1
+        else:
+            if repair is None or build_tries >= rounds:
                 raise BuildFailed(text)
-            return
-        tries += 1
+            build_tries += 1
         repair(text)
 
 

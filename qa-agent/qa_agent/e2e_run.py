@@ -260,8 +260,10 @@ def _build_if_needed(project: str, session: Any, env: dict[str, str], now: str) 
     return result
 
 
-def run(project: str, session: Any, grep: list[str] | None = None, reason: str = "build", force: bool = False) -> dict[str, Any]:
-    """Run the end-to-end journeys: all of them, or only the tests `grep` names (journey ids or titles).
+def run(project: str, session: Any, grep: list[str] | None = None, reason: str = "build", force: bool = False,
+        desktop: bool = False) -> dict[str, Any]:
+    """Run the end-to-end journeys: all of them, or only the tests `grep` names (journey ids or titles); `desktop` runs them
+    at desktop width only (a journey is proved on the desktop browser; phone width is looked at in the page pictures).
 
     A full run is skipped when the last one already tested this source (`force` runs it anyway: the person asked).
     Returns {"status": "passed" | "failed" | "skipped" | "build_failed" | "error", ...}; never raises but for Stop."""
@@ -294,11 +296,12 @@ def run(project: str, session: Any, grep: list[str] | None = None, reason: str =
             bus.agent_msg(project, text, title="End-to-end journeys not run", kind="command_output", agent=bus.DEVELOPER)
             bus.phase(project, "qa:e2e", phase_title, status="failed", detail="the app did not build", agent=bus.DEVELOPER)
             return {"status": "build_failed", "exit_code": built["exit_code"], "output": built["output"]}
-        command = [_node(), RUNNER, "--", "npx", "playwright", "test", *PLAYWRIGHT_ARGS]
+        args = [*PLAYWRIGHT_ARGS, *(["--project=desktop"] if desktop else [])]
+        command = [_node(), RUNNER, "--", "npx", "playwright", "test", *args]
         if pattern:
             command += ["--grep", pattern]
         shown = "node scripts/with-server.mjs -- npx playwright test " + " ".join(
-            f'"{arg}"' if " " in arg or "|" in arg else arg for arg in PLAYWRIGHT_ARGS) + (f' --grep "{pattern}"' if pattern else "")
+            f'"{arg}"' if " " in arg or "|" in arg else arg for arg in args) + (f' --grep "{pattern}"' if pattern else "")
         bus.agent_msg(project, shown, title=f"{phase_title} · up to {RUN_SECONDS // 60} min", kind="command", agent=bus.DEVELOPER)
         started_at = time.time()
         result = _execute(project, session, command, env, RUN_SECONDS, "The end-to-end run")
@@ -561,6 +564,65 @@ def fix_request(workspace: Path, said: str = "") -> tuple[str, list[str]]:
     if extra and not re.fullmatch(r"\s*fix (the )?fail(ing|ed) journeys\s*\.?\s*", extra, re.I):
         request += f"\n\nThe person also said: {extra}"
     return request, [row["id"] for row in failed]
+
+
+def journey_ids(workspace: Path) -> list[dict[str, str]]:
+    """The journeys of the contract, in order: [{"id", "name"}]."""
+    from server_modules import journeys
+
+    contract = journeys.read_journey_contract(workspace) or {}
+    return [{"id": str(j["id"]), "name": str(j.get("workflow_name") or j["id"])} for j in contract.get("journeys") or []
+            if isinstance(j, dict) and j.get("id")]
+
+
+REQUIREMENT_SPECS = "e2e/requirements"
+
+
+def requirement_specs(workspace: Path) -> list[dict[str, Any]]:
+    """The requirement tests the build wrote for pages no journey goes through: [{"id": spec path, "name", "grep": ids}]."""
+    folder = workspace / REQUIREMENT_SPECS
+    out = []
+    for spec in sorted(folder.glob("*.spec.*")) if folder.is_dir() else []:
+        try:
+            ids = sorted(set(re.findall(r"\bFR-\d+\b", spec.read_text(encoding="utf-8", errors="replace"))))
+        except OSError:
+            continue
+        if ids:
+            out.append({"id": spec.relative_to(workspace).as_posix(), "name": spec.name, "grep": ids})
+    return out
+
+
+def fix_spec_request(workspace: Path, spec: dict[str, Any]) -> str:
+    """What the fix of a failed requirement test is given: the tests of `spec` whose newest desktop result failed."""
+    from server_modules import prompts
+
+    wanted = set(spec["grep"])
+    failed = [t for t in build_evidence.newest_tests(workspace)
+              if str(t.get("status")) == "failed" and "mobile" not in str(t.get("project") or "")
+              and wanted & set(re.findall(r"\bFR-\d+\b", f"{t.get('suite') or ''} {t.get('title') or ''}"))]
+    if not failed:
+        return ""
+    rows = "\n".join(f"- `{spec['id']}` — {t.get('title')}: {str(t.get('error') or 'the test failed')[:300]}" for t in failed)
+    return prompts.load("testing/fix-journey", journey=rows).strip()
+
+
+def fix_one_request(workspace: Path, journey_id: str) -> str:
+    """What the fix of one failed journey is given: its name, spec file and why it failed. "" when it did not fail."""
+    from server_modules import prompts
+
+    row = next((r for r in failures(workspace) if r["id"] == journey_id), None)
+    if row is None:
+        return ""
+    text = f"- **{row['id']}** {row['name']}" + (f" — `{row['files']}`" if row["files"] else "") + f": {row['why']}"
+    return prompts.load("testing/fix-journey", journey=text).strip()
+
+
+def record_full(workspace: Path, entry: dict[str, Any]) -> None:
+    """A journey-by-journey pass over every journey is the app's run, as a full run is: what `current` and the runtime
+    test's carry-over read."""
+    saved = record(workspace)
+    saved["full"] = {**entry, "fingerprint": fingerprint(workspace)}
+    _save(workspace, saved)
 
 
 def _journey_tests(workspace: Path) -> list[dict[str, Any]]:

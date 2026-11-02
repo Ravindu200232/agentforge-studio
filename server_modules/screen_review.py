@@ -112,6 +112,30 @@ def run_fix(project: str, session: Any, request: str, model: str, agent: str, ti
         return why
 
 
+def rebuilt(project: str, rebuild: Any, agent: str, title: str) -> bool:
+    """Bundle the app again after a fix (`rebuild`, which has the agent repair what does not bundle). A fix that breaks the
+    bundle - one agent's fix of a crashing page took out a page's opening tag - is given one more go; when the app still does
+    not bundle, the review stops fixing and says so, and keeps what it found, instead of ending: the stage bundles the app
+    again, with its own repairs, when the review is over. Whether the app is bundled. Only Stop ends the review."""
+    from .session import RunCancelled
+
+    for attempt in (1, 2):
+        try:
+            rebuild()
+            return True
+        except RunCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a bundle that fails is repaired again, then reported, never the end of the review
+            why = str(exc).strip().splitlines()[0][:200] if str(exc).strip() else type(exc).__name__
+            if attempt == 1:
+                bus.log(project, "WARN", f"The fix left the app not bundling ({why}); repairing it again.", agent=agent)
+                continue
+            bus.agent_msg(project, f"The fix left the app not bundling ({why}). No more fixes in this review: what it found is "
+                                   "listed, and the app is bundled again, with its own repairs, when the stage finishes.",
+                          title=title, kind="narration", agent=agent)
+    return False
+
+
 def plural(count: int, word: str) -> str:
     return f"{count} {word}{'' if count == 1 else 's'}"
 

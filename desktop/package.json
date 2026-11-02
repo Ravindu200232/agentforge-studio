@@ -1,7 +1,7 @@
 {
   "name": "agentforge-desktop",
   "productName": "AgentForge",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "description": "AgentForge — plan, build, test and deploy apps with AI agents",
   "author": "AgentForge",
   "private": true,

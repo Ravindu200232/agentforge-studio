@@ -14,6 +14,7 @@ Every round after the first is a question in the chat (`screen_review.next_round
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from server_modules import bus, prompts, screen_review
@@ -30,14 +31,67 @@ def _stopped(session: Any) -> None:
 
 
 def screens_then_journeys(project: str, session: Any, reason: str = "build", force: bool = False) -> dict[str, Any]:
-    """Steps 1 and 2: every page looked at and fixed, round by round; then the journeys once, and round by round on the ones
-    that fail. Returns the journeys' run (`e2e_run.run`'s answer)."""
+    """Steps 1 and 2: every page looked at and fixed, round by round; then the journeys one by one, each fixed as soon as
+    it fails (`journeys_one_by_one`). Returns the journeys' run."""
     e2e_review.run(project, session, kind="pages", continue_plan=True)
     _stopped(session)
-    ran = e2e_run.run(project, session, reason=reason, force=force)
-    _stopped(session)
-    journey_rounds(project, session, ran)
-    return ran
+    return journeys_one_by_one(project, session, reason=reason, force=force)
+
+
+MAX_JOURNEY_FIXES = 2         # fixes of one journey before the run goes on to the next
+
+
+def journeys_one_by_one(project: str, session: Any, reason: str = "build", force: bool = False, model: str = "") -> dict[str, Any]:
+    """Each journey on its own, at desktop width: run it; when it fails, have it fixed and run it again (at most
+    MAX_JOURNEY_FIXES times); then the next. A fix made for one journey (a shared helper, the seed) is in place before the
+    journeys after it run, and the app is built again only when a fix changed it. Running all of them first and fixing
+    them together afterwards took an hour and a half on a 31-page store. Returns {"status": "passed" | "failed" | ...}."""
+    workspace = session.workspace
+    ids = e2e_run.journey_ids(workspace)
+    if not ids or not e2e_run.runnable(workspace):
+        ran = e2e_run.run(project, session, reason=reason, force=force)
+        journey_rounds(project, session, ran, model)
+        return ran
+    if not force and e2e_run.current(workspace):
+        return e2e_run.run(project, session, reason=reason)             # says the results are reused and returns them
+    passed, failed, fixed = [], [], []
+    # The journeys, then the requirement tests the build wrote for the pages no journey goes through, each the same way.
+    items = [{**j, "grep": [j["id"]], "ask": lambda j=j: e2e_run.fix_one_request(workspace, j["id"]), "what": "Journey"}
+             for j in ids]
+    items += [{**s, "ask": lambda s=s: e2e_run.fix_spec_request(workspace, s), "what": "Requirement test"}
+              for s in e2e_run.requirement_specs(workspace)]
+    for number, item in enumerate(items, start=1):
+        _stopped(session)
+        bus.agent_msg(project, f"{item['what']} {number} of {len(items)}: {item['id']} {item['name']}.", title="Journeys",
+                      kind="narration", agent=bus.DEVELOPER)
+        ran = e2e_run.run(project, session, grep=item["grep"], reason=f"{reason}: {item['id']}", desktop=True)
+        tries = 0
+        while ran.get("status") in {"failed", "build_failed"} and tries < MAX_JOURNEY_FIXES:
+            tries += 1
+            request = (item["ask"]() if ran.get("status") == "failed" else
+                       prompts.load("testing/fix-runtime", output=str(ran.get("output") or "")[-3000:]))
+            if not request:
+                break
+            bus.agent_msg(project, f"{item['id']} failed: fixing it ({tries} of {MAX_JOURNEY_FIXES}), then running it again.",
+                          title="Journeys", kind="narration", agent=bus.DEVELOPER)
+            _fix(project, session, request, model, "Journeys")
+            _stopped(session)
+            ran = e2e_run.run(project, session, grep=item["grep"], reason=f"{reason}: {item['id']} fix {tries}", desktop=True)
+        if ran.get("status") == "passed":
+            passed.append(item["id"])
+            if tries:
+                fixed.append(item["id"])
+        else:
+            failed.append(item["id"])
+    ids = items
+    status = "passed" if not failed else "failed"
+    e2e_run.record_full(workspace, {"at": time.time(), "reason": f"{reason} (one by one)", "grep": [],
+                                    "exit_code": 0 if not failed else 1, "passed": len(passed), "failed": len(failed),
+                                    "total": len(ids), "one_by_one": True})
+    text = (f"{len(passed)} of {len(ids)} journeys and requirement tests pass" + (f" ({', '.join(fixed)} after a fix)" if fixed else "")
+            + (f". Still failing after {MAX_JOURNEY_FIXES} fixes each: {', '.join(failed)}." if failed else "."))
+    bus.agent_msg(project, text, title="Journeys", kind="narration", agent=bus.DEVELOPER)
+    return {"status": status, "passed": len(passed), "failed": len(failed), "failing": failed, "total": len(ids)}
 
 
 def journey_rounds(project: str, session: Any, ran: dict[str, Any], model: str = "") -> int:

@@ -196,8 +196,9 @@ def _review(project: str, session: Any, model: str, rows: list[dict[str, Any]], 
         # round only at the pages it was fixing and the pages whose own file it changed.
         again = [r for r in rows if (shared and number == 1) or r in own or (str(r["file"]) in bad and (shared or own))]
         fixed_pages += [str(r["file"]) for r in again if str(r["file"]) not in fixed_pages]
-        if again and rebuild:
-            rebuild()
+        if again and rebuild and not screen_review.rebuilt(project, rebuild, bus.DESIGNER, "Visual review"):
+            rounds.append({"round": number, "fixing": count, "looked_again": 0, "bundle_failed": True})
+            break
         if not again:
             rounds.append({"round": number, "fixing": count, "looked_again": 0})
             break

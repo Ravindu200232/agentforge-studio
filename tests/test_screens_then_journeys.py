@@ -281,3 +281,47 @@ class AfterTheJourneysTests(Workspace):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OneJourneyAtATimeTests(Workspace):
+    """Each journey on its own, fixed as soon as it fails and run again, before the next one runs."""
+
+    specs: list = []
+
+    def loop(self, outcomes: dict[str, list[str]]):
+        ids = [{"id": j, "name": f"Journey {j}"} for j in outcomes if j.startswith("UJ-")]
+        calls: list[tuple] = []
+
+        def run(project, session, grep=None, reason="", force=False, desktop=False):
+            calls.append((tuple(grep or []), desktop))
+            return {"status": outcomes[grep[0]].pop(0)} if grep else {"status": "passed"}
+
+        with mock.patch.object(e2e_run, "journey_ids", return_value=ids), \
+                mock.patch.object(e2e_run, "runnable", return_value=True), \
+                mock.patch.object(e2e_run, "current", return_value=False), \
+                mock.patch.object(e2e_run, "run", run), \
+                mock.patch.object(e2e_run, "record_full") as recorded, \
+                mock.patch.object(e2e_run, "fix_one_request", lambda workspace, jid: f"fix {jid}"),                 mock.patch.object(e2e_run, "requirement_specs", return_value=self.specs),                 mock.patch.object(e2e_run, "fix_spec_request", lambda workspace, spec: f"fix {spec['id']}"):
+            result = sequence.journeys_one_by_one("p", self.session)
+        return result, calls, recorded
+
+    def test_a_failing_journey_is_fixed_and_run_again_before_the_next_runs(self):
+        result, calls, recorded = self.loop({"UJ-001": ["passed"], "UJ-002": ["failed", "passed"], "UJ-003": ["passed"]})
+        self.assertEqual([c[0] for c in calls], [("UJ-001",), ("UJ-002",), ("UJ-002",), ("UJ-003",)])
+        self.assertTrue(all(desktop for _, desktop in calls))
+        self.assertEqual(self.session.fixes, ["fix UJ-002"])
+        self.assertEqual((result["status"], result["passed"], result["failed"]), ("passed", 3, 0))
+        self.assertEqual(recorded.call_args.args[1]["exit_code"], 0)
+
+    def test_a_journey_still_failing_after_two_fixes_is_left_and_the_next_one_runs(self):
+        result, calls, _ = self.loop({"UJ-001": ["failed", "failed", "failed"], "UJ-002": ["passed"]})
+        self.assertEqual([c[0] for c in calls], [("UJ-001",)] * 3 + [("UJ-002",)])
+        self.assertEqual(self.session.fixes, ["fix UJ-001"] * sequence.MAX_JOURNEY_FIXES)
+        self.assertEqual((result["status"], result["failing"]), ("failed", ["UJ-001"]))
+
+    def test_the_requirement_tests_run_after_the_journeys_one_file_at_a_time(self):
+        self.specs = [{"id": "e2e/requirements/suppliers.spec.js", "name": "suppliers.spec.js", "grep": ["FR-031", "FR-032"]}]
+        result, calls, _ = self.loop({"UJ-001": ["passed"], "FR-031": ["failed", "passed"]})
+        self.assertEqual([c[0] for c in calls], [("UJ-001",), ("FR-031", "FR-032"), ("FR-031", "FR-032")])
+        self.assertEqual(self.session.fixes, ["fix e2e/requirements/suppliers.spec.js"])
+        self.assertEqual((result["status"], result["total"]), ("passed", 2))

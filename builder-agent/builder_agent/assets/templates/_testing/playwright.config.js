@@ -51,6 +51,7 @@ export default defineConfig({
   },
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'] } },
-    { name: 'mobile', use: { ...devices['Pixel 7'] } },
+    // A journey is proved at desktop width; phone width is looked at in the pictures of every page (e2e/pages.spec.js).
+    { name: 'mobile', use: { ...devices['Pixel 7'] }, testIgnore: /(journeys|requirements)[\\/]/ },
   ],
 })
