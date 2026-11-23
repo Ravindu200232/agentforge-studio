@@ -1,7 +1,7 @@
 """The prototype: a new high-fidelity React app, made by reading the approved wireframes.
 
 The wireframes stay exactly as they were approved, so the customer can still look at them. When this stage starts it sets up a new app in
-`.agentforge/prototype/app` (the skill's first step), and the project's agent reads Anthropic's web-artifacts-builder skill, the wireframes,
+`.agentforge/prototype/app`, and the project's agent reads the custom UI guide, the wireframes,
 `app.md` and the approved design, plans the prototype, and writes it with its own file tools. Code here only sets the app up, says which
 screens and which design there are, bundles the finished app into the one page the studio shows, and leaves what the build reads:
 `routes.json` and, when the product has sign-in, `demo-accounts.json`. How the pages look and behave is the agent's.
@@ -208,11 +208,10 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str) -> list
 
     uploaded = _uploaded_site_images(session, app)
     skill = web_app.stage_skill(session.workspace)
-    shadcn = web_app.stage_shadcn(session.workspace)
     resume = ("## Resuming an interrupted run\n\nThe app already has the pages an earlier run wrote: read them, keep what is "
               "finished, and write only the pages that are still missing." if resuming else "")
     request = prompts.load(
-        "prototype/generate", request=headline, skill=skill, shadcn=shadcn, app=app_rel, wireframe=wire_rel, inputs="\n".join(inputs),
+        "prototype/generate", request=headline, skill=skill, app=app_rel, wireframe=wire_rel, inputs="\n".join(inputs),
         design_direction=design_direction,
         routes=wireframe_stage.routes_text([{"route": r["route"], "name": r["name"], "file": files[str(r["route"])],
                                              "roles": r["roles"], "signedIn": r["signed_in"]} for r in routes_out]),

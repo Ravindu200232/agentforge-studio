@@ -12,7 +12,7 @@ from typing import Any
 
 import httpx
 
-from . import bus, config
+from . import ai_providers, bus, config
 
 SERVER_FILE = Path(__file__).with_name("accounts.json")
 TOKEN = "account_token"
@@ -76,8 +76,9 @@ def _remember(account: dict[str, Any]) -> dict[str, Any]:
         row["ollama"] = account["ollama"]                    # the admin is told the Ollama account's balance
     config.save_settings({CACHE: row})
     # Move an older free account's Pro model choice to one it can use.
+    selected = str(config.setting("model") or "")
     if (config.engine() == "built-in" and _free(row)
-            and restricted_model(config.setting("model", ""))):
+            and not ai_providers.split_model(selected)[0] and restricted_model(selected)):
         config.save_settings({"model": DEFAULT_FREE_MODEL})
     _asked_at = time.time()
     bus.transient({"type": "account_usage", **row})

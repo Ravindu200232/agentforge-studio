@@ -1,9 +1,8 @@
-"""The wireframes: a low-fidelity React app the project's agent builds with Anthropic's web-artifacts-builder skill.
+"""The wireframes: a low-fidelity React app the project's agent writes for the approved specification.
 
 The agent reads the skill and `app.md` (what the customer asked for, and the site map) and writes one page per screen with its own file
-tools, so every file it writes appears in the chat as it happens. Code here is only what it cannot do for itself: create the app
-(the skill's first step), say which screens the specification names, and bundle the finished app into the one page the studio shows
-(the skill's last step). What the pages look like, and how they hang together, is the agent's.
+tools, so every file it writes appears in the chat as it happens. The Studio creates the scaffold and route list and bundles the
+finished app into a single HTML preview.
 
     <workspace>/.agentforge/wireframe/app/     the app: `src/pages/<page>.tsx` for every screen, and `bundle.html`
 """
@@ -103,28 +102,28 @@ def generate(project: str, request: str = "", fresh: bool = True) -> dict[str, A
     if not (session.record / document.SRS_DIR / "handoff" / "app.md").is_file():
         raise ValueError("the SRS handoff is missing; the wireframes are drawn from its app.md")
 
-    if not web_app.kit_ready():
-        bus.agent_msg(project, "Getting the toolkit the wireframes are built with ready (React, Tailwind and shadcn/ui). "
+    app = app_path(project)
+    carrying_on = not fresh and (app / "index.html").is_file()
+    legacy = carrying_on and web_app.legacy_kit(app)
+    if not web_app.kit_ready(legacy):
+        bus.agent_msg(project, "Preparing React, TypeScript and Tailwind for the wireframes. "
                                "This happens once and can take a few minutes.", title="Wireframe toolkit", kind="narration",
                       agent=bus.DESIGNER)
-    ready, why = web_app.prepare_kit()
+    ready, why = web_app.prepare_kit(legacy)
     if not ready:
         raise RuntimeError("the toolkit the wireframes are built with could not be installed: " + why[-300:])
 
-    app = app_path(project)
-    carrying_on = not fresh and (app / "index.html").is_file()
     if not carrying_on:
         web_app.remove_app(app)
     title = str((document.document(project).get("srs_document", {}).get("app_summary") or {}).get("app_name") or project)
     rows = web_app.create_app(app, title, pages)
     skill = web_app.stage_skill(session.workspace)
-    shadcn = web_app.stage_shadcn(session.workspace)
 
     bus.phase(project, "wireframes", "Drawing the wireframes", detail=f"{len(rows)} page(s) from the approved specification.",
               agent=bus.DESIGNER)
     resume = (f"The app already has pages from a run that stopped: read what is in `{_relative(project)}/src/pages`, keep it, "
               "and write the pages that are still missing." if carrying_on else "")
-    ask = prompts.load("wireframe/generate", request=request or APPROVAL_PROMPT, skill=skill, shadcn=shadcn, app=_relative(project),
+    ask = prompts.load("wireframe/generate", request=request or APPROVAL_PROMPT, skill=skill, app=_relative(project),
                        routes=routes_text(rows), resume=resume)
     start_fresh(session)
     if carrying_on or len(rows) < LANE_MIN_PAGES:

@@ -217,6 +217,12 @@ class RealRenderTests(unittest.TestCase):
         self.assertNotIn('"Helvetica, Arial, sans-serif"', svg)
         self.assertIn("#f8b666", svg.lower())                      # the model's colours are still its own
 
+    def test_a_state_diagram_with_a_plain_english_direction_still_renders(self):
+        source = ("stateDiagram-v2\n  direction left-to-right\n  [*] --> Open\n"
+                  "  state decide <<choice>>\n  Open --> decide\n  decide --> Done : approved\n  Done --> [*]")
+        self.assertIn("direction LR", mermaid.clean(source))
+        self.assertIn("approved", self.draw("state_machine", source))
+
 
 class FallbackTests(unittest.TestCase):
     def test_a_sequence_is_the_workflows_own_steps(self):
@@ -278,14 +284,17 @@ class FallbackTests(unittest.TestCase):
 
 
 class DrawFixture(unittest.TestCase):
-    def draw(self, kind, replies, doc=None, render=None):
+    def draw(self, kind, replies, doc=None, render=None, deploy_model=""):
         """Run `_draw_diagram` with the model's replies in order (the last repeats); returns the entry, the model calls
         and the text saved to the `.mmd` file (None when nothing was saved)."""
         calls: list[dict] = []
 
         def complete(**kwargs):
             calls.append(kwargs)
-            return replies[min(len(calls), len(replies)) - 1]
+            reply = replies[min(len(calls), len(replies)) - 1]
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
 
         def drawn(_kind, source, out, timeout=180):
             out.write_text("<svg/>", encoding="utf-8")
@@ -297,6 +306,7 @@ class DrawFixture(unittest.TestCase):
             session.record_path.side_effect = lambda *parts: workspace / ".agentforge" / Path(*parts)
             (workspace / ".agentforge" / "srs" / "diagrams").mkdir(parents=True)
             with mock.patch.object(document.llm, "complete", side_effect=complete), \
+                 mock.patch.object(document, "_deploy_model", return_value=deploy_model), \
                  mock.patch.object(document, "_diagram_reference", return_value=""), \
                  mock.patch.object(document.mermaid, "available", return_value=True), \
                  mock.patch.object(document.mermaid, "render_diagram", side_effect=render or drawn) as renderer:
@@ -341,6 +351,22 @@ class NarrationIsNeverSavedTests(DrawFixture):
         entry, calls, saved = self.draw("sequence", ["", GOOD_SEQUENCE])
         self.assertEqual(len(calls), 2)
         self.assertEqual(saved.strip(), GOOD_SEQUENCE.strip())
+
+    def test_a_deploy_timeout_retries_with_the_srs_attached(self):
+        with mock.patch.object(document.llm, "within", side_effect=lambda _seconds, function, **opts: function(**opts)) as timer:
+            entry, calls, saved = self.draw("sequence", [TimeoutError(), GOOD_SEQUENCE], deploy_model="deploy/example")
+        self.assertEqual([call.args[0] for call in timer.call_args_list], list(document.DEPLOY_DIAGRAM_SECONDS))
+        self.assertIsNotNone(calls[0]["workspace"])
+        self.assertIsNone(calls[1]["workspace"])
+        self.assertIn("Booking a room", calls[1]["user"])
+        self.assertFalse(entry.get("fallback"))
+        self.assertEqual(saved, GOOD_SEQUENCE.strip())
+
+    def test_a_second_timeout_keeps_the_srs_based_fallback(self):
+        entry, calls, saved = self.draw("sequence", [TimeoutError()], deploy_model="deploy/example")
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(entry["fallback"])
+        self.assertTrue(saved.startswith("sequenceDiagram"))
 
     def test_a_good_first_reply_is_asked_for_once_with_the_read_tool(self):
         entry, calls, saved = self.draw("sequence", [GOOD_SEQUENCE])

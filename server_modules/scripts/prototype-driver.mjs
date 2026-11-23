@@ -276,9 +276,16 @@ const handlers = {
     await push()
     return { state: await state() }
   },
-  async screenshot({ path: target }) {
+  async screenshot({ path: target, maxHeight }) {
     fs.mkdirSync(path.dirname(target), { recursive: true })
-    await page.screenshot({ path: target, type: 'jpeg', quality: 72, captureBeyondViewport: false })
+    if (maxHeight) {
+      const contentHeight = await page.evaluate(() => Math.max(document.body.scrollHeight, document.documentElement.scrollHeight))
+      const height = Math.min(contentHeight, maxHeight)
+      await page.screenshot({ path: target, type: 'png', clip: { x: 0, y: 0, width: settings.width, height },
+        captureBeyondViewport: true })
+    } else {
+      await page.screenshot({ path: target, type: 'jpeg', quality: 72, captureBeyondViewport: false })
+    }
     return { path: target }
   },
   async errors() { const found = errors; errors = []; return { errors: [...new Set(found)].slice(0, 6) } },

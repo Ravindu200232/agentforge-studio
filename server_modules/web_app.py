@@ -1,16 +1,13 @@
 """The React apps the wireframe and the prototype are made of.
 
-Both are the same kind of thing: a small Vite + React + Tailwind + shadcn/ui app the project's agent writes with its own file tools,
-following Anthropic's `web-artifacts-builder` skill (`prompts/skills/web-artifacts-builder/`). The skill's steps are done here, in code,
-because they are the same for every app: the project is created (step 1) and the finished app is bundled into one HTML file (step 3).
-What the pages look like is the agent's.
+Both start from a small Vite, React and Tailwind app. The project's agent writes its own UI with the file tools. The Studio
+creates the framework files and bundles the finished app into one HTML file.
 
     <workspace>/.agentforge/wireframe/app/      the wireframe: source, and `bundle.html`, the page the studio shows
     <workspace>/.agentforge/prototype/app/      the prototype: a new app, written after reading the wireframes
-    <state>/web-kit/                            the packages, installed once and linked into every app as `node_modules`
+    <state>/web-kit-custom/                     the packages, installed once and linked into new apps as `node_modules`
 
-An app is bundled with Vite and `vite-plugin-singlefile` (the skill bundles with Parcel; Vite is what the app is built with, so it
-bundles itself), which leaves every script, style and small image inlined in `bundle.html`.
+Vite and `vite-plugin-singlefile` inline scripts, styles and small images in `bundle.html`.
 """
 from __future__ import annotations
 
@@ -20,21 +17,15 @@ import os
 import re
 import shutil
 import subprocess
-import tarfile
 import threading
 from pathlib import Path
 from typing import Any, Callable
 
 from . import bus, config, prompts
 
-SKILL = "web-artifacts-builder"
+SKILL = "custom-ui"
 SKILL_SOURCE = config.PROMPTS / "skills" / SKILL
-# shadcn/ui's own skill (https://github.com/shadcn-ui/ui, `skills/shadcn`, unchanged) and the components of that repository the skill's
-# archive does not have (`web_kit/components`, ported to Tailwind 3 and the single Radix packages the kit installs).
-SHADCN = "shadcn"
-SHADCN_SOURCE = config.PROMPTS / "skills" / SHADCN
 KIT_SOURCE = Path(__file__).resolve().parent / "web_kit"
-COMPONENTS_ARCHIVE = SKILL_SOURCE / "scripts" / "shadcn-components.tar.gz"
 KINDS = ("wireframe", "prototype")
 BUNDLE = "bundle.html"
 BUILT = ".built"
@@ -59,23 +50,33 @@ class BuildFailed(RuntimeError):
 
 # --- the packages ------------------------------------------------------------------------------------------------------------
 
-def kit_dir() -> Path:
-    return config.STATE / "web-kit"
+def legacy_kit(app: Path) -> bool:
+    """Older scaffolds include the component registry config and may still import its packages."""
+    return (app / "components.json").is_file()
 
 
-def _signature() -> str:
+def kit_dir(legacy: bool = False) -> Path:
+    return config.STATE / ("web-kit" if legacy else "web-kit-custom")
+
+
+def _kit_source(legacy: bool) -> Path:
+    return KIT_SOURCE / "legacy" if legacy else KIT_SOURCE
+
+
+def _signature(legacy: bool = False) -> str:
     digest = hashlib.sha256()
     for name in ("package.json", "package-lock.json"):
-        path = KIT_SOURCE / name
+        path = _kit_source(legacy) / name
         if path.is_file():
             digest.update(name.encode() + path.read_bytes())
     return digest.hexdigest()
 
 
-def kit_ready() -> bool:
-    marker = kit_dir() / ".installed"
-    return (marker.is_file() and marker.read_text(encoding="utf-8").strip() == _signature()
-            and (kit_dir() / "node_modules" / "vite" / "bin" / "vite.js").is_file())
+def kit_ready(legacy: bool = False) -> bool:
+    folder = kit_dir(legacy)
+    marker = folder / ".installed"
+    return (marker.is_file() and marker.read_text(encoding="utf-8").strip() == _signature(legacy)
+            and (folder / "node_modules" / "vite" / "bin" / "vite.js").is_file())
 
 
 def node_exe() -> str | None:
@@ -97,18 +98,18 @@ def _run(args: list[str], cwd: Path, timeout: int, env: dict[str, str] | None = 
     return done.returncode == 0, _ANSI.sub("", (done.stdout or "") + (done.stderr or "")).strip()
 
 
-def prepare_kit() -> tuple[bool, str]:
+def prepare_kit(legacy: bool = False) -> tuple[bool, str]:
     """Install the packages every app is built with, once. Safe to call every time: it does nothing when they are there."""
     with _kit_lock:
-        if kit_ready():
+        if kit_ready(legacy):
             return True, ""
         npm = _npm()
         if not npm or not node_exe():
             return False, "Node.js (node and npm) was not found, and the wireframe and the prototype are built with it"
-        folder = kit_dir()
+        folder = kit_dir(legacy)
         folder.mkdir(parents=True, exist_ok=True)
         for name in ("package.json", "package-lock.json"):
-            source = KIT_SOURCE / name
+            source = _kit_source(legacy) / name
             if source.is_file():
                 shutil.copyfile(source, folder / name)
             else:
@@ -122,7 +123,7 @@ def prepare_kit() -> tuple[bool, str]:
             ok, text = _run(command, folder, timeout=1500)
         if not ok or not (folder / "node_modules" / "vite" / "bin" / "vite.js").is_file():
             return False, text[-1500:] or "the packages could not be installed"
-        (folder / ".installed").write_text(_signature(), encoding="utf-8")
+        (folder / ".installed").write_text(_signature(legacy), encoding="utf-8")
         return True, ""
 
 
@@ -133,19 +134,7 @@ def stage_skill(workspace: Path) -> str:
     relative = f"{config.RECORD_DIR}/skills/{SKILL}"
     target = workspace / relative
     target.mkdir(parents=True, exist_ok=True)
-    for name in ("SKILL.md", "LICENSE.txt"):
-        shutil.copyfile(SKILL_SOURCE / name, target / name)
-    return relative
-
-
-def stage_shadcn(workspace: Path) -> str:
-    """Put shadcn/ui's skill (its `SKILL.md`, the `rules/` and the references) where the project's agent can read it."""
-    relative = f"{config.RECORD_DIR}/skills/{SHADCN}"
-    target = workspace / relative
-    for source in sorted(p for p in SHADCN_SOURCE.rglob("*") if p.is_file()):
-        copy = target / source.relative_to(SHADCN_SOURCE)
-        copy.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, copy)
+    shutil.copyfile(SKILL_SOURCE / "SKILL.md", target / "SKILL.md")
     return relative
 
 
@@ -209,37 +198,8 @@ def write_demo(app: Path, accounts: list[dict[str, Any]] | None = None, sign_in:
                     f"export const signUp: {{ route: string; roleKey: string }} | null = {json.dumps(up)};\n", encoding="utf-8")
 
 
-def _extract_components(app: Path) -> None:
-    """The skill's shadcn/ui components (`components/ui`, `lib/utils.ts`, `hooks`), into the app's `src`."""
-    root = (app / "src").resolve()
-    with tarfile.open(COMPONENTS_ARCHIVE) as archive:
-        for member in archive.getmembers():
-            target = (root / member.name).resolve()
-            if not target.is_relative_to(root) or not (member.isfile() or member.isdir()):
-                continue
-            if member.isdir():
-                target.mkdir(parents=True, exist_ok=True)
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                source = archive.extractfile(member)
-                if source:
-                    target.write_bytes(source.read())
-
-
-def _add_components(app: Path) -> None:
-    """The shadcn/ui components the skill's archive lacks (`Field`, `InputGroup`, `Empty`, `Spinner`...), beside the others; one the
-    agent already has is left as it is, except a copy with the one mistake an earlier kit had in it (`Slot.Root`, which is the name in
-    the single Radix package; the kit's own is `Slot`)."""
-    target = app / "src" / "components" / "ui"
-    target.mkdir(parents=True, exist_ok=True)
-    for source in sorted((KIT_SOURCE / "components").glob("*.tsx")):
-        copy = target / source.name
-        if not copy.exists() or "Slot.Root" in copy.read_text(encoding="utf-8", errors="replace"):
-            shutil.copyfile(source, copy)
-
-
 # A wireframe is black, white and grey. The Studio writes this palette into a wireframe's Tailwind config, so that no page can bring colour
-# in whatever it says: every colour name Tailwind has (`red-500`, `green-600`, ...) is the same grey scale, and the shadcn `destructive`
+# in whatever it says: every colour name Tailwind has (`red-500`, `green-600`, ...) is the same grey scale, and the `destructive`
 # colour is a dark grey.
 GREY_SCALE = {"50": "#fafafa", "100": "#f4f4f5", "200": "#e4e4e7", "300": "#d4d4d8", "400": "#a1a1aa", "500": "#71717a",
               "600": "#52525b", "700": "#3f3f46", "800": "#27272a", "900": "#18181b", "950": "#09090b"}
@@ -252,7 +212,7 @@ def wireframe_tailwind(base: str) -> str:
     """The kit's Tailwind config with the greys-only palette on the end."""
     config = base.replace("module.exports = {", "const config = {", 1)
     return (config.rstrip() + "\n\n// Written by the Studio: a wireframe is black, white and grey, so every colour name is the same grey scale here and the\n"
-            "// shadcn `destructive` colour is a dark grey. Do not edit.\n"
+            "// `destructive` is a dark grey. Do not edit.\n"
             f"const grey = {json.dumps(GREY_SCALE)};\n"
             "config.theme.colors = { transparent: \"transparent\", current: \"currentColor\", inherit: \"inherit\", "
             "white: \"#ffffff\", black: \"#000000\" };\n"
@@ -265,7 +225,7 @@ def lock_palette(app: Path) -> None:
     """Make a wireframe app grey: its Tailwind config is the kit's with the palette above, and its `--destructive` is a grey."""
     if app.parent.name != "wireframe":
         return
-    source = KIT_SOURCE / "app" / "tailwind.config.cjs"
+    source = (KIT_SOURCE / ("legacy" if legacy_kit(app) else "app")) / "tailwind.config.cjs"
     config = app / "tailwind.config.cjs"
     if source.is_file():
         wanted = wireframe_tailwind(source.read_text(encoding="utf-8"))
@@ -281,7 +241,7 @@ def lock_palette(app: Path) -> None:
 
 def create_app(app: Path, title: str, pages: list[dict[str, Any]], *, accounts: list[dict] | None = None,
                sign_in: str = "", sign_up: dict | None = None) -> list[dict[str, Any]]:
-    """Step 1 of the skill, in code: a project with React, TypeScript, Vite, Tailwind and the shadcn/ui components in it.
+    """Create the React, TypeScript, Vite and Tailwind scaffold the agent will write screens for.
 
     Files that are already there are left alone (an app a stopped run left behind keeps what the agent wrote); the route table and
     the demo accounts are always written again from the specification."""
@@ -293,9 +253,6 @@ def create_app(app: Path, title: str, pages: list[dict[str, Any]], *, accounts: 
         target.parent.mkdir(parents=True, exist_ok=True)
         text = source.read_text(encoding="utf-8")
         target.write_text(text.replace("{{title}}", re.sub(r"[<>&\"]", "", title) or "App"), encoding="utf-8")
-    if not (app / "src" / "components" / "ui").is_dir():
-        _extract_components(app)
-    _add_components(app)
     lock_palette(app)
     package = app / "package.json"
     if not package.exists():
@@ -328,7 +285,7 @@ def drop_link(path: Path) -> None:
 
 
 def link_node_modules(app: Path) -> None:
-    link, target = app / "node_modules", kit_dir() / "node_modules"
+    link, target = app / "node_modules", kit_dir(legacy_kit(app)) / "node_modules"
     if _is_link(link):
         try:
             if link.resolve() == target.resolve():
@@ -391,14 +348,15 @@ def sync_kit_files(app: Path) -> None:
 
 
 def bundle(app: Path) -> tuple[bool, str]:
-    """Step 3 of the skill: all of the app in one HTML file, `bundle.html`. Returns (ok, what the bundler said)."""
-    ok, text = prepare_kit()
+    """Bundle the app into one HTML file. Returns (ok, what the bundler said)."""
+    legacy = legacy_kit(app)
+    ok, text = prepare_kit(legacy)
     if not ok:
         return False, text
     link_node_modules(app)
     sync_kit_files(app)
     with _build_locks.setdefault(str(app), threading.Lock()):
-        ok, text = _run([node_exe() or "node", str(kit_dir() / "node_modules" / "vite" / "bin" / "vite.js"), "build"],
+        ok, text = _run([node_exe() or "node", str(kit_dir(legacy) / "node_modules" / "vite" / "bin" / "vite.js"), "build"],
                         app, timeout=600, env={"NODE_ENV": "production", "FORCE_COLOR": "0"})
         page = app / "dist" / "index.html"
         if not ok or not page.is_file():
@@ -411,7 +369,7 @@ def bundle(app: Path) -> tuple[bool, str]:
 
 # --- retyping words on a page ------------------------------------------------------------------------------------------------
 
-# What is not the page's own words: the toolkit's components, the route table, the demo accounts and what the Studio writes again.
+# Skip the legacy starter components and generated route, session and configuration files.
 _NOT_WORDS = ("components/ui/", "lib/router.tsx", "lib/session.tsx", "routes.ts", "demo.ts", "vite-env.d.ts")
 
 

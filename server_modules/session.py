@@ -25,13 +25,12 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 import httpx
-import ollama
 
 from ollama_terminal.agent import Agent
 from ollama_terminal.mcp_client import NAME_PREFIX as MCP_NAME_PREFIX
 from ollama_terminal.tools import WorkspaceTools, describe_call
 
-from . import bus, config, connection, deploy_vars, live, permissions, plugins, prompts, stage_evidence, supabase_connect, vision
+from . import ai_providers, bus, config, connection, deploy_vars, live, permissions, plugins, prompts, secrets_guard, stage_evidence, supabase_connect, vision
 
 
 class RunCancelled(Exception):
@@ -43,6 +42,7 @@ class IncompleteModelStream(ConnectionError):
 
 
 PHASE_REPAIRS = 2            # how many times a phase that is not finished is asked for again
+PHASE_PLANNING_STEPS = 3     # the planner has a prepared brief and a route-based fallback
 LANES = 3                    # agents working at once in `run_lanes` (the model service's own limit is near this)
 _ARCHIVE_LOCK = threading.Lock()   # agents working at once archive their conversations into the one file
 
@@ -71,6 +71,9 @@ class Phases:
     brief: str = ""
     # Phases next to one another with the same non-empty group are built at the same time (needs a brief).
     together: Callable[[dict[str, Any]], str] | None = None
+    planning_prompt: str = ""
+    fallback_plan: str = ""
+    notes_for: Callable[[str, int], str] = field(default=lambda _plan, _number: "")
 
 
 class EngineUnavailable(RuntimeError):
@@ -412,7 +415,9 @@ class RetryingClient:
         # The signed-in AgentForge account may make this call (approved, requests left), and it is counted as one request.
         from . import accounts, privacy_vault
 
-        accounts.check(str(kwargs.get("model") or ""))
+        model = str(kwargs.get("model") or "")
+        if not ai_providers.split_model(model)[0]:
+            accounts.check(model)
         # Every model call comes through here: the project's personal data is swapped for placeholders on the way out and
         # back for the real values on the way in, so the model never sees it and what it writes carries it.
         kept = self._kept_from_model()
@@ -484,10 +489,12 @@ def extract_json(text: str) -> Any:
 class StudioTools(WorkspaceTools):
     """The engine's own tools, with every action reported to the studio."""
 
-    def __init__(self, *args: Any, project: str, role_of: Callable[[], str], **kwargs: Any):
+    def __init__(self, *args: Any, project: str, role_of: Callable[[], str],
+                 planning: Callable[[], bool] | None = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.project = project
         self._role_of = role_of
+        self._planning = planning
         # A Studio agent must never own a long-running web server.  Preview
         # startup is handled by preview_runtime, which assigns the stack's preview port.
         self.managed_preview = True
@@ -572,6 +579,11 @@ class StudioTools(WorkspaceTools):
 
     def execute(self, name: str, args: dict[str, Any]) -> str:
         role = self._role_of()
+        if (self._planning and self._planning()
+                and name in {"read_file", "list_files", "search_text", "web_search", "web_fetch",
+                             "browser_inspect", "screenshot"}):
+            detail = secrets_guard.mask(describe_call(name, args))[:240]
+            bus.agent_state(self.project, name, thinking=True, agent=role, detail=detail)
         path = str(args.get("path") or "")
         previous = self._before(path) if name in {"write_file", "replace_text"} else None
 
@@ -676,6 +688,7 @@ class ProjectSession:
         self._discarded = threading.Event()
         self._agent: Agent | None = None
         self._model = ""
+        self._client_signature: tuple | None = None
         self._thinking_level = ""
         self._turn_started_at = 0
         self._turn_prompt_base = 0
@@ -689,16 +702,7 @@ class ProjectSession:
     # --- the engine ---------------------------------------------------------
 
     def _client(self) -> Any:
-        saved = config.settings()
-        if saved.get("cloud"):
-            from . import ollama_cloud
-
-            try:
-                inner = ollama_cloud.for_engine(saved)
-            except ValueError as exc:
-                raise EngineUnavailable(str(exc)) from exc
-        else:
-            inner = ollama.Client(host=saved.get("ollama_host") or "http://localhost:11434", timeout=connection.model_timeout())
+        inner = ai_providers.Client(config.settings())
         # A run that is working on the person's project holds still for "Try again" when the model service stops answering,
         # rather than failing with all it has done so far: the chat shows it (`bus.connection`) and says what to press.
         return RetryingClient(inner, announce=self._announce,
@@ -735,7 +739,8 @@ class ProjectSession:
                 bus.agent_msg(self.project, answer, title="Agent update", kind="narration",
                               agent=self.role)
         elif text.startswith("[thinking]"):
-            bus.agent_state(self.project, "thinking", thinking=True, agent=self.role)
+            planning = self._agent is not None and self._agent.mode == "plan"
+            bus.agent_state(self.project, "planning" if planning else "thinking", thinking=True, agent=self.role)
         elif text.startswith("[compacting] "):
             # The history is being summarized to fit the model's window: no model turn, no tool, often
             # minutes. How far along it is ("12/35", "merging 35") is what keeps it from looking stuck.
@@ -777,7 +782,7 @@ class ProjectSession:
             workspace=self.workspace,
             approve=lambda _question: not self.cancelled,
             context=int(saved.get("context") or 0) or None,
-            cloud=bool(saved.get("cloud")),
+            cloud=ai_providers.is_remote(model, saved),
             max_steps=int(saved.get("max_steps") or 40),
             announce=self._announce,
             web_host=saved.get("ollama_host") or "http://localhost:11434",
@@ -793,6 +798,7 @@ class ProjectSession:
             protected_app_root=config.ROOT,
             project=self.project,
             role_of=lambda: self.role,
+            planning=lambda: agent.mode == "plan",
             mcp=agent.mcp,
         )
         # What the agent may do without asking is the project's permission mode (permissions.py).
@@ -804,10 +810,11 @@ class ProjectSession:
         self._apply_effort(agent, level)
         return agent
 
-    def run_lanes(self, work: list[tuple[str, str]], parallel_write_limit: int = 1) -> list[dict[str, Any]]:
+    def run_lanes(self, work: list[tuple[str, str] | tuple[str, str, str]],
+                  parallel_write_limit: int = 1) -> list[dict[str, Any]]:
         """Carry out several independent parts of a stage at the same time, each by its own agent in a conversation of its own.
 
-        `work` is (request, plan) pairs, each a part no other part touches (the pages of a wireframe, say). One agent writing
+        Each item supplies the request and plan, optionally with a scoped task for continuations. One agent writing
         a hundred pages one after another took an hour and a half; three at once take a third of that. What each part made
         is on disk; its conversation is archived, not kept. Returns each part's {"status", "text", "rounds"}; a part whose
         turn failed is {"status": "failed", "text": <why>}, and the others still finish."""
@@ -816,12 +823,14 @@ class ProjectSession:
         main = self.agent()
         saved = config.settings()
 
-        def part(pair: tuple[str, str]) -> dict[str, Any]:
+        def part(work_item: tuple[str, str] | tuple[str, str, str]) -> dict[str, Any]:
+            request, plan, *scope = work_item
             agent = self._make_agent(main.model, self._thinking_level or config.thinking(saved), saved, mcp=False)
             agent.memory_summary = main.memory_summary
             agent.messages[0]["content"] = agent._system_message()
             try:
-                result = agent.execute_plan(pair[0], pair[1], audit=False, parallel_write_limit=parallel_write_limit)
+                options = {"phase_task": scope[0]} if scope else {}
+                result = agent.execute_plan(request, plan, audit=False, parallel_write_limit=parallel_write_limit, **options)
                 return {"status": result.status, "text": result.text, "rounds": result.rounds}
             except RunCancelled:
                 raise
@@ -858,6 +867,7 @@ class ProjectSession:
                 "No model is selected. Pick one in the studio before starting.")
 
         with self.lock:
+            signature = ai_providers.connection_key(saved)
             if self._agent is None:
                 self._agent = self._make_agent(wanted, level, saved)
                 self._model = wanted
@@ -873,11 +883,12 @@ class ProjectSession:
                     self._pending_notes.clear()
                     self.save_context()
                     self._save_pending_notes()
-            elif wanted != self._model:
+            elif wanted != self._model or self._client_signature != signature:
                 # Switching the model keeps the conversation: the context is the
                 # project's, not the model's.
-                self._agent.set_model(self._client(), wanted, bool(saved.get("cloud")))
+                self._agent.set_model(self._client(), wanted, ai_providers.is_remote(wanted, saved))
                 self._model = wanted
+            self._client_signature = signature
             self._thinking_level = level
             self._apply_effort(self._agent, level)
             return self._agent
@@ -1248,11 +1259,21 @@ class ProjectSession:
         bus.log(self.project, "INFO",
                 "Planning: reviewing the project context and choosing the files to inspect.",
                 agent=self.role)
+        planning_prompt = phases.planning_prompt if phases is not None else ""
+        if planning_prompt:
+            self.shed_history(keep_tokens=0)
         with self.lock:
             agent.set_mode("plan")
-            plan = agent.ask(request) or ""
+            if planning_prompt:
+                plan = agent.ask(planning_prompt, max_steps=PHASE_PLANNING_STEPS) or ""
+            else:
+                plan = agent.ask(request) or ""
         if self.cancelled:
             raise RunCancelled(self.project)
+        if phases is not None and planning_prompt and (
+                agent.tool_limit_reached or not all(phases.notes_for(plan, n) for n in range(1, len(phases.items) + 1))):
+            plan = phases.fallback_plan
+            bus.log(self.project, "INFO", "Using the approved prototype route map to start the build phases.", agent=self.role)
         plan_file = ""
         if plan_directory and plan.strip():
             # Keep each run's plan in the output app. A restarted run still plans
@@ -1293,11 +1314,12 @@ class ProjectSession:
         return {"plan": plan, "plan_file": plan_file, "status": result.status,
                 "text": result.text, "rounds": result.rounds}
 
-    def _phase_turn(self, agent: Agent, request: str, pointer: str, parallel_write_limit: int = 1) -> Any:
+    def _phase_turn(self, agent: Agent, request: str, notes: str, task: str, parallel_write_limit: int = 1) -> Any:
         """One phase's turn, or the repeat of it, in the one conversation."""
         try:
             with self.lock:
-                return agent.execute_plan(request, pointer, audit=False, parallel_write_limit=parallel_write_limit)
+                return agent.execute_plan(request, notes, audit=False, parallel_write_limit=parallel_write_limit,
+                                          phase_task=task)
         finally:
             self.report_memory()
             self.save_context()
@@ -1317,10 +1339,8 @@ class ProjectSession:
         sent again with every call, and a call at that size took four times as long as one at 50,000. What the earlier phases
         made is on disk, and the conversation they had is archived (`shed_history`)."""
         total = len(phases.items)
-        pointer = (f"The approved plan is saved at {plan_file}. Read the parts of it this phase needs, once; do not reread all of it."
-                   if plan_file else plan[:6000])
         rounds, last = 0, ""
-        fresh = fresh_first
+        fresh = fresh_first or bool(phases.planning_prompt)
         together: dict[int, Any] = {}           # phase number -> its turn, for phases built at the same time
         items = phases.items
         for number, phase in enumerate(items, start=1):
@@ -1333,14 +1353,16 @@ class ProjectSession:
                 batch = [(n, p) for i, (n, p) in enumerate(batch)
                          if all(q.get("status") != "done" and phases.together(q) == phases.together(phase) for _, q in batch[:i + 1])]
                 if len(batch) > 1:
-                    together.update(self._phases_at_once(batch, phases, pointer, total, parallel_write_limit))
+                    together.update(self._phases_at_once(batch, phases, plan, total, parallel_write_limit))
                     fresh = True
             key, title = f"build:phase-{number}", f"Phase {number} of {total} · {phase['title']}"
             apart = number in together                # built by an agent of its own: its repair starts fresh, with the brief
+            notes = phases.notes_for(plan, number)
             if apart:
                 result = together.pop(number)
             else:
-                ask = phases.request_for(number, phase)
+                task = phases.request_for(number, phase)
+                ask = task
                 if phases.brief and fresh:
                     self.shed_history(keep_tokens=0)
                     ask = phases.brief.strip() + "\n\n---\n\n" + ask
@@ -1350,7 +1372,7 @@ class ProjectSession:
                     bus.agent_msg(self.project, str(phase["detail"]), title=f"Phase {number} of {total}", kind="narration",
                                   agent=self.role)
                 bus.agent_state(self.project, "building", agent=self.role)
-                result = self._phase_turn(agent, ask, pointer, parallel_write_limit)
+                result = self._phase_turn(agent, ask, notes, task, parallel_write_limit)
             rounds += result.rounds
             last = result.text or last
             if result.status in {"blocked", "failed"}:
@@ -1368,10 +1390,11 @@ class ProjectSession:
                               + (f" (and {len(problems) - 2} more)" if len(problems) > 2 else "")
                               + f". Finishing it ({attempt} of {PHASE_REPAIRS}).",
                               title=f"Phase {number} of {total}", kind="narration", agent=self.role)
-                repair = phases.repair_for(number, phase, problems)
+                task = phases.repair_for(number, phase, problems)
+                repair = task
                 if apart and attempt == 1:
                     repair = phases.brief.strip() + "\n\n---\n\n" + repair
-                result = self._phase_turn(agent, repair, pointer, parallel_write_limit)
+                result = self._phase_turn(agent, repair, "", task, parallel_write_limit)
                 rounds += result.rounds
                 last = result.text or last
                 problems = phases.verify(phase)
@@ -1391,7 +1414,7 @@ class ProjectSession:
     def _may_run_together(phases: Phases, phase: dict[str, Any]) -> bool:
         return bool(phases.brief and phases.together and phases.together(phase))
 
-    def _phases_at_once(self, batch: list[tuple[int, dict[str, Any]]], phases: Phases, pointer: str, total: int,
+    def _phases_at_once(self, batch: list[tuple[int, dict[str, Any]]], phases: Phases, plan: str, total: int,
                         parallel_write_limit: int) -> dict[int, Any]:
         """Phases that do not depend on one another (the pages, a few at a time; the unit tests and the journey tests) built
         by `LANES` agents at the same time, each in a conversation of its own that begins with the brief. Returns each
@@ -1403,8 +1426,11 @@ class ProjectSession:
         for number, phase in batch:
             bus.phase(self.project, f"build:phase-{number}", f"Phase {number} of {total} · {phase['title']}",
                       detail=str(phase.get("detail") or ""), number=number, agent=self.role)
-        work = [(phases.brief.strip() + "\n\n---\n\n" + phases.request_for(number, phase)
-                 + "\n\n" + prompts.load("builder/phase-together").strip(), pointer) for number, phase in batch]
+        shared = prompts.load("builder/phase-together").strip()
+        work = []
+        for number, phase in batch:
+            task = phases.request_for(number, phase) + "\n\n" + shared
+            work.append((phases.brief.strip() + "\n\n---\n\n" + task, phases.notes_for(plan, number), task))
         done = self.run_lanes(work, parallel_write_limit=parallel_write_limit)
         return {number: SimpleNamespace(status=row.get("status") or "complete", text=row.get("text") or "",
                                         rounds=int(row.get("rounds") or 0))
@@ -1514,9 +1540,17 @@ class ProjectSession:
         # so a refresh can never parse an incomplete interview (or any other
         # project record) while another request is saving it.
         temporary = path.with_name(f".{path.name}.{threading.get_ident()}.{time.time_ns()}.tmp")
-        temporary.write_text(payload, encoding="utf-8")
         try:
-            os.replace(temporary, path)
+            temporary.write_text(payload, encoding="utf-8")
+            for attempt in range(7):
+                try:
+                    os.replace(temporary, path)
+                    break
+                except OSError as error:
+                    # On Windows even a brief read can prevent replacing the file.
+                    if attempt == 6 or getattr(error, "winerror", None) not in (5, 32, 33):
+                        raise
+                    time.sleep(0.025 * 2 ** attempt)
         finally:
             # os.replace removes it on success.  Keep a failed save from
             # accumulating hidden files without ever touching the last good

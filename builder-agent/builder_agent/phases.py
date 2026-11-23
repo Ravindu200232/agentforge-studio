@@ -25,6 +25,7 @@ PROGRESS = ("build", "progress.json")
 PROGRESS_DIR = ("build", "progress")          # one record per phase: phases built at the same time never write one file
 STATE = ("build", "phases.json")
 MIN_BYTES = 1                      # a file a page names has to exist and not be empty
+PLANNING_ROUTE_LIMIT = 24
 
 
 def routes_of(workspace: Path) -> list[dict[str, Any]]:
@@ -89,7 +90,7 @@ def _listing(rows: list[dict[str, Any]]) -> str:
                      + (f" — roles: {', '.join(row['roles'])}" if row["roles"] else "") for row in rows)
 
 
-def request_for(phase: dict[str, Any], number: int, total: int, routes: list[dict[str, Any]], request: str) -> str:
+def request_for(phase: dict[str, Any], number: int, total: int, routes: list[dict[str, Any]]) -> str:
     """What the model is asked for in this phase."""
     kind = phase["kind"]
     if kind == "foundation":
@@ -98,21 +99,55 @@ def request_for(phase: dict[str, Any], number: int, total: int, routes: list[dic
         wanted = [row for row in routes if row["route"] in set(phase.get("routes") or [])]
         task = prompts.load("builder/phase-pages", routes=_listing(wanted), progress=progress_file(phase)).strip()
     elif kind == "wiring":
-        task = prompts.load("builder/phase-wiring", phase1=section(request, 1)).strip()
+        task = prompts.load("builder/phase-wiring").strip()
     elif kind == "tests":
-        task = "## What this phase is: the unit tests\n\n" + (section(request, 2) or "Write the unit tests of the finished application.")
+        task = prompts.load("builder/phase-tests").strip()
     else:
-        task = "## What this phase is: the journey tests\n\n" + (section(request, 3) or "Write the end-to-end test of every saved journey.")
+        task = prompts.load("builder/phase-journeys").strip()
     return prompts.load("builder/phase", number=number, total=total, title=phase["title"], task=task).strip()
 
 
-def brief(request: str) -> str:
-    """What a phase's fresh conversation starts with: the build request, and where the earlier phases' work is."""
-    return ("# The build this phase is part of\n\n"
-            "Each phase starts a fresh conversation, so the build request is repeated here. What the earlier phases made is on "
-            "disk: `.agentforge/build/progress.json` and the records in `.agentforge/build/progress/` name each built page's files, and the shared layout, components, data "
-            "access and helpers are in the app's own folders. Read the ones this phase uses before writing; do not guess them, "
-            "and do not reread what this phase does not touch.\n\n" + request.strip())
+def fallback_plan(items: list[dict[str, Any]], routes: list[dict[str, Any]]) -> str:
+    """A complete phase outline from the approved prototype, also saved when planning runs out of steps."""
+    by_route = {row["route"]: row for row in routes}
+    outline = ["# Build plan from the approved prototype"]
+    for number, phase in enumerate(items, 1):
+        body = f"## Phase {number} — {phase['title']}\n\n{phase['detail']}"
+        if phase["routes"]:
+            body += "\n\n" + _listing([by_route[route] for route in phase["routes"]])
+        outline.append(body)
+    return "\n\n".join(outline)
+
+
+def planning_prompt(stack: str, items: list[dict[str, Any]], routes: list[dict[str, Any]],
+                    handoff: dict[str, Any], decisions: str) -> str:
+    """Give the planner the required facts and the Studio's phase order in a small input."""
+    facts = []
+    for title, key, field in (
+        ("Data", "collections", "name"),
+        ("Roles", "roles", "role_name"),
+        ("Workflows", "workflows", "workflow_name"),
+        ("Requirement areas", "requirements", "module"),
+    ):
+        names = [(row.get(field) if isinstance(row, dict) else row) for row in handoff.get(key) or []]
+        names = list(dict.fromkeys(str(name)[:100] for name in names if name))
+        if names:
+            facts.append(f"- {title}: {', '.join(names[:16])}" + (f" and {len(names) - 16} more" if len(names) > 16 else ""))
+    auth = handoff.get("authentication")
+    if isinstance(auth, dict):
+        facts.append(f"- Sign-in required: {'yes' if auth.get('login_required') else 'no'}")
+    requirements = [row for row in handoff.get("requirements") or []
+                    if isinstance(row, dict) and row.get("requirement")]
+    for row in requirements[:6]:
+        statement = " ".join(str(row["requirement"]).split())
+        facts.append(f"- {row.get('id') or 'Requirement'}: {statement[:180]}")
+    route_summary = _listing(routes[:PLANNING_ROUTE_LIMIT])
+    if len(routes) > PLANNING_ROUTE_LIMIT:
+        route_summary += f"\n- {len(routes) - PLANNING_ROUTE_LIMIT} additional routes remain in the approved prototype map."
+    return prompts.load("builder/plan-phases", stack=stack, app_name=handoff.get("app_name") or "Application",
+                        facts="\n".join(facts) or "See the approved SRS handoff.",
+                        decisions=decisions[:1800].strip() or "Follow the approved prototype.",
+                        routes=route_summary, outline="\n".join(f"{n}. {phase['title']}" for n, phase in enumerate(items, 1)))
 
 
 def together(phase: dict[str, Any]) -> str:

@@ -24,10 +24,9 @@ from pathlib import Path
 from typing import Any, Callable, Sequence, TypeVar
 
 import httpx
-import ollama
 from ollama_terminal.agent import served_from_cloud
 
-from . import bus, config, connection
+from . import ai_providers, bus, config, connection
 
 T = TypeVar("T")
 
@@ -166,21 +165,12 @@ def _hold_for_person() -> bool:
 
 
 def client() -> Any:
-    """One Ollama client per thread, so parallel lanes do not share a socket."""
+    """One provider router per thread, so parallel lanes do not share a socket."""
     saved = config.settings()
-    key = (config.engine(saved), saved.get("ollama_host"), saved.get("ollama_api_key"), saved.get("account_token"))
+    key = ai_providers.connection_key(saved)
     if getattr(_local, "key", None) != key or getattr(_local, "client", None) is None:
-        if saved.get("cloud"):
-            from . import ollama_cloud
-
-            try:
-                inner = ollama_cloud.for_engine(saved)
-            except ValueError as exc:
-                raise LLMUnavailable(str(exc)) from exc
-        else:
-            inner = ollama.Client(host=saved.get("ollama_host") or "http://localhost:11434", timeout=connection.model_timeout())
         from .session import RetryingClient
-        _local.client = RetryingClient(inner, cancelled=_stopped, wait_for_cancel=_wait_for_stop,
+        _local.client = RetryingClient(ai_providers.Client(saved), cancelled=_stopped, wait_for_cancel=_wait_for_stop,
                                        on_connection=_connection_report, presses=_connection_presses,
                                        hold=_hold_for_person, project=lambda: getattr(_local, "project", ""))
         _local.key = key
@@ -323,10 +313,11 @@ def complete(system: str, user: str, model: str = "", think: bool | None = None,
         "messages": [{"role": "system", "content": system},
                      _user_message(user, images)],
     }
-    kwargs["stream"] = bool(config.setting("cloud")) or served_from_cloud(kwargs["model"])
+    kwargs["stream"] = bool(ai_providers.split_model(kwargs["model"])[0] or config.setting("cloud")
+                            or served_from_cloud(kwargs["model"]))
     kwargs["think"] = config.thinking_enabled() if think is None else think
     context = _context_for(kwargs["model"])
-    if context and not config.setting("cloud"):
+    if context and not kwargs["stream"]:
         kwargs["options"] = {"num_ctx": context}
     tools = _tools_for(project, workspace, role)
     message = llm_tools.run_chat(client().chat, kwargs, tools,
@@ -342,7 +333,7 @@ def complete(system: str, user: str, model: str = "", think: bool | None = None,
 def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None = None,
                   label: str = "json", model: str = "", attempts: int = 3,
                   project: str = "", workspace: Path | None = None, role: str = "",
-                  images: Sequence[bytes | str] | None = None) -> Any:
+                  images: Sequence[bytes | str] | None = None, *, think: bool | None = None) -> Any:
     """One call answered as JSON, repaired in place when it is not.
 
     The repair carries the model's own broken answer and what was wrong with it,
@@ -357,18 +348,18 @@ def complete_json(system: str, user: str, validator: Callable[[Any], Any] | None
     last = ""
     for _ in range(max(1, attempts)):
         kwargs: dict[str, Any] = {"model": _model(model), "messages": messages}
-        kwargs["stream"] = bool(config.setting("cloud")) or served_from_cloud(kwargs["model"])
+        kwargs["stream"] = bool(ai_providers.split_model(kwargs["model"])[0] or config.setting("cloud")
+                                or served_from_cloud(kwargs["model"]))
         # Local Ollama supports JSON mode and returns syntactically valid JSON.
         # Ollama Cloud currently does not support constrained output, so keep
         # the existing prompt-and-validator repair path for hosted models.
         # Stacking constrained-JSON mode with tool-calling in one call is
         # unverified, so a tool-enabled call relies on the repair loop alone.
-        selected = kwargs["model"].lower()
-        if tools is None and not config.setting("cloud") and not selected.endswith(":cloud"):
+        if tools is None and not kwargs["stream"]:
             kwargs["format"] = "json"
-        kwargs["think"] = config.thinking_enabled()
+        kwargs["think"] = config.thinking_enabled() if think is None else think
         context = _context_for(kwargs["model"])
-        if context and not config.setting("cloud"):
+        if context and not kwargs["stream"]:
             kwargs["options"] = {"num_ctx": context}
         message = llm_tools.run_chat(client().chat, kwargs, tools,
                                      on_usage=_focused_usage(project, kwargs["model"], context, role))

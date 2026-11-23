@@ -267,7 +267,7 @@ def render(source: str, out_path: Path, timeout: int = 180, *, kind: str = "") -
     cli = _find_cli()
     if not cli:
         return False, "no mermaid renderer is installed"
-    source = prepare(source)
+    source = prepare(clean(source) if kind == "state_machine" else source)
     if not source.strip():
         return False, "the source is empty"
 
@@ -795,6 +795,11 @@ def _declaration(text: str) -> str:
     return " ".join(hit.group(0).split()).lower() if hit else ""
 
 
+_STATE_DIRECTIONS = {"left-to-right": "LR", "top-to-bottom": "TB"}
+_STATE_DIRECTION = re.compile(r"^([ \t]*direction[ \t]+)(left-to-right|top-to-bottom)(?=[ \t]*\r?$)",
+                              re.IGNORECASE | re.MULTILINE)
+
+
 def clean(source: str) -> str:
     """The Mermaid source out of whatever the model wrapped it in.
 
@@ -811,6 +816,8 @@ def clean(source: str) -> str:
         # Prose goes; a `%%{init: …}%%` line before the declaration is the model's colour choice and stays.
         theme = "".join(line.group(0).rstrip() + "\n" for line in _THEME_LINE.finditer(raw[:hit.start()]))
         raw = (theme + raw[hit.start():]).strip()
+    if _declaration(raw).startswith("statediagram"):
+        raw = _STATE_DIRECTION.sub(lambda line: line[1] + _STATE_DIRECTIONS[line[2].lower()], raw)
     return raw
 
 

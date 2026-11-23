@@ -1,11 +1,8 @@
 """The React apps the wireframe and the prototype are made of: the skill, the app that is created, and the bundling."""
 from __future__ import annotations
 
-import io
 import json
-import re
 import sys
-import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -34,7 +31,7 @@ class Scratch(unittest.TestCase):
         self.addCleanup(self.folder.cleanup)
         self.root = Path(self.folder.name)
         self.kit = self.root / "kit"
-        for patch in (mock.patch.object(web_app, "kit_dir", lambda: self.kit),
+        for patch in (mock.patch.object(web_app, "kit_dir", lambda legacy=False: self.root / "legacy-kit" if legacy else self.kit),
                       mock.patch.object(web_app, "check_pages", return_value=None)):
             patch.start()
             self.addCleanup(patch.stop)
@@ -43,101 +40,29 @@ class Scratch(unittest.TestCase):
         return self.root / name
 
 
-class SkillTests(unittest.TestCase):
-    def test_the_skill_is_anthropics_own_unchanged(self):
-        text = (web_app.SKILL_SOURCE / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("name: web-artifacts-builder", text)
-        self.assertIn("**Stack**: React 18 + TypeScript + Vite + Parcel (bundling) + Tailwind CSS + shadcn/ui", text)
-        self.assertIn("Apache License", (web_app.SKILL_SOURCE / "LICENSE.txt").read_text(encoding="utf-8"))
-        for name in ("init-artifact.sh", "bundle-artifact.sh", "shadcn-components.tar.gz"):
-            self.assertTrue((web_app.SKILL_SOURCE / "scripts" / name).is_file(), name)
+class CustomUiTests(Scratch):
+    def test_staged_guide_uses_product_authored_components(self):
+        relative = web_app.stage_skill(self.root)
+        self.assertEqual(relative, ".agentforge/skills/custom-ui")
+        guide = (self.root / relative / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("semantic HTML", guide)
+        self.assertIn("Do not install, generate from, or copy ready-made UI components", guide)
+        self.assertFalse((self.root / ".agentforge/skills/shadcn").exists())
 
-    def test_the_agent_is_given_the_skill_inside_its_workspace(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            relative = web_app.stage_skill(Path(tmp))
-            self.assertEqual(relative, ".agentforge/skills/web-artifacts-builder")
-            self.assertEqual((Path(tmp) / relative / "SKILL.md").read_bytes(), (web_app.SKILL_SOURCE / "SKILL.md").read_bytes())
-            self.assertTrue((Path(tmp) / relative / "LICENSE.txt").is_file())
-            self.assertFalse((Path(tmp) / relative / "scripts").exists())
-
-
-class ShadcnTests(Scratch):
-    def test_the_shadcn_skill_is_shadcn_uis_own_unchanged_with_its_licence_and_where_it_came_from(self):
-        text = (web_app.SHADCN_SOURCE / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("name: shadcn", text)
-        self.assertIn("rules/forms.md", text)
-        self.assertIn("MIT License", (web_app.SHADCN_SOURCE / "LICENSE.txt").read_text(encoding="utf-8"))
-        self.assertIn("https://github.com/shadcn-ui/ui", (web_app.SHADCN_SOURCE / "SOURCE.md").read_text(encoding="utf-8"))
-        for name in ("forms", "composition", "styling", "icons", "base-vs-radix"):
-            self.assertTrue((web_app.SHADCN_SOURCE / "rules" / f"{name}.md").is_file(), name)
-
-    def test_the_agent_is_given_the_shadcn_skill_with_its_rules_inside_its_workspace(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            relative = web_app.stage_shadcn(Path(tmp))
-            self.assertEqual(relative, ".agentforge/skills/shadcn")
-            self.assertEqual((Path(tmp) / relative / "SKILL.md").read_bytes(), (web_app.SHADCN_SOURCE / "SKILL.md").read_bytes())
-            self.assertTrue((Path(tmp) / relative / "rules" / "forms.md").is_file())
-
-    def test_the_components_the_archive_lacks_are_added_to_a_new_app_and_never_over_one_the_agent_has_written(self):
+    def test_legacy_app_preserves_its_component_files_and_package_link(self):
         app = self.app()
+        legacy_config = app / "components.json"
+        component = app / "src/components/ui/button.tsx"
+        component.parent.mkdir(parents=True)
+        component.write_text("// existing component", encoding="utf-8")
+        legacy_config.write_text("{}", encoding="utf-8")
+
         web_app.create_app(app, "App", PAGES)
-        ui = app / "src" / "components" / "ui"
-        for name in ("field", "input-group", "empty", "spinner", "item", "kbd", "button-group", "native-select", "pagination",
-                     "alert-dialog", "input-otp"):
-            self.assertTrue((ui / f"{name}.tsx").is_file(), name)
-        self.assertTrue((ui / "button.tsx").is_file())                   # the archive's own are still there
-        (ui / "empty.tsx").write_text("// the agent's own", encoding="utf-8")
-        web_app.create_app(app, "App", PAGES)
-        self.assertEqual((ui / "empty.tsx").read_text(encoding="utf-8"), "// the agent's own")
 
-    def test_every_component_is_written_for_this_app_and_every_package_it_imports_is_installed_by_the_kit(self):
-        package = json.loads((web_app.KIT_SOURCE / "package.json").read_text(encoding="utf-8"))
-        installed = {*package["dependencies"], *package["devDependencies"]}
-        for path in sorted((web_app.KIT_SOURCE / "components").glob("*.tsx")):
-            text = path.read_text(encoding="utf-8")
-            self.assertNotIn('from "cn"', text, path.name)
-            self.assertNotIn('from "radix-ui"', text, path.name)
-            self.assertNotIn("@/registry", text, path.name)
-            self.assertNotIn("shadow-xs", text, path.name)
-            for name in re.findall(r'from "([^"./@][^"]*|@[^"/]+/[^"/]+)', text):
-                package_name = name if name.startswith("@") else name.split("/")[0]
-                if package_name in {"react"}:
-                    continue
-                self.assertIn(package_name, installed, f"{path.name} imports {package_name}")
-            for local in re.findall(r'from "@/components/ui/([^"]+)"', text):
-                archive = (web_app.KIT_SOURCE / "components" / f"{local}.tsx").is_file() or local in {
-                    "button", "input", "textarea", "label", "separator"}
-                self.assertTrue(archive, f"{path.name} imports ui/{local}")
-
-    def test_a_copy_with_the_mistake_an_earlier_kit_had_is_made_right_and_the_agents_own_is_not_touched(self):
-        app = self.app()
-        web_app.create_app(app, "App", PAGES)
-        ui = app / "src" / "components" / "ui"
-        (ui / "item.tsx").write_text('const Comp = asChild ? Slot.Root : "div"', encoding="utf-8")
-        (ui / "kbd.tsx").write_text("// the agent's own kbd", encoding="utf-8")
-        web_app.create_app(app, "App", PAGES)
-        self.assertNotIn("Slot.Root", (ui / "item.tsx").read_text(encoding="utf-8"))
-        self.assertEqual((ui / "item.tsx").read_bytes(), (web_app.KIT_SOURCE / "components" / "item.tsx").read_bytes())
-        self.assertEqual((ui / "kbd.tsx").read_text(encoding="utf-8"), "// the agent's own kbd")
-
-    def test_no_component_uses_the_names_of_the_single_radix_package_the_kit_does_not_install(self):
-        for path in sorted((web_app.KIT_SOURCE / "components").glob("*.tsx")):
-            self.assertNotIn("Slot.Root", path.read_text(encoding="utf-8"), path.name)
-
-    def test_the_kit_has_the_version_of_the_day_picker_the_skills_calendar_is_written_for(self):
-        package = json.loads((web_app.KIT_SOURCE / "package.json").read_text(encoding="utf-8"))
-        self.assertTrue(package["dependencies"]["react-day-picker"].startswith("^9"))
-        lock = json.loads((web_app.KIT_SOURCE / "package-lock.json").read_text(encoding="utf-8"))
-        self.assertTrue(lock["packages"]["node_modules/react-day-picker"]["version"].startswith("9."))
-
-    def test_the_kit_installs_the_plugin_the_field_components_need_for_container_queries(self):
-        package = json.loads((web_app.KIT_SOURCE / "package.json").read_text(encoding="utf-8"))
-        self.assertIn("@tailwindcss/container-queries", package["devDependencies"])
-        config = (web_app.KIT_SOURCE / "app" / "tailwind.config.cjs").read_text(encoding="utf-8")
-        self.assertIn('require("@tailwindcss/container-queries")', config)
-        lock = json.loads((web_app.KIT_SOURCE / "package-lock.json").read_text(encoding="utf-8"))
-        for name in ("@tailwindcss/container-queries", "@radix-ui/react-alert-dialog", "input-otp"):
-            self.assertIn(f"node_modules/{name}", lock["packages"], name)
+        self.assertTrue(web_app.legacy_kit(app))
+        self.assertEqual(component.read_text(encoding="utf-8"), "// existing component")
+        self.assertEqual(list(component.parent.iterdir()), [component])
+        self.assertEqual((app / "node_modules").resolve(), self.root / "legacy-kit" / "node_modules")
 
 
 class PageFileTests(unittest.TestCase):
@@ -152,14 +77,15 @@ class PageFileTests(unittest.TestCase):
 
 
 class CreatingTheAppTests(Scratch):
-    def test_it_is_a_react_app_with_the_shadcn_components_and_the_route_table(self):
+    def test_it_is_a_react_app_with_routes_and_no_premade_components(self):
         app = self.app()
         rows = web_app.create_app(app, "Sweet Crumbs", PAGES)
         self.assertEqual([r["file"] for r in rows], ["home", "orders-id", "account"])
-        for name in ("index.html", "vite.config.ts", "tailwind.config.cjs", "postcss.config.cjs", "tsconfig.json", "components.json",
-                     "src/main.tsx", "src/App.tsx", "src/index.css", "src/lib/router.tsx", "src/lib/session.tsx",
-                     "src/lib/utils.ts", "src/components/ui/button.tsx", "src/components/ui/card.tsx", "src/hooks/use-toast.ts"):
+        for name in ("index.html", "vite.config.ts", "tailwind.config.cjs", "postcss.config.cjs", "tsconfig.json",
+                     "src/main.tsx", "src/App.tsx", "src/index.css", "src/lib/router.tsx", "src/lib/session.tsx"):
             self.assertTrue((app / name).is_file(), name)
+        self.assertFalse((app / "components.json").exists())
+        self.assertFalse((app / "src/components").exists())
         self.assertIn("<title>Sweet Crumbs</title>", (app / "index.html").read_text(encoding="utf-8"))
         self.assertEqual(json.loads((app / "package.json").read_text(encoding="utf-8"))["name"], "sweet-crumbs")
         routes = (app / "src" / "routes.ts").read_text(encoding="utf-8")
@@ -203,21 +129,6 @@ class CreatingTheAppTests(Scratch):
         web_app.remove_app(app)
         self.assertFalse(app.exists())
         self.assertTrue((self.kit / "node_modules" / "vite" / "marker").is_file(), "removing an app must leave the packages")
-
-    def test_an_archive_cannot_write_outside_the_app(self):
-        archive = self.root / "components.tar.gz"
-        with tarfile.open(archive, "w:gz") as tar:
-            for name, body in (("components/ui/ok.tsx", b"ok"), ("../escaped.txt", b"no")):
-                info = tarfile.TarInfo(name)
-                info.size = len(body)
-                tar.addfile(info, io.BytesIO(body))
-        app = self.app()
-        (app / "src").mkdir(parents=True)
-        with mock.patch.object(web_app, "COMPONENTS_ARCHIVE", archive):
-            web_app._extract_components(app)
-        self.assertTrue((app / "src" / "components" / "ui" / "ok.tsx").is_file())
-        self.assertFalse((app / "escaped.txt").exists())
-        self.assertFalse((self.root / "escaped.txt").exists())
 
 
 class BundlingTests(Scratch):
@@ -396,7 +307,7 @@ class GreyWireframeTests(Scratch):
         self.assertIn("config.theme.extend.colors.destructive", text)
         self.assertIn("module.exports = config;", text)
         self.assertNotIn("module.exports = {", text)
-        self.assertIn('border: "hsl(var(--border))"', text)               # the shadcn tokens are still the kit's
+        self.assertIn('border: "hsl(var(--border))"', text)
 
     def test_the_generated_config_is_valid_and_no_colour_name_is_anything_but_the_grey_scale(self):
         import shutil
@@ -448,7 +359,7 @@ class GreyWireframeTests(Scratch):
     def test_the_wireframe_prompts_ask_for_grey_in_the_international_low_fidelity_style_and_name_red(self):
         from server_modules import prompts
 
-        generate = prompts.load("wireframe/generate", request="x", skill="s", shadcn="sh", app="a", routes="r", resume="")
+        generate = prompts.load("wireframe/generate", request="x", skill="s", app="a", routes="r", resume="")
         for expected in ("international low-fidelity wireframe", "black, white and neutral greys only", "and that includes red",
                          "Showing state without colour", "A destructive action is a dark outlined button",
                          "light grey box with a thin diagonal cross", "No colour anywhere: search the pages",
@@ -523,16 +434,15 @@ class KitTests(Scratch):
         self.assertFalse(ok)
         self.assertIn("Node.js", text)
 
-    def test_the_kit_names_every_package_the_skill_installs(self):
+    def test_new_kit_has_framework_packages_and_legacy_keeps_its_old_dependencies(self):
         kit = json.loads((web_app.KIT_SOURCE / "package.json").read_text(encoding="utf-8"))
         names = set(kit["dependencies"]) | set(kit["devDependencies"])
-        skill = (web_app.SKILL_SOURCE / "scripts" / "init-artifact.sh").read_text(encoding="utf-8")
-        for package in ("@radix-ui/react-dialog", "@radix-ui/react-tabs", "lucide-react", "class-variance-authority", "tailwind-merge",
-                        "sonner", "cmdk", "vaul", "embla-carousel-react", "react-day-picker", "react-hook-form", "zod", "date-fns"):
-            self.assertIn(package, skill)
+        for package in ("react", "react-dom", "lucide-react", "vite", "tailwindcss", "vite-plugin-singlefile"):
             self.assertIn(package, names)
-        for package in ("react", "react-dom", "vite", "recharts", "tailwindcss", "vite-plugin-singlefile"):
-            self.assertIn(package, names)
+        lock = json.loads((web_app.KIT_SOURCE / "package-lock.json").read_text(encoding="utf-8"))
+        self.assertFalse(any("@radix-ui/" in name for name in lock["packages"]))
+        legacy = json.loads((web_app.KIT_SOURCE / "legacy" / "package.json").read_text(encoding="utf-8"))
+        self.assertIn("@radix-ui/react-dialog", legacy["dependencies"])
 
 
 if __name__ == "__main__":

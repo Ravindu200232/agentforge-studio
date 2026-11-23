@@ -59,7 +59,7 @@ const STAGE_TAB = {
 }
 
 // What starting each stage asks for: the first line of `prompts/wireframe/generate.md` and `prompts/prototype/generate.md`.
-// The agent reads the web-artifacts-builder skill and the files the earlier stages left; nothing more needs saying here.
+// The agent reads the project UI guide and the files the earlier stages left.
 const WIREFRAME_APPROVAL_PROMPT = 'Generate low-fidelity wireframes.'
 
 const PROTOTYPE_APPROVAL_PROMPT = 'Generate a high-fidelity, animated prototype.'
@@ -130,6 +130,7 @@ export default function Studio() {
 
   const [projects, setProjects] = useState([])
   const [cat, setCat] = useState(() => catalogue(null))
+  const catalogRequest = useRef(0)
   const [screen, setScreen] = useState('home')
   const [settingsOpen, setSettingsOpen] = useState(false)
   // The tab Settings opens on ('' = its own first tab), and a count of closings: Home re-reads
@@ -216,52 +217,35 @@ export default function Studio() {
     refreshProjects()
   }, [user])
 
+  function refreshModelCatalog() {
+    const request = ++catalogRequest.current
+    return api.models().then(result => {
+      if (request !== catalogRequest.current) return
+      const choices = catalogue(result)
+      setCat(choices)
+      const available = choices.all.filter(row => !row.locked && !row.willPull)
+      const allowed = new Set(available.map(row => row.id))
+      const selected = result.selected
+      const fallback = [selected, TIERS.medium.model, TIERS.high.model, TIERS.ultra.model].find(id => allowed.has(id))
+        || available[0]?.id
+      if (!fallback) return
+      const keep = id => allowed.has(id) || Boolean(id && result.provider_errors?.[id.split('/')[0]])
+      const state = useStore.getState()
+      for (const role of state.ROLE_MODELS) {
+        if (!keep(state.models[role])) state.setRoleModel(role, fallback)
+      }
+      const builder = useStore.getState().models.builder
+      if (!keep(selected) && allowed.has(builder)) {
+        return api.saveSettings({ agent_model: builder })
+      }
+    }).catch(() => {})
+  }
+
   useEffect(() => {
     useStore.getState().hydrate()
     const disconnect = connect()
     refreshProjects()
-    api.models().then(r => {
-      const c = catalogue(r)
-      setCat(c)
-
-      const cur = useStore.getState().models
-      const known = new Set([...c.cloud, ...(c.local || [])].filter(m => !m.locked).map(m => m.id))
-      api.settings().then(s => {
-        const legacy = String(s?.agent_model || '').trim()
-        // A first run has nothing saved: a model this engine really has, preferring the usual default.
-        const fallback = [TIERS.medium.model, TIERS.high.model, TIERS.ultra.model].find(id => known.has(id))
-          || c.cloud[0]?.id || (c.local || []).find(m => !m.willPull)?.id || TIERS.medium.model
-        const pick = value => {
-          const saved = String(value || legacy).trim()
-          return (saved && known.has(saved)) ? saved : fallback
-        }
-        const state = useStore.getState()
-        const now = state.models
-        // A removed or plan-restricted model is replaced for every agent role, including older localStorage choices.
-        const keep = value => value && (!known.size || known.has(value))
-        for (const role of state.ROLE_MODELS) {
-          if (!keep(now[role])) {
-            const saved = role === 'planner' ? s?.planner_model
-              : role === 'design' ? s?.design_model : role === 'builder' ? s?.builder_model : s?.agent_model
-            state.setRoleModel(role, pick(saved))
-          }
-        }
-        // The interview and the specification run on the saved model: never leave it empty or unknown.
-        const chosen = useStore.getState().models.builder
-        if (chosen && (!legacy || !known.has(legacy)) && known.has(chosen)) {
-          api.saveSettings({ agent_model: chosen }).catch(() => { })
-        }
-      }).catch(() => {
-        if (cur.planner && cur.design && cur.builder) return
-        const now = useStore.getState().models
-        useStore.setState({ models: {
-          ...now,
-          planner: now.planner || TIERS.medium.model,
-          design: now.design || TIERS.medium.model,
-          builder: now.builder || TIERS.medium.model,
-        } })
-      })
-    }).catch(() => { })
+    refreshModelCatalog()
     return disconnect
   }, [])
 
@@ -581,7 +565,7 @@ export default function Studio() {
                        onClose={() => { setSettingsOpen(false); setSettingsTab(''); setSettingsClosed(n => n + 1) }}
                        onSaved={() => {
                          setAccountsChanged(n => n + 1)
-                         return api.models().then(r => setCat(catalogue(r))).catch(() => { })
+                         return refreshModelCatalog()
                        }}
                        onImport={importFolder}
                        onZip={downloadZip}
@@ -598,20 +582,7 @@ export default function Studio() {
         onSuccess={() => {
           setAuthModalOpen(false)
           refreshProjects()
-          api.models().then(r => {
-            const choices = catalogue(r)
-            setCat(choices)
-            const allowed = new Set(choices.all.filter(row => !row.locked).map(row => row.id))
-            if (!allowed.size) return
-            const preferred = allowed.has('deepseek-v4.1-flash:cloud')
-              ? 'deepseek-v4.1-flash:cloud' : choices.all.find(row => !row.locked)?.id
-            const state = useStore.getState()
-            for (const role of state.ROLE_MODELS) {
-              if (state.models[role] && !allowed.has(state.models[role])) {
-                state.setRoleModel(role, preferred)
-              }
-            }
-          }).catch(() => {})
+          refreshModelCatalog()
         }}
       />
 
@@ -805,6 +776,7 @@ export default function Studio() {
                 : mobileView === 'chat' ? 'flex w-full lg:w-auto' : 'hidden lg:flex'
             )}>
               <AgentChat key={`${project}-${agentRole}-${user?.id || 'guest'}`}
+                         modelOptions={cat.all.filter(row => !row.willPull)}
                          projectTitle={projects.find(row => row?.name === project)?.title || ''} />
             </div>
 

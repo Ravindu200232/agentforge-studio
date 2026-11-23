@@ -172,8 +172,9 @@ def _stream_chat(chat: Callable[..., Any], kwargs: dict[str, Any],
         raise ConnectionError("The model stream ended before its final response.")
     if final is not None and on_usage is not None:
         on_usage(final)
-    return ollama.Message(role="assistant", content="".join(content),
-                          thinking="".join(thinking) or None, tool_calls=calls or None)
+    template = final.message if isinstance(final.message, ollama.Message) else ollama.Message(role="assistant")
+    return template.model_copy(update={"role": "assistant", "content": "".join(content),
+                                       "thinking": "".join(thinking) or None, "tool_calls": calls or None})
 
 
 def run_chat(chat: Callable[..., Any], kwargs: dict[str, Any],

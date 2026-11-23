@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Blocks, BrainCircuit, Check, ChevronDown, Puzzle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { STACKS } from '@/lib/stacks'
-import { TIERS, isCloud, tierFromModel } from '@/lib/models'
+import { TIERS, groupModels, modelLabel, tierFromModel } from '@/lib/models'
 import { useVisionModels } from '@/lib/vision'
 import VisionBadge from './VisionBadge'
 
@@ -49,10 +49,8 @@ export default function BuildSetup({
       return id ? [id, typeof item === 'string' ? { id, label: id } : item] : null
     }).filter(Boolean),
   ]).values())
-  const modelGroups = [
-    ['Cloud', modelRows.filter(item => item.cloud || isCloud(item.id || item))],
-    ['On this machine', modelRows.filter(item => !(item.cloud || isCloud(item.id || item)))],
-  ]
+  const modelGroups = groupModels(modelRows)
+  const selectedLabel = modelLabel(modelRows.find(row => row.id === model))
   const effortLabel = { low: 'Low', high: 'High', xhigh: 'Extra' }[thinkingLevel] || 'High'
 
   function chooseEffort(level) {
@@ -81,7 +79,7 @@ export default function BuildSetup({
             )}
           >
             {compact && <BrainCircuit className="size-3 shrink-0 text-accent" aria-hidden="true" />}
-            <span className={cn(compact ? 'truncate text-ink' : 'max-w-36 truncate')}>{model || 'Choose model'}</span>
+            <span className={cn(compact ? 'truncate text-ink' : 'max-w-36 truncate')}>{selectedLabel || 'Choose model'}</span>
             {compact && <span className="shrink-0 text-muted2">{effortLabel}</span>}
             <ChevronDown className={cn(compact ? 'size-3 shrink-0 transition-transform' : 'size-2.5 transition-transform', modelOpen && 'rotate-180')} />
           </button>
@@ -104,7 +102,7 @@ export default function BuildSetup({
                                   selected ? 'text-accent' : 'text-ink hover:bg-panel2')}>
                           <span className="min-w-0 flex-1 truncate">{item.label || id}</span>
                           {item.locked && <span className="shrink-0 text-[9px] font-semibold text-amber-600">Buy Pro</span>}
-                          {seeing.vision.has(id) && <VisionBadge />}
+                          {(item.vision || seeing.vision.has(id)) && <VisionBadge />}
                           {selected && <Check className="size-3 shrink-0 text-accent" />}
                         </button>
                       )

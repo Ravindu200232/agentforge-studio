@@ -364,7 +364,8 @@ def _decided_block(answers: list[dict[str, str]]) -> str:
             "and do not ask any of them again:\n\n" + _qa_rows(answers))
 
 
-def _build_in_phases(project: str, session: Any, stack: str, request: str, direction: str) -> dict[str, Any]:
+def _build_in_phases(project: str, session: Any, stack: str, request: str, direction: str,
+                     *, brief: str = "", decisions: str = "") -> dict[str, Any]:
     """Plan the application, then build it one numbered phase at a time (`phases.py`), however many pages it has.
 
     A build that was stopped carries on from the phase it reached, with the plan it already made. A prototype that lists no pages
@@ -383,15 +384,20 @@ def _build_in_phases(project: str, session: Any, stack: str, request: str, direc
 
     phased = Phases(
         items=items,
-        request_for=lambda number, phase: build_phases.request_for(phase, number, len(items), routes, request),
+        request_for=lambda number, phase: build_phases.request_for(phase, number, len(items), routes),
         repair_for=lambda number, phase, problems: build_phases.repair_for(phase, number, len(items), problems),
         verify=lambda phase: build_phases.problems(session.workspace, phase), save=save,
         summary=lambda phase: build_phases.summary(session.workspace, phase),
-        brief=build_phases.brief(request), together=build_phases.together)
+        brief=brief, together=build_phases.together,
+        notes_for=lambda plan, number: build_phases.section(plan, number)[:1200])
     if saved:
         plan_file = str(saved["plan_file"])
         return session.resume_phases((session.workspace / plan_file).read_text(encoding="utf-8", errors="replace"),
                                      plan_file, phased)
+    handoff = session.read_record("srs", "handoff.json", fallback=None)
+    phased.planning_prompt = build_phases.planning_prompt(stack, items, routes,
+                                                         handoff if isinstance(handoff, dict) else {}, decisions)
+    phased.fallback_plan = build_phases.fallback_plan(items, routes)
     return session.run_task(request, plan_directory="plan", audit=False, phases=phased)
 
 
@@ -438,15 +444,16 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
                       title="Builder scaffold")
         bus.phase(project, "build:write", "Building and checking the application",
                   detail="One sequential plan: complete the app, focused business units, then final product checks.")
+        report_template = build_report.stage_template(session.workspace)
+        ui_skill = web_app.stage_skill(session.workspace)
         request = prompts.load("builder/generate", stack=stack,
-                               report_template=build_report.stage_template(session.workspace))
+                               report_template=report_template)
         request += _prototype_context_block(session.workspace)
-        request += "\n\n" + prompts.load("builder/shadcn", shadcn=web_app.stage_shadcn(session.workspace)).strip()
         request += "\n\n## Scaffold installation\n" + json.dumps(installed, indent=2)
         guide_paths = reference_staging.stage(session.workspace, GUIDES_DIR,
                                               scaffold.build_guide_files(stack))
-        request += ("\n\n## Stack build guides\n\nRead these yourself before planning:\n"
-                    + reference_staging.as_bullets(guide_paths))
+        guides = reference_staging.as_bullets(guide_paths)
+        request += "\n\n## Stack build guides\n\nRead these yourself before planning:\n" + guides
         auth = auth_guide.staged_for(session.workspace, srs_document.document(project).get("srs_document", {}))
         if auth:
             request += ("\n\n## Authentication, roles and navigation\n\n"
@@ -456,23 +463,33 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
                         "pages exist; this file decides how they behave.")
         from prototype_agent import design as design_stage
         customization = design_stage.approved_customization(project)
+        design_block = ""
         if customization:
-            request += ("\n\n## Approved design customization\n"
-                        + json.dumps({"selected_design_path": customization.get("design_md_path"),
-                                      "customizer_prompt": customization.get("customizer_prompt"),
-                                      "customizer_spec": customization.get("customizer_spec")},
-                                     ensure_ascii=False, indent=2))
+            design_block = ("\n\n## Approved design customization\n"
+                            + json.dumps({"selected_design_path": customization.get("design_md_path"),
+                                          "customizer_prompt": customization.get("customizer_prompt"),
+                                          "customizer_spec": customization.get("customizer_spec")},
+                                         ensure_ascii=False, indent=2))
             if customization.get("design_md_workspace_path"):
-                request += (f"\n\nRead `{customization['design_md_workspace_path']}` yourself for "
-                            f"the selected theme's own guidance.")
-        request += _decided_block(decided)
-        if direction.strip():
-            request += f"\n\n## What the customer asked for on top of that\n\n{direction.strip()}"
+                design_block += (f"\n\nRead `{customization['design_md_workspace_path']}` for "
+                                 "the selected theme's guidance when implementing the design.")
+        decided_block = _decided_block(decided)
+        direction_block = f"\n\n## Additional build direction\n\n{direction.strip()}" if direction.strip() else ""
+        request += design_block + decided_block + direction_block
+        brief = prompts.load(
+            "builder/phase-brief", stack=stack, report_template=report_template, ui_skill=ui_skill, guides=guides,
+            auth=f"Authentication guide: `{auth}`." if auth else "",
+            design=design_block.strip(), decisions=decided_block.strip(), direction=direction_block.strip())
+        planning_decisions = "\n".join(piece for piece in (
+            direction.strip(), str(customization.get("customizer_prompt") or ""),
+            json.dumps(customization["customizer_spec"], ensure_ascii=False) if customization.get("customizer_spec") else "",
+            _qa_rows(decided)) if piece)
 
         # The end-to-end screenshots are copied as the tests take them: the next test run empties Playwright's output folder.
         from qa_agent import screen_keeper, sequence
         with screen_keeper.Keeper(session.workspace):
-            build_result = _build_in_phases(project, session, stack, request, direction)
+            build_result = _build_in_phases(project, session, stack, request, direction, brief=brief,
+                                            decisions=planning_decisions)
         if build_result.get("status") == "blocked":
             raise ValueError(build_result.get("text") or "the build was blocked")
         # The agent wrote the journeys. The Studio tests the app now, in this order (`qa_agent/sequence.py`): every page
@@ -535,7 +552,7 @@ def update(project: str, request: str) -> dict[str, Any]:
     session.begin("build-edit", role=bus.DEVELOPER)
     try:
         bus.user_msg(project, request)
-        full_request = prompts.load("builder/update", request=request, shadcn=web_app.stage_shadcn(session.workspace))
+        full_request = prompts.load("builder/update", request=request)
         result = session.run_task(full_request, audit=False)
         return _finish_update(project, session, result)
     except RunCancelled:

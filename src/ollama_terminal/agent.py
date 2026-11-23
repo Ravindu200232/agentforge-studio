@@ -192,6 +192,7 @@ class Agent:
         self.tool_call_count = 0
         self.parallel_write_limit = 1
         self.last_terminal_signal = ""
+        self.tool_limit_reached = False
         self.memory_summary = ""
         self.last_prompt_tokens = 0
         # How many real tokens one estimated token turned out to be, once the model has said (see prompt_too_long).
@@ -296,10 +297,12 @@ class Agent:
             raise ConnectionError("The model stream ended without a response")
         if getattr(final, "done", None) is False:
             raise ConnectionError("The model stream ended before its final response.")
+        template = getattr(final, "message", None)
+        if not isinstance(template, ollama.Message):
+            template = ollama.Message(role="assistant")
         return SimpleNamespace(
-            message=ollama.Message(role="assistant", content="".join(content),
-                                   thinking="".join(thinking) or None,
-                                   tool_calls=calls or None),
+            message=template.model_copy(update={"role": "assistant", "content": "".join(content),
+                                               "thinking": "".join(thinking) or None, "tool_calls": calls or None}),
             prompt_eval_count=_usage_count(final, "prompt_eval_count", "prompt_tokens", "input_tokens"),
             eval_count=_usage_count(final, "eval_count", "completion_tokens", "output_tokens"),
         )
@@ -449,12 +452,14 @@ class Agent:
                 return text[:limit]
         return ""
 
-    def ask(self, prompt: str) -> str:
+    def ask(self, prompt: str, *, max_steps: int | None = None) -> str:
         self.last_terminal_signal = ""
+        self.tool_limit_reached = False
         self.messages[0]["content"] = self._system_message()
         self.messages.append({"role": "user", "content": prompt})
         compacted_for_length = 0
-        for step_index in range(self.max_steps):
+        limit = self.max_steps if max_steps is None else min(self.max_steps, max(1, max_steps))
+        for step_index in range(limit):
             self._summarize_history()
             schemas = (TOOL_SCHEMAS if self.mode == "act" else
                        [schema for schema in TOOL_SCHEMAS if schema["function"]["name"]
@@ -588,7 +593,8 @@ class Agent:
             # continuation turn from reopening an already completed plan.
             if self.last_terminal_signal:
                 return terminal_text
-        return f"Tool batch reached {self.max_steps} steps; continuing automatically."
+        self.tool_limit_reached = True
+        return f"Tool batch reached {limit} steps; continuing automatically."
 
     def _show_pictures(self) -> None:
         """Hand the model the pictures its tools took (screenshots). Ollama carries a picture on a user turn, and the tool
@@ -632,18 +638,32 @@ class Agent:
                 message["content"] = str(message.get("content") or "") + " (the picture is no longer attached)"
 
     def execute_plan(self, request: str, plan: str, audit: bool = True,
-                     parallel_write_limit: int = 1) -> ExecutionResult:
+                     parallel_write_limit: int = 1, *, phase_task: str = "") -> ExecutionResult:
         """Run an approved plan with explicit and bounded completion semantics."""
         self.set_mode("act")
         self.parallel_write_limit = max(1, min(int(parallel_write_limit), 4))
-        prompt = ("The user approved this plan. Implement it in the workspace now.\n\n"
-                  f"Original request:\n{request}\n\nApproved plan:\n{plan}\n\n"
-                  "Use write_file, replace_text, and run_command directly. You have terminal access. "
-                  "Run only the checks requested by the approved plan and fix their failures. "
-                  "Do not provide files for the user to paste. "
-                  "As soon as the last planned action is complete, stop using tools; do not start "
-                  "another review, cleanup, improvement or reread. "
-                  f"Finish immediately with {COMPLETE} after checking every deliverable.")
+        if phase_task:
+            notes = f"\n\nPlanning notes for this phase:\n{plan}" if plan else ""
+            finish = (f"\n\nFinish this phase only with {COMPLETE} once its own deliverables are in place. "
+                      f"If blocked, return {BLOCKED}. Leave the remaining phases to the Studio.")
+            prompt = f"Implement the current build phase in the workspace.\n\n{request}{notes}{finish}"
+            continuation = (f"Resume only the current build phase. Inspect what is already done and finish only "
+                            f"its remaining work.\n\n{phase_task}{notes}{finish}")
+        else:
+            prompt = ("The user approved this plan. Implement it in the workspace now.\n\n"
+                      f"Original request:\n{request}\n\nApproved plan:\n{plan}\n\n"
+                      "Use write_file, replace_text, and run_command directly. You have terminal access. "
+                      "Run only the checks requested by the approved plan and fix their failures. "
+                      "Do not provide files for the user to paste. "
+                      "As soon as the last planned action is complete, stop using tools; do not start "
+                      "another review, cleanup, improvement or reread. "
+                      f"Finish immediately with {COMPLETE} after checking every deliverable.")
+            continuation = ("Continue executing the approved plan. Inspect what is already done, finish "
+                            "remaining items, and run only the checks the plan requests. Use the available "
+                            f"write_file, replace_text, and run_command tools.\n\nApproved plan:\n{plan}\n\n"
+                            "If no approved item remains, do not reread files or repeat commands: stop now and "
+                            f"return {COMPLETE}. Use {COMPLETE} only when everything is done. If an external blocker "
+                            f"prevents progress, use {BLOCKED}.")
         rounds = 0
         idle_rounds = 0
         while rounds < MAX_EXECUTION_ROUNDS:
@@ -691,13 +711,8 @@ class Agent:
             idle_rounds = 0 if self.tool_call_count > before else idle_rounds + 1
             if idle_rounds >= 3:
                 return ExecutionResult("blocked", "Model did not use available tools after three continuation prompts.", rounds)
-            self.announce(f"[progress] Plan still running (round {rounds}).")
-            prompt = ("Continue executing the approved plan. Inspect what is already done, finish "
-                      "remaining items, and run only the checks the plan requests. Use the available "
-                      f"write_file, replace_text, and run_command tools.\n\nApproved plan:\n{plan}\n\n"
-                      "If no approved item remains, do not reread files or repeat commands: stop now and "
-                      f"return {COMPLETE}. Use {COMPLETE} only when everything is done. If an external blocker "
-                      f"prevents progress, use {BLOCKED}.")
+            self.announce(f"[progress] {'Current phase' if phase_task else 'Plan'} still running (round {rounds}).")
+            prompt = continuation
         return ExecutionResult(
             "blocked",
             f"Execution stopped after {MAX_EXECUTION_ROUNDS} rounds without a terminal result; "

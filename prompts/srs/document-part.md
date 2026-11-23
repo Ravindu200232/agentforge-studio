@@ -1,10 +1,47 @@
-## In this call: only part of the specification
+# Write the {{title}} section of the specification
 
-The specification is written in parts at the same time, each by its own call, and joined afterwards. This call writes only these keys of `srs_document`:
+Return one JSON object with the exact keys shown below. Fill each key completely
+for the approved scope, omit all other keys, and return no prose or code fence.
 
-{{keys}}
+- Product name: {{project_name}}
+- Stack: {{stack}}
+- Document language: {{language}}
 
-Return `{"srs_document": { ... }}` with exactly those keys, each complete and following every rule above; leave every other key out. This call has no tools: the approved plan and the interview are given below instead of being read from disk.
+## Scope and checks
+
+The approved plan is the boundary. Use the interview to clarify its details.
+Cover every approved item that belongs to this section. Include no unapproved
+roles, screens, records, capabilities, accounts, or payments. Record genuine
+assumptions in the section that owns `ambiguities`.
+
+Apply these rules only to the fields you are returning:
+
+- **Scope and screens.** Include each planned screen exactly once, with its
+  route, allowed roles, sections and functions. Take sign-in and registration
+  rules from the approved plan. Keep the allowed pages and role capabilities consistent.
+- **Data.** Cover every planned record, including approved history and audit
+  records. Preserve the shared table names and reference keys as `table.id`.
+- **API.** Describe only the distinct operations needed by approved screens or
+  workflows. Use one contract per method and path. State authentication and
+  allowed roles. Keep validation rules tied to the approved fields or operations.
+- **Functional requirements.** Write one testable `The system shall …` statement
+  per requirement, with a unique sequential `FR-###` ID, rationale, verification
+  method and exactly one traceability row naming the pages, tables and test case.
+  Include the approved workflow exceptions and roles' capabilities.
+- **Quality and workflows.** Write eight to twelve testable `NFR-###` requirements
+  with measurable thresholds or named standards and a verification method.
+  Include each planned workflow by name, with the approved role, ordered steps
+  and one allowed `step_routes` entry per step. Repeat a route when the action
+  stays on the same screen.
+
+Use verification methods from this set: Functional Test, Test / Inspection,
+Demonstration / Inspection, Analysis.
+
+## JSON shape
+
+```json
+{{example}}
+```
 
 ## Names every part uses
 

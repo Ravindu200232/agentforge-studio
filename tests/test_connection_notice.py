@@ -306,9 +306,8 @@ class LlmWiringTests(unittest.TestCase):
     def test_a_cached_client_is_given_the_notice_and_the_press(self):
         llm._local.client = None
         inner = object()
-        with mock.patch.object(llm, "config") as cfg, mock.patch.object(llm.ollama, "Client", return_value=inner):
+        with mock.patch.object(llm, "config") as cfg, mock.patch.object(llm.ai_providers, "Client", return_value=inner):
             cfg.settings.return_value = {"cloud": False, "ollama_host": "http://x"}
-            cfg.engine.return_value = "local"
             built = llm.client()
         self.addCleanup(setattr, llm._local, "client", None)
         self.assertIs(built._on_connection, llm._connection_report)

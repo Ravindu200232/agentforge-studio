@@ -451,7 +451,7 @@ def _start_fold(project: str) -> None:
         try:
             folded = llm.complete_json(system=prompts.load("interview/system", language=language), user=request,
                                        validator=_fold_validator(set(coverage.categories())), label="interview:fold",
-                                       project=project, workspace=workspace)
+                                       project=project, workspace=workspace, think=False)
         except Exception as exc:  # noqa: BLE001 - the transcript still has the answer; the next turn reads it
             bus.log(project, "WARN", f"The answer was kept, but its bookkeeping did not finish: {str(exc)[:200]}")
             return
@@ -537,13 +537,13 @@ def _next_question(project: str) -> dict[str, Any]:
             # `project` reports this turn's context to the chat's meter. The read tools come only
             # with attached files: the prompt then tells the model to read them, which it cannot
             # do without a workspace, and a turn with nothing to read stays a fast tool-less call.
-            project=project,
+            project=project, think=False,
             workspace=session.workspace if session.read_record("attachments.json", fallback=[]) else None)
     except llm.LLMRepairFailed:
         turn = llm.complete_json(
             system=prompts.load("interview/system", language=language),
             user=_turn_request(record, session, data, index, budget),
-            validator=_turn_validator(set(cats)), label="interview:turn", project=project,
+            validator=_turn_validator(set(cats)), label="interview:turn", project=project, think=False,
             workspace=session.workspace if session.read_record("attachments.json", fallback=[]) else None)
 
     _apply_turn(data, turn, source=f"turn:{index}")

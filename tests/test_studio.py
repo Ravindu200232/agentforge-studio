@@ -24,7 +24,7 @@ for folder in ("", "src", "srs-agent", "prototype-agent", "builder-agent",
 
 from server_modules import prompts  # noqa: E402
 from server_modules import store as project_store  # noqa: E402
-from server_modules.session import extract_json  # noqa: E402
+from server_modules.session import ProjectSession, extract_json  # noqa: E402
 from server_modules.validation import completeness, plan_rules, review, srs_schema  # noqa: E402
 from srs_agent import document as srs_document  # noqa: E402
 from support import forget_project, isolate_workspaces  # noqa: E402
@@ -565,6 +565,31 @@ class JsonExtractionTests(unittest.TestCase):
             extract_json("no object here")
 
 
+class ProjectRecordTests(unittest.TestCase):
+    def test_atomic_save_retries_after_a_windows_reader_releases_the_record(self):
+        from os import replace
+
+        locked = PermissionError("record is open for reading")
+        locked.winerror = 5
+        with tempfile.TemporaryDirectory() as folder, \
+             patch("server_modules.session.config.workspace_for", return_value=Path(folder)):
+            session = ProjectSession("test-record")
+            path = session.write_record("srs.json", data={"version": 1})
+
+            def save_after_reader_closes(source, target):
+                if not waiting.called:
+                    raise locked
+                self.assertEqual(session.read_record("srs.json"), {"version": 1})
+                replace(source, target)
+
+            with patch("server_modules.session.time.sleep") as waiting, \
+                 patch("server_modules.session.os.replace", side_effect=save_after_reader_closes):
+                session.write_record("srs.json", data={"version": 2})
+            waiting.assert_called_once()
+            self.assertEqual(session.read_record("srs.json"), {"version": 2})
+            self.assertEqual(list(path.parent.glob(".srs.json.*.tmp")), [])
+
+
 class PlanRuleTests(unittest.TestCase):
     def test_a_complete_plan_passes(self):
         plan_rules.plan_validator(plan_rules.archetype_pack(a_plan()))(a_plan())
@@ -978,14 +1003,17 @@ class PlanningStreamTests(unittest.TestCase):
             root = Path(directory)
             (root / "handoff.md").write_text("one\ntwo\nthree\n", encoding="utf-8")
             tools = StudioTools(root, None, lambda _question: True,
-                                project="prj_plan", role_of=lambda: bus.DEVELOPER)
+                                project="prj_plan", role_of=lambda: bus.DEVELOPER, planning=lambda: True)
             dormant = type("Dormant", (), {"_agent": None})()
             with patch("server_modules.session.session_for", return_value=dormant), \
+                 patch.object(bus, "agent_state") as live, \
                  patch.object(bus, "file_read") as file_read, \
                  patch.object(bus, "log") as logged:
                 result = tools.execute("read_file", {"path": "handoff.md"})
 
         self.assertIn("1: one", result)
+        live.assert_called_once_with("prj_plan", "read_file", thinking=True, agent=bus.DEVELOPER,
+                                     detail="read_file(handoff.md)")
         file_read.assert_called_once()
         self.assertIn("Read handoff.md (3 lines)", logged.call_args.args[2])
 
@@ -1250,7 +1278,7 @@ class InterviewSplitTests(unittest.TestCase):
         calls = []
 
         def model(system="", user="", validator=None, label="", **kwargs):
-            calls.append(label)
+            calls.append((label, kwargs.get("think")))
             if label == "interview:fold":
                 return validator({"coverage_updates": {category: {"status": "KNOWN", "facts": ["learned it"]}}})
             return validator({"stage": "gathering", "next": {"question": "Who approves a refund?", "answer_type": "free_text",
@@ -1270,9 +1298,7 @@ class InterviewSplitTests(unittest.TestCase):
                     interview.record_answer(project, {"key": second["id"], "text": "The owner"})
                     interview._wait_fold(project)
                 self.assertEqual(second["question"], "Who approves a refund?")
-                self.assertIn("interview:ask", calls)
-                self.assertNotIn("interview:turn", calls)
-                self.assertEqual(calls.count("interview:fold"), 2)
+                self.assertCountEqual(calls, [("interview:ask", False), ("interview:fold", False), ("interview:fold", False)])
                 kept = interview.state(interview.session_for(project))["coverage"][category]
                 self.assertEqual((kept["status"], kept["facts"]), ("KNOWN", ["learned it"]))
             finally:

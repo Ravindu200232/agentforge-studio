@@ -37,4 +37,26 @@ assert.deepEqual(stages.map(turn => turn.title), [
   'SRS generation', 'Rendering diagram', 'Mermaid output', 'Wireframe page', 'Prototype screen',
 ])
 
+const progress = new URL('../../studio/lib/progress-model.js', import.meta.url).href
+const sessionSource = (await readFile(new URL('../../studio/lib/agent-session.js', import.meta.url), 'utf8'))
+  .replace("'./progress-model'", JSON.stringify(progress))
+const { emptySession, reduceSession } = await import(`data:text/javascript;base64,${Buffer.from(sessionSource).toString('base64')}`)
+const writing = { type: 'run_state', status: 'running', run_id: 'srs' }
+const section = { type: 'phase', kind: 'srs-progress', key: 'srs:part:tables', title: 'Database design', phase: 2 }
+const timeline = [
+  { ...writing, at: 1 },
+  { ...section, status: 'active', at: 2 },
+  { ...section, status: 'complete', at: 3 },
+  { type: 'run_state', status: 'completed', at: 4 },
+  { ...writing, at: 5 },
+  { ...section, status: 'queued', at: 6 },
+  { ...section, status: 'retrying', at: 7 },
+  { type: 'run_state', status: 'paused', at: 8 },
+].reduce(reduceSession, emptySession())
+assert.deepEqual(chatTurns([], timeline.chat).map(turn => [turn.at, turn.group, turn.status]), [
+  [2, 'srs-progress', 'complete'],
+  [6, 'srs-progress', 'paused'],
+])
+assert.equal(timeline.phases[0].status, 'paused')
+
 console.log('chat display cleaner: ok')

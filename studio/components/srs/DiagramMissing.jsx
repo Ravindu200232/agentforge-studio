@@ -6,9 +6,7 @@ import { api, isJobCancelled } from '@/lib/api'
 import { useStore } from '@/lib/store'
 
 /**
- * What stands where a diagram's picture should be when there is none and the saved source is not Mermaid: why, and a
- * way to draw it again. Never the saved text itself — it is whatever the model said instead of drawing (a sentence
- * about reading a file), not something to read as a diagram.
+ * Explain why a diagram preview is unavailable and offer a targeted redraw.
  *
  * The screen reloads on its own when the redraw finishes: the server announces the SRS change.
  */
@@ -33,10 +31,12 @@ export default function DiagramMissing({ diagram }) {
   return (
     <div className="flex flex-col items-center gap-3 px-4 py-10 text-center" role="status">
       <AlertTriangle className="size-6 text-amber-700" aria-hidden />
-      <p className="text-[14px] font-semibold text-ink">This diagram could not be drawn</p>
+      <p className="text-[14px] font-semibold text-ink">Diagram preview unavailable</p>
       <p className="max-w-[560px] text-[12px] leading-relaxed text-muted">
         {/* Only a reason written for this panel: an older error is Mermaid quoting the very words it could not read. */}
-        {(diagram.drawingFailed && diagram.renderError) || 'The model did not return a diagram for it. Redraw it to try again.'}
+        {(diagram.drawingFailed && diagram.renderError) || (diagram.drawable
+          ? 'Redraw this diagram to generate a fresh preview.'
+          : 'The model did not return a diagram for it. Redraw it to try again.')}
       </p>
       {error && <p className="text-[12px] text-bad">{error}</p>}
       <button

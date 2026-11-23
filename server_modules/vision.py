@@ -17,7 +17,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from . import config
+from . import ai_providers, config
 
 TTL_SECONDS = 7 * 24 * 3600
 RETRY_SECONDS = 120          # a model that could not be asked is asked again after this
@@ -111,6 +111,8 @@ def supports(model: str) -> bool | None:
     model = str(model or "").strip()
     if not model:
         return None
+    if ai_providers.split_model(model)[0]:
+        return ai_providers.vision_for(model, config.settings())
     _load()
     with _lock:
         entry = _known.get(model)

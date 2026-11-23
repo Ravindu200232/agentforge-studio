@@ -91,9 +91,8 @@ export default function PlanReview({ projectId, onGenerated, onGenerating, onCan
       return
     }
 
-    // The specification is written in the workspace: the chat streams each
-    // file as it lands and the SRS tab stays blurred under the generating
-    // animation until the server reports it finished.
+    // Open the project while the server writes the specification so the SRS
+    // tab can show generation progress.
     const st = useStore.getState()
     const sync = (status, extra) => st.applyProjectEvent({
       type: 'sync_state', project: projectId, status, source: 'srs', ...extra })
@@ -125,13 +124,15 @@ export default function PlanReview({ projectId, onGenerated, onGenerating, onCan
   }
 
   if (phase === 'loading' && !state) return <GenerationPreview
-    title="Generating your plan"
-    message="Turning the interview into a clear plan you can approve…"
+    projectId={projectId}
+    phase="reviewing"
+    message="Preparing a plan from your interview answers."
     seconds={waited}
   />
   if (phase === 'generating') return <GenerationPreview
-    title="Writing your specification"
-    message="The specification is being prepared. Follow each update in the chat stream."
+    projectId={projectId}
+    phase="generating"
+    message="Waiting for the generation run to start."
     seconds={waited}
   />
 
@@ -177,6 +178,9 @@ export default function PlanReview({ projectId, onGenerated, onGenerating, onCan
           <Plus className="size-3.5 text-accent" /> New Project
         </button>
       </div>
+
+      {phase === 'revising' && <SrsActivity projectId={projectId} phase="reviewing" title="Revising your plan"
+        message="Applying your requested changes." seconds={waited} compact />}
 
       <section className="overflow-hidden rounded-none border border-line bg-panel p-7 text-ink shadow-sm">
         <div className="flex flex-wrap items-start gap-6">
@@ -266,10 +270,10 @@ export default function PlanReview({ projectId, onGenerated, onGenerating, onCan
 
 /** One calm generation state. Detailed work belongs in the shared chat, not a
  * second animated checklist that competes with it. */
-function GenerationPreview({ title, message, seconds }) {
+function GenerationPreview({ projectId, phase, message, seconds }) {
   return (
     <div className="grid min-h-0 flex-1 place-items-center p-5 sm:p-8">
-      <SrsActivity title={title} message={message} seconds={seconds} />
+      <SrsActivity projectId={projectId} phase={phase} message={message} seconds={seconds} />
     </div>
   )
 }

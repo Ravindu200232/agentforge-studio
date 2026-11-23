@@ -174,7 +174,8 @@ export default function SrsResult({ onApprove }) {
         </div>
         {updatingSrs && (
           <div className="absolute inset-0 z-20 grid place-items-center overflow-y-auto bg-panel/30 px-5">
-            <SrsActivity phase="generating" message="Every file is written in the chat stream as it happens." />
+            <SrsActivity projectId={project} phase="generating"
+              message={sync?.detail || 'Waiting for the generation run to start.'} />
           </div>
         )}
       </div>

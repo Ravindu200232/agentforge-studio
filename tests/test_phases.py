@@ -16,7 +16,7 @@ for folder in (".", "src", "srs-agent", "prototype-agent", "builder-agent", "qa-
 
 from builder_agent import build, phases  # noqa: E402
 from server_modules import bus  # noqa: E402
-from server_modules.session import PHASE_REPAIRS, Phases, ProjectSession, RunCancelled  # noqa: E402
+from server_modules.session import PHASE_PLANNING_STEPS, PHASE_REPAIRS, Phases, ProjectSession, RunCancelled  # noqa: E402
 
 REQUEST = ("# One sequential plan\n\nIntro.\n\n## Phase 1 — complete the real application\n\nFinish the entire application first. "
            "Report: REPORT-TEMPLATE-PATH.\n\n## Phase 2 — read the completed app and test business logic\n\nWrite UNIT-TEST-TEXT.\n\n"
@@ -96,7 +96,7 @@ class PlanTests(unittest.TestCase):
 
 class RequestTests(unittest.TestCase):
     def ask(self, item, number=2, total=9, rows=None):
-        return phases.request_for(item, number, total, rows or routes(9), REQUEST)
+        return phases.request_for(item, number, total, rows or routes(9))
 
     def test_a_phase_is_numbered_scoped_and_forbids_cutting_the_application_down(self):
         items = phases.plan(routes(9))
@@ -117,25 +117,35 @@ class RequestTests(unittest.TestCase):
         self.assertIn(".agentforge/build/progress/pages-1.json", text)
         self.assertIn('{"routes": {"/the/route"', text)
 
-    def test_the_foundation_builds_no_pages_and_the_wiring_carries_the_plans_first_phase(self):
+    def test_the_foundation_leaves_pages_seeding_and_tests_to_their_phases(self):
         items = phases.plan(routes(5))
-        self.assertIn("Do **not** build the pages themselves", self.ask(items[0]))
+        self.assertIn("Do **not** build the pages themselves, seed the database, or write or run tests", self.ask(items[0]))
         wiring = self.ask(items[-3])
         self.assertIn("the seed script", wiring)
-        self.assertIn("Finish the entire application first. Report: REPORT-TEMPLATE-PATH.", wiring)
+        self.assertIn("Stop once wiring, seeding and compilation are verified", wiring)
+        self.assertNotIn("Finish the entire application first", wiring)
 
-    def test_the_tests_and_the_checks_carry_their_own_sections_of_the_build_request(self):
+    def test_unit_tests_and_browser_specs_have_separate_tasks(self):
         items = phases.plan(routes(5))
         tests, checks = self.ask(items[-2]), self.ask(items[-1])
-        self.assertIn("UNIT-TEST-TEXT", tests)
-        self.assertNotIn("FINAL-CHECK-TEXT", tests)
-        self.assertIn("FINAL-CHECK-TEXT", checks)
-        self.assertNotIn("UNIT-TEST-TEXT", checks)
+        self.assertIn("Run that unit suite", tests)
+        self.assertNotIn("e2e/journeys/", tests)
+        self.assertIn("Stop\nafter writing the specs and route list", checks)
+        self.assertNotIn("Run that unit suite", checks)
 
-    def test_a_request_without_those_sections_still_gives_the_phase_something_to_do(self):
-        items = phases.plan(routes(2))
-        self.assertIn("Write the unit tests", phases.request_for(items[-2], 4, 5, routes(2), "no sections here"))
-        self.assertEqual(phases.section("", 2), "")
+    def test_small_planner_brief_keeps_all_routes_in_the_fallback(self):
+        rows = routes(30)
+        items = phases.plan(rows)
+        brief = phases.planning_prompt("nextjs-supabase", items, rows, {
+            "app_name": "Shelf Check", "collections": [{"name": "stock"}],
+            "authentication": {"login_required": False}, "workflows": [{"workflow_name": "Restock"}],
+        }, "Approved theme: teal")
+        for value in ("Shelf Check", "stock", "Restock", "Approved theme: teal", "/page-1", "6 additional routes"):
+            self.assertIn(value, brief)
+        self.assertNotIn("`/page-30`", brief)
+        fallback = phases.fallback_plan(items, rows)
+        for row in rows:
+            self.assertIn(f"`{row['route']}`", fallback)
 
     def test_a_phase_that_is_not_finished_is_asked_for_again_with_what_is_missing(self):
         item = phases.plan(routes(5))[1]
@@ -287,8 +297,9 @@ class ExecutionTests(unittest.TestCase):
         self.script: list = []                  # what each turn does: a status string, an Exception, or a callable
 
         class Agent:
-            def execute_plan(agent_self, request, plan, audit=True, parallel_write_limit=1):
+            def execute_plan(agent_self, request, plan, audit=True, parallel_write_limit=1, *, phase_task=""):
                 self.asked.append((request, plan, audit))
+                self.assertTrue(phase_task)
                 step = self.script.pop(0) if self.script else "complete"
                 if callable(step):
                     step = step()
@@ -338,14 +349,13 @@ class ExecutionTests(unittest.TestCase):
         self.assertTrue(all(audit is False for _, _, audit in self.asked))
         self.assertEqual(result["rounds"], total)
 
-    def test_the_model_is_pointed_at_the_saved_plan_not_given_all_of_it_again_every_phase(self):
-        self.run_all(self.phased(2))
-        for _, plan, _ in self.asked:
-            self.assertIn("plan/developmentplan1.md", plan)
-            self.assertNotIn("THE PLAN", plan)
-        self.asked.clear()
-        self.run_all(self.phased(2), plan_file="")
-        self.assertTrue(all(plan == "THE PLAN" for _, plan, _ in self.asked))
+    def test_each_phase_receives_only_its_plan_section(self):
+        phased = self.phased(2)
+        phased.notes_for = phases.section
+        self.run_all(phased, plan="## Phase 1\nOnly foundation\n\n## Phase 2\nOnly pages")
+        self.assertEqual(self.asked[0][1], "## Phase 1\nOnly foundation")
+        self.assertEqual(self.asked[1][1], "## Phase 2\nOnly pages")
+        self.assertEqual(self.asked[2][1], "")
 
     def test_the_chat_gets_words_for_each_phase_not_only_files(self):
         self.run_all(self.phased(5))
@@ -443,7 +453,8 @@ class ExecutionTests(unittest.TestCase):
         self.session.shed_history = lambda note="", keep_tokens=40_000: shed.append(keep_tokens) or 0
 
         def run_lanes(work, parallel_write_limit=1):
-            lanes.append([request for request, _ in work])
+            lanes.append([request for request, _, _ in work])
+            self.assertTrue(all("## Built at the same time as other phases" in task for _, _, task in work))
             return [{"status": "complete", "text": "built", "rounds": 1} for _ in work]
 
         self.session.run_lanes = run_lanes
@@ -506,7 +517,7 @@ class RunTaskTests(unittest.TestCase):
                 def ask(agent_self, request):
                     return "1. everything"
 
-                def execute_plan(agent_self, request, plan, audit=True, parallel_write_limit=1):
+                def execute_plan(agent_self, request, plan, audit=True, parallel_write_limit=1, *, phase_task=""):
                     turns.append((request, plan))
                     return SimpleNamespace(status="complete", text="ok", rounds=1)
 
@@ -530,6 +541,34 @@ class RunTaskTests(unittest.TestCase):
                 self.assertEqual(modes, ["plan"])
                 self.assertEqual(len(turns), len(items) - 2)
                 self.assertEqual(resumed["plan_file"], "plan/developmentplan1.md")
+
+    def test_the_bounded_planner_saves_the_route_plan_instead_of_the_tool_limit_message(self):
+        with tempfile.TemporaryDirectory() as folder:
+            session = ProjectSession.__new__(ProjectSession)
+            session.project, session.role, session.stage = "prj_rt", bus.DEVELOPER, "build"
+            session.workspace = Path(folder)
+            session.lock = threading.RLock()
+            session._cancel = threading.Event()
+            session.report_memory = session.save_context = lambda: None
+            session.shed_history = mock.Mock()
+            agent = mock.Mock(tool_limit_reached=True)
+            agent.ask.return_value = "Tool batch reached the limit"
+            agent.execute_plan.return_value = SimpleNamespace(status="complete", text="ok", rounds=1)
+            session.agent = lambda model="": agent
+            items = phases.plan(routes(2))
+            fallback = phases.fallback_plan(items, routes(2))
+            phased = Phases(items=items, request_for=lambda n, p: f"ASK {n}", repair_for=lambda *a: "",
+                            brief="Shared references", planning_prompt="Prepared SRS brief",
+                            fallback_plan=fallback, notes_for=phases.section)
+            with mock.patch.object(bus, "phase"), mock.patch.object(bus, "agent_msg"), \
+                    mock.patch.object(bus, "agent_state"), mock.patch.object(bus, "log"):
+                result = session.run_task("Old broad request", plan_directory="plan", phases=phased)
+            agent.ask.assert_called_once_with("Prepared SRS brief", max_steps=PHASE_PLANNING_STEPS)
+            self.assertEqual((session.workspace / result["plan_file"]).read_text(encoding="utf-8"), fallback)
+            first = agent.execute_plan.call_args_list[0]
+            self.assertEqual(first.args[0], "Shared references\n\n---\n\nASK 1")
+            self.assertEqual(first.kwargs["phase_task"], "ASK 1")
+            self.assertNotIn("## Phase 2", first.args[1])
 
 
 class BuildWiringTests(Workspace):

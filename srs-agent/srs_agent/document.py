@@ -3,9 +3,9 @@
 Written as focused calls rather than as one agentic conversation, because the two
 produce very different documents. A single run asked to write the document and
 all of its diagrams spends its output budget on the first few and truncates the
-rest. So: one call for the document, one per diagram, and the independent ones run
-at the same time. (The wireframes that follow are not drawn here: the project's agent
-builds them as a React app, see `wireframe.py`.)
+rest. Independent sections are written concurrently and merged into one document.
+Diagrams are drawn in separate calls from the reviewed document. The project's
+agent builds the wireframes that follow (see `wireframe.py`).
 
 Continuity does not come from a shared conversation here. It comes from the
 artifacts: the approved plan bounds the document, the document bounds the
@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from server_modules import bus, config, journeys, llm, mermaid, prompts, reference_staging, stage_evidence, store, web_app
+from server_modules import ai_providers, bus, config, journeys, llm, mermaid, prompts, reference_staging, stage_evidence, store, web_app
 from server_modules.session import ProjectSession, RunCancelled, session_for
 from server_modules.validation import completeness, json_edits
 from server_modules.validation import corpus as corpus_rules
@@ -42,6 +42,13 @@ USER_JOURNEYS = (SRS_DIR, "user-journeys.json")
 DIAGRAM_KINDS = ("system_context", "use_case", "erd", "sequence", "activity",
                  "class_object", "state_machine", "dfd", "bpmn", "component",
                  "deployment")
+DEPLOY_SECTION_SECONDS = (75, 120)
+DEPLOY_DIAGRAM_SECONDS = (60, 40)
+
+
+def _deploy_model() -> str:
+    model = str(config.setting("model") or "").strip()
+    return model if ai_providers.split_model(model)[0] == "deploy" else ""
 
 # A notation reference is about the standard, not the project, so one search per
 # kind is shared by every project this process draws for rather than repeated.
@@ -93,11 +100,12 @@ def _diagram_reference(kind: str) -> str:
         if kind in _reference_cache:
             return _reference_cache[kind]
     local = _catalog_reference(kind)
-    found = llm.web_search(_NOTATION_SEARCHES.get(
-        kind, f"UML {kind.replace('_', ' ')} diagram example correct notation"), max_results=3)
-    searched = "\n".join(f"- {row['title']}: {row['content'][:300]}"
-                           for row in found if row.get("content"))[:900]
-    note = "\n\n".join(piece for piece in (local, searched) if piece)[:2400]
+    note = local
+    if not note:
+        found = llm.web_search(_NOTATION_SEARCHES.get(
+            kind, f"UML {kind.replace('_', ' ')} diagram example correct notation"), max_results=3)
+        note = "\n".join(f"- {row['title']}: {row['content'][:300]}"
+                         for row in found if row.get("content"))[:900]
     with _reference_lock:
         _reference_cache[kind] = note
     return note
@@ -197,6 +205,18 @@ PARTS = {
 PART_NEEDS = {"frame": ["roles", "public_pages", "protected_pages"], "tables": ["database_design"], "api": ["api_design"],
               "requirements": ["functional_requirements", "requirement_traceability_matrix"],
               "quality": ["non_functional_requirements", "business_workflows"]}
+PART_TITLES = {
+    "frame": "Scope, roles and screens",
+    "tables": "Database design",
+    "api": "API and validation rules",
+    "requirements": "Functional requirements and traceability",
+    "quality": "Workflows and non-functional requirements",
+}
+
+
+def _progress(project: str, key: str, title: str, status: str = "active",
+              detail: str = "", number: int = 0) -> None:
+    bus.phase(project, f"srs:{key}", title, status=status, detail=detail, number=number, kind="srs-progress")
 
 
 def _part_validator(name: str):
@@ -228,33 +248,64 @@ def _write_in_parts(session: ProjectSession, project: str, record: dict, approve
                        for r in approved.get("records") or [] if isinstance(r, dict) and r.get("name"))
     memory = session.memory_digest()
     system = prompts.load("srs/system") + (f"\n\n## What this project already knows\n\n{memory}" if memory else "")
-    base = prompts.load("srs/document", project_name=(str(approved.get("app_name") or "").strip() or record.get("name") or project),
-                        stack=record.get("stack", ""), language=record.get("language", "English"))
+    # Slice the same schema examples the single-draft writer sees. Each lane
+    # receives only its own keys and one consistent set of project facts.
+    template = prompts.load("srs/document")
+    _, _, example = template.partition("## The shape\n\n```json\n")
+    shape = json.loads(example.split("\n```", 1)[0])["srs_document"]
+    language = record.get("language", "English")
+    shape["document_language"] = language
+    deploy_model = _deploy_model()
     inputs = dict(routes=routes or "(none)", tables=tables or "(none)", plan=json.dumps(approved, ensure_ascii=False, indent=1),
-                  interview=interview_stage.full_transcript(project) or "(there was no interview)")
-
-    def write(name: str) -> dict:
-        keys = PARTS[name]
-        return llm.complete_json(system=system,
-                                 user=base + "\n\n" + prompts.load("srs/document-part", keys=", ".join(f"`{k}`" for k in keys),
-                                                                   **inputs),
-                                 validator=_part_validator(name), label=f"srs_document:{name}", project=project)
+                  interview=interview_stage.full_transcript(project) or "(there was no interview)",
+                  project_name=str(approved.get("app_name") or "").strip() or record.get("name") or project,
+                  stack=record.get("stack", ""), language=language)
 
     written: dict[str, dict] = {}
     failed: dict[str, str] = {}
+    order = {name: index for index, name in enumerate(PARTS, 1)}
 
-    def attempt(names: list[str]) -> None:
+    def attempt(names: list[str], retry: bool = False) -> None:
         failed.clear()
+
+        def write(name: str) -> dict:
+            number = order[name]
+            title = PART_TITLES[name]
+            key = f"part:{name}"
+            _progress(project, key, title, status="retrying" if retry else "active", number=number)
+            example = {"srs_document": {key: shape[key] for key in PARTS[name]}}
+            options = dict(system=system,
+                           user=prompts.load("srs/document-part", title=title,
+                                             example=json.dumps(example, ensure_ascii=False, indent=2), **inputs),
+                           validator=_part_validator(name), label=f"srs_document:{name}", project=project)
+            if deploy_model:
+                part = llm.within(DEPLOY_SECTION_SECONDS[retry], llm.complete_json, model=deploy_model, **options)
+            else:
+                part = llm.complete_json(**options)
+            _progress(project, key, title, status="complete", number=number)
+            return part
+
+        def on_error(name: str, exc: Exception) -> None:
+            failed[name] = str(exc)[:120]
+            reason = "The model timed out." if isinstance(exc, TimeoutError) else "The section could not be validated."
+            _progress(project, f"part:{name}", PART_TITLES[name], status="failed" if retry else "retrying",
+                      detail=reason if retry else f"{reason} Queued for another attempt.",
+                      number=order[name])
+
         done = llm.in_lanes(names, write, lanes=len(names),
-                            on_error=lambda name, exc: failed.__setitem__(name, str(exc)[:120]))
+                            on_error=on_error)
         written.update({name: part for name, part in zip(names, done) if part is not None and name not in failed})
 
+    for name, number in order.items():
+        _progress(project, f"part:{name}", PART_TITLES[name], status="queued", number=number)
     attempt(list(PARTS))
     if failed:                                  # a part that did not come back is asked for once more, on its own
         bus.log(project, "WARN", f"Writing {', '.join(failed)} of the specification again: {'; '.join(failed.values())}")
-        attempt(list(failed))
+        attempt(list(failed), retry=True)
     if failed:
         raise ValueError("a part could not be written (" + "; ".join(f"{k}: {v}" for k, v in failed.items()) + ")")
+    _progress(project, "document", "Merging the specification",
+              detail=f"Combining {len(written)} sections and validating the full document.")
     doc: dict[str, Any] = {}
     for name in PARTS:
         doc.update(written[name])
@@ -269,15 +320,19 @@ def _write_document(session: ProjectSession, project: str, record: dict,
                     approved: dict) -> dict:
     """The specification in parts written at the same time (`_write_in_parts`), or, when they do not join into a valid
     document, in one call."""
-    bus.phase(project, "srs:document", "Writing the requirements",
-              detail=f"{len(PARTS)} parts of the specification written at the same time, then joined.")
+    _progress(project, "document", "Writing the requirements",
+              detail="Using the approved plan, interview answers and shared route and table names.")
     try:
-        return _write_in_parts(session, project, record, approved)
+        envelope = _write_in_parts(session, project, record, approved)
     except RunCancelled:
         raise
     except Exception as exc:  # noqa: BLE001 - the one-call path is the fallback, never a failed specification
         bus.log(project, "WARN", f"The parts did not join into a valid specification ({str(exc)[:200]}); writing it in one call.")
-    return _write_whole(session, project, record, approved)
+        _progress(project, "document", "Writing a single draft", status="retrying",
+                  detail="The sections did not produce a valid document. Generating the specification in one pass.")
+        envelope = _write_whole(session, project, record, approved)
+    _progress(project, "document", "Specification draft", status="complete", detail="The draft passed schema validation.")
+    return envelope
 
 
 def _write_whole(session: ProjectSession, project: str, record: dict,
@@ -288,8 +343,6 @@ def _write_whole(session: ProjectSession, project: str, record: dict,
     and `.agentforge/interview.json`; the model reads them itself rather than
     having them pasted in here.
     """
-    bus.phase(project, "srs:document", "Writing the requirements",
-              detail="Decomposing the approved plan into testable requirements.")
     # The focused call has no conversation of its own, so the project's memory
     # is handed to it. That is what keeps one context across all six stages
     # while still writing each artifact in its own call.
@@ -597,6 +650,7 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
         {f"{kind}.json": digest}, fresh=False)
 
     reference = _diagram_reference(kind)
+    deploy_model = _deploy_model()
 
     def _ask(problem: str = "", previous: str = "") -> str:
         user = prompts.load("srs/diagram", kind=kind, standard=kind, guidance=guidance,
@@ -609,13 +663,23 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
                 problem=problem, digest=digest,
                 previous=f"Your rejected source:\n\n```\n{previous[:4000]}\n```\n\n" if previous else "")
         # The reasoning a model leaves in `thinking` is never a diagram, so it is never taken for one.
-        return mermaid.clean(llm.complete(
+        options = dict(
             system=prompts.load("srs/system"), user=user, project=project, think=False if retrying else None,
-            workspace=None if retrying else session.workspace, thinking_fallback=False))
+            workspace=None if retrying else session.workspace, thinking_fallback=False)
+        if deploy_model:
+            seconds = DEPLOY_DIAGRAM_SECONDS[1] if retrying else DEPLOY_DIAGRAM_SECONDS[0]
+            return mermaid.clean(llm.within(seconds, llm.complete, model=deploy_model, **options))
+        return mermaid.clean(llm.complete(**options))
 
     bus.agent_msg(project, f"Generating the {kind.replace('_', ' ')} diagram from the specification.",
                   title="SRS diagram", kind="narration")
-    source = _ask()
+    timed_out = False
+    try:
+        source = _ask()
+    except TimeoutError:
+        source, timed_out = "", True
+        bus.agent_msg(project, f"The {kind.replace('_', ' ')} diagram request timed out. Retrying with the SRS context attached.",
+                      title="Retrying diagram", kind="narration")
 
     # The tuned prompt is the quality control for diagram notation and visual
     # hierarchy.  We only retry a reply that is not a diagram at all, or a
@@ -632,7 +696,10 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
                     "format": "mermaid", "source": "", "applicable": False,
                     "applicability_note": source.split(":", 1)[-1].strip()[:240]}
         wrong = ""
-        if not mermaid.has_diagram(kind, source):
+        if timed_out:
+            why = "the model timed out while drawing"
+            wrong = "The request timed out. Draw only the essential evidence in the supplied context."
+        elif not mermaid.has_diagram(kind, source):
             why = "the model's reply was not a diagram"
             wrong = ("That reply was not Mermaid source"
                      + (f" — it was words, beginning “{source[:80]}”." if source else " — it was empty."))
@@ -649,7 +716,12 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
                 wrong = f"Mermaid rejected it: {why}"
         if not wrong or attempt == 2:
             break
-        source = _ask(wrong, source if mermaid.has_diagram(kind, source) else "")
+        try:
+            source = _ask(wrong, source if mermaid.has_diagram(kind, source) else "")
+            timed_out = False
+        except TimeoutError:
+            source, timed_out = "", True
+            break
 
     fallback = False
     no_diagram = not mermaid.has_diagram(kind, source)
@@ -657,18 +729,19 @@ def _draw_diagram(session: ProjectSession, project: str, doc: dict,
         drawn = diagram_fallback.build(kind, context)
         if drawn:
             source, fallback = drawn, True
-            bus.agent_msg(project, f"The model did not return a {kind.replace('_', ' ')} diagram Mermaid could draw, "
-                                   "so it was drawn directly from the specification.",
+            reason = "The model timed out" if timed_out else "The model did not return usable Mermaid source"
+            bus.agent_msg(project, f"{reason}. The {kind.replace('_', ' ')} diagram was drawn directly from the specification.",
                           title="SRS diagram", kind="narration")
             rendered, why = False, "no renderer"
             if mermaid.available():
                 rendered, why = mermaid.render_diagram(kind, source, svg)
         elif no_diagram:
-            bus.log(project, "WARN", f"Diagram · {kind.replace('_', ' ')} (not drawn — the model returned no diagram)")
+            reason = "The model timed out" if timed_out else "The model did not return a diagram"
+            bus.log(project, "WARN", f"Diagram · {kind.replace('_', ' ')} ({reason.lower()})")
             return {"id": f"DIA-{kind}", "kind": kind, "title": kind.replace("_", " ").title(),
                     "format": "mermaid", "source": "", "applicable": True, "drawing_failed": True,
-                    "render_error": "The model did not return a diagram and the specification has too little "
-                                    "to draw this one from directly. Redraw it to try again."}
+                    "render_error": f"{reason} and the specification has too little to draw this one from directly. "
+                                    "Redraw it to try again."}
 
     mmd.write_text(source, encoding="utf-8")
     bus.file_written(project, mmd.relative_to(session.workspace).as_posix(), source,
@@ -910,6 +983,8 @@ def generate(project: str) -> dict[str, Any]:
             bus.agent_msg(project, "Continuing the saved specification draft after the interrupted run.",
                           title="SRS generation", kind="narration")
             envelope = draft
+            _progress(project, "document", "Specification draft", status="complete",
+                      detail="Resuming the saved draft.")
         doc = envelope["srs_document"]
         # The document record embeds every rendered SVG. Sending that entire
         # record through the live file-event channel can fill a browser's
@@ -925,30 +1000,52 @@ def generate(project: str) -> dict[str, Any]:
         # Validate and reconcile the main SRS against its approved plan before
         # spending model calls on diagrams. The diagrams are downstream
         # artifacts and must never mask a missing workflow or a broken SRS.
+        _progress(project, "review", "Checking the specification",
+                  detail="Checking the draft against the approved scope before reviewing requirement quality.")
         envelope = _close_gaps(session, project, envelope, approved)
         bus.agent_msg(project, "Reviewing the requirements against the approved plan and SRS standards.",
                       title="SRS review", kind="narration")
         envelope = _review_loop(session, project, envelope, approved)
+        _progress(project, "review", "Checking the specification",
+                  detail="Checking coverage, user journeys and links between requirements.")
         envelope = _close_gaps(session, project, envelope, approved)
         envelope = _validate_journeys(project, envelope)
         srs_schema.srs_validator(envelope)
         _write_record_visible(session, project, DOCUMENT, envelope)
+        _progress(project, "review", "Specification checks", status="complete",
+                  detail="The reviewed draft passed schema validation.")
 
         doc = envelope["srs_document"]
-        bus.phase(project, "srs:draw", "Drawing the diagrams",
-                  detail=f"{len(DIAGRAM_KINDS)} diagrams, each on its own call.")
+        diagram_count = len(DIAGRAM_KINDS)
+        remaining = set(DIAGRAM_KINDS)
+        diagram_progress_lock = threading.Lock()
 
-        drawn = llm.in_lanes(
-            list(DIAGRAM_KINDS),
-            lambda kind: _draw_diagram(session, project, doc, kind),
-            lanes=diagram_look.DIAGRAM_LANES,
-            on_error=lambda kind, exc: {"id": f"DIA-{kind}", "kind": kind,
-                                        "title": kind.replace("_", " ").title(),
-                                        "format": "mermaid", "source": "",
-                                        "applicable": False,
-                                        "applicability_note": f"drawing failed: {exc}"[:240]})
+        def diagram_finished(kind: str) -> None:
+            with diagram_progress_lock:
+                remaining.discard(kind)
+                detail = f"{diagram_count - len(remaining)} of {diagram_count} diagram tasks finished."
+                if 0 < len(remaining) <= 3:
+                    names = ", ".join(name.upper() if name in {"erd", "dfd", "bpmn"} else name.replace("_", " ")
+                                      for name in sorted(remaining))
+                    detail += f" Still working on {names}."
+                _progress(project, "draw", "Drawing the diagrams", detail=detail)
+
+        def draw(kind: str) -> dict | None:
+            diagram = _draw_diagram(session, project, doc, kind)
+            diagram_finished(kind)
+            return diagram
+
+        def draw_error(kind: str, exc: Exception) -> dict:
+            diagram_finished(kind)
+            return {"id": f"DIA-{kind}", "kind": kind, "title": kind.replace("_", " ").title(),
+                    "format": "mermaid", "source": "", "applicable": False,
+                    "applicability_note": f"drawing failed: {exc}"[:240]}
+
+        _progress(project, "draw", "Drawing the diagrams", detail=f"0 of {diagram_count} diagram tasks finished.")
+        drawn = llm.in_lanes(list(DIAGRAM_KINDS), draw, lanes=diagram_look.DIAGRAM_LANES, on_error=draw_error)
         doc["diagrams"] = [d for d in drawn if d]
         rendered = sum(1 for d in doc["diagrams"] if d.get("svg"))
+        _progress(project, "draw", "Diagram generation", status="complete", detail=f"{rendered} diagrams rendered.")
         bus.log(project, "SUCCESS" if rendered else "WARN",
                 f"{sum(1 for d in doc['diagrams'] if d.get('applicable'))} diagrams drawn, "
                 f"{rendered} rendered to SVG."
@@ -957,6 +1054,8 @@ def generate(project: str) -> dict[str, Any]:
         # Each drawn diagram is photographed and looked at by a model that can see pictures, and fixed (two rounds at most):
         # after the specification is done, in the background (`_check_diagrams_later`), so nobody waits for it.
 
+        _progress(project, "save", "Saving the specification",
+                  detail="Writing the SRS, user journeys and handoff files.")
         doc = envelope["srs_document"]
         doc["approved_plan_markdown"] = plan_stage.markdown(project)
         doc["approved_plan"] = approved
@@ -973,6 +1072,7 @@ def generate(project: str) -> dict[str, Any]:
         named = str((doc.get("app_summary") or {}).get("app_name") or "").strip()
         if named and named != record.get("name"):
             store.rename(project, named)
+        _progress(project, "save", "Specification saved", status="complete")
 
         elapsed = int(time.time() - started)
         bus.agent_msg(project,
@@ -1231,8 +1331,8 @@ def _review_loop(session: ProjectSession, project: str, envelope: dict,
             review_rules.stamp(doc, "skipped", round_no, "there was nothing to review")
             return envelope
 
-        bus.phase(project, "srs:review", "Reviewing the specification",
-                  detail=f"Against the requirements standards (round {round_no + 1}).")
+        _progress(project, "review", "Reviewing the specification",
+                  detail=f"Checking the requirements standards (round {round_no + 1}).")
         structure = completeness.section_completeness(doc)
         ambiguity = completeness.ambiguity_resolution(doc)
         corpus_audit = corpus_rules.audit_document(doc)

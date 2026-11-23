@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useRef, useState } from 'react'
 import {
-  Check, Database, Keyboard,
+  Check, Database, KeyRound, Keyboard,
   LayoutGrid, Loader2, Network, Palette, Plug, SlidersHorizontal, X,
   Download, ExternalLink, FolderUp, LogOut,
 } from 'lucide-react'
@@ -39,8 +39,6 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
 
   // Real server settings, including the model engine on this computer.
   const [mongo, setMongo] = useState('')
-  const [engineChoice, setEngineChoice] = useState('built-in')
-  const [ollamaHost, setOllamaHost] = useState('http://localhost:11434')
   const [meta, setMeta] = useState(null)
   const [saving, setSaving] = useState(false)
   const [note, setNote] = useState('loading…')
@@ -52,8 +50,6 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
       .then(d => {
         if (!alive) return
         setMeta(d)
-        setEngineChoice(d.engine === 'local' ? 'local' : 'built-in')
-        setOllamaHost(d.ollama_host || 'http://localhost:11434')
         setNote('ready')
         setTone('ok')
       })
@@ -67,39 +63,12 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
     setTone('muted')
     const body = {}
     if (mongo.trim()) body.mongodb_uri = mongo.trim() === '-' ? '' : mongo.trim()
-    body.engine = engineChoice === 'local' ? 'local' : 'built-in'
-    if (engineChoice === 'local') body.ollama_host = ollamaHost.trim() || 'http://localhost:11434'
     try {
       const d = await api.saveSettings(body)
       setMeta(d)
-      if (engineChoice === 'local') {
-        const catalog = await api.models()
-        const picked = (catalog.local_models || [])[0]?.id || catalog.local?.[0]
-        if (picked) {
-          useStore.setState(state => ({ models: { ...state.models, planner: picked, design: picked,
-            builder: picked, agent: picked, qa: picked, srs: picked, deploy: picked } }))
-          await api.saveSettings({ model: picked })
-          setNote(`Local Ollama connected · ${picked}`)
-        } else {
-          setNote('Local mode saved. Start Ollama and pull a model to connect.')
-        }
-      } else {
-        const catalog = await api.models()
-        const cloud = catalog.cloud || []
-        const current = useStore.getState().models.builder
-        const picked = cloud.find(row => row.id === current && !row.locked)?.id
-          || cloud.find(row => row.id === 'deepseek-v4.1-flash:cloud' && !row.locked)?.id
-          || cloud.find(row => !row.locked)?.id
-        if (picked) {
-          useStore.setState(state => ({ models: { ...state.models, planner: picked, design: picked,
-            builder: picked, agent: picked, qa: picked, srs: picked, deploy: picked } }))
-          await api.saveSettings({ model: picked })
-        }
-        setNote(picked ? `Cloud connected · ${picked}` : 'Cloud mode saved. Models will appear when the engine is available.')
-      }
       setMongo('')
+      setNote('Settings saved')
       setTone('ok')
-      await useAuthStore.getState().init()
       onSaved?.()
     } catch (e) {
       setNote('save failed — ' + e.message)
@@ -119,6 +88,7 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
 
   const settingsNav = [
     { id: 'general',      label: 'General',      Icon: SlidersHorizontal },
+    { id: 'ai-providers', label: 'AI Providers', Icon: KeyRound },
     { id: 'application',  label: 'Application',  Icon: LayoutGrid },
     { id: 'appearance',   label: 'Appearance',   Icon: Palette },
     ...BRAND_ORDER.map(id => ({ id, label: BRANDS[id].title, brand: true })),
@@ -190,6 +160,7 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
             <div className="min-w-0 flex-1 pr-2">
               <h2 className="font-display text-[15px] sm:text-[16px] font-bold tracking-tight text-ink truncate">
                 {activeTab === 'general'      ? 'General'
+               : activeTab === 'ai-providers' ? 'AI Providers'
                : activeTab === 'application'  ? 'Application'
                : activeTab === 'appearance'   ? 'Appearance'
                : BRANDS[activeTab]            ? BRANDS[activeTab].title
@@ -201,6 +172,8 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
                 {activeTab === 'general'
                   ? isAdmin ? 'AgentForge database connection and this workspace.'
                             : 'What this machine runs, and what is yours.'
+                  : activeTab === 'ai-providers'
+                  ? 'Connect providers to add their models to the picker.'
                   : activeTab === 'application'
                   ? 'Running services and database status.'
                   : activeTab === 'appearance'
@@ -230,12 +203,6 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
             {activeTab === 'general' && !isAdmin && (
               <div className="space-y-4 max-w-[700px]">
                 <AccountRequests />
-                <EngineChoice value={engineChoice} onChange={setEngineChoice} host={ollamaHost} onHost={setOllamaHost} />
-                <button type="button" disabled={saving} onClick={save}
-                  className="rounded-xl bg-accent px-4 py-2 text-[12px] font-semibold text-ink disabled:opacity-50">
-                  {saving ? 'Connecting…' : 'Save AI connection'}
-                </button>
-                <p className="text-[11px] text-muted">{note}</p>
                 <p className="rounded-2xl border border-line bg-panel px-4 py-3 text-[12px] text-muted">
                   AgentForge's own database is shared by everyone on this
                   machine, so only its admin changes it. Your GitHub, AWS, Vercel
@@ -252,7 +219,6 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
             {activeTab === 'general' && isAdmin && (
               <div className="space-y-5 max-w-[700px]">
                 <AccountRequests />
-                <EngineChoice value={engineChoice} onChange={setEngineChoice} host={ollamaHost} onHost={setOllamaHost} />
                 <div className="grid gap-4 sm:grid-cols-2">
                   <label className="block">
                     <span className="mb-1.5 block text-[11.5px] font-semibold text-muted">MongoDB URI</span>
@@ -291,6 +257,10 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
                 <WorkspaceActions project={project} folderRef={folderRef} onImport={onImport}
                                   onZip={onZip} onOpenInNewTab={onOpenInNewTab} onLogout={onLogout} />
               </div>
+            )}
+
+            {activeTab === 'ai-providers' && (
+              <AiProviders meta={meta} onSaved={data => { setMeta(data); return onSaved?.() }} />
             )}
 
             {/* ── APPLICATION ── */}
@@ -411,18 +381,98 @@ export default function SettingsModal({ onClose, onSaved, onImport, onZip, onOpe
   )
 }
 
-/** The signed-in AgentForge account's requests (one per AI call): the limit the admin gave, what is used and what is left,
- * going down live as the AI works (`account_usage` events). Nothing is shown when AgentForge accounts are off. */
-function EngineChoice({ value, onChange, host, onHost }) {
-  return <div className="rounded-2xl border border-line bg-panel px-4 py-4 space-y-3">
-    <h3 className="text-[13px] font-semibold text-ink">AI connection</h3>
-    <label className="flex gap-2 text-[12px]"><input type="radio" name="ai-engine" checked={value === 'built-in'} onChange={() => onChange('built-in')} /> AgentForge Cloud · uses account credit</label>
-    <label className="flex gap-2 text-[12px]"><input type="radio" name="ai-engine" checked={value === 'local'} onChange={() => onChange('local')} /> Local Ollama · uses your computer, no cloud credit</label>
-    {value === 'local' && <label className="block text-[11px] text-muted">Ollama address
-      <input value={host} onChange={e => onHost(e.target.value)} placeholder="http://localhost:11434"
-        className="mt-1 block w-full rounded-xl border border-line bg-panel2 px-3 py-2 text-[12px] text-ink" />
-    </label>}
-  </div>
+const AI_PROVIDERS = [
+  ['ollama', 'Ollama Cloud'],
+  ['deploy', 'Deploy'],
+  ['openai', 'OpenAI'],
+  ['anthropic', 'Claude (Anthropic)'],
+  ['deepseek', 'DeepSeek'],
+  ['gemini', 'Google Gemini'],
+  ['custom', 'OpenAI-compatible endpoint'],
+]
+
+function AiProviders({ meta, onSaved }) {
+  const [keys, setKeys] = useState({})
+  const [removed, setRemoved] = useState({})
+  const [address, setAddress] = useState(null)
+  const [host, setHost] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [feedback, setFeedback] = useState(null)
+  const inputClass = 'mt-1 block w-full rounded-xl border border-line bg-panel2 px-3 py-2 text-[12px] text-ink'
+
+  async function save(event) {
+    event.preventDefault()
+    setSaving(true)
+    setFeedback(null)
+    const patch = {}
+    if (address !== null) patch.custom_api_url = address.trim()
+    if (host !== null) patch.ollama_host = host.trim() || 'http://localhost:11434'
+    for (const [id] of AI_PROVIDERS) {
+      if (removed[id]) patch[`${id}_api_key`] = ''
+      else if (keys[id]?.trim()) patch[`${id}_api_key`] = keys[id].trim()
+    }
+    try {
+      const settings = await api.saveSettings(patch)
+      setKeys({})
+      setRemoved({})
+      setAddress(null)
+      setHost(null)
+      setFeedback({ text: 'AI provider settings saved.' })
+      await onSaved(settings)
+    } catch (error) {
+      setFeedback({ text: error.message, error: true })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="max-w-[700px] space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        {AI_PROVIDERS.map(([id, label]) => {
+          const state = meta?.ai_providers?.[id]
+          return (
+            <section key={id} className={cn('rounded-2xl border border-line bg-panel p-4', id === 'custom' && 'sm:col-span-2')}>
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-[12px] font-semibold" htmlFor={`ai-key-${id}`}>{label} API key</label>
+                {state?.saved && (
+                  <button type="button" disabled={saving}
+                          onClick={() => { setRemoved(previous => ({ ...previous, [id]: !previous[id] })); setKeys(previous => ({ ...previous, [id]: '' })) }}
+                          className="text-[11px] text-muted hover:text-ink">
+                    {removed[id] ? 'Undo removal' : 'Remove key'}
+                  </button>
+                )}
+              </div>
+              <input id={`ai-key-${id}`} type="password" autoComplete="off" spellCheck={false} disabled={saving || !!removed[id]}
+                     value={keys[id] || ''} onChange={event => setKeys(previous => ({ ...previous, [id]: event.target.value }))}
+                     placeholder={removed[id] ? 'Key will be removed' : state?.saved ? 'Key saved' : state?.configured ? 'Set from environment' : 'Enter API key'}
+                     className={inputClass} />
+              {id === 'custom' && (
+                <label className="mt-3 block text-[11px] text-muted">
+                  API base URL
+                  <input value={address ?? meta?.custom_api_url ?? ''} onChange={event => setAddress(event.target.value)}
+                         placeholder="https://provider.example/v1" disabled={saving} className={inputClass} />
+                </label>
+              )}
+              {state?.error && <p className="mt-2 text-[11px] text-bad">{state.error}</p>}
+            </section>
+          )
+        })}
+      </div>
+      <label className="block rounded-2xl border border-line bg-panel p-4 text-[12px] font-semibold">
+        Local Ollama address
+        <input value={host ?? meta?.ollama_host ?? 'http://localhost:11434'} onChange={event => setHost(event.target.value)}
+               disabled={saving} className={inputClass} />
+      </label>
+      <div className="flex flex-wrap items-center gap-3">
+        <button type="submit" disabled={saving || !meta}
+                className="rounded-xl bg-accent px-4 py-2 text-[12px] font-semibold text-ink disabled:opacity-50">
+          {saving ? 'Saving…' : 'Save AI providers'}
+        </button>
+        {feedback && <p role="status" className={cn('text-[11px]', feedback.error ? 'text-bad' : 'text-muted')}>{feedback.text}</p>}
+      </div>
+    </form>
+  )
 }
 
 const NL = String.fromCharCode(10)

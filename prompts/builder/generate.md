@@ -6,7 +6,7 @@ The staged guides are hand-written for this exact scaffold and are the standard 
 
 ## Mandatory prototype-to-app parity workflow
 
-The approved prototype is the frontend source of truth. It is a React app (Vite, Tailwind CSS, shadcn/ui) in `.agentforge/prototype/app`: every screen is `src/pages/<page>.tsx`, and the shared layout, navigation and components are under `src/`. The real application must reproduce it at 100% visual, content, image, interaction and navigation parity while connecting the real data and business logic.
+The approved prototype is the frontend source of truth. It is a React app with Vite and Tailwind CSS in `.agentforge/prototype/app`: every screen is `src/pages/<page>.tsx`, and the shared layout, navigation and components are under `src/`. The real application must reproduce it at 100% visual, content, image, interaction and navigation parity while connecting the real data and business logic. Write shared UI for the product with native HTML controls and the target stack's styling. Do not install or copy shadcn/ui, Radix UI, or any ready-made component kit, including from an older prototype.
 
 Before writing the implementation plan:
 
@@ -17,7 +17,7 @@ Before writing the implementation plan:
 
 While implementing, work route by route. Immediately before creating or editing a real application page, reopen its mapped prototype page and the components it imports. Reproduce the same page structure, visible copy, typography, colors, spacing, sizing, images, image crops, ordering, shells, responsive states, controls, hover/focus states, buttons, links, destinations and navigation flow. Reuse the exact same prototype images and URLs; do not replace them with placeholders, stock substitutes, generated images or different crops. Copy a local prototype asset into the application's public assets when the framework needs a served file, and keep its appearance unchanged.
 
-The prototype's `src/index.css` and Tailwind theme already fix one numeric spacing scale and one definition per common component (the shadcn/ui button, input, card, table row, empty state) — port those into the application's own styling system once (the framework's theme config, a global stylesheet or CSS custom properties) and build one shared component per kind (`Button`, `Card`, `Input`, ...) that every page imports. Do not let each page's own file re-derive its own padding, margin or control size by eyeballing the prototype HTML page by page: that is exactly how the real app drifts from the prototype's own consistency one page at a time. Two buttons of the same kind, on two different pages, use the same shared component and are pixel-identical unless the design spec defines a real size variant.
+Port the prototype's spacing scale and common styles into the application's styling system once. Reuse project-authored buttons, inputs, cards, table rows, and empty states across pages. Keep equal controls consistent in size and spacing unless the design spec defines a variant.
 
 The SRS defines data, permissions and business behaviour. The mapped prototype page defines the frontend presentation and interaction. Connect real data without redesigning, simplifying, restyling or inventing a different screen. If a detail is forgotten, reopen the mapped HTML instead of guessing. Never expose credentials from `demo-accounts.json` in the visible interface.
 

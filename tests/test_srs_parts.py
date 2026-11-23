@@ -64,16 +64,17 @@ class PartsTests(unittest.TestCase):
             return validator({"srs_document": {**data}})
         return complete_json
 
-    def write(self, model):
+    def write(self, model, deploy_model=""):
         with mock.patch.object(document.llm, "complete_json", model), \
+                mock.patch.object(document, "_deploy_model", return_value=deploy_model), \
                 mock.patch.object(interview, "full_transcript", return_value="Q: Who sells? A: The owner."), \
-                mock.patch.object(document.bus, "phase"), mock.patch.object(document.bus, "log") as logged:
+                mock.patch.object(document.bus, "phase") as phases, mock.patch.object(document.bus, "log") as logged:
             envelope = document._write_document(self.session, "prj_parts", {"name": "Corner Shop", "stack": "nextjs"}, PLAN)
-        return envelope, logged
+        return envelope, logged, phases.call_args_list
 
     def test_the_parts_are_joined_into_one_valid_specification_with_the_same_names(self):
         self.assertEqual(set(document.PARTS), set(PARTS))
-        envelope, _ = self.write(self.model())
+        envelope, _, phases = self.write(self.model())
         doc = envelope["srs_document"]
         self.assertEqual(len(self.users), len(document.PARTS))
         self.assertEqual(len(doc["functional_requirements"]), 3)
@@ -82,17 +83,45 @@ class PartsTests(unittest.TestCase):
             self.assertIn("- `/products` — Owner", user)
             self.assertIn("- `products` (Product)", user)
             self.assertIn("Q: Who sells? A: The owner.", user)
+            self.assertNotIn("Read these two files yourself", user)
+        api_prompt = next(user for user in self.users if '"api_design":' in user)
+        self.assertNotIn('"functional_requirements":', api_prompt)
+        self.assertNotIn('"database_design":', api_prompt)
+        completed = [call.args[1] for call in phases if call.kwargs["status"] == "complete"]
+        self.assertEqual(set(completed[:-1]), {f"srs:part:{name}" for name in PARTS})
+        self.assertEqual(completed[-1], "srs:document")
+        self.assertIn("Merging the specification", [call.args[2] for call in phases])
 
     def test_a_part_that_fails_once_is_written_again_on_its_own_and_the_parts_still_join(self):
-        envelope, _ = self.write(self.model(fail="tables", times=1))
+        envelope, _, phases = self.write(self.model(fail="tables", times=1))
         self.assertEqual(len(self.users), len(document.PARTS) + 1)            # only the failed part again
         self.assertEqual(envelope["srs_document"]["database_design"]["tables"][0]["table_name"], "products")
+        self.assertEqual([call.kwargs["status"] for call in phases if call.args[1] == "srs:part:tables"],
+                         ["queued", "active", "retrying", "retrying", "complete"])
 
     def test_a_part_that_fails_twice_means_the_whole_specification_is_written_in_one_call(self):
-        envelope, logged = self.write(self.model(fail="tables"))
+        envelope, logged, phases = self.write(self.model(fail="tables"))
         self.assertIn("writing it in one call", logged.call_args.args[2])
         self.assertEqual(len(envelope["srs_document"]["functional_requirements"]), 3)
         self.assertEqual(len(self.users), len(document.PARTS) + 2)            # the parts, the failed one again, the one call
+        self.assertIn("Writing a single draft", [call.args[2] for call in phases])
+
+    def test_only_the_timed_out_deploy_section_is_retried(self):
+        budgets = []
+
+        def within(seconds, function, **options):
+            label = options["label"]
+            budgets.append((label, seconds, options["model"]))
+            if label == "srs_document:api" and seconds == document.DEPLOY_SECTION_SECONDS[0]:
+                raise TimeoutError("provider did not finish")
+            return function(**options)
+
+        with mock.patch.object(document.llm, "within", side_effect=within):
+            _, _, phases = self.write(self.model(), deploy_model="deploy/example")
+        self.assertEqual(len(budgets), len(PARTS) + 1)
+        self.assertEqual(budgets[-1], ("srs_document:api", document.DEPLOY_SECTION_SECONDS[1], "deploy/example"))
+        self.assertTrue(any(call.args[1] == "srs:part:api" and "timed out" in call.kwargs["detail"]
+                            for call in phases))
 
 
 if __name__ == "__main__":

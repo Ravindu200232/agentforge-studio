@@ -4,7 +4,11 @@ Build these pages of the approved application now, each one completely and worki
 
 {{routes}}
 
-For each page, reopen its mapped prototype page (a `.tsx` file under `.agentforge/prototype/`) and the components it imports immediately before you build it, and reproduce the page at full parity (the parity map in the plan names the destination files). Reuse the shared components and styling from the foundation; add to them rather than copying.
+For each page, open the mapped prototype page and its relevant imports before
+implementing it. Preserve its layout, text, typography, colors, images, responsive
+states, controls and navigation. Reuse the exact prototype assets and the shared
+components and styling from the foundation. Keep demo credentials out of the
+visible interface. Leave the seed, full compile and tests to later phases.
 
 When a page is finished, record it in `{{progress}}` (this phase's own record), merging into what is already there and never replacing it:
 

@@ -7,4 +7,7 @@ Every page is built. Now make the whole application run as one:
 - `.env.example` lists every variable the code reads (names only, no real value);
 - run the minimum build command that compiles the application, and fix what it reports.
 
-{{phase1}}
+Update `.agentforge/build/report.json` with delivered routes, real commands,
+exit codes and honest gaps, using the report template in the build references.
+Stop once wiring, seeding and compilation are verified. Leave unit and browser
+tests to their own phases.

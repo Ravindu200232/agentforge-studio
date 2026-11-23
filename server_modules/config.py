@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -35,9 +37,21 @@ API_PREFIX = "/__agentforge/api"
 # Where the project's own record lives, inside each workspace.
 RECORD_DIR = ".agentforge"
 
+AI_KEY_SETTINGS = {
+    "ollama": "ollama_api_key",
+    "deploy": "deploy_api_key",
+    "openai": "openai_api_key",
+    "anthropic": "anthropic_api_key",
+    "deepseek": "deepseek_api_key",
+    "gemini": "gemini_api_key",
+    "custom": "custom_api_key",
+}
+_settings_lock = threading.RLock()
+
 DEFAULTS: dict[str, Any] = {
     "ollama_host": os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
-    "ollama_api_key": "",
+    **dict.fromkeys(AI_KEY_SETTINGS.values(), ""),
+    "custom_api_url": "",
     # "" chooses itself (ollama.com once a key is saved), "cloud" or "local" pins it. See engine().
     "engine": "",
     "cloud": False,
@@ -170,7 +184,7 @@ def engine(saved: dict[str, Any] | None = None) -> str:
     """
     saved = saved if saved is not None else settings()
     chosen = str(saved.get("engine") or "").strip().lower()
-    has_key = bool(str(saved.get("ollama_api_key") or "").strip())
+    has_key = bool(ai_key("ollama", saved))
     if chosen == "local":
         return "local"
     if chosen == "built-in" and built_in_engine():
@@ -185,7 +199,8 @@ def engine(saved: dict[str, Any] | None = None) -> str:
 def settings() -> dict[str, Any]:
     """The saved settings, over the defaults. `cloud` (the models run remotely, on ollama.com directly or through
     the built-in engine) is always what `engine()` decides, never a stale copy."""
-    saved = _read(SETTINGS_FILE, {})
+    with _settings_lock:
+        saved = _read(SETTINGS_FILE, {})
     merged = {**DEFAULTS, **(saved if isinstance(saved, dict) else {})}
     merged["cloud"] = engine(merged) in ("cloud", "built-in")
     return merged
@@ -199,9 +214,6 @@ THINKING_LEVELS = ("off", "low", "high", "xhigh")
 
 
 def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
-    current = _read(SETTINGS_FILE, {})
-    if not isinstance(current, dict):
-        current = {}
     clean = {k: v for k, v in (patch or {}).items() if k in DEFAULTS or k.endswith("_model")}
     if "local_num_ctx" in clean:
         try:
@@ -216,9 +228,31 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
         # answer: agent_think was always "does it reason", so both high
         # levels map to true for older readers that only understand a boolean.
         clean["agent_think"] = clean["thinking_level"] in ("high", "xhigh")
-    current.update(clean)
-    _write(SETTINGS_FILE, current)
-    return settings()
+    with _settings_lock:
+        current = _read(SETTINGS_FILE, {})
+        if not isinstance(current, dict):
+            current = {}
+        if "custom_api_url" in clean and clean["custom_api_url"] != current.get("custom_api_url", ""):
+            clean.setdefault("custom_api_key", "")
+        current.update(clean)
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=SETTINGS_FILE.parent,
+                                         prefix=".settings-", suffix=".tmp", delete=False) as file:
+            temporary = Path(file.name)
+            try:
+                json.dump(current, file, ensure_ascii=False, indent=2)
+                file.close()
+                temporary.replace(SETTINGS_FILE)
+            finally:
+                file.close()
+                temporary.unlink(missing_ok=True)
+        return settings()
+
+
+def ai_key(provider: str, saved: dict[str, Any]) -> str:
+    field = AI_KEY_SETTINGS[provider]
+    value = saved.get(field) or (os.environ.get(field.upper()) if provider != "custom" else "")
+    return str(value or "").strip()
 
 
 def setting(name: str, fallback: Any = None) -> Any:

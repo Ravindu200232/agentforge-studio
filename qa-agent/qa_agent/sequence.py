@@ -60,6 +60,8 @@ def journeys_one_by_one(project: str, session: Any, reason: str = "build", force
              for j in ids]
     items += [{**s, "ask": lambda s=s: e2e_run.fix_spec_request(workspace, s), "what": "Requirement test"}
               for s in e2e_run.requirement_specs(workspace)]
+    # The evidence reader keeps reports from the start of the full run onward.
+    started_at = time.time()
     for number, item in enumerate(items, start=1):
         _stopped(session)
         bus.agent_msg(project, f"{item['what']} {number} of {len(items)}: {item['id']} {item['name']}.", title="Journeys",
@@ -85,7 +87,7 @@ def journeys_one_by_one(project: str, session: Any, reason: str = "build", force
             failed.append(item["id"])
     ids = items
     status = "passed" if not failed else "failed"
-    e2e_run.record_full(workspace, {"at": time.time(), "reason": f"{reason} (one by one)", "grep": [],
+    e2e_run.record_full(workspace, {"at": started_at, "reason": f"{reason} (one by one)", "grep": [],
                                     "exit_code": 0 if not failed else 1, "passed": len(passed), "failed": len(failed),
                                     "total": len(ids), "one_by_one": True})
     text = (f"{len(passed)} of {len(ids)} journeys and requirement tests pass" + (f" ({', '.join(fixed)} after a fix)" if fixed else "")

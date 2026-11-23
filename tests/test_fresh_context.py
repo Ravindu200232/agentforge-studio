@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 import unittest
@@ -121,12 +122,12 @@ class AModelThatNeverAnswersEndsTests(unittest.TestCase):
         self.assertEqual((timeout.read, timeout.connect), (900.0, 30.0))
 
     def test_every_client_that_talks_to_the_model_service_has_it(self):
-        for name in ("session.py", "llm.py", "ollama_cloud.py"):
+        for name in ("ai_providers.py", "ollama_cloud.py"):
             source = (ROOT / "server_modules" / name).read_text(encoding="utf-8")
-            clients = [line for line in source.splitlines() if "ollama.Client(" in line]
+            clients = re.findall(r"ollama\.Client\([\s\S]+?timeout=([^\n]+)", source)
             self.assertTrue(clients, name)
-            for line in clients:
-                self.assertIn("timeout=connection.model_timeout()", line, f"{name}: {line.strip()}")
+            for timeout in clients:
+                self.assertTrue(timeout.startswith("connection.model_timeout()"), f"{name}: {timeout}")
 
     def test_a_timeout_is_a_transient_failure_so_it_is_asked_for_again_with_a_notice(self):
         import httpx

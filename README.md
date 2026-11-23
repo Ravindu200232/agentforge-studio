@@ -28,8 +28,15 @@ You also still have the plain terminal agent:
 oterm --model qwen3-coder "Find and fix the bug"
 ```
 
-Requirements: Python 3.10+, Node 20+, and Ollama. Pick a model in the studio's
-settings before starting a project — the backend does not choose one for you.
+Requirements are Python 3.10+ and Node 20+. For local models, install Ollama.
+For hosted models, open **Settings → AI Providers** and save an API key for
+Ollama Cloud, Deploy, OpenAI, Claude, DeepSeek, or Gemini. You can also add an
+OpenAI-compatible API base URL and its key. Pick a model beside the project
+brief or in chat. Models marked **Vision** can review attached images and
+screenshots.
+
+Studio connects directly to the configured AI providers. API keys are stored
+in the local Studio settings and are masked in the UI.
 
 ## One context, five agents
 
@@ -46,7 +53,7 @@ workspaces/<project>/           the application being built
     srs/        srs.json, SRS.md, diagrams/*.mmd, handoff/{app,builder}.md, handoff.json
     wireframe/  app/   a React app: src/pages/<page>.tsx for every screen, and bundle.html
     prototype/  app/   the wireframe app, edited into the prototype; routes.json, demo-accounts.json
-    skills/     web-artifacts-builder   Anthropic's skill, staged for the agent to read
+    skills/     custom-ui              project UI guidance staged for the agent
     build/      report.json
     qa/         report.json
     deploy/     run.json, events.jsonl
@@ -70,24 +77,22 @@ those same files through `write_file` and `replace_text`.
 
 ## Wireframes and prototype: one React app, edited
 
-Neither is hand-drawn HTML. Both are a small **React** app (TypeScript, Vite, Tailwind CSS, shadcn/ui, Lucide icons, Recharts) that
-the project's agent writes with its own file tools, following Anthropic's official
-[`web-artifacts-builder`](https://github.com/anthropics/skills/tree/main/skills/web-artifacts-builder) skill, which is kept unchanged in
-`prompts/skills/web-artifacts-builder/` and staged where the agent can read it.
+The default wireframe and prototype are **React** apps with TypeScript, Vite and Tailwind CSS. The agent writes the project's UI using
+semantic HTML and local React components, following the guide in `prompts/skills/custom-ui/`.
 
 The handoff the agent works from is two files in `.agentforge/srs/handoff/`: a small **`app.md`**, which is what the customer asked
 for in their own words, who uses it and the site map, with nothing technical in it; and the developer's **`builder.md`**, the full
 specification, which the build, the tests and the deployment read.
 
 - **Wireframes**: the agent reads the skill and `app.md` and writes `src/pages/<page>.tsx` for every screen of the site map, in
-  low fidelity. The Studio only creates the app (the skill's first step: `server_modules/web_app.py`, from `server_modules/web_kit/`) and,
-  when the agent is done, bundles it with Vite into one self-contained `bundle.html` (the skill's last step), which the Wireframe tab frames.
+  low fidelity. The Studio creates the app from `server_modules/web_kit/` and bundles the result with Vite into the self-contained
+  `bundle.html` preview shown in the Wireframe tab.
 - **Prototype**: a new app is set up, and the agent reads the skill, the approved wireframes (every page and what it imports),
   `app.md` and the approved design, plans the prototype, and writes a high-fidelity, animated page for every screen. The wireframes stay
   as they were. When the product has sign-in, the prototype signs in with one fictitious account for each role (`src/demo.ts`), the same
   accounts the build is seeded with (`demo-accounts.json`). A screen with no page leaves the run resumable instead of handed over.
-- The packages (about 180 MB) are installed once into `<state>/web-kit` and linked into every app as `node_modules`; Node.js is the only
-  thing a computer needs. An app that does not bundle is given to the agent, with what the bundler said, to fix.
+- New apps link to the framework packages installed in `<state>/web-kit-custom`. Legacy apps with `components.json` retain their
+  existing dependency cache in `<state>/web-kit`. The agent receives bundler errors for repair.
 
 ## Scaffold-first build and evidence
 
@@ -125,7 +130,7 @@ stage behaves is editing a file:
 | `plan/` | the approval plan a customer signs off, and its revisions |
 | `srs/` | the specification, its review and its repairs |
 | `srs/skills/` | the requirements standards, ported from `RP-SE-009` |
-| `skills/web-artifacts-builder/` | Anthropic's skill for building React apps (React, Vite, Tailwind, shadcn/ui), unchanged |
+| `skills/custom-ui/` | Guidance for writing accessible, project-authored UI |
 | `wireframe/` | two short prompts: draw the wireframes, change them |
 | `design/` | the design contract; `design/themes/` holds 70 themes |
 | `prototype/` | two short prompts: make the prototype from the wireframes, change it |

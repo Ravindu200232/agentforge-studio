@@ -32,12 +32,22 @@ export function reduceSession(session, event) {
     case 'log': log(event.level, event.text); break
     case 'user_msg': chat({ role: 'user', text: event.text }); break
     case 'agent_msg': chat({ role: 'assistant', text: event.text, title: event.title, kind: event.kind, design: event.design, images: event.images, actions: event.actions }); break
-    case 'run_state':
+    case 'run_state': {
       next.runId = event.run_id || s.runId
       next.busy = ['running', 'queued'].includes(event.status)
       next.workflowStatus = event.status
       next.runStartedAt = next.busy ? at : 0
-      if (!next.busy) next.connection = null
+      if (!next.busy) {
+        next.connection = null
+        if (s.runId === 'srs' && s.runStartedAt && ['failed', 'paused'].includes(event.status)) {
+          const stopped = row => ['queued', 'active', 'retrying'].includes(row.status) && row.at >= s.runStartedAt
+          const status = event.status
+          next.phases = s.phases.map(phase => phase.kind === 'srs-progress' && stopped(phase)
+            ? { ...phase, status, detail: '' } : phase)
+          next.chat = s.chat.map(row => row.group === 'srs-progress' && stopped(row)
+            ? { ...row, status, detail: '' } : row)
+        }
+      }
       if (next.busy) {
         // A new request must not inherit the previous request's generated
         // total while it is waiting for the first provider usage report.
@@ -45,6 +55,7 @@ export function reduceSession(session, event) {
           turn_tokens: 0, sent: 0, received: 0 }
       }
       break
+    }
     case 'agent_state':
       next.agentState = event.state || ''; next.agentDetail = event.detail || ''; next.reasoning = Boolean(event.thinking); break
     case 'memory': next.runStats = event; break
@@ -62,7 +73,9 @@ export function reduceSession(session, event) {
       next.phases = [...s.phases.filter(p =>
         `${p.kind || 'run'}:${p.key || p.title || p.phase}` !== phaseKey), event]
       const previous = s.chat.findIndex(row => row.role === 'stage' && row.phaseKey === phaseKey &&
-        row.runId === s.runId)
+        row.runId === s.runId &&
+        (event.kind !== 'srs-progress' || row.at >= s.runStartedAt) &&
+        (event.kind !== 'plan-activity' || row.status === 'active'))
       const stage = { role: 'stage', phaseKey, runId: s.runId,
         title: event.title || event.key || 'Stage', status: event.status || 'active',
         detail: event.detail || '', number: event.phase, group: event.kind || 'run' }

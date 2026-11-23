@@ -692,7 +692,7 @@ def ensure_project(project: str, name: str = "", log=None, region: str = "", org
     db_password = _db_password()
     created = _run_json([
         tool, "projects", "create", name or project, "--org-id", org_id,
-        "--db-password", db_password, "--region", region or DEFAULT_REGION, "--output", "json",
+        "--db-password", db_password, "--region", region or DEFAULT_REGION, "--output", "json", "--yes",
     ], timeout=60) or {}
     ref = str(created.get("id") or created.get("ref") or "")
     if not ref:

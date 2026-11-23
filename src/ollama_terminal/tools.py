@@ -279,27 +279,28 @@ def read_only(command: str) -> bool:
 
 
 def tools_unsupported(exc: Exception) -> bool:
-    """True for an Ollama error whose message says the model can't take tools.
+    """True when the model service explicitly says the model can't take tools.
 
     Duck-typed on the exception's shape rather than `isinstance(exc,
     ollama.ResponseError)`, so this file does not need to import `ollama`
     just for this one check, and callers in either package (this one, or
     `server_modules`, which already depends on it) can use it the same way.
     """
-    return (type(exc).__name__ == "ResponseError"
-            and getattr(exc, "status_code", None) == 400
-            and "tool" in str(getattr(exc, "error", "") or exc).lower())
+    if type(exc).__name__ != "ResponseError" or getattr(exc, "status_code", None) != 400:
+        return False
+    message = str(getattr(exc, "error", "") or exc).lower()
+    return bool(re.search(
+        r"\b(?:does not|doesn't|do not|don't|cannot) support (?:the )?(?:tools|tool (?:calls?|calling|use))\b"
+        r"|\b(?:tools|tool (?:calls?|calling|use)) (?:is |are )?(?:not supported|unsupported)\b",
+        message,
+    ))
 
 
 def describe_call(name: str, args: dict[str, Any]) -> str:
     """A short human label for a tool call, e.g. `read_file(srs/spec.md)`.
 
-    Used only for logging a *failed* call to the studio's activity feed —
-    the success path already has its own per-tool phrasing ("Listed X",
-    "Read X (N lines)", ...). Without this, a WARN line for a failure was
-    just the bare exception text ("Tool error: Not a directory") with no
-    way to tell which call produced it, even though the model recovers on
-    its own next turn.
+    Used for live planning activity and for identifying failed calls in the
+    Studio log. Successful calls have their own per-tool result messages.
     """
     if name in ("list_files", "write_file", "replace_text"):
         return f"{name}({args.get('path') or '.'})"

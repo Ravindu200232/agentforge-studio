@@ -291,8 +291,11 @@ class OneJourneyAtATimeTests(Workspace):
     def loop(self, outcomes: dict[str, list[str]]):
         ids = [{"id": j, "name": f"Journey {j}"} for j in outcomes if j.startswith("UJ-")]
         calls: list[tuple] = []
+        now = 1000
 
         def run(project, session, grep=None, reason="", force=False, desktop=False):
+            nonlocal now
+            now += 10
             calls.append((tuple(grep or []), desktop))
             return {"status": outcomes[grep[0]].pop(0)} if grep else {"status": "passed"}
 
@@ -300,8 +303,10 @@ class OneJourneyAtATimeTests(Workspace):
                 mock.patch.object(e2e_run, "runnable", return_value=True), \
                 mock.patch.object(e2e_run, "current", return_value=False), \
                 mock.patch.object(e2e_run, "run", run), \
+                mock.patch.object(sequence, "time") as clock, \
                 mock.patch.object(e2e_run, "record_full") as recorded, \
                 mock.patch.object(e2e_run, "fix_one_request", lambda workspace, jid: f"fix {jid}"),                 mock.patch.object(e2e_run, "requirement_specs", return_value=self.specs),                 mock.patch.object(e2e_run, "fix_spec_request", lambda workspace, spec: f"fix {spec['id']}"):
+            clock.time.side_effect = lambda: now
             result = sequence.journeys_one_by_one("p", self.session)
         return result, calls, recorded
 
@@ -312,6 +317,7 @@ class OneJourneyAtATimeTests(Workspace):
         self.assertEqual(self.session.fixes, ["fix UJ-002"])
         self.assertEqual((result["status"], result["passed"], result["failed"]), ("passed", 3, 0))
         self.assertEqual(recorded.call_args.args[1]["exit_code"], 0)
+        self.assertEqual(recorded.call_args.args[1]["at"], 1000)
 
     def test_a_journey_still_failing_after_two_fixes_is_left_and_the_next_one_runs(self):
         result, calls, _ = self.loop({"UJ-001": ["failed", "failed", "failed"], "UJ-002": ["passed"]})

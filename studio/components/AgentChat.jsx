@@ -15,7 +15,7 @@ import { chatTurns } from '@/lib/chat'
 import { chatDisplayBlocks, cleanChatProse } from '@/lib/chat-display'
 import { consoleReport, forgetConsole } from '@/lib/console-log'
 import { computeLineDiff } from '@/lib/diff'
-import { modelLabel } from '@/lib/models'
+import { groupModels, modelLabel } from '@/lib/models'
 import { useStore } from '@/lib/store'
 import { useVisionModels } from '@/lib/vision'
 import { useEditAttachments } from '@/lib/use-edit-attachments'
@@ -49,7 +49,7 @@ const EFFORT_TONE = {
 // available from the top of the stream; they are never removed from history.
 const TURN_PAGE_SIZE = 240
 
-export default function AgentChat({ projectTitle = '', readOnly = false, className = '' }) {
+export default function AgentChat({ projectTitle = '', readOnly = false, className = '', modelOptions = [] }) {
   const logs = useStore(s => s.logs)
   const chat = useStore(s => s.chat)
   const busy = useStore(s => s.busy)
@@ -111,20 +111,16 @@ export default function AgentChat({ projectTitle = '', readOnly = false, classNa
       // Backend events are mirrored to both role projections so every tab sees
       // one conversation. Role is deliberately not part of this key: including
       // it rendered every persisted plan/message twice after a reload.
-      chat: unique(sessions.flatMap(session => session.chat || []), ['at', 'text', 'title', 'kind']),
+      chat: unique(sessions.flatMap(session => session.chat || []), ['at', 'text', 'title', 'kind', 'phaseKey']),
       busy: busy || ['designer', 'developer'].some(role => role !== agentRole && own[role]?.busy),
       startedAt: Math.max(0, ...sessions.map(session => Number(session.runStartedAt) || 0)),
     }
   }, [projectSessions, project, agentRole, logs, chat, busy, runStartedAt])
   const turns = useMemo(() => {
     const ordinary = chatTurns(lifecycleStream.logs, lifecycleStream.chat)
-    // The "Checking this stage now…" cards are gone: the files and actions in
-    // the stream already say what is happening.
     return [...ordinary, ...lifecycleTurns(lifecycle)]
-      // Plans are internal execution input.  The stream shows the concrete
-      // files, searches and decisions used to make them, not a large final
-      // plan pasted into the conversation (including older persisted events).
-      .filter(turn => turn.role !== 'stage' && turn.kind !== 'plan')
+      .filter(turn => turn.kind !== 'plan' && (turn.role !== 'stage' ||
+        ['srs-progress', 'plan-activity'].includes(turn.group)))
       .sort((a, b) => (a.at || 0) - (b.at || 0))
   }, [lifecycleStream, lifecycle])
   const firstVisibleTurn = Math.max(0, turns.length - visibleTurnCount)
@@ -428,7 +424,7 @@ export default function AgentChat({ projectTitle = '', readOnly = false, classNa
               </span>
             ) : <span />}
             <div className="flex shrink-0 items-center gap-1">
-              <ChatModelControls project={project} agentRole={agentRole} busy={lifecycleStream.busy} />
+              <ChatModelControls project={project} agentRole={agentRole} busy={lifecycleStream.busy} modelOptions={modelOptions} />
               <ContextUsage stats={stats} />
               {(!lifecycleStream.busy || text.trim()) && (
                 <button onClick={submit}
@@ -460,41 +456,24 @@ export default function AgentChat({ projectTitle = '', readOnly = false, classNa
  * next turn. Keeping this next to the stream makes that distinction visible
  * instead of burying it in global Settings.
  */
-function ChatModelControls({ project, agentRole, busy }) {
+function ChatModelControls({ project, agentRole, busy, modelOptions }) {
   const models = useStore(s => s.models)
   const thinkingLevel = useStore(s => s.thinkingLevel)
   const setRoleModel = useStore(s => s.setRoleModel)
   const setThinkingLevel = useStore(s => s.setThinkingLevel)
   const addLog = useStore(s => s.addLog)
-  const [catalog, setCatalog] = useState(null)
   const [saving, setSaving] = useState(false)
   const [open, setOpen] = useState(false)
   const seeing = useVisionModels(open)
 
   const role = agentRole === 'designer' ? 'design' : 'builder'
   const current = models[role] || models.agent || ''
-  const groups = [
-    ['On this machine', catalog?.local_models || []],
-    ['Cloud', catalog?.cloud || []],
-  ]
-  const inCatalog = groups.some(([, rows]) => rows.some(row => (row.id || row) === current))
-  const selected = groups.flatMap(([, rows]) => rows).find(row => (row.id || row) === current)
+  const groups = groupModels(modelOptions)
+  const selected = modelOptions.find(row => row.id === current)
   const selectedLabel = modelLabel(selected || { id: current }) || current || 'Choose model'
   const effort = {
     low: 'Low', high: 'High', xhigh: 'Extra',
   }[thinkingLevel] || 'High'
-
-  useEffect(() => {
-    let alive = true
-    api.models().then(result => {
-      if (!alive) return
-      setCatalog(result || {})
-      if (result?.cloud?.some(row => row.id === current && row.locked) && result.selected)
-        setRoleModel(role, result.selected)
-    })
-      .catch(() => { if (alive) setCatalog({}) })
-    return () => { alive = false }
-  }, [])
 
   async function save(nextModel, nextLevel) {
     setSaving(true)
@@ -509,7 +488,7 @@ function ChatModelControls({ project, agentRole, busy }) {
 
   function chooseModel(next) {
     if (!next || next === current) return
-    if (catalog?.cloud?.some(row => row.id === next && row.locked)) return
+    if (modelOptions.some(row => row.id === next && row.locked)) return
     setRoleModel(role, next)
     save(next, thinkingLevel)
   }
@@ -539,7 +518,7 @@ function ChatModelControls({ project, agentRole, busy }) {
         <div role="dialog" aria-label="Model and reasoning settings">
           <p className="px-2 pb-1 text-[10px] font-semibold text-muted2">Select model</p>
           <div className="max-h-52 space-y-1 overflow-y-auto pr-1">
-            {current && !inCatalog && (
+            {current && !selected && (
               <button type="button" onClick={() => chooseModel(current)}
                       className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-[11px] text-ink hover:bg-panel2">
                 <span className="truncate">{current}</span><span className="text-[9px] text-muted2">Current</span>
@@ -558,20 +537,19 @@ function ChatModelControls({ project, agentRole, busy }) {
                               picked ? 'bg-accent/55 text-ink' : 'text-ink hover:bg-panel2')}>
                       <span className="min-w-0 flex-1 truncate">{modelLabel(row) || id}</span>
                       {row.locked && <span className="shrink-0 text-[9px] font-semibold text-amber-600">Buy Pro</span>}
-                      {seeing.vision.has(id) && <VisionBadge />}
+                      {(row.vision || seeing.vision.has(id)) && <VisionBadge />}
                       {picked && <Check className="size-3 shrink-0" />}
                     </button>
                   )
                 })}
               </section>
             ))}
-            {!catalog && <p className="px-2 py-3 text-[10px] text-muted2">Reading available models…</p>}
-            {catalog && seeing.vision.size > 0 && (
+            {!modelOptions.length && <p className="px-2 py-3 text-[10px] text-muted2">No models are available yet.</p>}
+            {seeing.vision.size > 0 && (
               <p className="px-2 py-1.5 text-[9.5px] leading-snug text-muted2">
                 A model marked <b>vision</b> can look at pictures, so the Studio can have it check the prototype's screens by looking at them. Other models skip that check.
               </p>
             )}
-            {catalog && !groups.some(([, rows]) => rows.length) && <p className="px-2 py-3 text-[10px] text-muted2">No models are available yet.</p>}
           </div>
 
           <div className="mt-2 border-t border-line pt-2">
@@ -855,6 +833,7 @@ function Thinking({ reasoning = false, state = '', detail = '' }) {
     replace_text: 'Editing a file',
     run_command: 'Running a command',
     browser_inspect: 'Checking the page in a browser',
+    screenshot: 'Taking a screenshot',
   }
   const label = labels[state] || (reasoning ? 'Analysing project context' : 'Working')
   // A model writing a whole page sends nothing until the page is done. A clock
@@ -864,7 +843,7 @@ function Thinking({ reasoning = false, state = '', detail = '' }) {
     setSeconds(0)
     const timer = setInterval(() => setSeconds(value => value + 1), 1000)
     return () => clearInterval(timer)
-  }, [state])
+  }, [state, detail])
   // Compacting says how far along it is: `12/35` parts summarized, then `merging 35`.
   const part = state === 'compacting' ? String(detail).match(/^(\d+)\/(\d+)$/) : null
   const merging = state === 'compacting' && /^merging/.test(String(detail))
@@ -886,6 +865,9 @@ function Thinking({ reasoning = false, state = '', detail = '' }) {
           ))}
         </span>
       </div>
+      {detail && state !== 'compacting' && (
+        <p className="ml-5 mt-1 break-all font-mono text-[10.5px] text-muted2">{detail}</p>
+      )}
       {(part || merging) && (
         <div className="ml-5 mt-1.5 flex max-w-[320px] items-center gap-2" title="The conversation grew past the model's window: older work is being summarized so the run can carry on">
           <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-black/[.07]">
@@ -1243,31 +1225,20 @@ function FileActionCard({ turn, live }) {
 const Turn = memo(function Turn({ turn, live }) {
   const project = useStore(s => s.project)
   if (turn.role === 'stage') {
-    const active = turn.status === 'active'
-    const passed = turn.status === 'done'
-    const Icon = active ? Loader2 : passed ? CheckCircle2 : CircleAlert
+    const active = ['active', 'retrying'].includes(turn.status)
+    const passed = ['done', 'complete'].includes(turn.status)
+    const queued = turn.status === 'queued'
+    const label = { queued: 'Queued', active: 'In progress', retrying: 'Retrying', paused: 'Paused', failed: 'Failed' }[turn.status]
+    const Icon = active || queued ? Loader2 : passed ? CheckCircle2 : CircleAlert
     return (
-      <div className={cn('my-2 rounded-xl border px-3.5 py-3 shadow-sm',
-        active ? 'border-accent/35 bg-accent' : passed
-          ? 'border-ok/30 bg-ok-tint/60' : 'border-warn/35 bg-warn-tint/50')}>
-        <div className="flex items-start gap-2.5">
-          <span className={cn('mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg',
-            active ? 'bg-accent text-ink' : passed ? 'bg-ok/15 text-ok' : 'bg-warn/15 text-warn')}>
-            <Icon className={cn('size-4', active && 'animate-spin')} />
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center justify-between gap-1.5">
-              <p className="text-[12.5px] font-semibold text-ink">{turn.title}</p>
-              <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
-                active ? 'bg-accent text-ink' : passed ? 'bg-ok/15 text-ok' : 'bg-warn/15 text-warn')}>
-                {active ? 'Running' : passed ? 'Completed' : 'Needs attention'}
-              </span>
-            </div>
-            <p className="mt-0.5 text-[11px] leading-relaxed text-muted">
-              {turn.detail || (active ? 'Checking this stage now…' : passed
-                ? 'Stage finished; moving to the next check.' : 'See the test evidence for details.')}
-            </p>
-          </div>
+      <div className="flex items-start gap-2 py-1.5">
+        <Icon aria-hidden="true" className={cn('mt-0.5 size-3.5 shrink-0',
+          active ? 'animate-spin text-accent' : queued ? 'text-muted2' : passed ? 'text-ok' : 'text-warn')} />
+        <div className="min-w-0 flex-1">
+          <p className="text-[12px] font-medium text-ink">
+            {turn.title} <span className="text-[10.5px] font-normal text-muted2">{passed ? '· Done' : label && `· ${label}`}</span>
+          </p>
+          {turn.detail && <p className="mt-0.5 text-[11px] leading-relaxed text-muted">{turn.detail}</p>}
         </div>
       </div>
     )

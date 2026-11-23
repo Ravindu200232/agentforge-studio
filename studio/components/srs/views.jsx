@@ -1477,10 +1477,6 @@ function Diagrams({ srs }) {
               <Maximize2 className="size-3.5" /> Click to Enlarge
             </span>
           </>
-        ) : current.drawable ? (
-          <pre className="whitespace-pre font-mono text-[11.5px] text-muted max-h-[360px] overflow-y-auto p-2">
-            {current.mermaid}
-          </pre>
         ) : (
           <DiagramMissing diagram={current} />
         )}
@@ -1549,13 +1545,6 @@ function Diagrams({ srs }) {
       {current.fallback && (
         <p className="text-[11px] text-muted2 italic">
           Drawn directly from the specification, because the model did not return a diagram. Redraw it for a model-drawn version.
-        </p>
-      )}
-      {!current.svg && current.drawable && (
-        <p className="text-[11px] text-muted2 italic">
-          {current.rendered
-            ? 'The picture for this revision is on disk but only the current version is displayed — its Mermaid source is shown instead.'
-            : 'No image was rendered for this one — the Mermaid source is shown instead.'}
         </p>
       )}
     </div>

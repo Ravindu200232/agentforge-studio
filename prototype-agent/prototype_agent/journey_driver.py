@@ -210,8 +210,8 @@ class Driver:
         """Press a key (Escape closes a dialog that is open)."""
         return self.call("key", key=name)
 
-    def screenshot(self, path: Path) -> Path:
-        self.call("screenshot", path=str(path))
+    def screenshot(self, path: Path, *, max_height: int = 0) -> Path:
+        self.call("screenshot", path=str(path), **({"maxHeight": max_height} if max_height else {}))
         return path
 
     def errors(self) -> list[str]:

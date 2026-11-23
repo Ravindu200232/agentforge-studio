@@ -226,6 +226,31 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(result.rounds, 4)
             self.assertEqual(Path(directory, "done.txt").read_text(), "done")
 
+    def test_a_continuation_repeats_only_the_current_build_phase(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeClient()
+
+            def respond(**kwargs):
+                client.calls.append(copy.deepcopy(kwargs))
+                if len(client.calls) == 1:
+                    call = SimpleNamespace(function=SimpleNamespace(
+                        name="write_file", arguments={"path": "layout.txt", "content": "shared layout"}))
+                    return SimpleNamespace(message=FakeMessage(calls=[call]))
+                return SimpleNamespace(message=FakeMessage("Finished. <TASK_COMPLETE>"))
+
+            client.chat = respond
+            agent = Agent(client, "test", Path(directory), lambda _: True,
+                          max_steps=1, announce=lambda _: None)
+            task = "Build the shared layout. Leave the browser tests for a later phase."
+            result = agent.execute_plan(f"Shared build references\n\n{task}", "Use the approved layout",
+                                        audit=False, phase_task=task)
+            follow_up = client.calls[1]["messages"][-1]["content"]
+            self.assertEqual(result.status, "complete")
+            self.assertIn(task, follow_up)
+            self.assertIn("Use the approved layout", follow_up)
+            self.assertNotIn("Shared build references", follow_up)
+            self.assertNotIn("Continue executing the approved plan", follow_up)
+
     def test_source_guard_restores_cli_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

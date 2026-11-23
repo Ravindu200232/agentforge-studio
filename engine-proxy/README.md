@@ -1,4 +1,8 @@
-# AgentForge engine
+# Legacy AgentForge engine
+
+Current Studio installs use direct provider connections from **Settings → AI
+Providers**. This Worker is available to earlier desktop releases and
+installations that explicitly configure the legacy account service and engine.
 
 A Cloudflare Worker that stands between AgentForge and ollama.com, so the ollama.com API key is never in the app.
 It is also the broker for "Sign in with Supabase" (below), so nobody who installs AgentForge registers an OAuth app.
@@ -8,8 +12,7 @@ AgentForge app  --(app token)-->  this Worker  --(private server call)-->  Verce
 ```
 
 - The key is the Worker secret `OLLAMA_API_KEY`. For model calls the Worker sends it to the authenticated Vercel admin service over HTTPS; neither the key nor the metering secret reaches the desktop app.
-- Every copy of the app sends `APP_TOKEN`. The app keeps the same value in `server_modules/engine.json`.
-  - The token ships with the app, so it only keeps out callers who do not have the app.
+- Clients of this Worker send its `APP_TOKEN`.
   - Each address is also rate limited (`wrangler.toml`).
 - Only the calls the app makes are passed through: chat, model details and list, web search and web fetch, and the
   account balance (`GET /api/balance`), which the AgentForge admin app shows.
@@ -17,8 +20,7 @@ AgentForge app  --(app token)-->  this Worker  --(private server call)-->  Verce
 ## Streaming replies and credit
 
 The production Worker is `agentforge-engine` at
-`https://agentforge-engine.engine-proxy.workers.dev`. Installed desktop apps already use this URL. Deploying this Worker
-updates those apps without rebuilding or changing their configuration.
+`https://agentforge-engine.engine-proxy.workers.dev`. Earlier desktop releases use this URL.
 
 For chat and generation, the Worker authenticates the app, rate limits the request, and streams bytes to and from the
 Vercel admin service. Vercel checks account credit and the permitted model, reserves credit, calls Ollama, then reads
@@ -49,14 +51,14 @@ Paste the key when asked. It goes straight to Cloudflare.
 npx wrangler secret put APP_TOKEN
 ```
 
-Use the `token` value from `server_modules/engine.json`.
+Use the value that your legacy clients are configured to send.
 
 ```bash
 npx wrangler deploy
 ```
 
-The deploy prints the Worker's address (`https://agentforge-engine.<your-subdomain>.workers.dev`). That address is
-the `url` in `server_modules/engine.json`.
+The deploy prints the Worker's address. Set `AGENTFORGE_ENGINE_URL` to that address and `AGENTFORGE_ENGINE_TOKEN`
+to the corresponding app token on each client that still uses this Worker.
 
 ## Sign in with Supabase (once, by whoever publishes AgentForge)
 
@@ -102,7 +104,7 @@ Until this is done, AgentForge still works: a copy with no broker asks for an OA
 
 - **Key:** make a new key on ollama.com, then run `npx wrangler secret put OLLAMA_API_KEY` again. The app does not
   change.
-- **Token:** put a new value in `engine.json` and in `APP_TOKEN`, then publish a new release. Older copies of the app
+- **Token:** update the clients' matching token and the Worker's `APP_TOKEN`. Older copies of the app
   stop reaching the engine.
 - **Supabase client secret:** create a new secret on the OAuth app in Supabase, then run
   `npx wrangler secret put SUPABASE_CLIENT_SECRET` again. The app does not change.

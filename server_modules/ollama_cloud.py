@@ -138,7 +138,7 @@ def for_engine(saved: dict[str, Any]) -> Any:
         built_in = config.built_in_engine()
         return client(built_in["token"], host=built_in["url"],
                       account_token=str(saved.get("account_token") or ""))
-    return client(str(saved.get("ollama_api_key") or ""))
+    return client(config.ai_key("ollama", saved))
 
 
 def test(key: str, model: str = "") -> dict[str, Any]:

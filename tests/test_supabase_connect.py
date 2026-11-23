@@ -260,6 +260,8 @@ class EnsureProjectTests(SupabaseSettingsCase):
             fake_time.time.side_effect = __import__("time").time
             result = sc.ensure_project(PROJECT, name="My App")
         self.assertEqual(result, {"connected": True, "ref": "newref", "name": "My App", "url": "https://newref.supabase.co"})
+        create = next(args for args in calls if args[1:3] == ["projects", "create"])
+        self.assertIn("--yes", create)
         row = sc.record(PROJECT)
         self.assertEqual((row["anon_key"], row["service_role_key"]), ("anon-1", "service-1"))
         self.assertTrue(row["db_password"])  # generated, never empty

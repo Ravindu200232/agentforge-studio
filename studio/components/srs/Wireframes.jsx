@@ -226,7 +226,7 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
       )}
       {!open && <div className="flex flex-wrap items-baseline justify-between gap-3">
         <p className="text-[11.5px] text-muted">
-          {pages.length} page{pages.length === 1 ? '' : 's'} as a low-fidelity React app (shadcn/ui, Tailwind), with sample data.
+          {pages.length} page{pages.length === 1 ? '' : 's'} as a low-fidelity React app with sample data.
           {' Open a page to click through it, or to ask for a change.'}
           {drawn === pages.length ? ' All drawn.' : ` ${drawn} of ${pages.length} drawn so far.`}
         </p>

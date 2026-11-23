@@ -31,7 +31,7 @@ from qa_agent import verify as qa
 from srs_agent import document as srs_document
 from srs_agent import wireframe as wireframer
 
-from . import accounts, bus, changes, cli_monitor, cli_signin, config, connection, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, permissions, preview_runtime, privacy, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, web_app, workspace_picker
+from . import accounts, ai_providers, bus, changes, cli_monitor, cli_signin, config, connection, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, permissions, preview_runtime, privacy, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, web_app, workspace_picker
 from . import database_rows as database_rows_module
 from .session import session_for
 
@@ -182,7 +182,7 @@ def models(_ctx: dict) -> Any:
     if engine != "built-in":
         # The built-in engine is the only one there is: models on an Ollama app here would not be reached.
         try:
-            listed = ollama.Client(host=saved["ollama_host"]).list()
+            listed = ollama.Client(host=saved["ollama_host"], timeout=2).list()
             for row in getattr(listed, "models", []) or []:
                 name = getattr(row, "model", None) or getattr(row, "name", None)
                 if name:
@@ -191,10 +191,10 @@ def models(_ctx: dict) -> Any:
         except Exception:  # noqa: BLE001 - a daemon that is not running is an answer
             ready = False
 
-    has_key = bool(saved.get("ollama_api_key"))
+    has_key = bool(config.ai_key("ollama", saved))
     cloud_models = [m for m in local if m["id"].endswith("-cloud") or m["id"].endswith(":cloud")]
     local_models = [m for m in local if m not in cloud_models]
-    if engine in ("cloud", "built-in"):
+    if engine == "built-in" or has_key:
         # ollama.com itself (with the key, or through the built-in engine): every model it serves, named the way
         # the Ollama app names them (ollama_cloud.studio_name), so a choice made either way keeps working.
         seen = {m["id"] for m in cloud_models}
@@ -206,11 +206,13 @@ def models(_ctx: dict) -> Any:
         cloud_models = [{**m, "locked": accounts.restricted_model(m["id"]),
                          "upgrade": "Buy Pro" if accounts.restricted_model(m["id"]) else ""}
                         for m in cloud_models]
+    hosted, errors = ai_providers.catalogs(saved)
     return {
         "local": [m["id"] for m in local_models],
         "local_models": local_models,
-        "cloud": cloud_models,
-        "cloud_enabled": bool(saved.get("cloud")) or has_key or bool(cloud_models),
+        "cloud": [*cloud_models, *hosted],
+        "cloud_enabled": bool(saved.get("cloud")) or has_key or bool(cloud_models or hosted),
+        "provider_errors": errors,
         "cloud_via": "built-in" if engine == "built-in" else "api-key" if has_key else ("signed-in" if cloud_models else "none"),
         "engine": engine,
         "ollama_ready": ready,
@@ -232,16 +234,20 @@ def model_capabilities(_ctx: dict) -> Any:
     Ollama is asked per model (`vision.py`), a few at a time in the background, so this answers at once with what is known
     and the picker asks again while `pending` is not zero."""
     listed = models({})
+    rows = [*(listed.get("local_models") or []), *(listed.get("cloud") or [])]
     ids = [str(row.get("id") if isinstance(row, dict) else row)
-           for row in [*(listed.get("local_models") or []), *(listed.get("cloud") or [])]]
-    return vision.capabilities(ids)
+           for row in rows if not isinstance(row, dict) or not row.get("provider")]
+    result = vision.capabilities(ids)
+    result["capabilities"].update({row["id"]: {"vision": row["vision"]} for row in rows
+                                  if isinstance(row, dict) and isinstance(row.get("vision"), bool)})
+    return result
 
 
 @route("POST", r"/ollama/test")
 def ollama_test(ctx: dict) -> Any:
     """Whether ollama.com takes the key typed in (or, with none typed, the saved one). The key never comes back."""
     typed = str(ctx.get("key") or "").strip()
-    key = typed if typed and typed != "****" else str(config.setting("ollama_api_key") or "")
+    key = typed if typed and typed != "****" else config.ai_key("ollama", config.settings())
     return {**ollama_cloud.test(key, str(ctx.get("model") or config.setting("model") or "")),
             "checked": "typed" if typed and typed != "****" else "saved"}
 
@@ -282,9 +288,11 @@ def read_settings(_ctx: dict) -> Any:
             "thinking_level": config.thinking(saved),
             "mcp_servers": _safe_mcp_servers(saved.get("mcp_servers")),
             "cloud_enabled": bool(catalog["cloud_enabled"]),
-            # With the key, ollama.com is the engine and the Ollama app here does not matter.
-            "cloud_reachable": bool(catalog["cloud"] and (catalog["ollama_ready"] or catalog["engine"] == "cloud")),
+            "cloud_reachable": bool(catalog["cloud"]),
             "engine": catalog["engine"],
+            "ai_providers": {provider: {"configured": bool(config.ai_key(provider, saved)),
+                                        "saved": bool(saved.get(field)), "error": catalog.get("provider_errors", {}).get(provider, "")}
+                             for provider, field in config.AI_KEY_SETTINGS.items()},
             "api_key_hint": str(saved.get("ollama_api_key") or "")[-4:],
             "mongodb_uri_set": bool(saved.get("mongodb_uri")),
             "mongodb_uri_hint": str(saved.get("mongodb_uri") or "")[-4:],
@@ -322,8 +330,16 @@ def write_settings(ctx: dict) -> Any:
         address = urlparse(str(patch["ollama_host"]).strip())
         if address.scheme != "http" or address.hostname not in {"localhost", "127.0.0.1", "::1"} or not address.port:
             raise ValueError("Local Ollama address must be http://localhost:PORT or 127.0.0.1:PORT")
-    if patch.get("ollama_api_key") == "****":
-        patch.pop("ollama_api_key")
+    for field in config.AI_KEY_SETTINGS.values():
+        if patch.get(field) == "****":
+            patch.pop(field)
+        elif field in patch:
+            value = patch[field]
+            if not isinstance(value, str) or not re.fullmatch(r"[!-~]{0,4096}", value.strip()):
+                raise ValueError("Enter a valid API key.")
+            patch[field] = value.strip()
+    if "custom_api_url" in patch:
+        patch["custom_api_url"] = ai_providers.clean_custom_url(patch["custom_api_url"])
     if "deploy_mongodb_uri" in patch:
         # The same address rule a value question enforces (deploy_vars.accept): saved directly here or
         # typed into the question's private box, a loopback address is refused either way, not just
@@ -334,7 +350,10 @@ def write_settings(ctx: dict) -> Any:
     for alias in ("agent_model", "planner_model", "builder_model", "design_model"):
         if patch.get(alias):
             patch["model"] = patch[alias]
-    if (patch.get("model") and config.engine({**config.settings(), **patch}) == "built-in"
+    if "model" in patch and not isinstance(patch["model"], str):
+        raise ValueError("Enter a model ID as text.")
+    if (patch.get("model") and not ai_providers.split_model(patch["model"])[0]
+            and config.engine({**config.settings(), **patch}) == "built-in"
             and accounts.free_plan() and accounts.restricted_model(patch["model"])):
         raise ValueError("Buy Pro to use this cloud model. Free accounts can use DeepSeek V4.1 Flash and Gemma 4 31B.")
     if "engine" in patch and str(patch["engine"] or "").lower() not in ("", "built-in", "cloud", "local"):

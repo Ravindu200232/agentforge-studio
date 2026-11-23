@@ -113,6 +113,7 @@ class AccountsTest(unittest.TestCase):
         self.assertEqual(self.calls[-1], ("POST", "/api/accounts/checkout", {}, "account-token"))
 
     def test_signup_waits_for_emailed_code_before_creating_an_account(self):
+        self.enterContext(mock.patch.object(config, "built_in_engine", return_value={"url": "https://engine", "token": "x"}))
         self.replies["/api/accounts/signup"] = (200, {"verificationRequired": True, "email": "nimal@example.com"})
         result = httpd.auth_signup({"username": "nimal", "email": "nimal@example.com", "password": "password"})
         self.assertFalse(result["ok"])

@@ -19,6 +19,7 @@ from ollama_terminal import screenshot
 from server_modules.session import RunCancelled
 
 from . import demo
+from .journey_driver import Driver, DriverError
 
 VIEWPORTS = tuple(screenshot.VIEWPORTS)
 LANES = 3
@@ -80,6 +81,22 @@ def find_page(root: Path, target: str, rows: list[dict[str, Any]]) -> dict[str, 
     return None
 
 
+def _shoot(page: Path, out: Path, viewport: str, browser: tuple[str, str], suffix: str,
+           cancelled: Callable[[], bool] | None) -> Path:
+    if viewport == "mobile" and browser[1] == "chrome":
+        # Full Chromium can lay out a narrow command-line screenshot at its 500 px minimum window width.
+        # Set the actual browser viewport with the same driver that clicks through prototype journeys.
+        try:
+            with Driver(size=screenshot.VIEWPORTS[viewport], cancelled=cancelled) as driver:
+                driver.goto(page, suffix)
+                return driver.screenshot(out, max_height=screenshot.MAX_HEIGHT[viewport])
+        except DriverError as exc:
+            raise ValueError(f"Could not capture the mobile viewport: {exc}") from exc
+    if cancelled:
+        return screenshot.shoot(page, out, viewport, browser, suffix=suffix, cancelled=cancelled)
+    return screenshot.shoot(page, out, viewport, browser, suffix=suffix)
+
+
 def shoot_page(root: Path, row: dict[str, Any], accounts: list[dict[str, Any]], out: Path, viewport: str,
                email: str | None = None, cancelled: Callable[[], bool] | None = None) -> Path:
     """One picture of one prototype page, signed in as `email` (default: the account that can open it)."""
@@ -87,7 +104,10 @@ def shoot_page(root: Path, row: dict[str, Any], accounts: list[dict[str, Any]], 
     work = Path(tempfile.mkdtemp(prefix="agentforge-prototype-"))
     try:
         page = bundle_page(root, work)
-        return screenshot.shoot(page, out, viewport, cancelled=cancelled, suffix=suffix_for(str(row.get("route") or "/"), chosen))
+        browser = screenshot.working_browser(cancelled=cancelled)
+        if not browser:
+            raise ValueError("no browser to take the screenshots with (Edge, Chrome or Chromium)")
+        return _shoot(page, out, viewport, browser, suffix_for(str(row.get("route") or "/"), chosen), cancelled)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -120,10 +140,7 @@ def capture_all(root: Path, rows: list[dict[str, Any]], accounts: list[dict[str,
             answer = {"route": row.get("route"), "file": row["file"], "viewport": viewport, "path": "", "error": ""}
             try:
                 suffix = suffix_for(str(row.get("route") or "/"), role_for(row, accounts))
-                if cancelled:
-                    screenshot.shoot(page, out, viewport, browser, cancelled=cancelled, suffix=suffix)
-                else:
-                    screenshot.shoot(page, out, viewport, browser, suffix=suffix)
+                _shoot(page, out, viewport, browser, suffix, cancelled)
                 answer["path"] = out.relative_to(root).as_posix()
             except InterruptedError as exc:
                 raise RunCancelled("prototype") from exc

@@ -26,8 +26,11 @@ for folder in ("", "src", "srs-agent", "prototype-agent", "builder-agent",
     if path not in sys.path:
         sys.path.insert(0, path)
 
-# `.deps` is where this workspace keeps its packages when it was not pip-installed.
+# Checkout launchers can keep packages under the Python version they were built for.
 _deps = ROOT / ".deps"
+_versioned_deps = _deps / f"py{sys.version_info.major}{sys.version_info.minor}"
+if _versioned_deps.is_dir():
+    _deps = _versioned_deps
 if _deps.is_dir() and str(_deps) not in sys.path:
     sys.path.insert(0, str(_deps))
 
@@ -37,7 +40,7 @@ from server_modules import accounts, config, httpd, privacy, runs, wsd  # noqa: 
 def main() -> int:
     config.STATE.mkdir(parents=True, exist_ok=True)
     config.WORKSPACES.mkdir(parents=True, exist_ok=True)
-    accounts.switch_on()                    # with an accounts address set (accounts.json), people sign in here
+    accounts.switch_on()                    # optional, for installations with an explicit account service
 
     if config.TRANSPORT == "stdio":
         from server_modules import stdio_bridge

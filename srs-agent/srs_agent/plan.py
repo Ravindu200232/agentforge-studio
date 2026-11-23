@@ -140,8 +140,12 @@ def draft(project: str, revision: str = "", answers: dict[str, str] | None = Non
 
     answered = "\n".join(f"- {q}: {a}" for q, a in (answers or {}).items() if str(a).strip())
 
-    if previous and (said or answered):
-        bus.agent_state(project, "revising the plan", thinking=True)
+    revising = bool(previous and (said or answered))
+    title = "Revising the product plan" if revising else "Drafting the product plan"
+    sources = ("Using the existing plan, interview answers and your requested changes." if revising
+               else "Using your project idea and interview answers.")
+    bus.phase(project, "plan:draft", title, detail=sources, kind="plan-activity")
+    if revising:
         prompt = prompts.load("plan/revise",
                               plan=json.dumps(previous, ensure_ascii=False, indent=2),
                               transcript=interview.full_transcript(project),
@@ -149,7 +153,6 @@ def draft(project: str, revision: str = "", answers: dict[str, str] | None = Non
                               answers=answered or "(none)",
                               language=language)
     else:
-        bus.agent_state(project, "drafting the plan", thinking=True)
         prompt = prompts.load("plan/draft",
                               idea=record.get("idea", ""),
                               stack=record.get("stack", ""),
@@ -164,25 +167,29 @@ def draft(project: str, revision: str = "", answers: dict[str, str] | None = Non
         plan_rules.plan_validator(plan_rules.archetype_pack(merged))(merged)
         return merged
 
-    memory = session.memory_digest()
-    merged = llm.complete_json(
-        system=prompts.load("plan/system")
-        + (f"\n\n## What this project already knows\n\n{memory}" if memory else ""),
-        user=prompt, validator=check, label="plan", project=project)
+    try:
+        memory = session.memory_digest()
+        merged = llm.complete_json(
+            system=prompts.load("plan/system")
+            + (f"\n\n## What this project already knows\n\n{memory}" if memory else ""),
+            user=prompt, validator=check, label="plan", project=project)
 
-    data["versions"] = (data.get("versions") or []) + [{
-        "version": data.get("version", 0) + 1,
-        "at": time.time(),
-        "revision": said,
-    }]
-    data["version"] = data.get("version", 0) + 1
-    data["plan"] = merged
-    data["approved"] = False
-    save(session, data)
-    session.write_record("plan.md", data=_markdown(merged))
-
-    bus.agent_state(project, "")
-    store.advance(project, "plan")
+        data["versions"] = (data.get("versions") or []) + [{
+            "version": data.get("version", 0) + 1,
+            "at": time.time(),
+            "revision": said,
+        }]
+        data["version"] = data.get("version", 0) + 1
+        data["plan"] = merged
+        data["approved"] = False
+        save(session, data)
+        session.write_record("plan.md", data=_markdown(merged))
+        store.advance(project, "plan")
+    except Exception:
+        bus.phase(project, "plan:draft", title, status="failed", detail="The plan could not be prepared.",
+                  kind="plan-activity")
+        raise
+    bus.phase(project, "plan:draft", "Product plan ready", status="complete", detail=sources, kind="plan-activity")
     return current(project)
 
 

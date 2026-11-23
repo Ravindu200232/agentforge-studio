@@ -65,6 +65,26 @@ export const modelLabel = (model) =>
 export const isCloud = (id) => String(id || '').includes('-cloud')
   || String(id || '').endsWith(':cloud')
 
+const PROVIDER_LABELS = {
+  deploy: 'Deploy',
+  openai: 'OpenAI',
+  anthropic: 'Claude',
+  deepseek: 'DeepSeek',
+  gemini: 'Google Gemini',
+  custom: 'OpenAI-compatible',
+}
+
+export function groupModels(rows) {
+  const groups = new Map()
+  for (const row of rows) {
+    const group = PROVIDER_LABELS[row.provider]
+      || (row.cloud || isCloud(row.id) ? 'Ollama Cloud' : 'Local Ollama')
+    if (!groups.has(group)) groups.set(group, [])
+    groups.get(group).push(row)
+  }
+  return [...groups.entries()]
+}
+
 export function catalogue(payload) {
   const p = payload || {}
   const cloud = (p.cloud || []).map(m => ({
@@ -80,9 +100,8 @@ export function catalogue(payload) {
     if (!byId.has(id)) byId.set(id, { id, tag: 'local' })
   }
 
-  // Models to pull are only worth offering where an Ollama app runs: with the built-in engine, or just an
-  // ollama.com key, there is none.
-  if (p.ollama_ready || p.engine === 'local') {
+  // With a working hosted provider and no local Ollama, show the models that can answer right now.
+  if (p.ollama_ready || (p.engine === 'local' && !cloud.length)) {
     for (const m of CURATED) {
       if (!byId.has(m.id)) byId.set(m.id, { ...m, willPull: true })
     }
