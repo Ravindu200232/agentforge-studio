@@ -1,0 +1,95 @@
+:root {
+  color-scheme: light;
+  --af-ink: color-mix(in srgb, var(--af-primary) 18%, #181621);
+  --af-muted: color-mix(in srgb, var(--af-ink) 88%, #fff);
+  --af-paper: color-mix(in srgb, var(--af-surface) 14%, #fff);
+  --af-tint: color-mix(in srgb, var(--af-secondary) 10%, #fff);
+  --af-rule: color-mix(in srgb, var(--af-secondary) 22%, #fff);
+  --af-link: color-mix(in srgb, var(--af-primary) 34%, #181621);
+  --af-shadow: 0 12px 32px color-mix(in srgb, var(--af-ink) 9%, transparent);
+  --ink: var(--af-ink);
+  --ink-2: var(--af-muted);
+  --ink-3: var(--af-muted);
+  --bg: #fff;
+  --bg-soft: var(--af-tint);
+  --bg-softer: var(--af-paper);
+  --line: var(--af-rule);
+  --line-soft: var(--af-rule);
+  --radius-sm: 10px;
+  --radius-md: 18px;
+}
+
+body {
+  background: var(--af-paper);
+  color: var(--af-ink);
+  font-family: var(--af-body-font), system-ui, sans-serif;
+}
+
+button, input, select, textarea { font-family: inherit; }
+h1, h2, h3, h4, h5, h6, .brand {
+  font-family: var(--af-heading-font), system-ui, sans-serif;
+  letter-spacing: -.025em;
+}
+
+main h1 {
+  max-inline-size: 19ch;
+  font-size: clamp(2rem, 4.8vw, 4rem);
+  line-height: 1.04;
+  letter-spacing: -.045em;
+  overflow-wrap: anywhere;
+}
+
+main .page-header, main .hero, main .hero-section, main .page-hero {
+  padding: clamp(1.25rem, 4vw, 3.5rem);
+  border: 1px solid var(--af-rule);
+  border-radius: clamp(16px, 3.5vw, 32px);
+  color: var(--af-ink);
+  background:
+    radial-gradient(ellipse at 88% 12%, color-mix(in srgb, var(--af-accent) 25%, transparent), transparent 55%),
+    linear-gradient(142deg, #fff, color-mix(in srgb, var(--af-surface) 22%, #fff));
+}
+
+main .page-desc { max-inline-size: 64ch; color: var(--af-muted); line-height: 1.65; }
+body > header, .site-header { background: #fff; border-color: var(--af-rule); }
+.brand-mark { background: var(--af-primary); color: var(--af-on-primary); border-color: transparent; }
+main a:not([class*="btn"]), .link, .product-price { color: var(--af-link); }
+.nav-link[aria-current], .nav-link.is-active {
+  background: var(--af-tint);
+  color: var(--af-link);
+}
+.segmented button[aria-pressed="true"] { background: var(--af-primary); color: var(--af-on-primary); }
+
+.btn-primary, button.primary, a.primary, [class~="button-primary"] {
+  background: var(--af-primary);
+  color: var(--af-on-primary);
+  border-color: var(--af-primary);
+  border-radius: 999px;
+}
+.btn-primary:hover { background: var(--af-primary); color: var(--af-on-primary); filter: brightness(.96); }
+.btn-outline, .btn-ghost { border-radius: 999px; }
+:focus-visible { outline: 2px solid var(--af-link); outline-offset: 3px; }
+
+.product-card, .card, .feature-card, .stat-card, .panel {
+  background: #fff;
+  border: 1px solid var(--af-rule);
+  border-radius: 18px;
+  box-shadow: var(--af-shadow);
+}
+.product-card { overflow: hidden; }
+.product-photo, .image-placeholder {
+  color: var(--af-link);
+  background: linear-gradient(135deg, var(--af-tint), color-mix(in srgb, var(--af-accent) 26%, #fff));
+}
+.product-name { font-family: var(--af-heading-font), system-ui, sans-serif; }
+.badge-solid { background: var(--af-tint); color: var(--af-link); }
+input:not([type="checkbox"]):not([type="radio"]), select, textarea { border-color: var(--af-rule); }
+.site-footer, body > footer { background: var(--af-tint); border-color: var(--af-rule); }
+
+@media (max-width: 600px) {
+  main .page-header, main .hero, main .hero-section, main .page-hero { padding: 1.25rem; }
+  .toolbar { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: start; gap: .55rem; }
+  .toolbar .search-field { width: 100%; min-inline-size: 0; }
+  .toolbar .toolbar-spacer { display: none; }
+  .toolbar .segmented { max-inline-size: 100%; flex-wrap: wrap; }
+  .product-foot { flex-wrap: wrap; }
+}

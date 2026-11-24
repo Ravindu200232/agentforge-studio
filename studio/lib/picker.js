@@ -1,4 +1,6 @@
-
+import { attachPickerMove, elementSelector, pickerElement } from './picker-move'
+import { attachPickerResize, RESIZE_CSS } from './picker-resize'
+import { previewLayout } from './picker-layout'
 
 const PICK_CSS =
   '.__lc_hi{outline:2px solid #5b7cf7!important;' +
@@ -89,19 +91,43 @@ export function pickLabel(info) {
 }
 
 
-export function attachPicker(frame, onPick) {
+export function attachPicker(frame, onPick, { onLayout, canEdit = () => true, viewport = 'desktop' } = {}) {
   const d = frameDoc(frame)
   if (!d) return null
   if (!d.getElementById('__lc_pick_style')) {
     const st = d.createElement('style')
     st.id = '__lc_pick_style'
-    st.textContent = PICK_CSS
+    st.textContent = PICK_CSS +
+      '.__af_moving,.__af_moving *{cursor:grabbing!important;user-select:none!important}' +
+      (onLayout ? RESIZE_CSS : '')
     d.head.appendChild(st)
   }
-  const hover = (e) => e.target.classList && e.target.classList.add('__lc_hi')
+  const hover = (e) => {
+    if (!e.target.closest?.('.__af_resize_box')) e.target.classList?.add('__lc_hi')
+  }
   const leave = (e) => e.target.classList && e.target.classList.remove('__lc_hi')
+  const describe = el => {
+    const { tag, id, text, attrs, chain, outerHTML, rect, scroll, viewport: size } = elementInfo(frame, el, viewport)
+    return { tag, id, text, attrs, chain, outerHTML, rect, scroll, viewport: size, selector: elementSelector(el) }
+  }
+  const draft = onLayout && previewLayout(d, describe, onLayout)
+  const editable = element => canEdit() && draft.permits(element)
+  const resize = draft && attachPickerResize(d, { onResize: draft.resize, canResize: editable })
+  const movement = draft && attachPickerMove(d, {
+    onMove: draft.move, canMove: editable, onStart: () => resize.select(null),
+  })
+  const cancel = () => { draft?.cancel(); resize?.select(null) }
+  const key = event => { if (event.key === 'Escape') cancel() }
+  if (draft) {
+    d.defaultView.addEventListener('hashchange', cancel, true)
+    d.addEventListener('keydown', key, true)
+    frame.ownerDocument.addEventListener('keydown', key, true)
+  }
   const click = (e) => {
     e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation()
+    if (resize?.suppressClick(e) || movement?.suppressClick()) return
+    const element = resize && pickerElement(e.target)
+    if (element && editable(element)) resize.select(element)
     onPick(e.target)
   }
   d.addEventListener('mouseover', hover, true)
@@ -109,13 +135,17 @@ export function attachPicker(frame, onPick) {
   d.addEventListener('click', click, true)
 
   return () => {
-    const doc = frameDoc(frame)
-    if (!doc) return
-    doc.removeEventListener('mouseover', hover, true)
-    doc.removeEventListener('mouseout', leave, true)
-    doc.removeEventListener('click', click, true)
-    doc.querySelectorAll('.__lc_hi').forEach(e => e.classList.remove('__lc_hi'))
-    doc.getElementById('__lc_pick_style')?.remove()
+    movement?.detach()
+    resize?.detach()
+    draft?.cancel()
+    d.defaultView.removeEventListener('hashchange', cancel, true)
+    d.removeEventListener('keydown', key, true)
+    frame.ownerDocument.removeEventListener('keydown', key, true)
+    d.removeEventListener('mouseover', hover, true)
+    d.removeEventListener('mouseout', leave, true)
+    d.removeEventListener('click', click, true)
+    d.querySelectorAll('.__lc_hi').forEach(e => e.classList.remove('__lc_hi'))
+    d.getElementById('__lc_pick_style')?.remove()
   }
 }
 

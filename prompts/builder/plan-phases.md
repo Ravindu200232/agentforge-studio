@@ -10,6 +10,10 @@ assets, selectors, and implementation files are checked in its page phase.
 The approved route map supplies all page work. Use a tool only if a necessary
 planning decision is missing from this brief.
 
+Plan how to preserve the approved type, colors, spacing and shared motion
+tokens in the selected stack. Include interaction feedback, reduced motion
+and responsive behavior in the phases that implement visible screens.
+
 ## SRS facts
 
 {{facts}}

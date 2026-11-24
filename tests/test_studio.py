@@ -170,36 +170,54 @@ class InterviewShapeTests(unittest.TestCase):
 
         self.assertNotIn(interview.APP_TYPE_KEY, coverage.categories())
 
-    def test_the_first_question_is_the_product_shape_and_costs_no_model_call(self):
+    def test_the_first_question_offers_the_catalogue_without_a_default(self):
         from srs_agent import interview
 
-        question = interview._app_type_question("a hotel taking room bookings", 1, 25)
+        question = interview._app_type_question(1, 25)
         self.assertEqual(question["id"], interview.APP_TYPE_KEY)
         self.assertEqual(question["answer_type"], "single_choice")
         values = {o["value"] for o in question["options"]}
         self.assertIn("booking", values)
         self.assertIn("other", values)
         self.assertEqual(question["total"], 25)
+        self.assertIsNone(question["recommended"])
 
-    def test_the_guess_ignores_the_words_every_idea_contains(self):
+    def test_the_model_receives_the_screened_first_input_and_catalogue(self):
         from srs_agent import interview
 
-        # "Subscription product with accounts" shares "with" and "product" with
-        # almost any sentence; matching on those made everything look like SaaS.
-        for idea, wanted in (
-            ("a hotel that takes room bookings online with payment", "booking"),
-            ("a shop till for a hardware store with stock and receipts", "pos"),
-            ("a storefront with a cart and checkout for selling shoes", "ecommerce"),
-            ("a calculator for converting currency", "utility"),
-            ("a subscription tool with workspaces and billing plans", "saas"),
+        idea = "beheth tika website eken gedarata gennaganna oni"
+        with patch.object(interview.privacy, "screen", return_value=idea) as screen, \
+             patch.object(interview.llm, "complete_json",
+                          side_effect=lambda **kw: kw["validator"]({"app_type": "ecommerce"})) as complete:
+            self.assertEqual(interview._suggest_app_type("prj_shape", "private", "picked-model"), "ecommerce")
+
+        screen.assert_called_once_with("prj_shape", "private")
+        complete.assert_called_once()
+        request = complete.call_args.kwargs
+        self.assertEqual(request["model"], "picked-model")
+        self.assertFalse(request["think"])
+        self.assertEqual(request["attempts"], 1)
+        self.assertNotIn("workspace", request)
+        user = json.loads(request["user"])
+        self.assertEqual(user["description"], idea)
+        self.assertNotIn("private", request["user"])
+        self.assertIn("ecommerce", {entry["id"] for entry in user["categories"]})
+
+    def test_unclear_invalid_and_failed_suggestions_have_no_default(self):
+        from srs_agent import interview
+
+        for result, error in (
+            ({"app_type": None}, None),
+            ({"app_type": "made-up"}, None),
+            ({}, None),
+            (None, TimeoutError()),
         ):
-            self.assertEqual(interview._guess_app_type(idea), wanted, idea)
-
-    def test_a_plural_in_the_idea_still_matches_a_singular_hint(self):
-        from srs_agent import interview
-
-        self.assertEqual(interview._guess_app_type("weekly classes members can book"),
-                         "booking")
+            with self.subTest(result=result, error=error), \
+                 patch.object(interview.privacy, "screen", return_value="make me an app"), \
+                 patch.object(interview.bus, "log"), \
+                 patch.object(interview.llm, "within", side_effect=error,
+                              wraps=lambda _seconds, _call, **kw: kw["validator"](result)):
+                self.assertIsNone(interview._suggest_app_type("prj_shape", "make me an app"))
 
     def test_the_catalogue_is_a_file_not_a_constant(self):
         from srs_agent import interview
@@ -220,19 +238,52 @@ class InterviewShapeTests(unittest.TestCase):
             config.PROJECTS_FILE = Path(folder) / "projects.json"
             config.WORKSPACES = Path(folder) / "workspaces"
             try:
-                project = store.create("a boutique hotel booking site")["id"]
-                with patch.object(interview.bus, "agent_msg") as announced:
+                idea = "a boutique hotel booking site"
+                project = store.create(idea, interview_model="project-model")["id"]
+                with patch.object(interview.bus, "agent_msg") as announced, \
+                     patch.object(interview, "_suggest_app_type", return_value="booking") as suggest:
                     first = interview.next_question(project)
                     again = interview.next_question(project)
 
                 self.assertEqual(first["question"]["id"], interview.APP_TYPE_KEY)
-                self.assertEqual(again["question"]["id"], interview.APP_TYPE_KEY)
+                self.assertEqual(first["question"]["recommended"], "booking")
+                self.assertEqual(again["question"], first["question"])
+                suggest.assert_called_once_with(project, idea, "project-model")
                 announced.assert_called_once_with(
                     project, first["question"]["question"], agent=interview.bus.DEVELOPER,
                     title="Interview question", kind="interview")
             finally:
                 drop(project)
                 config.PROJECTS_FILE, config.WORKSPACES = original_projects, original_workspaces
+
+    def test_an_unanswered_legacy_question_updates_its_saas_suggestion_once(self):
+        from server_modules import config, store
+        from server_modules.session import drop, session_for
+        from srs_agent import interview
+
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(config, "PROJECTS_FILE", Path(folder) / "projects.json"), \
+             patch.object(config, "WORKSPACES", Path(folder) / "workspaces"):
+            idea = "an online pharmacy where customers order for delivery"
+            project = store.create(idea)["id"]
+            try:
+                session = session_for(project)
+                data = interview.state(session)
+                pending = interview._app_type_question(1, 25)
+                pending.update(recommended="saas", announced=True)
+                data.update(pending=pending, transcript=[pending])
+                interview.save(session, data)
+
+                with patch.object(interview.bus, "agent_msg") as announced, \
+                     patch.object(interview, "_suggest_app_type", return_value="ecommerce") as suggest:
+                    for _ in range(2):
+                        question = interview.next_question(project)["question"]
+                        self.assertEqual(question["recommended"], "ecommerce")
+                    suggest.assert_called_once_with(project, idea, "")
+                    announced.assert_not_called()
+                self.assertEqual(interview.state(session)["transcript"][0]["recommended"], "ecommerce")
+            finally:
+                drop(project)
 
 
 class InterviewTurnTests(unittest.TestCase):
@@ -378,7 +429,7 @@ class InterviewTurnTests(unittest.TestCase):
                 project = store.create("a boutique hotel booking site")["id"]
                 session = session_for(project)
                 data = interview.state(session)
-                first = interview._app_type_question("hotel booking", 1, 8)
+                first = interview._app_type_question(1, 8)
                 next_one = interview._question_from_turn({
                     "topic": "auth_method", "question": "How should guests sign in?",
                     "answer_type": "single_choice",
@@ -418,7 +469,7 @@ class InterviewTurnTests(unittest.TestCase):
                 project = store.create("a boutique hotel booking site")["id"]
                 session = session_for(project)
                 data = interview.state(session)
-                question = interview._app_type_question("hotel booking", 1, 8)
+                question = interview._app_type_question(1, 8)
                 data["transcript"] = [question]
                 data["pending"] = question
                 interview.save(session, data)
@@ -445,7 +496,7 @@ class InterviewTurnTests(unittest.TestCase):
                 project = store.create("a boutique hotel booking site")["id"]
                 session = session_for(project)
                 data = interview.state(session)
-                question = interview._app_type_question("hotel booking", 1, 8)
+                question = interview._app_type_question(1, 8)
                 data["transcript"] = [question]
                 data["pending"] = question
                 interview.save(session, data)
@@ -511,7 +562,7 @@ class InterviewTurnTests(unittest.TestCase):
             try:
                 project = store.create("a boutique hotel booking site")["id"]
                 session = session_for(project)
-                question = interview._app_type_question("hotel booking", 1, 8)
+                question = interview._app_type_question(1, 8)
                 session.write_record("interview.json", data={
                     "transcript": [question, "broken row"],
                     "answers": {"broken": "row"}, "order": [None, question["id"]],
@@ -1279,6 +1330,8 @@ class InterviewSplitTests(unittest.TestCase):
 
         def model(system="", user="", validator=None, label="", **kwargs):
             calls.append((label, kwargs.get("think")))
+            if label == "interview:app-type":
+                return validator({"app_type": "pos"})
             if label == "interview:fold":
                 return validator({"coverage_updates": {category: {"status": "KNOWN", "facts": ["learned it"]}}})
             return validator({"stage": "gathering", "next": {"question": "Who approves a refund?", "answer_type": "free_text",
@@ -1298,7 +1351,11 @@ class InterviewSplitTests(unittest.TestCase):
                     interview.record_answer(project, {"key": second["id"], "text": "The owner"})
                     interview._wait_fold(project)
                 self.assertEqual(second["question"], "Who approves a refund?")
-                self.assertCountEqual(calls, [("interview:ask", False), ("interview:fold", False), ("interview:fold", False)])
+                self.assertEqual(first["recommended"], "pos")
+                self.assertCountEqual(calls, [
+                    ("interview:app-type", False), ("interview:ask", False),
+                    ("interview:fold", False), ("interview:fold", False),
+                ])
                 kept = interview.state(interview.session_for(project))["coverage"][category]
                 self.assertEqual((kept["status"], kept["facts"]), ("KNOWN", ["learned it"]))
             finally:

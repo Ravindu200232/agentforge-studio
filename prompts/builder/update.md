@@ -6,6 +6,8 @@ Read the files that carry this behavior and change only what the request affects
 
 Use project-authored components, semantic HTML, and the application's existing styles for new UI. Do not add shadcn/ui, Radix UI, or ready-made UI components. Keep existing screens working on older projects.
 
+{{design_motion}}
+
 When the change touches signing in, sessions, roles, a role's dashboard or the navigation, follow `.agentforge/auth/AUTHENTICATION.md` (when it exists): cookie sessions, access checked on the server and in the data, each role's own dashboard and navigation, and the signed-out navigation only for signed-out people. Whatever you change keeps the build's quality bar — access checked on the server, inputs validated, lists paginated, writes atomic, and loading, empty and error states with a way forward.
 
 Testing rules for updates:

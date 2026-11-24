@@ -63,14 +63,14 @@ class PrototypeSignInTests(unittest.TestCase):
         self.assertIsNone(demo.sign_up_of({"authentication_requirement": {"registration_mode": "admin_created"}}, routes, accounts))
 
     def test_the_session_every_prototype_has_signs_in_signs_up_and_signs_out(self):
-        session = (web_app.KIT_SOURCE / "app" / "src" / "lib" / "session.tsx").read_text(encoding="utf-8")
+        session = (web_app.RUNTIME / "session.tsx").read_text(encoding="utf-8")
         for needle in ("signIn:", "signInAs:", "signUp:", "signOut:", "canOpen:", "?as=", "navigate(account.landsOn)",
                        "navigate(signInRoute"):
             self.assertIn(needle, session)
         self.assertNotIn("localStorage", session, "the prototype keeps nobody signed in between visits")
 
     def test_the_router_keeps_the_app_on_its_own_page(self):
-        router = (web_app.KIT_SOURCE / "app" / "src" / "lib" / "router.tsx").read_text(encoding="utf-8")
+        router = (web_app.RUNTIME / "router.tsx").read_text(encoding="utf-8")
         for needle in ("hashchange", "event.preventDefault()", 'href.startsWith("/")', "onSubmit", "matchRoute"):
             self.assertIn(needle, router)
 

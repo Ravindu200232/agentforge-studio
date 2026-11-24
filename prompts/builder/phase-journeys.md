@@ -1,6 +1,6 @@
 ## What this phase is: the journey tests
 
-Use the saved user journeys at `.agentforge/srs/user-journeys.json`, the SRS
+Use `.agentforge/build/journey-contract.json` when present and keep its journey IDs and role transitions. Extend or reuse the verified first journey spec if its behavior changed during later phases. Use the saved user journeys at `.agentforge/srs/user-journeys.json`, the SRS
 handoff, mapped prototype routes and the implemented app to identify the actual
 selectors, roles, setup and expected outcomes. Write one browser spec per
 journey at `e2e/journeys/UJ-001.spec.js` (using its own ID in the filename and

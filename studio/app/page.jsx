@@ -833,7 +833,7 @@ export default function Studio() {
                   <div className={wireFocus ? 'flex min-h-0 flex-1 flex-col' : 'mx-auto max-w-[1400px]'}>
                     {!wireFocus && <div className="mb-5">
                       <h1 className="text-lg font-semibold text-ink">Wireframes</h1>
-                      <p className="text-xs text-muted">The wireframes, as a React app: click through the pages, or ask for a change.</p>
+                      <p className="text-xs text-muted">Click through the wireframes or ask for a change.</p>
                     </div>}
                     <Wireframes srs={{ project }} onFocus={setWireFocus} generating={syncState?.status === 'running' && ['srs', 'wireframe'].includes(syncState?.source)}
                                 approving={syncState?.status === 'running' && syncState?.source === 'prototype'}

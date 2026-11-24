@@ -41,7 +41,8 @@ def routes_of(workspace: Path) -> list[dict[str, Any]]:
             continue
         seen.add(route)
         rows.append({"route": route, "file": str(row.get("file") or ""), "name": str(row.get("name") or route),
-                     "roles": [str(r) for r in row.get("roles") or [] if str(r).strip()]})
+                     "roles": [str(r) for r in row.get("roles") or [] if str(r).strip()],
+                     **({"signed_in": bool(row["signed_in"])} if "signed_in" in row else {})})
     return rows
 
 
@@ -56,12 +57,18 @@ def _span(rows: list[dict[str, Any]]) -> str:
     return ", ".join(names[:4]) + ("…" if len(names) > 4 else "")
 
 
-def plan(routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def plan(routes: list[dict[str, Any]], first_journey: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """The phases of a build, in order: the foundation, the pages a few at a time, the wiring, the unit tests, the final checks."""
     phases: list[dict[str, Any]] = [{
         "id": "foundation", "kind": "foundation", "title": "Foundation: the data, sign-in and the shared layout",
         "detail": "Building what every page stands on: the data models, authentication and roles, the shared layout and components.",
         "routes": [], "status": "pending"}]
+    if first_journey:
+        phases.append({"id": "first-journey", "kind": "first-journey", "required": True,
+                       "title": f"First journey: {first_journey['id']} · {first_journey['name']}",
+                       "detail": "Implementing and testing this complete flow with an isolated database before building other pages.",
+                       "journey": first_journey, "routes": first_journey["routes"], "status": "pending"})
+        routes = [row for row in routes if row["route"] not in first_journey["routes"]]
     for number, start in enumerate(range(0, len(routes), PAGES_PER_PHASE), start=1):
         rows = routes[start:start + PAGES_PER_PHASE]
         first, last = start + 1, start + len(rows)
@@ -95,6 +102,10 @@ def request_for(phase: dict[str, Any], number: int, total: int, routes: list[dic
     kind = phase["kind"]
     if kind == "foundation":
         task = prompts.load("builder/phase-foundation").strip()
+    elif kind == "first-journey":
+        wanted = [row for row in routes if row["route"] in phase["routes"]]
+        task = prompts.load("builder/phase-first-journey", journey=phase["journey"]["id"],
+                            routes=_listing(wanted), progress=progress_file(phase)).strip()
     elif kind == "pages":
         wanted = [row for row in routes if row["route"] in set(phase.get("routes") or [])]
         task = prompts.load("builder/phase-pages", routes=_listing(wanted), progress=progress_file(phase)).strip()
@@ -210,7 +221,7 @@ def missing(workspace: Path, routes: list[dict[str, Any]]) -> list[str]:
 
 def summary(workspace: Path, phase: dict[str, Any]) -> str:
     """What a finished pages phase delivered, as the chat reads it: each page and the files that are its own."""
-    if phase["kind"] != "pages":
+    if phase["kind"] not in {"pages", "first-journey"}:
         return ""
     notes = recorded(workspace)
     lines = []
@@ -225,7 +236,7 @@ def problems(workspace: Path, phase: dict[str, Any]) -> list[str]:
     """What keeps a phase from being finished, in words the model can act on; nothing when it is."""
     if phase["kind"] == "foundation":
         return [] if (workspace / "package.json").is_file() else ["there is no package.json: the application has not been set up"]
-    if phase["kind"] != "pages":
+    if phase["kind"] not in {"pages", "first-journey"}:
         return []
     notes = recorded(workspace)
     found = []
@@ -240,6 +251,10 @@ def problems(workspace: Path, phase: dict[str, Any]) -> list[str]:
             if login_ui.issues(paths):
                 found.append(f"`{route}` shows demo accounts or prefilled credentials in its login UI; remove them "
                              "and keep the working blank sign-in form. Credentials are sent in Studio chat.")
+    if phase["kind"] == "first-journey":
+        spec = f"e2e/journeys/{phase['journey']['id']}.spec.js"
+        if not _real(workspace, spec):
+            found.append(f"Write the browser spec at `{spec}` so Studio can verify the first journey.")
     return found
 
 
@@ -266,6 +281,7 @@ def resume_state(session: Any, finger: str) -> dict[str, Any] | None:
     for item in items:                                   # a phase that ended unfinished is asked for again
         if isinstance(item, dict) and item.get("status") != "done":
             item["status"] = "pending"
+            item.pop("repairable", None)
     return saved
 
 

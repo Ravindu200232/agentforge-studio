@@ -7,9 +7,10 @@
  * AppTextEdit). What was pointed at or marked is kept in `items`, each as the record the agent is told about (`info`, or
  * `marked` for what a drawing is around), and is sent with the next request.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
 
 import { attachPicker, elementsUnderStrokes, pickedFrom, pickLabel } from '@/lib/picker'
+import { attachShapeTool, SHAPE_TOOLS } from '@/lib/picker-shape'
 
 let seq = 0
 const MOST = 6
@@ -20,7 +21,7 @@ function markedLabel(marked) {
   return `Drawing around ${names.join(', ')}${marked.length > 2 ? ` +${marked.length - 2}` : ''}`
 }
 
-export function useFrameTools(frameRef, { loaded = 0 } = {}) {
+export function useFrameTools(frameRef, { loaded = 0, onLayout, canEdit = false } = {}) {
   const [mode, setMode] = useState(null)
   const [items, setItems] = useState([])
   const [inked, setInked] = useState(false)
@@ -46,15 +47,19 @@ export function useFrameTools(frameRef, { loaded = 0 } = {}) {
   const clearItems = useCallback(() => { setItems([]); clearInk() }, [clearInk])
 
   const chooseTool = useCallback(next => setMode(current => (current === next ? null : next)), [])
+  const edit = useEffectEvent(draft => onLayout?.(draft))
+  const layoutEnabled = useEffectEvent(() => canEdit)
 
   // Select: a click on anything in the page is a thing pointed at.
   useEffect(() => {
     const frame = frameRef.current
-    if (mode !== 'pick' || !frame) return undefined
+    if (!frame) return undefined
+    if (SHAPE_TOOLS.includes(mode)) return attachShapeTool(frame, mode, layoutEnabled, edit)
+    if (mode !== 'pick') return undefined
     const detach = attachPicker(frame, (element) => {
       const info = pickedFrom(frame, element, 'desktop')
       addItem({ key: `pick-${++seq}`, kind: 'element', info, label: pickLabel(info) })
-    })
+    }, { onLayout: edit, canEdit: layoutEnabled })
     return () => { detach?.() }
   }, [mode, loaded, frameRef, addItem])
 

@@ -110,7 +110,8 @@ DEFAULT_STACK = "nextjs-supabase"
 
 def stack_of(project: str) -> str:
     """The stack the project was built on: what the build recorded, else what the project was created with."""
-    built = session_for(project).read_record("build", "scaffold.json", fallback=None)
+    session = session_for(project)
+    built = session.read_record("build", "stack.json", fallback=None) or session.read_record("build", "scaffold.json", fallback=None)
     found = str((built or {}).get("stack") or "") if isinstance(built, dict) else ""
     return found or str((store.get(project) or {}).get("stack") or "") or DEFAULT_STACK
 

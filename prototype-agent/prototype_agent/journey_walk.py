@@ -18,6 +18,7 @@ and nothing here ever fails the prototype: it is a test, not a gate.
 """
 from __future__ import annotations
 
+import base64
 import json
 import queue
 import re
@@ -124,16 +125,24 @@ def load_journeys(record: Path) -> list[dict[str, Any]]:
         data = json.loads((record / "srs" / "user-journeys.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
+    return normalize_journeys(data)
+
+
+def normalize_journeys(data: Any, *, bounded: bool = True) -> list[dict[str, Any]]:
     found = []
     for row in (data.get("journeys") if isinstance(data, dict) else None) or []:
         if not isinstance(row, dict):
             continue
         steps = [s for s in (row.get("steps") or []) if isinstance(s, dict) and str(s.get("step") or "").strip()]
         if row.get("id") and steps:
+            if bounded:
+                steps = steps[:MAX_STEPS]
             found.append({"id": str(row["id"]), "name": str(row.get("workflow_name") or row["id"]), "who": str(row.get("who") or ""),
                           "steps": [{"id": str(s.get("id") or f"{row['id']}-S{n:02d}"), "step": str(s["step"]).strip(),
-                                     "route": str(s.get("route") or "")} for n, s in enumerate(steps[:MAX_STEPS], 1)]})
-    return found[:MAX_JOURNEYS]
+                                     "route": str(s.get("route") or ""),
+                                     **({"expected_outcome": str(s["expected_outcome"])} if s.get("expected_outcome") else {})}
+                                    for n, s in enumerate(steps, 1)]})
+    return found[:MAX_JOURNEYS] if bounded else found
 
 
 def account_for(who: str, accounts: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -148,15 +157,20 @@ def account_for(who: str, accounts: list[dict[str, Any]]) -> dict[str, Any] | No
     return None
 
 
-_LITERAL = re.compile(r"""["'`](/[A-Za-z0-9_\-/\[\]:${}.]*)["'`]""")
+_LITERAL = re.compile(r"""["'`]#?(/[A-Za-z0-9_\-/\[\]:${}.]*)["'`]""")
 
 
 def link_graph(root: Path, rows: list[dict[str, Any]]) -> dict[str, set[str]]:
     """Which screens each screen links to, read from the app's source, only to choose a way when there is no direct link: the way is
     then clicked, a hop at a time, so a link that is not really there still shows up as a failure. What the shared components
     (the navigation) link to is what every screen links to."""
-    source = root / "app" / "src"
-    if not source.is_dir():
+    app = root / "app"
+    if (app / "preview.json").is_file():
+        shared_sources = [app / "index.html", app / "assets" / "prototype.js"]
+    elif (app / "src").is_dir():
+        components = app / "src" / "components"
+        shared_sources = [file for file in components.rglob("*.tsx") if file.relative_to(components).parts[0] != "ui"]
+    else:
         return {}
     routes = {str(r.get("route")) for r in rows}
 
@@ -169,12 +183,11 @@ def link_graph(root: Path, rows: list[dict[str, Any]]) -> dict[str, set[str]]:
         return found
 
     shared: set[str] = set()
-    for path in (source / "components").rglob("*.tsx") if (source / "components").is_dir() else []:
-        if "ui" not in path.relative_to(source / "components").parts[:1]:
-            try:
-                shared |= targets(path.read_text(encoding="utf-8", errors="replace"))
-            except OSError:
-                continue
+    for path in shared_sources:
+        try:
+            shared |= targets(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
     graph: dict[str, set[str]] = {}
     for row in rows:
         try:
@@ -320,7 +333,7 @@ class Walk:
             self.event("step", title=title, label=step["step"], verb="GOTO", route=step["route"], index=number - 1, total=len(steps))
             walked.append(self._step(journey, number, step, out))
             self.event("step_done", title=title, label=step["step"], index=number, total=len(steps), ok=walked[-1]["reached"])
-        done = all(s["reached"] for s in walked) and (setup is None or setup["ok"])
+        done = all(s["reached"] and s.get("performed") is not False for s in walked) and (setup is None or setup["ok"])
         self.event("journey_done", title=title, ok=done, index=len(steps), total=len(steps),
                    message="" if done else "a step could not be done")
         return {"id": journey["id"], "name": journey["name"], "who": journey["who"], "account": (account or {}).get("email", ""),
@@ -421,6 +434,7 @@ class Walk:
         visited: list[str] = []
         shots: list[str] = []
         crashed = ""
+        performed = None
         sid = step["id"].rsplit("-", 1)[-1] or f"S{number:02d}"
         try:
             self._close_dialog()
@@ -439,6 +453,9 @@ class Walk:
                 reached = reached and signed
             elif reached and _DOING.search(step["step"]):
                 changed = self._do(journey, number, step, actions, visited, notes)
+                performed = changed
+                if not performed and not notes:
+                    notes.append("No available interaction completed the action in this step.")
             final = self.driver.screenshot(out / f"{sid}.jpg").name
             shots = [arrival, final] if changed else [final]
             if not changed:
@@ -456,6 +473,8 @@ class Walk:
             notes.append(f"the browser never got to {target}")
         return {"id": step["id"], "step": step["step"], "route": step["route"], "expected": target, "reached": reached,
                 "actions": actions, "notes": notes, "visited": [v for v in dict.fromkeys(visited) if v], "shots": shots,
+                **({"performed": performed} if performed is not None else {}),
+                **({"expected_outcome": step["expected_outcome"]} if step.get("expected_outcome") else {}),
                 "page": self.name_of(self.here(now)) if now.get("path") else "", "errors": errors, "crashed": crashed}
 
     def _reach(self, target: str, step: dict[str, Any], state: dict[str, Any], actions: list[str], visited: list[str],
@@ -585,7 +604,8 @@ class Walk:
             route = self.here(state)
             request = prompts.load(
                 "prototype/journey-plan", journey=journey["name"], who=journey["who"] or "a visitor", number=number,
-                total=len(journey["steps"]), step=step["step"], page=self.name_of(route) if route else (state.get("title") or "this screen"),
+                total=len(journey["steps"]), step=step["step"] + (" Expected outcome: " + step["expected_outcome"]
+                      if step.get("expected_outcome") else ""), page=self.name_of(route) if route else (state.get("title") or "this screen"),
                 file=route or state.get("path") or "/", heading=state.get("heading"),
                 signed_in=f" Signed in as {state['user']}." if state.get("user") else " Nobody is signed in.",
                 text=self.driver.text() or "(nothing)", elements="\n".join(_line(e) for e in elements), most=MAX_ACTIONS)
@@ -672,6 +692,12 @@ def judge(project: str, model: str, root: Path, journey: dict[str, Any], walked:
     """A vision model looks at the pictures of one walked journey and says what each shows."""
     folder = root / JOURNEY_DIR / journey["id"]
     steps = walked["steps"]
+    if len(steps) > MAX_PICTURES:
+        reports = [judge(project, model, root, journey, {**walked, "steps": steps[start:start + MAX_PICTURES]})
+                   for start in range(0, len(steps), MAX_PICTURES)]
+        return {"completes": all(report["completes"] for report in reports),
+                "summary": " ".join(report["summary"] for report in reports),
+                "steps": {key: value for report in reports for key, value in report["steps"].items()}}
     pictures: list[bytes] = []
     lines = []
     for number, step in enumerate(steps, 1):
@@ -685,6 +711,7 @@ def judge(project: str, model: str, root: Path, journey: dict[str, Any], walked:
         extra = " ".join(f"({n})" for n in step["notes"])
         lines.append(f"{number}. `{step['id']}` on {step['route']}: \"{step['step']}\" — {shown}. The browser: {did}. "
                      f"It ended on \"{step['page'] or 'a page'}\".{' Notes: ' + extra if extra else ''}"
+                     + (f" Expected outcome: {step['expected_outcome']}." if step.get("expected_outcome") else "")
                      + (f" Page errors: {'; '.join(step['errors'])}." if step["errors"] else ""))
     request = prompts.load("prototype/journey-review", who=journey["who"] or "A visitor", journey=journey["name"], id=journey["id"],
                            steps="\n".join(lines), pictures=f"{len(pictures)} picture{'s' if len(pictures) != 1 else ''} in all.")
@@ -703,7 +730,7 @@ def problems(journey: dict[str, Any], walked: dict[str, Any], judged: dict[str, 
         found.append({"step": "sign-in", "severity": "high", "where": "the sign-in page", "problem": setup["note"], "fix": ""})
     seen = (judged or {}).get("steps") or {}
     for step in walked["steps"]:
-        if not step["reached"]:
+        if not step["reached"] or step.get("performed") is False:
             found.append({"step": step["id"], "severity": "high", "where": f"{step['route']} (step: {step['step']})",
                           "problem": "; ".join(step["notes"]) or "the step could not be done", "fix": ""})
         elif step["notes"] and step["actions"] == []:
@@ -819,9 +846,16 @@ def _walk_all(project: str, session: Any, model: str, sees: bool, root: Path, ro
     watching = bus.viewers() > 0
     lanes = 1 if watching else min(LANES, max(1, len(todo)))
     graph = link_graph(root, rows)
-    uploads = root / "app" / "src" / "assets" / "uploads"
+    app = root / "app"
+    uploads = (app if (app / "preview.json").is_file() else app / "src") / "assets" / "uploads"
     sample = next((str(p) for p in sorted(uploads.glob("*")) if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}), "") \
         if uploads.is_dir() else ""
+    if not sample and any(re.search(r"\bupload\w*\b", step["step"], re.I) for journey in todo for step in journey["steps"]):
+        fixture = root / JOURNEY_DIR / "sample-upload.png"
+        fixture.parent.mkdir(parents=True, exist_ok=True)
+        fixture.write_bytes(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIElEQVR4nGN49PwdVRDDqEGj"
+                                            "Bo0aNGrQqEGjBj0acIMAGnAcG6w9NBcAAAAASUVORK5CYII="))
+        sample = str(fixture)
     jobs: queue.Queue = queue.Queue()
     for journey in todo:
         jobs.put(journey)
@@ -900,7 +934,13 @@ def _walk_all(project: str, session: Any, model: str, sees: bool, root: Path, ro
 def _run(project: str, session: Any, model: str, rows: list[dict[str, Any]], accounts_doc: dict[str, Any], fix: bool,
          rebuild: Any = None) -> dict[str, Any]:
     root = session.record / "prototype"
-    journeys = load_journeys(session.record)
+    from .journey_guide import SNAPSHOT
+
+    try:
+        saved = json.loads((root / SNAPSHOT).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        saved = None
+    journeys = saved if isinstance(saved, list) else load_journeys(session.record)
     if not journeys:
         bus.agent_msg(project, "There are no journeys in the specification to click through.", title="Journey test",
                       kind="narration", agent=bus.DESIGNER)

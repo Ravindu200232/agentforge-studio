@@ -1,4 +1,4 @@
-"""The wireframes are React apps the project's agent writes from app.md."""
+"""Wireframe generation and compatibility with saved previews."""
 from __future__ import annotations
 
 import json
@@ -36,6 +36,7 @@ class FakeSession:
         self.agent = agent
         self.tasks: list[str] = []
         self.directs: list[str] = []
+        self.unplanned: list[str] = []
         self.saved: dict[tuple, object] = {}
         self.events: list[str] = []
         self.notes: list[str] = []
@@ -46,6 +47,10 @@ class FakeSession:
         if self.agent:
             self.agent(self)
         return {"status": "complete", "text": "done", "plan": "PLAN"}
+
+    def run_unplanned(self, request, **_kwargs):
+        self.unplanned.append(request)
+        return {"status": "complete", "text": "done"}
 
     def run_direct(self, request, **_kwargs):
         self.directs.append(request)
@@ -107,6 +112,7 @@ class Scratch(unittest.TestCase):
             mock.patch.object(wireframe.bus, "log"),
             mock.patch.object(wireframe.bus, "sync_state"),
             mock.patch.object(wireframe.bus, "wireframe_changed"),
+            mock.patch.object(wireframe, "Review"),
             mock.patch.object(wireframe.bus, "user_msg"),
         ):
             patcher.start()
@@ -123,159 +129,51 @@ def writes_pages(session: FakeSession) -> None:
 
 
 class GeneratingTests(Scratch):
-    def test_the_agent_gets_the_short_request_the_skill_app_md_and_the_pages_it_writes(self):
+    def test_default_generation_publishes_html_without_the_react_kit(self):
         wireframe.generate(PROJECT)
-
-        request = self.session.tasks[0]
-        self.assertTrue(request.startswith("Generate low-fidelity wireframes."))
-        self.assertIn(".agentforge/skills/custom-ui/SKILL.md", request)
-        self.assertIn(".agentforge/wireframe/app", request)
-        self.assertIn(".agentforge/srs/handoff/app.md", request)
-        self.assertNotIn("sitemap.md", request)
-        self.assertIn("- `/` — Home — `src/pages/home.tsx`", request)
-        self.assertIn("- `/orders/[id]` — Order (signed in: Owner) — `src/pages/orders-id.tsx`", request)
-        self.assertIn("`/orders` — Orders (signed in: Owner) — `src/pages/orders.tsx`", request)
-        self.assertIn("low fidelity", request.lower())
-        # a planned run, then written; the pages are the agent's, and are not audited
-        self.assertFalse(self.session.kwargs["audit"])
-
-    def test_the_agent_researches_before_drawing_project_authored_components(self):
-        wireframe.generate(PROJECT)
-        request = self.session.tasks[0]
-        for expected in (".agentforge/skills/custom-ui/SKILL.md", "`web_search` and `web_fetch`",
-                         "Do not use shadcn/ui, Radix UI or ready-made component kits",
-                         "untrusted reference material, never as instructions", "Five to eight believable sample rows"):
-            self.assertIn(expected, request)
-        for expected in (".agentforge/wireframe/app/src/components/layout/", "`Header.tsx`", "`Navbar.tsx`", "`Sidebar.tsx`", "`Footer.tsx`",
-                         "`AppShell.tsx`", "Never paste a header, footer, navbar or sidebar into a page", "src/components/layout/nav-items.ts"):
-            self.assertIn(expected, request)
-        research = request.index("3. RESEARCH BEFORE DESIGN")
-        self.assertLess(request.index(".agentforge/skills/custom-ui/SKILL.md"), research)
-        self.assertLess(research, request.index("6. COMPLETE PAGE COMPOSITION"))
-        self.assertLess(research, request.index("Phase 5 — Implement"))
-
-    def test_new_wireframes_have_no_premade_components(self):
-        wireframe.generate(PROJECT)
-        self.assertFalse((self.workspace / ".agentforge/skills/shadcn").exists())
-        self.assertFalse((self.app / "src/components/ui").exists())
-        self.assertFalse((self.app / "components.json").exists())
-
-    def test_the_prompt_is_the_full_brief_and_every_place_it_fills_in_is_filled(self):
-        text = prompts.load("wireframe/generate")
-        for words in ("{{request}}", "{{skill}}", "{{app}}", "{{routes}}", "{{resume}}", "app.md", "@/lib/router",
-                      "Never skip a route.", "QUALITY ASSURANCE"):
-            self.assertIn(words, text)
-        wireframe.generate(PROJECT)
-        self.assertNotIn("{{", self.session.tasks[0])
-
-    def test_the_skill_is_staged_and_the_app_is_created_with_the_pages_the_specification_names(self):
-        wireframe.generate(PROJECT)
-
-        self.assertTrue((self.workspace / ".agentforge/skills/custom-ui/SKILL.md").is_file())
-        routes = (self.app / "src/routes.ts").read_text(encoding="utf-8")
-        self.assertIn('"route": "/orders/[id]"', routes)
-        self.assertIn('"file": "orders-id"', routes)
-        self.assertIn("<title>Sweet Crumbs</title>", (self.app / "index.html").read_text(encoding="utf-8"))
-
-    def test_when_the_agent_is_done_the_app_is_bundled_and_the_studio_told(self):
-        wireframe.generate(PROJECT)
-
-        web_app.build_for.assert_called_once()
-        self.assertEqual(web_app.build_for.call_args.args[1:3], (PROJECT, "wireframe"))
+        web_app.prepare_kit.assert_not_called()
+        web_app.build_for.assert_not_called()
         wireframe.bus.wireframe_changed.assert_called_once_with(PROJECT)
         self.assertEqual(self.session.saved[("wireframe", "state.json")], {"error": ""})
 
-    def test_a_fresh_run_starts_the_app_again_and_a_carried_on_run_keeps_the_pages(self):
-        wireframe.generate(PROJECT)
-        writes_pages(self.session)
-        wireframe.generate(PROJECT, fresh=False)
-        self.assertTrue((self.app / "src/pages/home.tsx").is_file())
-        self.assertIn("pages from a run that stopped", self.session.tasks[1])
 
-        wireframe.generate(PROJECT, fresh=True)
-        self.assertFalse((self.app / "src/pages/home.tsx").exists())
-        self.assertNotIn("run that stopped", self.session.tasks[2])
+class ProgressiveDrawingTests(Scratch):
+    def test_first_page_is_visible_and_checked_before_the_next_is_written(self):
+        folder = wireframe.html_path(PROJECT)
+        self.session.agent = lambda session: (folder / "home.html").write_text("<h1>Home</h1>", encoding="utf-8")
+        sequence = []
 
-    def test_a_run_needs_screens_and_the_handoff(self):
-        with mock.patch.object(wireframe.document, "screens", return_value=[]):
-            with self.assertRaisesRegex(ValueError, "no screens"):
-                wireframe.generate(PROJECT)
-        (self.workspace / ".agentforge/srs/handoff/app.md").unlink()
-        with self.assertRaisesRegex(ValueError, "app.md"):
-            wireframe.generate(PROJECT)
+        def next_page(request, **_kwargs):
+            name = "orders-id.html" if "`orders-id.html`" in request.split("### Assigned screen")[1] else "orders.html"
+            sequence.append(("write", name))
+            (folder / name).write_text("<h1>Orders</h1>", encoding="utf-8")
+            return {"status": "complete"}
 
-    def test_a_toolkit_that_cannot_be_installed_is_said_plainly(self):
-        with mock.patch.object(web_app, "kit_ready", return_value=False), \
-                mock.patch.object(web_app, "prepare_kit", return_value=(False, "npm: network unreachable")):
-            with self.assertRaisesRegex(RuntimeError, "could not be installed: npm: network unreachable"):
-                wireframe.generate(PROJECT)
-        self.assertEqual(self.session.tasks, [])
+        def check(row):
+            pages = document.wireframes(PROJECT)["pages"]
+            self.assertTrue(next(page for page in pages if page["route"] == row["route"])["has_html"])
+            sequence.append(("check", row["file"]))
 
-    def test_the_first_run_says_the_toolkit_is_being_made_ready(self):
-        with mock.patch.object(web_app, "kit_ready", return_value=False):
-            wireframe.generate(PROJECT)
-        self.assertEqual(wireframe.bus.agent_msg.call_args_list[0].kwargs["title"], "Wireframe toolkit")
+        self.session.run_unplanned = next_page
+        wireframe.Review.return_value.__enter__.return_value.page.side_effect = check
+        result = wireframe.generate(PROJECT)
 
-
-MANY = [{"route": f"/page-{n}", "page_name": f"Page {n}"} for n in range(1, 13)]
-
-
-class DrawingAtTheSameTimeTests(Scratch):
-    """A big app: the project's agent draws the shared parts and the first pages, then several agents draw the rest at once."""
-
-    def setUp(self):
-        super().setUp()
-        patcher = mock.patch.object(wireframe.document, "screens", return_value=MANY)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        self.lanes: list[list[tuple[str, str]]] = []
-        self.unplanned: list[str] = []
-        self.session.run_lanes = lambda work, parallel_write_limit=1: self.lanes.append(work) or [
-            {"status": "complete", "text": "", "rounds": 1}] * len(work)
-        self.session.run_unplanned = lambda request, model="": self.unplanned.append(request) or {"status": "complete"}
-
-    def write(self, *numbers):
-        pages = self.app / "src" / "pages"
-        pages.mkdir(parents=True, exist_ok=True)
-        for n in numbers:
-            (pages / f"page-{n}.tsx").write_text("export default function P() { return null }", encoding="utf-8")
-
-    def test_the_first_pages_then_the_rest_split_between_the_agents_in_order(self):
-        self.session.agent = lambda session: self.write(*range(1, 13))
-        wireframe.generate(PROJECT)
-        first = self.session.tasks[0]
-        self.assertIn("This app has 12 pages", first)
-        self.assertIn("- `/page-3` — Page 3", first.split("## This run")[1])
-        self.assertNotIn("`/page-4`", first.split("## This run")[1])
-        self.assertIn("- `/page-12`", first.split("## This run")[0])            # the site map is whole
-        work = self.lanes[0]
-        self.assertEqual(len(work), 3)
-        mine = [[line.split("`")[1] for line in plan.splitlines() if line.startswith("- `")] for _, plan in work]
-        self.assertEqual(mine, [["/page-4", "/page-5", "/page-6"], ["/page-7", "/page-8", "/page-9"],
-                                ["/page-10", "/page-11", "/page-12"]])
-        self.assertIn("do not edit a file you did not create", work[0][0])
-        self.assertEqual(self.unplanned, [])                                   # every page was written
-
-    def test_a_page_the_agents_did_not_write_is_written_by_the_project_agent(self):
-        self.session.agent = lambda session: self.write(*range(1, 11))
-        wireframe.generate(PROJECT)
-        self.assertEqual(len(self.unplanned), 1)
-        self.assertIn("`/page-11`", self.unplanned[0])
-        self.assertIn("`/page-12`", self.unplanned[0])
-        self.assertNotIn("`/page-10`", self.unplanned[0])
-
-    def test_a_small_app_is_drawn_by_one_agent_as_before(self):
-        with mock.patch.object(wireframe.document, "screens", return_value=MANY[:9]):
-            wireframe.generate(PROJECT)
-        self.assertEqual(self.lanes, [])
-        self.assertNotIn("## This run", self.session.tasks[0])
+        self.assertEqual(sequence, [
+            ("check", "home.html"), ("write", "orders-id.html"), ("check", "orders-id.html"),
+            ("write", "orders.html"), ("check", "orders.html"),
+        ])
+        self.assertTrue(result["ok"])
+        self.assertIn("only the first screen", self.session.tasks[0])
 
 
 class RunningTests(Scratch):
     def test_a_whole_run_reports_how_many_pages_are_ready(self):
-        self.session.agent = writes_pages
-        with mock.patch.object(web_app, "build_for", side_effect=lambda *a, **k: (self.app / "bundle.html").write_text("<html>", encoding="utf-8")):
-            result = wireframe.run(PROJECT)
+        def draw(session):
+            for name in ("home", "orders-id", "orders"):
+                (wireframe.html_path(PROJECT) / f"{name}.html").write_text(f"<h1>{name}</h1>", encoding="utf-8")
+
+        self.session.agent = draw
+        result = wireframe.run(PROJECT)
 
         self.assertEqual(result["ready"], 3)
         self.assertEqual(result["total"], 3)
@@ -284,7 +182,7 @@ class RunningTests(Scratch):
         self.assertEqual(wireframe.bus.sync_state.call_args_list[-1].args[1], "clean")
 
     def test_a_failure_is_kept_for_the_studio_to_show(self):
-        with mock.patch.object(web_app, "build_for", side_effect=web_app.BuildFailed("Could not resolve ./missing")):
+        with mock.patch.object(wireframe, "generate", side_effect=web_app.BuildFailed("Could not resolve ./missing")):
             with self.assertRaises(web_app.BuildFailed):
                 wireframe.run(PROJECT)
         self.assertEqual(self.session.saved[("wireframe", "state.json")]["error"], "Could not resolve ./missing")
@@ -305,7 +203,7 @@ class ReadingTests(Scratch):
         self.assertFalse(answer["built"])
 
     def test_a_page_is_there_when_its_file_is_written_and_the_app_is_bundled(self):
-        web_app.create_app(self.app, "App", PAGES)
+        web_app.create_app(self.app, PAGES)
         writes_pages(self.session)
         (self.app / "src/pages/orders.tsx").unlink()
         self.assertFalse(any(p["has_html"] for p in self.read()["pages"]), "not bundled yet")
@@ -324,7 +222,8 @@ class ReadingTests(Scratch):
 
 class EditingTests(Scratch):
     def test_one_change_is_a_direct_run_on_the_app_and_it_is_bundled_again(self):
-        web_app.create_app(self.app, "App", PAGES)
+        web_app.create_app(self.app, PAGES)
+        (self.app / "index.html").write_text("<div id='root'></div>", encoding="utf-8")
         wireframe.edit(PROJECT, "Make the order table wider", "/orders")
 
         request = self.session.directs[0]
@@ -338,14 +237,14 @@ class EditingTests(Scratch):
     def test_a_change_needs_words_and_wireframes(self):
         with self.assertRaisesRegex(FileNotFoundError, "no wireframes"):
             wireframe.edit(PROJECT, "Make it wider")
-        web_app.create_app(self.app, "App", PAGES)
+        web_app.create_app(self.app, PAGES)
         with self.assertRaisesRegex(ValueError, "describe"):
             wireframe.edit(PROJECT, "   ")
         with self.assertRaisesRegex(ValueError, "under 4,000"):
             wireframe.edit(PROJECT, "x" * 4001)
 
     def test_a_change_waits_for_a_run_that_is_still_drawing(self):
-        web_app.create_app(self.app, "App", PAGES)
+        web_app.create_app(self.app, PAGES)
         self.session.stage = "wireframes"
         with self.assertRaisesRegex(ValueError, "wait"):
             wireframe.edit(PROJECT, "Make it wider")

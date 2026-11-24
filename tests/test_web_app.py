@@ -57,7 +57,7 @@ class CustomUiTests(Scratch):
         component.write_text("// existing component", encoding="utf-8")
         legacy_config.write_text("{}", encoding="utf-8")
 
-        web_app.create_app(app, "App", PAGES)
+        web_app.create_app(app, PAGES)
 
         self.assertTrue(web_app.legacy_kit(app))
         self.assertEqual(component.read_text(encoding="utf-8"), "// existing component")
@@ -79,29 +79,27 @@ class PageFileTests(unittest.TestCase):
 class CreatingTheAppTests(Scratch):
     def test_it_is_a_react_app_with_routes_and_no_premade_components(self):
         app = self.app()
-        rows = web_app.create_app(app, "Sweet Crumbs", PAGES)
+        rows = web_app.create_app(app, PAGES)
         self.assertEqual([r["file"] for r in rows], ["home", "orders-id", "account"])
-        for name in ("index.html", "vite.config.ts", "tailwind.config.cjs", "postcss.config.cjs", "tsconfig.json",
-                     "src/main.tsx", "src/App.tsx", "src/index.css", "src/lib/router.tsx", "src/lib/session.tsx"):
+        for name in ("src/lib/router.tsx", "src/lib/session.tsx", "src/routes.ts", "src/demo.ts"):
             self.assertTrue((app / name).is_file(), name)
-        self.assertFalse((app / "components.json").exists())
-        self.assertFalse((app / "src/components").exists())
-        self.assertIn("<title>Sweet Crumbs</title>", (app / "index.html").read_text(encoding="utf-8"))
-        self.assertEqual(json.loads((app / "package.json").read_text(encoding="utf-8"))["name"], "sweet-crumbs")
+        for name in ("index.html", "package.json", "vite.config.ts", "tailwind.config.cjs", "src/main.tsx",
+                     "src/App.tsx", "src/index.css", "src/components", "components.json"):
+            self.assertFalse((app / name).exists(), name)
         routes = (app / "src" / "routes.ts").read_text(encoding="utf-8")
         self.assertIn('"route": "/orders/[id]"', routes)
         self.assertIn('"signedIn": true', routes)
 
     def test_it_has_no_accounts_unless_the_product_has_sign_in(self):
         app = self.app()
-        web_app.create_app(app, "App", PAGES)
+        web_app.create_app(app, PAGES)
         demo = (app / "src" / "demo.ts").read_text(encoding="utf-8")
         self.assertIn("export const accounts: Account[] = []", demo)
         self.assertIn('export const signInRoute: string = ""', demo)
 
     def test_the_demo_accounts_are_written_for_the_session_to_use(self):
         app = self.app()
-        web_app.create_app(app, "App", PAGES, accounts=ACCOUNTS, sign_in="/", sign_up={"route": "/account", "role_key": "baker"})
+        web_app.create_app(app, PAGES, accounts=ACCOUNTS, sign_in="/", sign_up={"route": "/account", "role_key": "baker"})
         demo = (app / "src" / "demo.ts").read_text(encoding="utf-8")
         self.assertIn('"email": "baker@example.com"', demo)
         self.assertIn('"landsOn": "/orders/[id]"', demo)
@@ -111,18 +109,18 @@ class CreatingTheAppTests(Scratch):
 
     def test_what_the_agent_wrote_is_kept_when_the_app_is_made_again_but_the_route_table_is_refreshed(self):
         app = self.app()
-        web_app.create_app(app, "App", PAGES[:1])
+        web_app.create_app(app, PAGES[:1])
         (app / "src" / "pages").mkdir()
         (app / "src" / "pages" / "home.tsx").write_text("export default () => null", encoding="utf-8")
         (app / "src" / "App.tsx").write_text("// edited", encoding="utf-8")
-        web_app.create_app(app, "App", PAGES)
+        web_app.create_app(app, PAGES)
         self.assertEqual((app / "src" / "App.tsx").read_text(encoding="utf-8"), "// edited")
         self.assertTrue((app / "src" / "pages" / "home.tsx").is_file())
         self.assertIn("/account", (app / "src" / "routes.ts").read_text(encoding="utf-8"))
 
     def test_the_packages_are_linked_in_not_copied(self):
         app = self.app()
-        web_app.create_app(app, "App", PAGES)
+        web_app.create_app(app, PAGES)
         (self.kit / "node_modules" / "vite").mkdir(parents=True, exist_ok=True)
         (self.kit / "node_modules" / "vite" / "marker").write_text("x", encoding="utf-8")
         self.assertTrue((app / "node_modules" / "vite" / "marker").is_file())
@@ -134,7 +132,7 @@ class CreatingTheAppTests(Scratch):
 class BundlingTests(Scratch):
     def made(self) -> Path:
         app = self.app()
-        web_app.create_app(app, "App", PAGES)
+        web_app.create_app(app, PAGES)
         return app
 
     def fake_vite(self, app: Path, ok: bool = True, text: str = ""):
@@ -190,7 +188,7 @@ class BundlingTests(Scratch):
     def test_the_agent_fix_is_a_run_of_its_own_with_the_bundler_text(self):
         session = mock.Mock(workspace=self.root, cancelled=False)
         app = web_app.app_dir(self.root, "wireframe")
-        web_app.create_app(app, "App", PAGES)
+        web_app.create_app(app, PAGES)
         outcomes = iter([(False, "Unexpected token"), (True, "")])
 
         def run(args, cwd, timeout, env=None):
@@ -227,7 +225,7 @@ class CheckingThePagesTests(Scratch):
 
     def made(self) -> Path:
         app = self.app()
-        web_app.create_app(app, "App", PAGES)
+        web_app.create_app(app, PAGES)
         (app / web_app.BUNDLE).write_text("<html></html>", encoding="utf-8")
         return app
 
@@ -244,6 +242,11 @@ class CheckingThePagesTests(Scratch):
 
     def test_an_app_whose_screens_all_open_has_nothing_to_fix(self):
         self.assertEqual(self.check('<pre id="af-selftest" hidden>[]</pre>')[0], [])
+
+    def test_an_empty_react_root_reports_an_entry_failure(self):
+        found, _ = self.check('<html><body><div id="root"></div></body></html>')
+        self.assertEqual(found[0][0], "/")
+        self.assertIn("Router pages prop", found[0][1])
 
     def test_a_check_that_cannot_run_says_nothing_and_stops_nothing(self):
         self.assertIsNone(self.check(self.DOM, browser=None)[0], "no browser")
@@ -291,112 +294,48 @@ class CheckingThePagesTests(Scratch):
         self.assertEqual(told, [])
 
 
-class GreyWireframeTests(Scratch):
-    """A wireframe is black, white and grey: the Studio writes a palette with no colour in it into the app, whatever the pages say."""
-
-    def wireframe(self):
-        return web_app.app_dir(self.root, "wireframe")
-
-    def test_a_wireframe_app_gets_a_tailwind_config_in_which_every_colour_name_is_grey(self):
-        app = self.wireframe()
-        web_app.create_app(app, "App", PAGES)
-        text = (app / "tailwind.config.cjs").read_text(encoding="utf-8")
-        for name in ("red", "green", "amber", "blue", "emerald", "rose"):
-            self.assertIn(f'"{name}"', text)
-        self.assertIn("config.theme.colors = {", text)
-        self.assertIn("config.theme.extend.colors.destructive", text)
-        self.assertIn("module.exports = config;", text)
-        self.assertNotIn("module.exports = {", text)
-        self.assertIn('border: "hsl(var(--border))"', text)
-
-    def test_the_generated_config_is_valid_and_no_colour_name_is_anything_but_the_grey_scale(self):
-        import shutil
-        import subprocess
-
-        node = shutil.which("node")
-        if not node:
-            self.skipTest("node is not installed")
-        app = self.wireframe()
-        web_app.create_app(app, "App", PAGES)
-        config = app / "tailwind.config.cjs"
-        body = config.read_text(encoding="utf-8").replace(
-            'plugins: [require("tailwindcss-animate"), require("@tailwindcss/container-queries")],', "plugins: [],")
-        config.write_text(body, encoding="utf-8")
-        probe = ("const c = require(process.argv[1]); const out = {red: c.theme.colors.red, rose: c.theme.colors.rose, "
-                 "destructive: c.theme.extend.colors.destructive, border: c.theme.extend.colors.border}; "
-                 "console.log(JSON.stringify(out))")
-        done = subprocess.run([node, "-e", probe, str(config)], capture_output=True, text=True, timeout=60)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        seen = json.loads(done.stdout)
-        self.assertEqual(seen["red"], web_app.GREY_SCALE)
-        self.assertEqual(seen["rose"], web_app.GREY_SCALE)
-        self.assertEqual(seen["destructive"]["DEFAULT"], "#3f3f46")
-        self.assertEqual(seen["border"], "hsl(var(--border))")
-
-    def test_the_destructive_colour_in_the_stylesheet_is_grey_too(self):
-        app = self.wireframe()
-        web_app.create_app(app, "App", PAGES)
-        css = (app / "src" / "index.css").read_text(encoding="utf-8")
-        self.assertNotIn("0 84.2% 60.2%", css)
-        self.assertIn("--destructive: 0 0% 25%;", css)
-
-    def test_a_prototype_keeps_its_colours(self):
-        app = web_app.app_dir(self.root, "prototype")
-        web_app.create_app(app, "App", PAGES)
-        self.assertEqual((app / "tailwind.config.cjs").read_bytes(), (web_app.KIT_SOURCE / "app" / "tailwind.config.cjs").read_bytes())
-        self.assertIn("0 84.2% 60.2%", (app / "src" / "index.css").read_text(encoding="utf-8"))
-
-    def test_a_wireframe_made_before_the_palette_was_grey_becomes_grey_when_it_is_bundled_again(self):
-        app = self.wireframe()
-        web_app.create_app(app, "App", PAGES)
-        (app / "tailwind.config.cjs").write_bytes((web_app.KIT_SOURCE / "app" / "tailwind.config.cjs").read_bytes())
-        css = app / "src" / "index.css"
-        css.write_text(css.read_text(encoding="utf-8").replace("--destructive: 0 0% 25%;", "--destructive: 0 84.2% 60.2%;"), encoding="utf-8")
+class GeneratedStylesTests(Scratch):
+    def test_a_resume_keeps_the_authored_wireframe_styles(self):
+        app = self.app("wireframe") / "app"
+        web_app.create_app(app, PAGES)
+        style = app / "tailwind.config.cjs"
+        style.write_text("module.exports = { theme: { extend: {} } };", encoding="utf-8")
         web_app.sync_kit_files(app)
-        self.assertIn("config.theme.extend.colors.destructive", (app / "tailwind.config.cjs").read_text(encoding="utf-8"))
-        self.assertIn("--destructive: 0 0% 25%;", css.read_text(encoding="utf-8"))
+        self.assertEqual(style.read_text(encoding="utf-8"), "module.exports = { theme: { extend: {} } };")
 
-    def test_the_wireframe_prompts_ask_for_grey_in_the_international_low_fidelity_style_and_name_red(self):
+    def test_wireframe_setup_and_grayscale_are_prompt_requirements(self):
         from server_modules import prompts
-
-        generate = prompts.load("wireframe/generate", request="x", skill="s", app="a", routes="r", resume="")
-        for expected in ("international low-fidelity wireframe", "black, white and neutral greys only", "and that includes red",
-                         "Showing state without colour", "A destructive action is a dark outlined button",
-                         "light grey box with a thin diagonal cross", "No colour anywhere: search the pages",
-                         "no red, no colour of any hue"):
-            self.assertIn(expected, generate)
-        edit = prompts.load("wireframe/edit", request="x", skill="s", app="a", where="")
-        for expected in ("The wireframes stay low fidelity, whatever the request says", "must not turn into a high-fidelity design",
-                         "no colour of any hue (not even red for an error or a delete)", "colour and visual styling are for the prototype",
-                         "more polished", "src/components/layout/", "Write no colour value of your own"):
-            self.assertIn(expected, edit)
-        self.assertNotIn("{{", edit)
+        prompt = prompts.load("wireframe/generate", setup=prompts.load("shared/preview-app"))
+        self.assertIn("grayscale", prompt)
+        self.assertIn("index.html", prompt)
+        self.assertIn("tailwind.config.cjs", prompt)
+        self.assertIn("SessionProvider", prompt)
 
 
 class KitOwnedFilesTests(Scratch):
     def test_the_router_and_the_session_are_written_again_when_the_studio_has_changed_them(self):
         app = self.app()
-        web_app.create_app(app, "App", PAGES)
+        web_app.create_app(app, PAGES)
         router = app / "src" / "lib" / "router.tsx"
         router.write_text("// an older router", encoding="utf-8")
         (app / "src" / "App.tsx").write_text("// the agent's own App", encoding="utf-8")
         web_app.sync_kit_files(app)
-        self.assertEqual(router.read_bytes(), (web_app.KIT_SOURCE / "app" / "src" / "lib" / "router.tsx").read_bytes())
+        self.assertEqual(router.read_bytes(), (web_app.RUNTIME / "router.tsx").read_bytes())
         self.assertEqual((app / "src" / "App.tsx").read_text(encoding="utf-8"), "// the agent's own App")
 
     def test_a_page_that_crashes_is_caught_and_the_selftest_is_in_the_router(self):
-        router = (web_app.KIT_SOURCE / "app" / "src" / "lib" / "router.tsx").read_text(encoding="utf-8")
+        router = (web_app.RUNTIME / "router.tsx").read_text(encoding="utf-8")
         for needle in ("getDerivedStateFromError", "data-af-error", "window.__afErrors", 'id="af-selftest"', "selftest"):
             self.assertIn(needle, router)
 
     def test_a_product_with_no_page_at_the_root_opens_on_its_sign_in_page_or_its_first_screen(self):
-        router = (web_app.KIT_SOURCE / "app" / "src" / "lib" / "router.tsx").read_text(encoding="utf-8")
+        router = (web_app.RUNTIME / "router.tsx").read_text(encoding="utf-8")
         self.assertIn('import { signInRoute } from "@/demo";', router)
         self.assertIn('path === "/"', router)
         self.assertIn("matchRoute(signInRoute) ? signInRoute : routes[0]?.route", router)
 
     def test_the_session_says_who_is_signed_in_for_the_browser_that_clicks_through_the_prototype(self):
-        session = (web_app.KIT_SOURCE / "app" / "src" / "lib" / "session.tsx").read_text(encoding="utf-8")
+        session = (web_app.RUNTIME / "session.tsx").read_text(encoding="utf-8")
         self.assertIn("__afUser", session)
 
 

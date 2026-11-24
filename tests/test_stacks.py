@@ -73,30 +73,24 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual(deployment_stacks()[stack]["targets"], ["vercel", "aws_ec2", "aws_ecs", "azure"], stack)
         self.assertEqual(deployment_stacks()["nextjs-mongo-only"]["targets"], "all")
 
-    def test_every_stack_has_a_template_a_guide_and_an_uploads_rule_where_it_needs_one(self):
+    def test_every_stack_has_a_creation_prompt_and_an_uploads_rule_where_needed(self):
         for stack in scaffold.STACK_GUIDES:
             with self.subTest(stack=stack):
-                folder = scaffold.template_dir(stack)
-                self.assertTrue(folder.is_dir(), folder)
-                self.assertTrue(any((folder / name).is_file() for name in ("package.json", "package.json.tpl")))
-                self.assertIn(scaffold.STACK_GUIDES[stack], scaffold.guide_files(stack))
+                guides = scaffold.build_guide_files(stack)
+                self.assertIn("Author ", guides[scaffold.STACK_GUIDES[stack]])
+                self.assertIn("application.md", guides)
                 self.assertEqual(stack in scaffold.UPLOAD_GUIDES, scaffold.uses_mongodb(stack))
 
-    def test_the_original_stack_ids_keep_their_templates_and_their_supabase_bucket(self):
-        for stack in ("nextjs-mongo", "vite-mongo", "mern-microservices"):
-            self.assertEqual(scaffold.template_dir(stack).name, stack)
-            self.assertTrue(scaffold.uses_supabase(stack))
-            self.assertEqual(scaffold.UPLOAD_GUIDES[stack], "uploads-supabase.md")
-
-    def test_a_mongo_only_stack_installs_its_twins_template(self):
+    def test_mongo_only_and_bucket_stacks_share_framework_guidance(self):
         for only in MONGO_ONLY:
             twin = only.removesuffix("-only")
-            twin = {"mern-microservices": "mern-microservices"}.get(twin, twin)
-            self.assertEqual(scaffold.template_dir(only), scaffold.template_dir(twin), only)
+            self.assertEqual(scaffold.STACK_GUIDES[only], scaffold.STACK_GUIDES[twin])
+            self.assertEqual(scaffold.UPLOAD_GUIDES[only], "uploads-gridfs.md")
+            self.assertEqual(scaffold.UPLOAD_GUIDES[twin], "uploads-supabase.md")
 
     def test_an_unknown_stack_is_still_refused(self):
         with tempfile.TemporaryDirectory() as folder, self.assertRaisesRegex(ValueError, "unsupported build stack"):
-            scaffold.install(Path(folder), "nextjs-nosql")
+            scaffold.describe_workspace(Path(folder), "nextjs-nosql")
 
 
 class MongoOnlyNeverTouchesSupabaseTests(unittest.TestCase):
@@ -140,44 +134,12 @@ class MongoOnlyNeverTouchesSupabaseTests(unittest.TestCase):
         self.assertNotIn("supabase", scaffold.build_guide_files("nextjs-mongo-only")["pitfalls.md"].lower())
         self.assertIn("## Test data", scaffold.build_guide_files("nextjs-mongo-only")["pitfalls.md"])
 
-    def test_no_mongodb_template_holds_any_supabase_code(self):
-        for template in {scaffold.template_dir(stack) for stack in scaffold.STACK_GUIDES if scaffold.uses_mongodb(stack)}:
-            for path in template.rglob("*"):
-                if path.is_file():
-                    self.assertNotIn("supabase", path.read_text(encoding="utf-8", errors="ignore").lower(),
-                                     path.relative_to(scaffold.ROOT).as_posix())
 
-    def test_a_mongo_only_project_installs_with_no_supabase_file_or_dependency(self):
-        for stack in MONGO_ONLY:
-            with self.subTest(stack=stack), tempfile.TemporaryDirectory() as temp:
-                workspace = Path(temp)
-                result = scaffold.install(workspace, stack)
-                self.assertTrue(result["scaffolded"])
-                self.assertFalse((workspace / "supabase").exists())
-                self.assertEqual([path for path in result["files"] if "supabase" in path.lower()], [])
-                manifest = json.loads((workspace / "package.json").read_text(encoding="utf-8"))
-                dependencies = {**manifest.get("dependencies", {}), **manifest.get("devDependencies", {})}
-                self.assertEqual([name for name in dependencies if "supabase" in name], [])
-
-
-class RemixMongoTemplateTests(unittest.TestCase):
-    def test_the_template_is_remix_on_mongodb(self):
-        with tempfile.TemporaryDirectory() as temp:
-            workspace = Path(temp)
-            result = scaffold.install(workspace, "remix-mongo")
-            self.assertTrue(result["scaffolded"])
-            self.assertEqual(result["source"], "builder_agent/assets/templates/remix-mongo")
-            for path in ("app/root.jsx", "app/routes/_index.jsx", "lib/db.js", "scripts/seed.mjs", "vite.config.js",
-                         "test/helpers/db.js", "test/helpers/remix.js", "vitest.config.js", "vitest.env.js"):
-                self.assertTrue((workspace / path).is_file(), path)
-            manifest = json.loads((workspace / "package.json").read_text(encoding="utf-8"))
-            for name in ("@remix-run/node", "@remix-run/react", "@remix-run/serve", "mongoose", "bcryptjs", "jose"):
-                self.assertIn(name, manifest["dependencies"])
-            self.assertEqual(manifest["scripts"]["start"], "remix-serve ./build/server/index.js")
-            slug = scaffold.project_slug(workspace.name)
-            self.assertIn(f"{slug}_test", (workspace / "vitest.env.js").read_text(encoding="utf-8"))
-            self.assertIn(f"{slug}_test", (workspace / "test/helpers/db.js").read_text(encoding="utf-8"))
-            self.assertNotIn("__APP_DB__", (workspace / "lib/db.js").read_text(encoding="utf-8"))
+class RemixMongoPromptTests(unittest.TestCase):
+    def test_the_stack_prompt_names_the_remix_entry_and_mongodb_contract(self):
+        guide = scaffold.build_guide_files("remix-mongo")["remix-mongo.md"]
+        for item in ("@remix-run/serve", "build/server/index.js", "Mongoose", "loaders and actions", "TEST_MONGODB_URI"):
+            self.assertIn(item, guide)
 
 
 class BuildGateTests(StraightThroughCase):
@@ -193,7 +155,7 @@ class BuildGateTests(StraightThroughCase):
     def build_stack(self, stack: str) -> str:
         self.session.results.append({"status": "complete", "text": "done", "plan": "p"})
         with mock.patch.object(build.store, "require", return_value={"stack": stack, "name": "Shop"}), \
-             mock.patch("builder_agent.scaffold.install", mock.Mock(return_value={"scaffolded": True, "files": []})):
+             mock.patch("builder_agent.scaffold.describe_workspace", mock.Mock(return_value={"mode": "from_scratch", "existing": []})):
             build.run(RUN_PROJECT)
         return self.session.before_plan[0]
 
@@ -266,13 +228,6 @@ class TheDatabaseIsTheStudiosToProvideTests(unittest.TestCase):
                     for old in ("value-only question", "asked for before the plan", "carry on with the local fallback",
                                 "customer's to supply"):
                         self.assertNotIn(old, guide)
-
-    def test_the_templates_env_example_says_the_studio_sets_it_and_it_is_not_copied(self):
-        for template in ("nextjs-mongo", "remix-mongo", "vite-mongo", "mern-microservices"):
-            text = (scaffold.ROOT / template / ".env.example").read_text(encoding="utf-8")
-            self.assertIn("The Studio sets MONGODB_URI", text, template)
-            self.assertIn("do not copy", text, template)
-            self.assertNotIn("Local development and `npm test` only", text, template)
 
     def test_the_build_prompts_say_it_too(self):
         for name in ("builder/generate", "builder/update"):

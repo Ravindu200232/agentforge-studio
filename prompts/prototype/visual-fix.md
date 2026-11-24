@@ -7,7 +7,7 @@ The prototype's screens were photographed in a browser and looked at. These are 
 How to fix:
 
 - Change only what each problem needs: read the page, find the part named, and correct it with `replace_text` or a rewrite of that part. Do not redraw a page that has a small problem.
-- Keep the approved design (its colours and type are in `src/index.css` and the Tailwind theme), the routes and the way the pages work. `src/lib/router.tsx` and `src/lib/session.tsx` belong to the Studio: do not edit them.
+- Keep the approved design, routes and interactions. Use the named page's source and shared style files. HTML previews use `pages/`, `assets/prototype.css` and `assets/prototype.js`. Preserve the Studio navigation and session runtime.
 - A problem that appears on several pages usually lives in a shared component or in `src/index.css`: fix it there once.
 - Every fix works at both widths: desktop (1440px) and mobile (390px).
 

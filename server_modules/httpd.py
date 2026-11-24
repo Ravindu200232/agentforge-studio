@@ -33,6 +33,7 @@ from srs_agent import wireframe as wireframer
 
 from . import accounts, ai_providers, bus, changes, cli_monitor, cli_signin, config, connection, deploy_vars, github_device, jobs, live, mongo_connect, ollama_cloud, pdf, plugins as plugin_service, permissions, preview_runtime, privacy, prompts, routes_deploy, routes_srs, runs, secrets_guard, store, supabase_connect, versions, vision, web_app, workspace_picker
 from . import database_rows as database_rows_module
+from . import design_preview, wireframe_pictures
 from .session import session_for
 
 Handler =Callable[[dict[str, Any]], Any]
@@ -1091,10 +1092,17 @@ def srs_get(ctx: dict) -> Any:
 @route("GET", r"/web/(?P<project>[^/]+)/(?P<kind>wireframe|prototype)/status")
 def web_app_status(ctx: dict) -> Any:
     """Whether the wireframes or the prototype is bundled yet, and when (what the studio's frame reloads on)."""
-    app = web_app.app_dir(session_for(_project(ctx)).workspace, ctx["_match"].group("kind"))
+    kind = ctx["_match"].group("kind")
+    app = web_app.app_dir(session_for(_project(ctx)).workspace, kind)
     built = web_app.built(app)
-    return {"built": built, "stale": built and web_app.stale(app),
-            "version": int((app / web_app.BUNDLE).stat().st_mtime) if built else 0}
+    preview = app / web_app.BUNDLE if built else app / web_app.html_prototype.PARTIAL
+    partial = not built and kind == "prototype" and preview.is_file()
+    try:
+        version = preview.stat().st_mtime_ns // 1_000_000 if built or partial else 0
+    except FileNotFoundError:
+        version = 0
+    return {"built": built, "partial": partial, "stale": built and web_app.stale(app), "version": version,
+            "ready": web_app.html_prototype.published_routes(app) if partial else []}
 
 
 @route("GET", r"/web/(?P<project>[^/]+)/(?P<kind>wireframe|prototype)")
@@ -1102,15 +1110,69 @@ def web_app_page(ctx: dict) -> Any:
     """The wireframes or the prototype: one page, the bundled React app. The studio frames it and picks the screen with the
     address hash (`#/orders`); `?as=<role or email>` opens a prototype signed in."""
     project = _project(ctx)
-    app = web_app.app_dir(session_for(project).workspace, ctx["_match"].group("kind"))
+    kind = ctx["_match"].group("kind")
+    app = web_app.app_dir(session_for(project).workspace, kind)
     try:
         return Raw(web_app.preview_page(web_app.page(app)), "text/html; charset=utf-8")
     except FileNotFoundError as exc:
-        raise HttpError(404, f"the {ctx['_match'].group('kind')} is not drawn yet") from exc
+        if kind == "prototype":
+            try:
+                return Raw(web_app.preview_page((app / web_app.html_prototype.PARTIAL).read_bytes()), "text/html; charset=utf-8")
+            except FileNotFoundError:
+                pass
+        raise HttpError(404, f"the {kind} is not drawn yet") from exc
 
 
 _HTML_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-               ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".json": "application/json", ".txt": "text/plain; charset=utf-8"}
+               ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif",
+               ".json": "application/json", ".txt": "text/plain; charset=utf-8"}
+
+
+def _picture_page(session, name: str) -> Path:
+    page = session.record / wireframer.HTML_DIR / name
+    if name == "index.html" or not page.is_file() or page.is_symlink():
+        raise FileNotFoundError("open a drawn HTML wireframe page to edit its pictures")
+    return page
+
+
+@route("GET", r"/wireframe-pictures/(?P<project>[^/]+)/(?P<page>[a-z0-9-]+\.html)")
+def read_wireframe_pictures(ctx: dict) -> Any:
+    session = session_for(_project(ctx))
+    return wireframe_pictures.read(_picture_page(session, ctx["_match"].group("page")))
+
+
+@route("POST", r"/wireframe-pictures/(?P<project>[^/]+)/(?P<page>[a-z0-9-]+\.html)")
+def edit_wireframe_pictures(ctx: dict) -> Any:
+    project = _project(ctx)
+    session = session_for(project)
+    if session.stage in routes_srs._WORKING:
+        raise ValueError("wait for the current wireframe edit or generation to finish")
+    saved = wireframe_pictures.save(session, _picture_page(session, ctx["_match"].group("page")), ctx)
+    bus.wireframe_changed(project)
+    return saved
+
+
+@route("GET", r"/web/(?P<project>[^/]+)/wireframe-html/design-preview")
+def home_design_preview(ctx: dict) -> Raw:
+    project = _project(ctx)
+    row = design_preview.home_row(web_app.route_rows(srs_document.screens(project), ".html"))
+    if not row:
+        raise HttpError(404, "This project has no home wireframe to test yet.")
+    root = wireframer.html_path(project).resolve()
+    page = (root / row["file"]).resolve()
+    try:
+        if not page.is_relative_to(root):
+            raise FileNotFoundError(row["file"])
+        source = page.read_bytes() if page.is_file() else web_app.page(wireframer.app_path(project))
+    except FileNotFoundError as exc:
+        raise HttpError(404, "Draw the home wireframe before testing the design.") from exc
+    query = ctx.get("_query") or {}
+    try:
+        themed = design_preview.render(source, str(query.get("colors") or "").split(","),
+                                       str(query.get("heading") or ""), str(query.get("body") or ""))
+    except ValueError as exc:
+        raise HttpError(400, str(exc)) from exc
+    return Raw(themed, "text/html; charset=utf-8")
 
 
 @route("GET", r"/web/(?P<project>[^/]+)/wireframe-html(?:/(?P<name>.*))?")
@@ -1459,6 +1521,7 @@ def _queue(router, ctx: dict, label: str) -> Any:
     match = re.search(r"/projects/([^/]+)", path)
     project = unquote(match.group(1)) if match and label == "srs" else ""
     agent = (bus.DESIGNER if any(part in path for part in ("/wireframes", "/design-spec"))
+             or path.endswith(("/app/move", "/app/resize", "/app/layout", "/app/insert"))
              else bus.DEVELOPER)
     on_cancel = None
     if project:

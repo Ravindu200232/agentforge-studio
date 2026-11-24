@@ -9,20 +9,18 @@ about next, in this particular project's own words. A single-screen tool
 finishes in a handful of questions and a multi-role system does not, and only
 something that has read the answers so far can tell which this is.
 
-The one question the catalogue still owns is the very first: which kind of
-product this is. Asking it before any model call anchors everything that
-follows, and costs nothing — the customer sees it the moment they press Start.
+The first question uses the catalogue's product types. The model can recommend
+one from the initial idea, and the customer's answer sets the product shape.
 """
 from __future__ import annotations
 
 import json
-import re
 import threading
 import time
 from typing import Any
 
-from server_modules import bus, config, coverage, llm, prompts, store
-from server_modules.session import ProjectSession, session_for
+from server_modules import bus, config, coverage, llm, privacy, prompts, store
+from server_modules.session import ProjectSession, RunCancelled, session_for
 
 RECORD = ("interview.json",)
 
@@ -40,73 +38,46 @@ def catalogue() -> dict[str, Any]:
     try:
         return prompts.data("interview/app-types")
     except prompts.MissingPrompt:
-        return {"default": "other", "types": {}}
+        return {"types": {}}
 
 
-# Words that appear in every description and every idea, and so tell the guess
-# nothing. Without this, "with" in "Subscription product with accounts" matched
-# "a hotel that takes bookings with payment" and every idea looked like SaaS.
-_NOISE_WORDS = {
-    "with", "that", "this", "from", "into", "your", "their", "them", "they",
-    "have", "has", "will", "would", "should", "must", "need", "needs", "want",
-    "wants", "make", "made", "take", "takes", "taken", "give", "gives", "also",
-    "some", "each", "every", "only", "other", "another", "when", "where", "what",
-    "which", "than", "then", "there", "here", "over", "under", "about", "after",
-    "before", "page", "pages", "site", "app", "apps", "product", "products",
-    "system", "systems", "online", "website", "web", "user", "users", "people",
-    "thing", "things", "something", "anything", "built", "build", "building",
-}
+def _suggest_app_type(project: str, idea: str, model: str = "") -> str | None:
+    types = catalogue().get("types") or {}
+    if not idea.strip() or not types:
+        return None
+
+    def validate(result: Any) -> dict[str, Any]:
+        if not isinstance(result, dict) or "app_type" not in result:
+            raise ValueError("app_type is required")
+        key = result["app_type"]
+        if key is not None and (not isinstance(key, str) or key not in types):
+            raise ValueError("app_type must be a catalogue ID or null")
+        return result
+
+    try:
+        request = json.dumps({
+            "description": privacy.screen(project, idea),
+            "categories": [{"id": key, "label": entry["label"], "description": entry["desc"]}
+                           for key, entry in types.items()],
+        }, ensure_ascii=False)
+        result = llm.within(
+            15, llm.complete_json, system=prompts.load("interview/recommend-app-type"),
+            user=request, validator=validate, label="interview:app-type", project=project,
+            role=bus.DEVELOPER, model=model, attempts=1, think=False,
+        )
+        return result["app_type"]
+    except RunCancelled:
+        raise
+    except Exception:
+        bus.log(project, "WARN", "The model could not suggest an app type. Choose the best match below.")
+        return None
 
 
-def _stems(text: str) -> set[str]:
-    """Words worth matching on, reduced to a crude stem.
-
-    Crude on purpose: "bookings" and "booking", "rooms" and "room" have to meet,
-    and a five-character prefix does that without a stemmer.
-    """
-    out: set[str] = set()
-    for word in re.split(r"[^a-z]+", str(text or "").lower()):
-        if len(word) > 3 and word not in _NOISE_WORDS:
-            out.add(word[:5])
-    return out
-
-
-def _guess_app_type(idea: str) -> str:
-    """The type this idea most sounds like, for the first question's default.
-
-    A weak signal deliberately: it preselects nothing the customer cannot change
-    in one click, and a wrong guess costs them that click.
-    """
-    words = _stems(idea)
-    if not words:
-        return ""
-    best, best_score = "", 0
-    for key, entry in (catalogue().get("types") or {}).items():
-        if key == "other":
-            continue
-        hints = _stems(" ".join([
-            str(entry.get("label", "")), str(entry.get("desc", "")),
-            *(str(p) for p in (entry.get("asks_about") or [])),
-        ]))
-        score = len(hints & words)
-        if score > best_score:
-            best, best_score = key, score
-    return best
-
-
-def _app_type_question(idea: str, index: int, total: int) -> dict[str, Any]:
-    """The first question, built from the catalogue rather than from the model.
-
-    Asking it first is what stops the interview drifting: once the product has a
-    shape, every later question is asked inside that shape instead of exploring
-    the space of all possible products. It costs no model call, so the customer
-    sees it the moment they press Start.
-    """
-    pack = catalogue()
+def _app_type_question(index: int, total: int) -> dict[str, Any]:
+    """The customer's first answer sets the shape of the remaining interview."""
     options = [{"label": f"{entry.get('icon', '')} {entry.get('label', key)}".strip(),
                 "value": key, "hint": entry.get("desc", "")}
-               for key, entry in (pack.get("types") or {}).items()]
-    guess = _guess_app_type(idea) or pack.get("default") or ""
+               for key, entry in (catalogue().get("types") or {}).items()]
     return {
         "id": APP_TYPE_KEY, "key": APP_TYPE_KEY, "topic": "app_type",
         "question": "Which of these best describes what you want built?",
@@ -116,7 +87,7 @@ def _app_type_question(idea: str, index: int, total: int) -> dict[str, Any]:
         "answer_type": "single_choice", "kind": "single",
         "options": options,
         "suggested_options": [o["label"] for o in options],
-        "recommended": guess or None,
+        "recommended": None,
         "prefill": [], "prefill_note": "", "placeholder": "",
         "coverage_areas": ["app_type"], "maps_to_srs_fields": ["app_type"],
         "required": True, "optional": False, "multiline": False,
@@ -452,13 +423,18 @@ def _start_fold(project: str) -> None:
             folded = llm.complete_json(system=prompts.load("interview/system", language=language), user=request,
                                        validator=_fold_validator(set(coverage.categories())), label="interview:fold",
                                        project=project, workspace=workspace, think=False)
+        except RunCancelled:
+            return
         except Exception as exc:  # noqa: BLE001 - the transcript still has the answer; the next turn reads it
             bus.log(project, "WARN", f"The answer was kept, but its bookkeeping did not finish: {str(exc)[:200]}")
             return
         with _ask_lock(project):
             latest = state(session)
             _apply_turn(latest, folded, source=f"answer:{index - 1}")
-            save(session, latest)
+            try:
+                save(session, latest)
+            except RunCancelled:
+                return
 
     thread = threading.Thread(target=fold, daemon=True, name=f"interview-fold:{project}")
     _folds[project] = thread
@@ -496,25 +472,27 @@ def _next_question(project: str) -> dict[str, Any]:
     if data.get("done"):
         return view(session, data)
 
-    # A question already on screen is asked again rather than replaced, so a
-    # browser reload does not cost the customer an answer.
-    if data.get("pending"):
-        _announce_question(project, session, data, data["pending"])
+    pending = data.get("pending")
+    index = len(data["order"]) + 1
+    if pending or index == 1:
+        if not pending:
+            budget = max(3, int(config.setting("interview_max_questions", 25)))
+            pending = _app_type_question(index, budget)
+            data["pending"] = pending
+            data["transcript"] = [pending]
+        if pending.get("id") == APP_TYPE_KEY and not pending.get("recommendation_checked"):
+            pending["recommended"] = _suggest_app_type(
+                project, record.get("idea") or "", record.get("interview_model") or "",
+            )
+            pending["recommendation_checked"] = True
+            data["transcript"] = [pending if q.get("id") == APP_TYPE_KEY else q
+                                  for q in data["transcript"]]
+            save(session, data)
+        _announce_question(project, session, data, pending)
         return view(session, data)
 
     session.role = bus.DEVELOPER
-    index = len(data["order"]) + 1
     budget = max(3, int(config.setting("interview_max_questions", 25)))
-
-    # The first question is the product's shape, and it comes from the catalogue
-    # rather than the model — instant, and it anchors everything after it.
-    if index == 1:
-        question = _app_type_question(record.get("idea", ""), index, budget)
-        data["pending"] = question
-        data["transcript"] = [question]
-        save(session, data)
-        _announce_question(project, session, data, question)
-        return view(session, data)
 
     # A safety ceiling, not a target: past it, stop gathering and ask for
     # confirmation instead of cutting the customer off with nothing to show.

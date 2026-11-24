@@ -25,7 +25,7 @@ import { refreshQaReport } from '@/lib/qa-results'
 
 
 const VIEWS = [
-  { id: 'verification', label: 'Scaffold QA', Icon: FileCheck2, C: Verification },
+  { id: 'verification', label: 'Verification', Icon: FileCheck2, C: Verification },
   { id: 'overview', label: 'Overview', Icon: Activity, C: Overview },
   { id: 'evidence', label: 'Evidence', Icon: FileSearch, C: Evidence },
   { id: 'unit', label: 'Unit Testing', Icon: Code2, C: UnitTests },

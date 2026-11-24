@@ -217,6 +217,12 @@ export const api = {
   // One change to the prototype, asked for in words; `elements` are the things on the page they pointed at.
   editPrototype: (project, prompt, elements = []) =>
     api.srs(`/projects/${encodeURIComponent(project)}/prototype/edit`, { prompt, elements }),
+  editAppLayout: (project, kind, route, operation, details) =>
+    api.srs(`/projects/${encodeURIComponent(project)}/app/${operation}`, { kind, route, [operation]: details }),
+  wireframePictures: (project, page, body) => {
+    const path = `/wireframe-pictures/${encodeURIComponent(project)}/${encodeURIComponent(page)}`
+    return body === undefined ? req(path) : post(path, body)
+  },
   // Retype words on a page of the wireframes or the prototype (`kind`): swapped in the app's source when they are written in one place.
   editAppText: (project, kind, old, text) =>
     api.srs(`/projects/${encodeURIComponent(project)}/app/text-edit`, { kind, old, new: text }),
@@ -269,6 +275,12 @@ export const api = {
   srsResults: (project) => req(`/srs-results/${encodeURIComponent(project)}`),
 
   designSpec: srsId => api.srs(`/projects/${encodeURIComponent(srsId)}/design-spec`),
+  testHomeDesign: async (project, { colors, headingFont, bodyFont }, signal) => {
+    const query = new URLSearchParams({ colors: colors.join(','), heading: headingFont, body: bodyFont, v: Date.now() })
+    const path = `/web/${encodeURIComponent(project)}/wireframe-html/design-preview?${query}`
+    await req(path, { signal })
+    return API + path
+  },
   draftDesignSpec: (srsId, spec, direction = '') => api.srs(`/projects/${encodeURIComponent(srsId)}/design-spec/draft`, {
     spec, direction, source: 'design-customizer',
   }),

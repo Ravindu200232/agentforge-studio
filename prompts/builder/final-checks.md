@@ -1,6 +1,6 @@
 # The final checks, after the journeys
 
-The Studio has photographed every page and had what looked wrong fixed, and has run the whole journey suite on this application; its result is in `.agentforge/qa/e2e-run.json` and the runs kept under `.agentforge/qa/runs/`. Now run the remaining layers, once each, with the scaffold's existing runners, reading each layer's guide first (`visual.md`, `axe.md`, `lighthouse.md`, `zap.md` among the stack build guides):
+The Studio has reviewed the pages and run the journey suite. See `.agentforge/qa/e2e-run.json` and `.agentforge/qa/runs/`. Run the remaining layers once each using the Studio QA runners and the application's `qa:*` scripts. Read the corresponding guides in `.agentforge/build/guides/` first.
 
 - visual: `npm run qa:visual`;
 - accessibility: `npm run qa:a11y`;

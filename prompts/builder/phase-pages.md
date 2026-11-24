@@ -4,6 +4,8 @@ Build these pages of the approved application now, each one completely and worki
 
 {{routes}}
 
+Read `.agentforge/build/journey-contract.json` when present. Implement the role, action, visible outcome and persisted state of each step mapped to your routes. Reuse the first journey's established data, navigation and auth interfaces to preserve cross-page behavior.
+
 For each page, open the mapped prototype page and its relevant imports before
 implementing it. Preserve its layout, text, typography, colors, images, responsive
 states, controls and navigation. Reuse the exact prototype assets and the shared

@@ -1,10 +1,9 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Check, Heart, ImagePlus, Loader2, Sparkles, Upload, X } from 'lucide-react'
+import { ArrowLeft, Check, ImagePlus, Loader2, Monitor, Play, Sparkles, Upload, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Button, Modal } from './ui'
-import LearnHubPreview from './LearnHubPreview'
 
 const PALETTES = [
   { id: 'pastel', name: 'Pastel', group: 'Pastel', colors: ['#a14646', '#da6556', '#eb895b', '#fdb773'] },
@@ -132,15 +131,25 @@ function specFor(state) {
 
 function PaletteCard({ palette, selected, onPick }) {
   return <button type="button" onClick={() => onPick(palette)} aria-pressed={selected}
-    className={`group overflow-hidden rounded-2xl border text-left transition ${selected ? 'border-accent ring-2 ring-accent/35' : 'border-line hover:-translate-y-0.5 hover:border-line2'}`}>
-    <span className="block overflow-hidden rounded-[14px] bg-panel">
-      {palette.colors.map((color, index) => <i key={color} className="block h-10 sm:h-12" style={{ background: color, borderTop: index ? '1px solid rgba(255,255,255,.08)' : 'none' }} />)}
+    className={`group overflow-hidden rounded-lg border text-left transition focus-visible:outline-2 focus-visible:outline-accent ${selected ? 'border-accent ring-1 ring-accent' : 'border-line hover:border-line2'}`}>
+    <span className="flex overflow-hidden">
+      {palette.colors.map((color, index) => <i key={index} className="h-7 flex-1" style={{ background: color }} />)}
     </span>
     <span className="flex items-center justify-between gap-2 px-2.5 py-2">
       <span className="truncate text-[11px] font-semibold text-ink">{palette.name}</span>
-      <Heart className={`size-3.5 ${selected ? 'fill-accent text-accent' : 'text-muted2 group-hover:text-accent'}`} />
+      {selected && <Check className="size-3 shrink-0 text-accent" aria-hidden="true" />}
     </span>
   </button>
+}
+
+function FontSelect({ label, value, onChange }) {
+  return <label className="block min-w-0 text-xs font-medium text-ink">
+    {label}
+    <select value={value} onChange={event => onChange(event.target.value)} style={{ fontFamily: fontStack(value) }}
+      className="mt-1.5 block w-full rounded-lg border border-line bg-panel px-2 py-2.5 text-sm text-ink focus-visible:outline-2 focus-visible:outline-accent">
+      {FONT_OPTIONS.map(font => <option key={font}>{font}</option>)}
+    </select>
+  </label>
 }
 
 export default function DesignCustomize({ projectId, onContinue, onBack }) {
@@ -150,13 +159,18 @@ export default function DesignCustomize({ projectId, onContinue, onBack }) {
   const [error, setError] = useState('')
   const [group, setGroup] = useState('All')
   const [step, setStep] = useState(0)
-  const [paletteDialog, setPaletteDialog] = useState(null)
-  const [draftColors, setDraftColors] = useState([])
-  const [fontTarget, setFontTarget] = useState('heading')
-  const [fontQuery, setFontQuery] = useState('')
+  const [preview, setPreview] = useState(null)
+  const [testing, setTesting] = useState(false)
+  const [previewError, setPreviewError] = useState('')
   const [pendingImage, setPendingImage] = useState(null)
   const [imagePurpose, setImagePurpose] = useState('')
   const picker = useRef(null)
+  const previewRequest = useRef(null)
+
+  useEffect(() => {
+    setPreview(null); setPreviewError(''); setTesting(false)
+    return () => previewRequest.current?.abort()
+  }, [projectId])
 
   useEffect(() => {
     try { setState(normalize(JSON.parse(localStorage.getItem(`agentforge-design-${projectId}`) || '{}'))) } catch { setState(EMPTY) }
@@ -224,26 +238,28 @@ export default function DesignCustomize({ projectId, onContinue, onBack }) {
     }
   }
 
-  function openPalette(palette) {
-    setPaletteDialog(palette)
-    setDraftColors([...palette.colors])
-  }
-
-  function updateDraftColor(index, value) {
-    if (!isHex(value)) return
-    const colors = [...draftColors]
+  function updateColor(index, value) {
+    if (!isHex(value) || value.toLowerCase() === state.colors[index].toLowerCase()) return
+    const colors = [...state.colors]
     colors[index] = value.toUpperCase()
-    setDraftColors(colors)
+    save({ colors })
   }
 
-  function applyPalette() {
-    if (!paletteDialog || draftColors.length !== 4) return
-    save({ palette: paletteDialog.id, colors: draftColors })
-    setPaletteDialog(null)
-  }
+  const appearanceKey = [state.colors.join(','), state.headingFont, state.bodyFont].join('|')
 
-  function chooseFont(font) {
-    save(fontTarget === 'heading' ? { headingFont: font } : { bodyFont: font })
+  async function testDesign() {
+    if (testing || !projectId) return
+    const controller = new AbortController()
+    previewRequest.current = controller
+    setTesting(true); setPreviewError('')
+    try {
+      const url = await api.testHomeDesign(projectId, state, controller.signal)
+      if (!controller.signal.aborted) setPreview({ url, key: appearanceKey })
+    } catch (failure) {
+      if (!controller.signal.aborted) setPreviewError(failure?.message || 'The home page preview could not load.')
+    } finally {
+      if (!controller.signal.aborted) setTesting(false)
+    }
   }
 
   async function approve() {
@@ -256,13 +272,10 @@ export default function DesignCustomize({ projectId, onContinue, onBack }) {
 
   const selected = useMemo(() => paletteFor(state.palette), [state.palette])
   const shownPalettes = useMemo(() => group === 'All' ? PALETTES : PALETTES.filter(palette => palette.group === group), [group])
-  const shownFonts = useMemo(() => FONT_OPTIONS.filter(font => font.toLowerCase().includes(fontQuery.trim().toLowerCase())), [fontQuery])
-  const currentFont = fontTarget === 'heading' ? state.headingFont : state.bodyFont
   const stepCopy = [
-    { eyebrow: 'Step 1 of 4', title: 'Choose your colours', text: 'Choose a palette, open it, then adjust all four colours in the editor.' },
-    { eyebrow: 'Step 2 of 4', title: 'Choose your typography', text: 'Pick separate Google Fonts for headings and body text. See each choice on the LearnHub website.' },
-    { eyebrow: 'Step 3 of 4', title: 'Upload image references', text: 'Add images that the prototype can use as visual references.' },
-    { eyebrow: 'Step 4 of 4', title: 'Add a design brief', text: 'Optionally add an extra design prompt, then continue directly to your prototype.' },
+    { eyebrow: 'Step 1 of 3', title: 'Colours and fonts', text: 'Choose your palette and type, then test them on your home wireframe.' },
+    { eyebrow: 'Step 2 of 3', title: 'Upload image references', text: 'Add images that the prototype can use as visual references.' },
+    { eyebrow: 'Step 3 of 3', title: 'Add a design brief', text: 'Optionally add an extra design prompt, then continue to your prototype.' },
   ][step]
   return <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-panel text-ink">
     <header className="sticky top-0 z-10 flex shrink-0 items-center justify-between gap-3 border-b border-line bg-panel/95 px-4 py-3 backdrop-blur sm:px-6">
@@ -271,35 +284,88 @@ export default function DesignCustomize({ projectId, onContinue, onBack }) {
     </header>
 
     <main className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
-      <nav className="mb-7 flex flex-wrap gap-1" aria-label="Design customizer steps">{['Colours', 'Fonts', 'Images', 'Design brief'].map((label, index) => <div key={label} className="flex items-center gap-1"><button type="button" onClick={() => setStep(index)} aria-current={index === step ? 'step' : undefined} className={`flex items-center gap-2 rounded-lg px-1.5 py-1 text-xs font-semibold transition hover:bg-panel2 ${index === step ? 'text-ink' : index < step ? 'text-accent' : 'text-muted2'}`}><i className={`grid size-5 place-items-center rounded-full text-[10px] not-italic ${index <= step ? 'bg-accent text-ink' : 'bg-panel2 text-muted'}`}>{index < step ? <Check className="size-3" /> : index + 1}</i>{label}</button>{index < 3 && <b className="h-px w-6 bg-line" />}</div>)}</nav>
+      <nav className="mb-7 flex flex-wrap gap-1" aria-label="Design customizer steps">{['Colours and fonts', 'Images', 'Design brief'].map((label, index) => <div key={label} className="flex items-center gap-1"><button type="button" onClick={() => setStep(index)} aria-current={index === step ? 'step' : undefined} className={`flex items-center gap-2 rounded-lg px-1.5 py-1 text-xs font-semibold transition hover:bg-panel2 ${index === step ? 'text-ink' : index < step ? 'text-accent' : 'text-muted2'}`}><i className={`grid size-5 place-items-center rounded-full text-[10px] not-italic ${index <= step ? 'bg-accent text-ink' : 'bg-panel2 text-muted'}`}>{index < step ? <Check className="size-3" /> : index + 1}</i>{label}</button>{index < 2 && <b className="h-px w-6 bg-line" />}</div>)}</nav>
       <section className="mb-6 max-w-2xl"><p className="text-[11px] font-semibold uppercase tracking-[.12em] text-accent">{stepCopy.eyebrow}</p><h2 className="mt-2 text-2xl font-semibold tracking-[-.035em] text-ink">{stepCopy.title}</h2><p className="mt-2 text-sm leading-relaxed text-muted">{stepCopy.text}</p></section>
 
-      {step === 0 && <><nav aria-label="Palette categories" className="mb-5 flex flex-wrap gap-1.5">{GROUPS.map(item => <button key={item} type="button" onClick={() => setGroup(item)} aria-pressed={group === item} className={`rounded-full border px-3 py-1.5 text-xs transition ${group === item ? 'border-accent bg-accent text-ink' : 'border-line bg-panel text-muted hover:border-line2 hover:text-ink'}`}>{item}</button>)}</nav><section aria-label="Colour theme gallery" className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">{shownPalettes.map(palette => <PaletteCard key={palette.id} palette={palette} selected={selected.id === palette.id} onPick={openPalette} />)}</section><section className="mt-5 flex flex-wrap items-center gap-3 rounded-2xl border border-line bg-panel2 p-4"><div className="flex overflow-hidden rounded-lg border border-line">{state.colors.map((color, index) => <i key={`${color}-${index}`} className="block size-9 sm:size-10" style={{ background: color }} title={color} />)}</div><div className="min-w-0 flex-1"><p className="text-sm font-semibold">{selected.name}</p><p className="mt-0.5 text-xs text-muted">Click any palette to open its four-colour editor.</p></div><Button onClick={() => setStep(1)}>Approve colours</Button></section></>}
-
-      {step === 1 && <section className="grid gap-5 lg:grid-cols-[minmax(0,390px)_minmax(0,1fr)]">
-        <div className="rounded-2xl border border-line bg-panel2 p-4 sm:p-5">
-          <div className="flex rounded-xl border border-line bg-panel p-1"><button type="button" onClick={() => setFontTarget('heading')} className={`flex-1 rounded-lg px-3 py-2 text-left text-xs transition ${fontTarget === 'heading' ? 'bg-accent font-semibold text-ink' : 'text-muted'}`}>Heading<br /><span className="font-normal">{state.headingFont}</span></button><button type="button" onClick={() => setFontTarget('body')} className={`flex-1 rounded-lg px-3 py-2 text-left text-xs transition ${fontTarget === 'body' ? 'bg-accent font-semibold text-ink' : 'text-muted'}`}>Body<br /><span className="font-normal">{state.bodyFont}</span></button></div>
-          <div className="mt-4 flex items-center justify-between gap-3"><p className="text-xs text-muted">Selecting a font applies it to the active {fontTarget} role.</p><span className="shrink-0 text-[11px] text-muted">{FONT_OPTIONS.length} Google Fonts</span></div>
-          <input aria-label="Search Google Fonts" value={fontQuery} onChange={event => setFontQuery(event.target.value)} placeholder="Search 100+ fonts…" className="mt-3 w-full rounded-xl border border-line bg-panel px-3 py-2 text-sm text-ink outline-none placeholder:text-muted2 focus:border-accent" />
-          <div className="mt-3 grid max-h-[480px] gap-2 overflow-y-auto pr-1 sm:grid-cols-2">{shownFonts.map(font => <button key={font} type="button" onMouseEnter={() => loadGoogleFont(font)} onFocus={() => loadGoogleFont(font)} onClick={() => chooseFont(font)} aria-pressed={currentFont === font} style={{ fontFamily: fontStack(font) }} className={`rounded-xl border px-3 py-3 text-left text-lg transition ${currentFont === font ? 'border-accent bg-accent/15' : 'border-line bg-panel hover:border-line2'}`}>{font}<span className="mt-1 block text-[11px] text-muted">Aa Bb Cc 123</span></button>)}{shownFonts.length === 0 && <p className="col-span-2 rounded-xl border border-dashed border-line p-4 text-sm text-muted">No fonts match that search.</p>}</div>
-          <div className="mt-5 flex gap-2"><Button variant="outline" onClick={() => setStep(0)}>Back</Button><Button className="flex-1" onClick={() => setStep(2)}>Approve fonts</Button></div>
+      {step === 0 && <div className="grid items-start gap-5 xl:grid-cols-[minmax(340px,400px)_minmax(0,1fr)]">
+        <div className="min-w-0 rounded-2xl border border-line bg-panel2 p-4 sm:p-5">
+          <section aria-label="Colour palette">
+            <h3 className="text-sm font-semibold text-ink">Palette</h3>
+            <nav aria-label="Palette categories" className="my-3 flex flex-wrap gap-1.5">
+              {GROUPS.map(item => (
+                <button key={item} type="button" onClick={() => setGroup(item)} aria-pressed={group === item}
+                  className={'rounded-full border px-2.5 py-1 text-[11px] transition ' + (group === item ? 'border-accent bg-accent text-ink' : 'border-line bg-panel text-muted hover:border-line2 hover:text-ink')}>
+                  {item}
+                </button>
+              ))}
+            </nav>
+            <div className="grid max-h-52 grid-cols-2 gap-2 overflow-y-auto p-1 sm:grid-cols-3">
+              {shownPalettes.map(palette => (
+                <PaletteCard key={palette.id} palette={palette} selected={selected.id === palette.id}
+                  onPick={picked => save({ palette: picked.id, colors: picked.colors })} />
+              ))}
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              {state.colors.map((color, index) => (
+                <div key={COLOR_LABELS[index]} className="flex min-w-0 items-center gap-2 rounded-lg border border-line bg-panel p-2">
+                  <input aria-label={COLOR_LABELS[index] + ' colour'} type="color" value={color}
+                    onChange={event => updateColor(index, event.target.value)} className="size-7 shrink-0 cursor-pointer border-0 bg-transparent p-0" />
+                  <label className="min-w-0 text-[11px] font-medium text-ink">
+                    {COLOR_LABELS[index]}
+                    <input key={color} aria-label={COLOR_LABELS[index] + ' hex'} defaultValue={color} maxLength={7} spellCheck={false}
+                      onBlur={event => { const value = event.target.value.trim(); if (isHex(value)) updateColor(index, value); else event.target.value = color }}
+                      onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
+                      className="block w-full rounded bg-transparent font-mono text-[11px] uppercase text-muted focus-visible:outline-2 focus-visible:outline-accent" />
+                  </label>
+                </div>
+              ))}
+            </div>
+          </section>
+          <section aria-label="Typography" className="mt-5 border-t border-line pt-4">
+            <h3 className="mb-3 text-sm font-semibold text-ink">Typography</h3>
+            <div className="grid grid-cols-2 gap-2">
+              <FontSelect label="Heading font" value={state.headingFont} onChange={headingFont => save({ headingFont })} />
+              <FontSelect label="Body font" value={state.bodyFont} onChange={bodyFont => save({ bodyFont })} />
+            </div>
+          </section>
+          <div className="mt-5 flex justify-end border-t border-line pt-4">
+            <Button variant="outline" onClick={() => setStep(1)}>Continue to images</Button>
+          </div>
         </div>
-        <div className="overflow-hidden rounded-2xl border border-line bg-panel2 p-3 sm:p-4"><div className="mb-3 flex items-center justify-between gap-2"><div><p className="text-sm font-semibold">LearnHub live preview</p><p className="text-xs text-muted">Your colours and fonts on a full website example</p></div><div className="flex overflow-hidden rounded-md border border-line">{state.colors.map((color, index) => <i key={`${color}-${index}`} className="block size-5" style={{ background: color }} />)}</div></div><div className="overflow-hidden rounded-xl border border-line bg-white"><LearnHubPreview colors={state.colors} headingFont={state.headingFont} bodyFont={state.bodyFont} className="h-[520px] lg:h-[650px]" /></div></div>
-      </section>}
 
-      {step === 2 && <section className="mx-auto max-w-3xl rounded-2xl border border-line bg-panel2 p-4 sm:p-6"><div className="flex items-center gap-2"><ImagePlus className="size-4 text-accent" /><h3 className="text-sm font-semibold">Image upload queue</h3></div><p className="mt-1 text-xs leading-relaxed text-muted">These images are visual references for the prototype designer.</p><input ref={picker} hidden type="file" accept={ACCEPT_IMAGES} onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; requestImage(file) }} /><div role="button" tabIndex={0} aria-label="Upload design reference image" onClick={() => picker.current?.click()} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') picker.current?.click() }} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); requestImage(event.dataTransfer.files?.[0]) }} className="mt-5 grid min-h-44 cursor-pointer place-items-center rounded-2xl border-2 border-dashed border-line2 bg-panel p-5 text-center transition hover:border-accent hover:bg-accent/5"><div><Upload className="mx-auto size-7 text-accent" /><p className="mt-3 text-sm font-semibold">Drag or click to upload image</p><p className="mt-1 text-xs text-muted">PNG, JPEG, WebP, GIF or SVG</p></div></div>{uploading && <p className="mt-3 flex items-center gap-2 text-xs text-muted"><Loader2 className="size-3.5 animate-spin" />Uploading image…</p>}{state.images.length > 0 && <ul className="mt-4 divide-y divide-line rounded-xl border border-line bg-panel">{state.images.map(image => <li key={image.file} className="flex items-center gap-2 px-3 py-2.5 text-xs"><span className="min-w-0 flex-1 truncate" title={image.file}>{image.file}</span><span className="text-muted">ready</span><button type="button" onClick={() => removeImage(image.file)} className="rounded p-1 text-muted hover:bg-panel2 hover:text-ink" title={`Remove ${image.file} from this design`}><X className="size-3.5" /></button></li>)}</ul>}<div className="mt-5 flex justify-end gap-2"><Button variant="outline" onClick={() => setStep(1)}>Back</Button><Button onClick={() => setStep(3)}>Continue to design brief</Button></div></section>}
+        <section aria-label="Home wireframe design preview" className="min-w-0 overflow-hidden rounded-2xl border border-line bg-panel2">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+            <div>
+              <h3 className="text-sm font-semibold text-ink">Home page preview</h3>
+              {preview && preview.key !== appearanceKey && (
+                <p className="mt-1 text-xs text-muted" role="status">Test again to see your changes.</p>
+              )}
+            </div>
+            <Button variant="solid" disabled={testing || !projectId} onClick={testDesign}>
+              {testing ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : <Play className="size-3.5" aria-hidden="true" />}
+              {testing ? 'Preparing…' : 'Test design'}
+            </Button>
+          </div>
+          {previewError && <div role="alert" className="border-b border-line px-4 py-2 text-sm text-rose-500">{previewError}</div>}
+          {preview ? (
+            <iframe src={preview.url} title="Themed home wireframe" sandbox="allow-scripts" referrerPolicy="no-referrer"
+              className="block h-[540px] w-full border-0 bg-white sm:h-[660px]" />
+          ) : (
+            <div className="grid min-h-64 place-items-center bg-panel p-6 text-center sm:min-h-96">
+              <div className="max-w-xs">
+                <Monitor className="mx-auto mb-3 size-6 text-muted" aria-hidden="true" />
+                <p className="text-sm text-muted">Test your colours and fonts on a copy of this project’s home wireframe.</p>
+              </div>
+            </div>
+          )}
+        </section>
+      </div>}
 
-      {step === 3 && <section className="mx-auto grid max-w-3xl gap-5 lg:grid-cols-[minmax(0,1fr)_260px]"><div className="rounded-2xl border border-line bg-panel2 p-4 sm:p-6"><div className="flex items-center gap-2"><Sparkles className="size-4 text-accent" /><h3 className="text-sm font-semibold">Design prompt</h3></div><p className="mt-1 text-xs leading-relaxed text-muted">Optional — leave this empty if your colours, fonts and reference images already describe the design.</p><textarea aria-label="Additional design direction" value={state.prompt} onChange={event => save({ prompt: event.target.value })} rows={9} placeholder="Example: Friendly marketplace, rounded cards, warm and welcoming, generous whitespace…" className="mt-4 w-full resize-y rounded-xl border border-line bg-panel px-3 py-2.5 text-sm leading-relaxed text-ink outline-none placeholder:text-muted2 focus:border-accent" /></div><aside className="flex flex-col rounded-2xl border border-line bg-panel2 p-4 sm:p-6"><p className="text-sm font-semibold">Ready for prototype</p><p className="mt-2 text-xs leading-relaxed text-muted">{selected.name} colours, {state.headingFont}/{state.bodyFont}, and {state.images.length} image reference{state.images.length === 1 ? '' : 's'} will go to the prototype generation stage.</p><div className="mt-4 flex overflow-hidden rounded-lg border border-line">{state.colors.map((color, index) => <i key={`${color}-${index}`} className="block size-8" style={{ background: color }} />)}</div><div className="mt-auto flex gap-2 pt-5"><Button variant="outline" onClick={() => setStep(2)}>Back</Button><Button className="flex-1" disabled={saving} onClick={approve}>{saving ? 'Saving…' : 'Generate prototype'}</Button></div></aside></section>}
+      {step === 1 && <section className="mx-auto max-w-3xl rounded-2xl border border-line bg-panel2 p-4 sm:p-6"><div className="flex items-center gap-2"><ImagePlus className="size-4 text-accent" /><h3 className="text-sm font-semibold">Image upload queue</h3></div><p className="mt-1 text-xs leading-relaxed text-muted">These images are visual references for the prototype designer.</p><input ref={picker} hidden type="file" accept={ACCEPT_IMAGES} onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; requestImage(file) }} /><div role="button" tabIndex={0} aria-label="Upload design reference image" onClick={() => picker.current?.click()} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') picker.current?.click() }} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); requestImage(event.dataTransfer.files?.[0]) }} className="mt-5 grid min-h-44 cursor-pointer place-items-center rounded-2xl border-2 border-dashed border-line2 bg-panel p-5 text-center transition hover:border-accent hover:bg-accent/5"><div><Upload className="mx-auto size-7 text-accent" /><p className="mt-3 text-sm font-semibold">Drag or click to upload image</p><p className="mt-1 text-xs text-muted">PNG, JPEG, WebP, GIF or SVG</p></div></div>{uploading && <p className="mt-3 flex items-center gap-2 text-xs text-muted"><Loader2 className="size-3.5 animate-spin" />Uploading image…</p>}{state.images.length > 0 && <ul className="mt-4 divide-y divide-line rounded-xl border border-line bg-panel">{state.images.map(image => <li key={image.file} className="flex items-center gap-2 px-3 py-2.5 text-xs"><span className="min-w-0 flex-1 truncate" title={image.file}>{image.file}</span><span className="text-muted">ready</span><button type="button" onClick={() => removeImage(image.file)} className="rounded p-1 text-muted hover:bg-panel2 hover:text-ink" title={`Remove ${image.file} from this design`}><X className="size-3.5" /></button></li>)}</ul>}<div className="mt-5 flex justify-end gap-2"><Button variant="outline" onClick={() => setStep(0)}>Back</Button><Button onClick={() => setStep(2)}>Continue to design brief</Button></div></section>}
+
+      {step === 2 && <section className="mx-auto grid max-w-3xl gap-5 lg:grid-cols-[minmax(0,1fr)_260px]"><div className="rounded-2xl border border-line bg-panel2 p-4 sm:p-6"><div className="flex items-center gap-2"><Sparkles className="size-4 text-accent" /><h3 className="text-sm font-semibold">Design prompt</h3></div><p className="mt-1 text-xs leading-relaxed text-muted">Optional — leave this empty if your colours, fonts and reference images already describe the design.</p><textarea aria-label="Additional design direction" value={state.prompt} onChange={event => save({ prompt: event.target.value })} rows={9} placeholder="Example: Friendly marketplace, rounded cards, warm and welcoming, generous whitespace…" className="mt-4 w-full resize-y rounded-xl border border-line bg-panel px-3 py-2.5 text-sm leading-relaxed text-ink outline-none placeholder:text-muted2 focus:border-accent" /></div><aside className="flex flex-col rounded-2xl border border-line bg-panel2 p-4 sm:p-6"><p className="text-sm font-semibold">Ready for prototype</p><p className="mt-2 text-xs leading-relaxed text-muted">{selected.name} colours, {state.headingFont}/{state.bodyFont}, and {state.images.length} image reference{state.images.length === 1 ? '' : 's'} will go to the prototype generation stage.</p><div className="mt-4 flex overflow-hidden rounded-lg border border-line">{state.colors.map((color, index) => <i key={`${color}-${index}`} className="block size-8" style={{ background: color }} />)}</div><div className="mt-auto flex gap-2 pt-5"><Button variant="outline" onClick={() => setStep(1)}>Back</Button><Button className="flex-1" disabled={saving} onClick={approve}>{saving ? 'Saving…' : 'Generate prototype'}</Button></div></aside></section>}
       {error && <p role="alert" className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
     </main>
-    {paletteDialog && <Modal onClose={() => setPaletteDialog(null)} className="max-w-[1200px] p-0" overlayClassName="bg-black/55">
-      <div className="border-b border-line px-5 py-4"><p className="text-[11px] font-semibold uppercase tracking-[.12em] text-accent">Colour editor</p><h3 className="mt-1 text-lg font-semibold">{paletteDialog.name} palette</h3><p className="mt-1 text-xs text-muted">Edit a colour and see it on the LearnHub website immediately.</p></div>
-      <div className="grid gap-5 p-5 lg:grid-cols-[250px_minmax(0,1fr)]">
-        <div><p className="mb-3 text-xs font-semibold text-muted">Palette colours</p><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">{draftColors.map((color, index) => <label key={`${COLOR_LABELS[index]}-${color}`} className="flex items-center gap-3 rounded-xl border border-line bg-panel2 p-3"><input aria-label={`${COLOR_LABELS[index]} draft colour`} type="color" value={color} onChange={event => updateDraftColor(index, event.target.value)} className="size-10 cursor-pointer rounded border-0 bg-transparent p-0" /><span className="min-w-0 flex-1"><span className="block text-xs font-semibold">{COLOR_LABELS[index]}</span><input aria-label={`${COLOR_LABELS[index]} draft hex`} key={color} defaultValue={color} onBlur={event => updateDraftColor(index, event.target.value)} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }} className="mt-1 w-full bg-transparent text-xs uppercase text-muted outline-none focus:text-ink" /></span></label>)}</div></div>
-        <div className="min-w-0"><div className="mb-2 flex items-center justify-between gap-2"><p className="text-xs font-semibold text-ink">Website preview</p><div className="flex overflow-hidden rounded-md border border-line">{draftColors.map((color, index) => <i key={`${color}-${index}`} className="block size-5" style={{ background: color }} />)}</div></div><div className="overflow-hidden rounded-xl border border-line bg-white"><LearnHubPreview colors={draftColors} headingFont={state.headingFont} bodyFont={state.bodyFont} className="h-[450px] lg:h-[570px]" /></div></div>
-      </div>
-      <div className="flex justify-end gap-2 border-t border-line px-5 py-4"><Button variant="outline" onClick={() => setPaletteDialog(null)}>Cancel</Button><Button onClick={applyPalette}>Apply colours</Button></div>
-    </Modal>}
     {pendingImage && <Modal onClose={() => setPendingImage(null)} className="max-w-lg p-0" overlayClassName="bg-black/55"><div className="border-b border-line px-5 py-4"><p className="text-[11px] font-semibold uppercase tracking-[.12em] text-accent">Describe image</p><h3 className="mt-1 text-lg font-semibold">What is this image for?</h3><p className="mt-1 truncate text-xs text-muted" title={pendingImage.name}>{pendingImage.name}</p></div><div className="p-5"><label className="block text-xs font-semibold text-ink">Reference purpose <span className="font-normal text-muted">(optional)</span><input autoFocus aria-label="Image reference purpose" value={imagePurpose} onChange={event => setImagePurpose(event.target.value)} placeholder="Example: Product photography style, brand logo, dashboard inspiration…" className="mt-2 w-full rounded-xl border border-line bg-panel2 px-3 py-2.5 text-sm text-ink outline-none placeholder:text-muted2 focus:border-accent" /></label><p className="mt-3 text-xs leading-relaxed text-muted">This label helps the prototype designer use the image in the right way.</p><div className="mt-5 flex justify-end gap-2"><Button variant="outline" onClick={() => setPendingImage(null)}>Cancel</Button><Button disabled={uploading} onClick={() => addImage(pendingImage, imagePurpose)}>{uploading ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}{uploading ? 'Uploading…' : 'Add image'}</Button></div></div></Modal>}
   </div>
 }

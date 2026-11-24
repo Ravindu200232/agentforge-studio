@@ -75,7 +75,7 @@ carries it out, because the studio approved the stage by starting it. What it
 leaves behind is files. A message typed into the chat stream afterwards edits
 those same files through `write_file` and `replace_text`.
 
-## Wireframes and prototype: one React app, edited
+## Wireframes and prototype from the product requirements
 
 The default wireframe and prototype are **React** apps with TypeScript, Vite and Tailwind CSS. The agent writes the project's UI using
 semantic HTML and local React components, following the guide in `prompts/skills/custom-ui/`.
@@ -84,36 +84,31 @@ The handoff the agent works from is two files in `.agentforge/srs/handoff/`: a s
 for in their own words, who uses it and the site map, with nothing technical in it; and the developer's **`builder.md`**, the full
 specification, which the build, the tests and the deployment read.
 
-- **Wireframes**: the agent reads the skill and `app.md` and writes `src/pages/<page>.tsx` for every screen of the site map, in
-  low fidelity. The Studio creates the app from `server_modules/web_kit/` and bundles the result with Vite into the self-contained
-  `bundle.html` preview shown in the Wireframe tab.
-- **Prototype**: a new app is set up, and the agent reads the skill, the approved wireframes (every page and what it imports),
+- **Wireframes**: the agent reads the UI guide and `app.md` and writes the app entry, layout, styles and grayscale screen for each
+  approved route. The Studio provides route data and the preview runtime and bundles the result into `bundle.html`.
+- **Prototype**: the agent authors a new app after reading the UI guide, the approved wireframes (every page and what it imports),
   `app.md` and the approved design, plans the prototype, and writes a high-fidelity, animated page for every screen. The wireframes stay
   as they were. When the product has sign-in, the prototype signs in with one fictitious account for each role (`src/demo.ts`), the same
   accounts the build is seeded with (`demo-accounts.json`). A screen with no page leaves the run resumable instead of handed over.
 - New apps link to the framework packages installed in `<state>/web-kit-custom`. Legacy apps with `components.json` retain their
   existing dependency cache in `<state>/web-kit`. The agent receives bundler errors for repair.
 
-## Scaffold-first build and evidence
+## Stack-specific builds and evidence
 
-After prototype approval, the builder installs the selected stack's template —
-Next.js, Vite or Remix on Supabase; Next.js, Vite, Remix or MERN on MongoDB alone (no Supabase
-account needed); or those MongoDB stacks with a Supabase Storage bucket for uploaded files — from `builder-agent/builder_agent/assets/templates/` into an
-empty project workspace.
-It never overwrites an existing application. Before it plans, the builder's
+After prototype approval, the builder reads the selected stack prompt in `prompts/builder/stacks/`. It writes the application
+manifest, configuration, data layer, shared UI and routes from the approved requirements and prototype. Interrupted builds can
+continue from their existing files. Before it plans, the builder's
 model may ask the customer what it cannot settle itself - a decision with no safe
 default, or a value only they have - in its own words and only when it is really
 needed. Once the plan starts the build never stops to ask: it runs straight
 through on the project's connected database and records whatever it could not
-settle as a gap in the build report. The stack and testing guides in `_guides/` and the
+settle as a gap in the build report. The stack and testing guides and the
 authentication guide (`prompts/shared/authentication.md`) are staged under
 `.agentforge/build/guides/` and passed into the build plan along with the SRS
-handoff, approved design customization and prototype. The build records its
-installed files in `.agentforge/build/scaffold.json`.
+handoff, approved design customization and prototype. The build records its stack in `.agentforge/build/stack.json`.
 
-QA uses the copied Vitest, Playwright, axe and Lighthouse configuration and the
-ZAP CI example. It saves runner JSON and actual screenshots under the project;
-the Studio's **Testing → Scaffold QA** view reads those artifacts. Unavailable
+The application defines its test dependencies and commands. Studio QA supplies the shared Playwright, axe, Lighthouse and ZAP
+runners and saves evidence under the project. The Studio's **Testing → Verification** view reads those artifacts. Unavailable
 tools, missing routes and incomplete requirements are reported as gaps, not
 counted as passing tests.
 

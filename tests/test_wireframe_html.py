@@ -1,4 +1,4 @@
-"""The same wireframes as plain HTML pages: drawn beside the React app, to compare them with it."""
+"""Generated HTML wireframes, their Studio metadata, and static serving."""
 from __future__ import annotations
 
 import sys
@@ -14,7 +14,7 @@ for folder in (".", "src", "srs-agent", "prototype-agent", "builder-agent", "qa-
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from server_modules import httpd, prompts, web_app  # noqa: E402
+from server_modules import httpd, prompts, routes_srs, web_app  # noqa: E402
 from srs_agent import document, wireframe  # noqa: E402
 from test_wireframe import FakeSession, PAGES  # noqa: E402
 
@@ -40,6 +40,8 @@ class Scratch(unittest.TestCase):
                               return_value={"srs_document": {"app_summary": {"app_name": "Sweet <Crumbs>"}}}),
             mock.patch.object(wireframe.bus, "agent_msg"),
             mock.patch.object(wireframe.bus, "phase"),
+            mock.patch.object(wireframe.bus, "wireframe_changed"),
+            mock.patch.object(wireframe, "Review"),
             mock.patch.object(wireframe.bus, "log"),
         ):
             patcher.start()
@@ -83,6 +85,15 @@ class GeneratingTests(Scratch):
         self.assertNotIn('href="orders-id.html"', index)
         self.assertIn("not drawn", index)
         self.assertIn("Sweet &lt;Crumbs&gt;", index)                       # the name is escaped, never markup
+
+    def test_the_studio_lists_static_filenames_for_drawn_and_pending_pages(self):
+        self.draw = ["home.html", "orders.html"]
+        wireframe.generate(PROJECT)
+        (self.out / "index.html").unlink()
+        pages = document.wireframes(PROJECT)["pages"]
+        self.assertEqual([page["html_file"] for page in pages], FILES)
+        self.assertEqual([page["has_html"] for page in pages], [True, False, True])
+        self.assertGreater(pages[0]["version"], 0)
 
     def test_a_fresh_run_starts_the_folder_again_and_a_carried_on_run_keeps_the_pages(self):
         self.out.mkdir(parents=True)
@@ -130,6 +141,102 @@ class RunningTests(Scratch):
         self.assertTrue(any(event.startswith("fail") for event in self.session.events), self.session.events)
 
 
+class MovingTests(Scratch):
+    def test_drop_edits_the_drawn_page_at_low_effort_and_publishes(self):
+        self.draws(self.session)
+        page = self.out / "orders.html"
+        page.write_text('<button id="search">Search</button><button id="filter">Filter</button>', encoding="utf-8")
+        other = (self.out / "home.html").read_bytes()
+        path = f"/projects/{PROJECT}/app/move"
+        body = {"kind": "wireframe", "route": "/orders",
+                "move": {"source": {"selector": "#search"}, "target": {"selector": "#filter"},
+                         "placement": "after", "point": {"x": 420, "y": 160}}}
+
+        def edit(_prompt, **_kwargs):
+            page.write_text('<button id="filter">Filter</button><button id="search">Search</button>', encoding="utf-8")
+
+        with mock.patch.object(routes_srs, "session_for", return_value=self.session), \
+             mock.patch.object(routes_srs.privacy, "screen", side_effect=lambda _project, text: text), \
+             mock.patch.object(self.session, "run_direct", side_effect=edit) as model:
+            self.assertEqual(routes_srs.dispatch("POST", path, body), {"ok": True, "route": "/orders"})
+        self.assertEqual(model.call_args.kwargs["thinking_level"], "low")
+        request = model.call_args.args[0]
+        for expected in ("`orders.html`", '"placement": "after"', "#search", "#filter", '"x": 420'):
+            self.assertIn(expected, request)
+        self.assertEqual((self.out / "home.html").read_bytes(), other)
+        wireframe.bus.wireframe_changed.assert_called_once_with(PROJECT)
+
+    def test_unchanged_source_is_reported_as_a_failed_move(self):
+        self.draws(self.session)
+        with self.assertRaisesRegex(ValueError, "could not move"):
+            wireframe.edit(PROJECT, "Move a button", "/", layout=("move", '{"placement":"after"}'))
+        wireframe.bus.wireframe_changed.assert_not_called()
+
+    def test_resize_posts_the_requested_bounds_at_low_effort(self):
+        self.draws(self.session)
+        page = self.out / "orders.html"
+        page.write_text('<section id="card" style="width:220px">Orders</section>', encoding="utf-8")
+        path = f"/projects/{PROJECT}/app/resize"
+        before = {"x": 40, "y": 80, "w": 220, "h": 140}
+        after = {**before, "w": 300}
+        body = {"kind": "wireframe", "route": "/orders",
+                "resize": {"source": {"selector": "#card", "rect": before}, "handle": "e", "bounds": after}}
+        with mock.patch.object(routes_srs, "session_for", return_value=self.session), \
+             mock.patch.object(routes_srs.privacy, "screen", side_effect=lambda _project, text: text), \
+             mock.patch.object(self.session, "run_direct",
+                               side_effect=lambda *_args, **_kwargs: page.write_text(
+                                   '<section id="card" style="width:300px">Orders</section>', encoding="utf-8")) as model:
+            with self.assertRaisesRegex(ValueError, "size did not change"):
+                routes_srs.dispatch("POST", path, {**body, "resize": {**body["resize"], "bounds": before}})
+            self.assertEqual(routes_srs.dispatch("POST", path, body), {"ok": True, "route": "/orders"})
+
+        model.assert_called_once()
+        self.assertEqual(model.call_args.kwargs["thinking_level"], "low")
+        for expected in ('Resize one existing element', '`orders.html`', '#card', '"handle": "e"', '"w": 300'):
+            self.assertIn(expected, model.call_args.args[0])
+        wireframe.bus.wireframe_changed.assert_called_once_with(PROJECT)
+
+    def test_wireframe_insert_renders_the_shape_details_and_rejects_prototype(self):
+        self.draws(self.session)
+        page = self.out / "home.html"
+        path = f"/projects/{PROJECT}/app/insert"
+        body = {"kind": "wireframe", "route": "/",
+                "insert": {"shape": "textbox", "target": {"selector": "body", "rect": {"x": 8, "y": 8}},
+                           "bounds": {"x": 50, "y": 60, "w": 180, "h": 70}, "text": "New caption"}}
+        with mock.patch.object(routes_srs, "session_for", return_value=self.session), \
+             mock.patch.object(routes_srs.privacy, "screen", side_effect=lambda _project, text: text), \
+             mock.patch.object(self.session, "run_direct",
+                               side_effect=lambda *_args, **_kwargs: page.write_text(
+                                   "<p>New caption</p>", encoding="utf-8")) as model:
+            with self.assertRaisesRegex(ValueError, "available on wireframes"):
+                routes_srs.dispatch("POST", path, {**body, "kind": "prototype"})
+            self.assertTrue(routes_srs.dispatch("POST", path, body)["ok"])
+        model.assert_called_once()
+        self.assertEqual(model.call_args.kwargs["thinking_level"], "low")
+        for expected in ('Add one element', '`home.html`', '"shape": "textbox"', '"w": 180', '"text": "New caption"',
+                         '"offset_within_target": {"x": 42, "y": 52}'):
+            self.assertIn(expected, model.call_args.args[0])
+
+    def test_move_and_resize_for_one_element_are_applied_by_one_edit(self):
+        self.draws(self.session)
+        source = {"selector": "#box", "rect": {"x": 50, "y": 60, "w": 180, "h": 70}}
+        body = {"kind": "wireframe", "route": "/", "layout": {
+            "move": {"source": source, "target": {"selector": "#other"}, "placement": "after"},
+            "resize": {"source": source, "handle": "e", "bounds": {**source["rect"], "w": 240}},
+        }}
+        page = self.out / "home.html"
+        with mock.patch.object(routes_srs, "session_for", return_value=self.session), \
+             mock.patch.object(routes_srs.privacy, "screen", side_effect=lambda _project, text: text), \
+             mock.patch.object(self.session, "run_direct",
+                               side_effect=lambda *_args, **_kwargs: page.write_text(
+                                   '<div id="other"></div><div id="box" style="width:240px"></div>',
+                                   encoding="utf-8")) as model:
+            self.assertTrue(routes_srs.dispatch("POST", f"/projects/{PROJECT}/app/layout", body)["ok"])
+        self.assertIn("Move and resize one existing element", model.call_args.args[0])
+        self.assertIn('"w": 240', model.call_args.args[0])
+        model.assert_called_once()
+
+
 class ServingTests(Scratch):
     def setUp(self):
         super().setUp()
@@ -157,6 +264,27 @@ class ServingTests(Scratch):
         self.assertIn(b"wireframes as plain HTML", self.get("").body)
         self.assertEqual(self.get("assets/wireframe.css").content_type, "text/css; charset=utf-8")
         self.assertEqual(self.get("assets/wireframe.js").content_type, "text/javascript; charset=utf-8")
+
+    def test_design_preview_applies_palette_and_fonts_to_home_without_writing_it(self):
+        source = self.out / "home.html"
+        original = source.read_bytes()
+        query = {"colors": "#12372a,#436850,#a3bc9f,#f1f8e8", "heading": "DM Serif Display", "body": "DM Sans"}
+        result = httpd.dispatch("GET", f"/web/{PROJECT}/wireframe-html/design-preview", query=query)
+        self.assertIn(b"<h1>home.html</h1>", result.body)
+        self.assertIn(b"--af-primary:#12372a", result.body)
+        self.assertIn(b'--af-heading-font:"DM Serif Display"', result.body)
+        self.assertIn(b'https://fonts.googleapis.com/css2?', result.body)
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_design_preview_rejects_invalid_fonts_and_reports_missing_home(self):
+        query = {"colors": "#12372a,#436850,#a3bc9f,#f1f8e8", "heading": 'x"}', "body": "DM Sans"}
+        with self.assertRaises(httpd.HttpError) as bad:
+            httpd.dispatch("GET", f"/web/{PROJECT}/wireframe-html/design-preview", query=query)
+        self.assertEqual(bad.exception.status, 400)
+        (self.out / "home.html").unlink()
+        with self.assertRaisesRegex(httpd.HttpError, "Draw the home wireframe") as missing:
+            httpd.dispatch("GET", f"/web/{PROJECT}/wireframe-html/design-preview", query=query)
+        self.assertEqual(missing.exception.status, 404)
 
     def test_nothing_outside_the_folder_is_ever_served(self):
         (self.workspace / "secret.txt").write_text("secret", encoding="utf-8")

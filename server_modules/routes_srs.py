@@ -15,7 +15,7 @@ from prototype_agent import prototype as prototyper
 from srs_agent import document, interview, plan
 from srs_agent import wireframe as wireframer
 
-from . import bus, config, permissions, privacy, store, web_app
+from . import bus, config, permissions, pointed, privacy, store, web_app
 from .session import session_for
 
 Handler = Callable[[str, dict[str, Any]], Any]
@@ -71,7 +71,8 @@ def create_project(_project: str, body: dict) -> Any:
     record = store.create(idea=idea,
                           language=str(body.get("language") or ""),
                           stack=str(body.get("stack") or ""),
-                          workspace_path=str(body.get("workspace_path") or ""))
+                          workspace_path=str(body.get("workspace_path") or ""),
+                          interview_model=chosen)
     privacy.keep_for(record["id"], hidden)
     permissions.start_project(record["id"], str(body.get("permission_mode") or ""))
     return {"project": {"id": record["id"], "name": record["name"],
@@ -264,7 +265,7 @@ def build_wireframes(project: str, body: dict) -> Any:
 
 @route("POST", rf"/projects/{P}/wireframes/html")
 def build_html_wireframes(project: str, body: dict) -> Any:
-    """The same wireframes as plain HTML pages in `.agentforge/wireframe-html` (to compare with the React app)."""
+    """Generate the plain HTML wireframes and return the gallery URL."""
     return wireframer.run_html(project, privacy.screen(project, str(body.get("prompt") or "").strip()), fresh=not body.get("resume"))
 
 
@@ -285,6 +286,31 @@ def edit_prototype(project: str, body: dict) -> Any:
 _WORKING = ("srs", "wireframes", "wireframe-edit", "prototype", "prototype-edit", "review", "build")
 
 
+@route("POST", rf"/projects/{P}/app/(?P<operation>move|resize|layout|insert)")
+def edit_app_layout(project: str, body: dict) -> Any:
+    operation = body["_match"].group("operation")
+    kind = body.get("kind")
+    page = str(body.get("route") or "").strip()
+    if kind not in ("wireframe", "prototype") or not page.startswith("/") or len(page) > 500:
+        raise ValueError("open a wireframe or prototype page before editing its layout")
+    if operation == "insert" and kind != "wireframe":
+        raise ValueError("shape and text box tools are available on wireframes")
+    if session_for(project).stage in _WORKING:
+        raise ValueError("wait for the current edit or generation to finish")
+    describe, action = {
+        "move": (pointed.move_details, "Move the selected element"),
+        "resize": (pointed.resize_details, "Resize the selected element"),
+        "layout": (pointed.combined_layout_details, "Move and resize the selected element"),
+        "insert": (pointed.insert_details, "Add a wireframe element"),
+    }[operation]
+    details = privacy.screen(project, describe(body.get(operation)))
+    layout = (operation, details)
+    request = f"{action} on {page}."
+    if kind == "wireframe":
+        return wireframer.edit(project, request, page, layout=layout)
+    return prototyper.revise(project, request, route=page, layout=layout)
+
+
 @route("POST", rf"/projects/{P}/app/text-edit")
 def edit_app_text(project: str, body: dict) -> Any:
     """Retype some words on a page of the wireframes or the prototype: `old` becomes `new` in the app's source when `old` is
@@ -296,13 +322,17 @@ def edit_app_text(project: str, body: dict) -> Any:
     session = session_for(project)
     if session.stage in _WORKING:
         raise ValueError("wait for the agent to finish: it is still working on the app")
-    app = web_app.app_dir(session.workspace, kind)
-    if not web_app.built(app):
+    app = wireframer.source_path(project) if kind == "wireframe" else web_app.app_dir(session.workspace, kind)
+    html_wireframe = kind == "wireframe" and app.name == wireframer.HTML_DIR
+    if not html_wireframe and not web_app.built(app):
         raise FileNotFoundError(f"the {kind} is not drawn yet")
     done = web_app.edit_text(app, str(body.get("old") or ""), str(body.get("new") or ""))
     if not done.get("ok"):
         return done
     original = done.pop("original")
+    if html_wireframe:
+        bus.wireframe_changed(project)
+        return done
     made, log = web_app.bundle(app)
     if not made:
         (app / done["file"]).write_bytes(original.encode("utf-8"))

@@ -10,6 +10,10 @@ that satisfies it. Earlier page phases recorded their output files in
 Use `.agentforge/design/design-spec.json` and `media/IMAGES.md` where present
 for the approved design and image sources the phase touches.
 
+When present, `.agentforge/build/journey-contract.json` gives the approved actions, actors, routes and known expected outcomes. A first-journey phase tests one real flow before the remaining page phases. Its established helpers and browser spec are available to later phases.
+
+{{workspace}}
+
 Use real data in the app. Enforce authorization and validate writes on the
 server. Keep secrets on the server and out of rendered pages, examples, and logs.
 Scope queries, keep related writes atomic, and paginate large collections.
@@ -28,3 +32,4 @@ Keep loading, empty, and error states wherever the phase implements a screen.
 {{design}}
 {{decisions}}
 {{direction}}
+{{design_motion}}

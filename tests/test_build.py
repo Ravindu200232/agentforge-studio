@@ -149,8 +149,8 @@ class StraightThroughCase(unittest.TestCase):
 class RunStraightThroughTests(StraightThroughCase):
     def setUp(self):
         super().setUp()
-        self.install = mock.Mock(return_value={"scaffolded": True, "files": ["package.json"]})
-        self.enterContext(mock.patch("builder_agent.scaffold.install", self.install))
+        self.install = mock.Mock(return_value={"mode": "from_scratch", "existing": []})
+        self.enterContext(mock.patch("builder_agent.scaffold.describe_workspace", self.install))
 
     def test_a_build_goes_straight_to_planning_and_never_asks(self):
         outcome = {"status": "complete", "text": "done", "plan": "the plan", "plan_file": "p.md"}
@@ -165,7 +165,7 @@ class RunStraightThroughTests(StraightThroughCase):
         self.install.assert_called_once_with(self.session.workspace, "nextjs-supabase")
         self.assertEqual(self.session.task_options, [{"plan_directory": "plan", "audit": False}])
         request = self.session.requests[0]
-        self.assertIn("## Scaffold installation", request)
+        self.assertIn("## Application workspace", request)
         self.assertIn("## Stack build guides", request)
         self.assertIn("make the checkout quick", request)
         self.assertNotIn("Settled with the customer", request)
@@ -195,6 +195,7 @@ class RunStraightThroughTests(StraightThroughCase):
     def test_final_checks_already_done_on_this_app_are_not_asked_for_again(self):
         self.session.results.append({"status": "complete", "text": "done", "plan": "the plan"})
         from qa_agent import e2e_run
+        e2e_run.stage_tooling(self.session.workspace)
         self.session.write_record("build", "final-checks.json",
                                   data={"fingerprint": e2e_run.fingerprint(self.session.workspace)})
         with mock.patch("qa_agent.sequence.screens_then_journeys"), mock.patch("qa_agent.sequence.after_changes") as runtime:
@@ -247,17 +248,19 @@ class RunStraightThroughTests(StraightThroughCase):
         self.ask.assert_not_called()
 
 
-class FreshProjectTemplateTests(StraightThroughCase):
-    def test_a_fresh_project_still_gets_its_template(self):
-        """The guides are staged in the record folder, never the app root: a folder made there would make
-        `scaffold.install` take a fresh workspace for an existing app and copy no template."""
+class FreshProjectPromptTests(StraightThroughCase):
+    def test_a_fresh_project_builds_from_its_selected_prompt_without_a_starter_app(self):
         self.session.results.append({"status": "complete", "text": "done", "plan": "p"})
         build.run(RUN_PROJECT)
         request = self.session.requests[0]
-        installed = json.loads(request.split("## Scaffold installation\n", 1)[1].split("\n\n## ", 1)[0])
-        self.assertTrue(installed["scaffolded"], installed.get("existing"))
-        self.assertTrue((self.session.workspace / ".agentforge" / "build" / "guides" / "pitfalls.md").is_file())
-        self.assertFalse((self.session.workspace / "build").exists())
+        workspace = json.loads(request.split("## Application workspace\n", 1)[1].split("\n\n## ", 1)[0])
+        self.assertEqual(workspace["mode"], "from_scratch")
+        self.assertIn("## Design and motion guidance", request)
+        self.assertIn("prefers-reduced-motion", request)
+        self.assertTrue((self.session.workspace / ".agentforge/build/guides/nextjs-supabase.md").is_file())
+        self.assertFalse((self.session.workspace / "package.json").exists())
+        self.assertFalse((self.session.workspace / "app").exists())
+        self.assertTrue((self.session.workspace / "scripts/with-server.mjs").is_file())
         self.assertNothingWasAsked()
 
 
@@ -323,8 +326,8 @@ class AskingBeforeThePlanTests(StraightThroughCase):
     def setUp(self):
         super().setUp()
         self.ensure_project.return_value = {"ref": "abc"}
-        self.enterContext(mock.patch("builder_agent.scaffold.install",
-                                     mock.Mock(return_value={"scaffolded": True, "files": ["package.json"]})))
+        self.enterContext(mock.patch("builder_agent.scaffold.describe_workspace",
+                                     mock.Mock(return_value={"mode": "from_scratch", "existing": []})))
         self.waited = mock.Mock(return_value="Use the sandbox")
         self.enterContext(mock.patch.object(build.bus, "ask_and_wait", self.waited))
         self.session.results.append({"status": "complete", "text": "done", "plan": "p"})
@@ -439,8 +442,8 @@ class MongoDatabaseBuildTests(StraightThroughCase):
 
     def setUp(self):
         super().setUp()
-        self.enterContext(mock.patch("builder_agent.scaffold.install",
-                                     mock.Mock(return_value={"scaffolded": True, "files": ["package.json"]})))
+        self.enterContext(mock.patch("builder_agent.scaffold.describe_workspace",
+                                     mock.Mock(return_value={"mode": "from_scratch", "existing": []})))
         self.waited = mock.Mock(return_value="Use the sandbox")
         self.enterContext(mock.patch.object(build.bus, "ask_and_wait", self.waited))
         self.session.results.append({"status": "complete", "text": "done", "plan": "p"})
@@ -448,6 +451,11 @@ class MongoDatabaseBuildTests(StraightThroughCase):
         self.found = {"status": "ready", "database": "shop_build", "reason": ""}
         self.made = mock.Mock(side_effect=lambda project, log=None: self.found)
         self.enterContext(mock.patch.object(build.mongo_connect, "ensure_for_project", self.made))
+        # Exercise the real verification path with an Atlas connection owned by this fixture.
+        saved = build.config.setting
+        uri = "mongodb+srv://agentforge_fixture:x@cluster.example.test/"
+        self.enterContext(mock.patch.object(build.config, "setting", side_effect=lambda name, default=None:
+                                           uri if name == "deploy_mongodb_uri" else saved(name, default)))
         self.cluster = (True, "")                                              # whether the connected cluster answers
         self.enterContext(mock.patch.object(build.deploy_vars, "cluster_answers", lambda uri: self.cluster))
         build.deploy_vars._noted.clear()

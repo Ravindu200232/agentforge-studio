@@ -13,7 +13,7 @@ from server_modules.session import Phases, RunCancelled, session_for, start_fres
 from server_modules.validation import build_report
 
 from . import phases as build_phases
-from . import preflight
+from . import journey_contract, preflight, scaffold
 
 BUILD_DIR = "build"
 REPORT = (BUILD_DIR, "report.json")
@@ -21,8 +21,7 @@ DECISIONS = (BUILD_DIR, "decisions.json")
 # The most the customer is asked before one build is planned - a bound, not a list: what is asked is the model's call.
 QUESTIONS = 5
 REPORT_REPAIR_ROUNDS = 2
-# The stack's build guides, staged where the agent reads them - inside the record folder, never the app root: a
-# folder there would make `scaffold.install` take a fresh workspace for an existing app and copy no template.
+# Stage the stack's guidance inside the project record, separate from the application source.
 GUIDES_DIR = f"{config.RECORD_DIR}/{BUILD_DIR}/guides"
 
 
@@ -64,8 +63,8 @@ def _prototype_context_block(workspace: Path) -> str:
         return ""
     return (
         "\n\n## Mandatory prototype parity inventory\n\n"
-        "There is an approved prototype at `.agentforge/prototype/`, a React app in "
-        "`app/` (its pages are `app/src/pages/*.tsx`). Before planning, list it "
+        "There is an approved prototype at `.agentforge/prototype/`. Its route map names the HTML "
+        "or legacy React source for each screen. Before planning, list it "
         "(`list_files`) and read every page and shared component it contains "
         "in full. In the plan, map each route to its exact prototype page, destination "
         "application files and reused image sources. Before implementing each route, "
@@ -365,7 +364,7 @@ def _decided_block(answers: list[dict[str, str]]) -> str:
 
 
 def _build_in_phases(project: str, session: Any, stack: str, request: str, direction: str,
-                     *, brief: str = "", decisions: str = "") -> dict[str, Any]:
+                     *, brief: str = "", decisions: str = "", srs_doc: dict | None = None) -> dict[str, Any]:
     """Plan the application, then build it one numbered phase at a time (`phases.py`), however many pages it has.
 
     A build that was stopped carries on from the phase it reached, with the plan it already made. A prototype that lists no pages
@@ -373,20 +372,44 @@ def _build_in_phases(project: str, session: Any, stack: str, request: str, direc
     routes = build_phases.routes_of(session.workspace)
     if not routes:
         return session.run_task(request, plan_directory="plan", audit=False)
-    finger = build_phases.fingerprint(routes, stack, direction)
+    planned, first = journey_contract.stage(session, srs_doc or {}, routes)
+    base_finger = build_phases.fingerprint(routes, stack, direction)
+    finger = (build_phases.fingerprint(routes, stack, direction + "\n" + json.dumps(planned, sort_keys=True))
+              if first else base_finger)
     saved = build_phases.resume_state(session, finger)
-    items = saved["phases"] if saved else build_phases.plan(routes)
+    if not saved and finger != base_finger:
+        saved = build_phases.resume_state(session, base_finger)
+        if saved:
+            finger = base_finger
+    items = saved["phases"] if saved else build_phases.plan(routes, first)
     state = {"fingerprint": finger, "plan_file": str(saved["plan_file"]) if saved else "", "phases": items, "finished": False}
 
     def save(plan_file: str) -> None:
         state["plan_file"] = plan_file or state["plan_file"]
         build_phases.save_state(session, state)
 
+    def verify(phase: dict) -> list[str]:
+        problems = build_phases.problems(session.workspace, phase)
+        if problems or phase["kind"] != "first-journey":
+            return problems
+        from qa_agent import e2e_run
+
+        journey_id = phase['journey']['id']
+        result = e2e_run.first_journey(project, session, journey_id, mongo=scaffold.uses_mongodb(stack),
+                                       supabase=scaffold.uses_supabase(stack))
+        session.write_record(BUILD_DIR, 'first-journey.json', data={'id': journey_id,
+                             **{key: val for key, val in result.items() if key != 'output'}})
+        if result['status'] == 'passed':
+            return []
+        if result['status'] == 'unavailable':
+            phase['repairable'] = False
+        return [f"{journey_id} first journey: {result.get('reason') or result.get('output', '')[-1800:] or 'No passing browser result was recorded.'}"]
+
     phased = Phases(
         items=items,
         request_for=lambda number, phase: build_phases.request_for(phase, number, len(items), routes),
         repair_for=lambda number, phase, problems: build_phases.repair_for(phase, number, len(items), problems),
-        verify=lambda phase: build_phases.problems(session.workspace, phase), save=save,
+        verify=verify, save=save,
         summary=lambda phase: build_phases.summary(session.workspace, phase),
         brief=brief, together=build_phases.together,
         notes_for=lambda plan, number: build_phases.section(plan, number)[:1200])
@@ -410,8 +433,6 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
     """
     from srs_agent import document as srs_document
 
-    from . import scaffold
-
     if not srs_document.has_document(project):
         raise ValueError("write the specification before building")
 
@@ -424,7 +445,7 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         # missing is listed in one card, and the build waits until it is connected (Yes checks again) or is stopped (No).
         preflight.ensure(project, stack, cancelled=lambda: bool(session.cancelled))
         # The stack's guides are staged first: the model reads them to judge whether anything needs the customer.
-        reference_staging.stage(session.workspace, GUIDES_DIR, scaffold.build_guide_files(stack))
+        guide_paths = reference_staging.stage(session.workspace, GUIDES_DIR, scaffold.build_guide_files(stack))
         start_fresh(session)
         decided = _decide(project, session, stack, direction)
         # A stack that uses Supabase (the Supabase-database ones, and the MongoDB ones that keep uploads in a bucket) gets
@@ -437,24 +458,24 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         # of this project's own), or a cluster made now when an Atlas account is signed in.
         if scaffold.uses_mongodb(stack):
             _mongodb_ready(project, record)
-        installed = scaffold.install(session.workspace, stack)
-        bus.agent_msg(project,
-                      f"{stack} scaffold copied ({len(installed['files'])} files)."
-                      if installed["scaffolded"] else "Existing application preserved; building on its files.",
-                      title="Builder scaffold")
+        workspace = scaffold.describe_workspace(session.workspace, stack)
+        session.write_record(BUILD_DIR, "stack.json", data={"stack": stack})
+        from qa_agent import e2e_run
+        e2e_run.stage_tooling(session.workspace)
         bus.phase(project, "build:write", "Building and checking the application",
                   detail="One sequential plan: complete the app, focused business units, then final product checks.")
         report_template = build_report.stage_template(session.workspace)
         ui_skill = web_app.stage_skill(session.workspace)
+        design_motion = prompts.load("shared/design-motion").strip()
         request = prompts.load("builder/generate", stack=stack,
-                               report_template=report_template)
+                               report_template=report_template, design_motion=design_motion)
         request += _prototype_context_block(session.workspace)
-        request += "\n\n## Scaffold installation\n" + json.dumps(installed, indent=2)
-        guide_paths = reference_staging.stage(session.workspace, GUIDES_DIR,
-                                              scaffold.build_guide_files(stack))
+        workspace_note = "## Application workspace\n\n" + json.dumps(workspace, indent=2)
+        request += "\n\n" + workspace_note
         guides = reference_staging.as_bullets(guide_paths)
         request += "\n\n## Stack build guides\n\nRead these yourself before planning:\n" + guides
-        auth = auth_guide.staged_for(session.workspace, srs_document.document(project).get("srs_document", {}))
+        srs_doc = srs_document.document(project).get("srs_document", {})
+        auth = auth_guide.staged_for(session.workspace, srs_doc)
         if auth:
             request += ("\n\n## Authentication, roles and navigation\n\n"
                         f"Read `{auth}` yourself before planning. It is the standard this app's sign-up, sign-in, cookie "
@@ -478,8 +499,10 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         request += design_block + decided_block + direction_block
         brief = prompts.load(
             "builder/phase-brief", stack=stack, report_template=report_template, ui_skill=ui_skill, guides=guides,
+            workspace=workspace_note,
             auth=f"Authentication guide: `{auth}`." if auth else "",
-            design=design_block.strip(), decisions=decided_block.strip(), direction=direction_block.strip())
+            design=design_block.strip(), decisions=decided_block.strip(), direction=direction_block.strip(),
+            design_motion=design_motion)
         planning_decisions = "\n".join(piece for piece in (
             direction.strip(), str(customization.get("customizer_prompt") or ""),
             json.dumps(customization["customizer_spec"], ensure_ascii=False) if customization.get("customizer_spec") else "",
@@ -489,7 +512,7 @@ def run(project: str, direction: str = "") -> dict[str, Any]:
         from qa_agent import screen_keeper, sequence
         with screen_keeper.Keeper(session.workspace):
             build_result = _build_in_phases(project, session, stack, request, direction, brief=brief,
-                                            decisions=planning_decisions)
+                                            decisions=planning_decisions, srs_doc=srs_doc)
         if build_result.get("status") == "blocked":
             raise ValueError(build_result.get("text") or "the build was blocked")
         # The agent wrote the journeys. The Studio tests the app now, in this order (`qa_agent/sequence.py`): every page
@@ -552,7 +575,7 @@ def update(project: str, request: str) -> dict[str, Any]:
     session.begin("build-edit", role=bus.DEVELOPER)
     try:
         bus.user_msg(project, request)
-        full_request = prompts.load("builder/update", request=request)
+        full_request = prompts.load("builder/update", request=request, design_motion=prompts.load("shared/design-motion").strip())
         result = session.run_task(full_request, audit=False)
         return _finish_update(project, session, result)
     except RunCancelled:

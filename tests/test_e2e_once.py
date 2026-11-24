@@ -65,6 +65,44 @@ class Workspace(unittest.TestCase):
         self.workspace = Path(self.temp.name)
 
 
+class FirstJourneyTests(Workspace):
+    def test_supabase_test_overrides_web_and_server_aliases_and_rejects_live_database(self):
+        config = {"SUPABASE_URL": "https://live.supabase.co", "NEXT_PUBLIC_SUPABASE_URL": "https://live.supabase.co",
+                  "SUPABASE_DB_URL": "postgresql://postgres@example.test/postgres", "E2E_SUPABASE_URL": "https://qa.supabase.co",
+                  "E2E_SUPABASE_DB_URL": "postgresql://postgres@db.qa.supabase.co/postgres",
+                  "E2E_SUPABASE_ANON_KEY": "qa-anon", "E2E_SUPABASE_SERVICE_ROLE_KEY": "qa-role"}
+        env = e2e_run._first_journey_env(config, mongo=False, supabase=True)
+        self.assertEqual(env["VITE_SUPABASE_URL"], config["E2E_SUPABASE_URL"])
+        self.assertEqual(env["NEXT_PUBLIC_SUPABASE_URL"], config["E2E_SUPABASE_URL"])
+        self.assertEqual(env["SUPABASE_DB_URL"], config["E2E_SUPABASE_DB_URL"])
+        with self.assertRaisesRegex(ValueError, "separate Supabase URL"):
+            e2e_run._first_journey_env({**config, "SUPABASE_DB_URL": config["E2E_SUPABASE_DB_URL"]}, False, True)
+        with self.assertRaisesRegex(ValueError, "matching Postgres URL"):
+            e2e_run._first_journey_env({**config, "E2E_SUPABASE_DB_URL": "postgresql://postgres@db.live.supabase.co/postgres"}, False, True)
+
+    def test_first_journey_runs_just_its_own_spec_and_requires_a_pass(self):
+        session = mock.Mock(workspace=self.workspace)
+
+        def execute(*_args):
+            playwright(self.workspace, [("e2e/journeys/UJ-001.spec.js", "[UJ-001] Order", "desktop", "passed")])
+            return {"exit_code": 0, "output": "passed"}
+
+        with mock.patch.object(e2e_run, "command_environment", return_value={"MONGODB_URI": "mongodb://example.test/app"}), \
+                mock.patch.object(e2e_run, "runnable", return_value=True), mock.patch.object(e2e_run, "ensure_runner"), \
+                mock.patch.object(e2e_run, "_execute", side_effect=execute) as ran, mock.patch.object(e2e_run.live, "finish"), \
+                mock.patch.object(e2e_run.bus, "phase"):
+            result = e2e_run.first_journey("p", session, "UJ-001", mongo=True, supabase=False)
+            self.assertEqual(result["status"], "passed")
+            command = ran.call_args.args[2]
+            self.assertIn("--first-journey", command)
+            self.assertIn("e2e/journeys/UJ-001.spec.js", command)
+            self.assertIn("--retries=0", command)
+            (self.workspace / "test-results/results.json").unlink()
+            ran.side_effect = None
+            ran.return_value = {"exit_code": 0, "output": "no test run"}
+            self.assertEqual(e2e_run.first_journey("p", session, "UJ-001", mongo=True, supabase=False)["status"], "failed")
+
+
 class TheAgentDoesNotRunTheWholeSuiteTests(unittest.TestCase):
     def test_a_whole_suite_run_is_told_apart_from_one_journey_or_a_grep(self):
         for command in ("npm run qa:e2e", "npm run test:e2e", "npx playwright test",

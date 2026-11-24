@@ -124,12 +124,13 @@ export const useStore = create((set, get) => ({
     const availability = role === 'designer' && event.type === 'done'
       ? { buildAvailability: { ...state.buildAvailability, [project]: event.type === 'done' } } : {}
     const changedPath = String(event.name || '')
-    const artifactRefresh = event.type === 'file' ? {
-      ...(changedPath.startsWith('.agentforge/srs/')
+    const artifactRefresh = {
+      ...(event.type === 'wireframe' || (event.type === 'file' &&
+        (changedPath.startsWith('.agentforge/srs/') || changedPath.startsWith('.agentforge/wireframe-html/')))
         ? { srsStamp: { ...state.srsStamp, [project]: Date.now() } } : {}),
-      ...(changedPath.startsWith('.agentforge/prototype/')
+      ...(event.type === 'file' && changedPath.startsWith('.agentforge/prototype/')
         ? { prototypeArtifactStamp: { ...state.prototypeArtifactStamp, [project]: Date.now() } } : {}),
-    } : {}
+    }
     return { ...availability, ...artifactRefresh,
       projectSessions: { ...state.projectSessions, [project]: { ...own, [role]: session } },
       ...(visible ? session : {}) }

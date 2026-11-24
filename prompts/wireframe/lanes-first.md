@@ -1,6 +1,6 @@
 ## This run: the shared parts and the first pages
 
-This app has {{count}} pages, so it is drawn in two steps, and you do the first. Write the parts every page shares (the layout, the navigation for every role and every page of the site map above, and the components under `{{app}}/src/components/layout/`) and these pages, each in full:
+This app has {{count}} pages, so it is drawn in two steps, and you do the first. Write the app entry and shared styling, the layout, the navigation for every role, the components under `{{app}}/src/components/layout/`, and these pages, each in full:
 
 {{pages}}
 

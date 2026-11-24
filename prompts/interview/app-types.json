@@ -1,6 +1,5 @@
 {
   "_comment": "The first interview question. Ported from RP-SE-009's app type catalogue. Choosing one of these up front anchors everything after it: the model stops guessing what kind of product this is, and the questions it asks land inside the right frame. Edit this file to change the choices; nothing in code names them.",
-  "default": "saas",
   "types": {
     "pos": {
       "label": "POS / Retail",

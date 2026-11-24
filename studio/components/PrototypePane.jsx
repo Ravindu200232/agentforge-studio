@@ -1,9 +1,9 @@
 'use client'
 
-/** The prototype: a bundled React app framed on its own address, with a page list, element selection and pencil annotations. */
+/** The prototype preview shows the screens published so far, with navigation and annotation tools. */
 
 import { useAgentPreview } from '@/lib/agent-preview'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import {
   Monitor, Tablet, Smartphone, MousePointerClick, Pencil, RotateCw,
   ExternalLink, Layers, Eraser, Undo2, ChevronLeft, ChevronRight, Rocket, Loader2, Route, ScanEye, Type,
@@ -12,6 +12,8 @@ import { useStore } from '@/lib/store'
 import { api } from '@/lib/api'
 import { watchFrame } from '@/lib/console-log'
 import { attachPicker, elementsUnderStrokes, pickedFrom, pickLabel } from '@/lib/picker'
+import { useElementLayout } from '@/lib/use-element-layout'
+import { LayoutControls } from './FrameTools'
 import { Tip } from './ui'
 import AppTextEdit from './AppTextEdit'
 import AgentBrowser from './AgentBrowser'
@@ -52,7 +54,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
   const [loadedTick, setLoadedTick] = useState(0)
   const [route, setRoute] = useState('/')
   const [pages, setPages] = useState([])
-  const [status, setStatus] = useState({ built: false, version: 0 })
+  const [status, setStatus] = useState({ built: false, partial: false, ready: [], version: 0 })
 
   const trail = useRef(['/'])
   const at = useRef(0)
@@ -61,18 +63,19 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
 
   const { addLog, busy, workflowStatus, prototypeStamp, progress, drawing, setDrawing,
     selection, addSelection, patchSelection, clearSelection, undo, setUndo } = useAgentPreview(project, 'designer')
+  const { stageLayout, saveLayout, cancelLayout, layoutDraft, layoutOperation, layoutError } = useElementLayout()
   const buildAllowed = useStore(s => Boolean(s.buildAvailability[project]))
   const statusText = useStore(s => s.statusText)
   // The journeys being clicked through in a real browser: shown live over the prototype, like a build's tests.
   const liveFrame = useStore(s => s.browserFrame)
   const liveStep = useStore(s => s.e2eLive)
   const walking = Boolean(liveFrame?.frame || liveStep)
-  const isBusy = busy || generating
+  const isBusy = busy || generating || Boolean(layoutOperation)
   // A prototype stopped part of the way is still resumable until the backend marks the complete one buildable.
   const resumePrototype = canResumePrototype && !isBusy
-  const actionEnabled = buildAllowed || resumePrototype
+  const actionEnabled = (buildAllowed && status.built) || resumePrototype
 
-  const protoReady = status.built
+  const protoReady = status.built || status.partial
   const width = VIEWPORTS.find(x => x.id === vp)?.w
   // The frame loads the bundle once for each version of it; moving between screens only changes the hash.
   const src = useMemo(() => (project && protoReady ? api.webUrl(project, 'prototype', lastRouteRef.current, status.version) : ''),
@@ -83,10 +86,11 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     if (!project) return
     try {
       const answer = await api.webStatus(project, 'prototype')
-      setStatus(old => (old.built === Boolean(answer?.built) && old.version === (answer?.version || 0)
-        ? old : { built: Boolean(answer?.built), version: answer?.version || 0 }))
+      const next = { built: Boolean(answer?.built), partial: Boolean(answer?.partial), ready: answer?.ready || [], version: answer?.version || 0 }
+      setStatus(old => (old.built === next.built && old.partial === next.partial && old.version === next.version
+        && old.ready.length === next.ready.length && old.ready.every((route, index) => route === next.ready[index]) ? old : next))
     } catch {
-      setStatus(old => (old.built ? { built: false, version: 0 } : old))
+      setStatus(old => (old.built || old.partial ? { built: false, partial: false, ready: [], version: 0 } : old))
     }
   }, [project])
 
@@ -172,6 +176,11 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
     }
   }, [addSelection, patchSelection, addLog, project])
 
+  const canEdit = useEffectEvent(() => status.built && !hidden && !isBusy && !walking)
+  const onLayout = useEffectEvent(draft => {
+    stageLayout(draft, project, 'prototype', currentRoute(frameRef.current), checkReady)
+  })
+
   const attach = useCallback(() => {
     detachRef.current?.()
     if (!frameRef.current) return
@@ -195,7 +204,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
           rect: info.rect,
         }
       )
-    })
+    }, { onLayout, canEdit, viewport: vp })
     if (!detachRef.current) addLog('WARN', 'The prototype is not loaded yet')
   }, [vp, addLog, attachShot, viewportOf, project])
 
@@ -428,7 +437,11 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
                     aria-label="Screen"
                     className="min-w-0 flex-1 truncate bg-transparent font-mono text-[11.5px] font-medium text-ink outline-none">
               {!pages.some(p => p.route === route) && <option value="">{route}</option>}
-              {pages.map(page => <option key={page.route} value={page.route}>{page.route} — {page.page_name}</option>)}
+              {pages.map(page => (
+                <option key={page.route} value={page.route} disabled={status.partial && !status.ready.includes(page.route)}>
+                  {page.route} — {page.page_name}{status.partial && !status.ready.includes(page.route) ? ' (pending)' : ''}
+                </option>
+              ))}
             </select>
           ) : (
             <span className="truncate font-mono text-[11.5px] text-ink font-medium">{route}</span>
@@ -447,7 +460,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
           </button>
         )}
 
-        {project && protoReady && (
+        {project && status.built && (
           <div className="flex items-center gap-1 rounded-full border border-line/80 bg-panel/80 p-1 shadow-sm">
             <Cell tip="Take a screenshot of every screen and fix what looks wrong" disabled={isBusy || walking}
                   onClick={() => look('prototype')} className="rounded-full px-3">
@@ -482,7 +495,7 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
 
         {/* Select & Pencil Tools */}
         <div className="flex items-center gap-1 rounded-full border border-line/80 bg-panel/80 p-1 shadow-sm">
-          <Cell tip="Click prototype elements to attach them to chat"
+          <Cell tip="Select, move or resize elements"
                 side="left" on={pickOn} onClick={togglePick} className="rounded-full">
             <MousePointerClick className="size-3.5" />
           </Cell>
@@ -508,6 +521,12 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
           </Cell>
         </div>
       </div>
+      {layoutError && <p role="alert" className="shrink-0 border-b border-line bg-panel px-4 py-2 text-xs text-rose-600">{layoutError}</p>}
+      {status.partial && pages.length > 0 && (
+        <p className="shrink-0 border-b border-line bg-panel px-4 py-2 text-xs text-muted" role="status">
+          {status.ready.length} of {pages.length} screens available. Screenshot checks appear in chat as each screen is written.
+        </p>
+      )}
 
       {/* Frame Container */}
       <div className="relative min-h-0 flex-1 overflow-hidden bg-canvas">
@@ -516,14 +535,15 @@ export default function PrototypePane({ project, hidden, onBuild, generating = f
                 style={{ pointerEvents: pencilOn ? 'auto' : 'none',
                          cursor: pencilOn ? 'crosshair' : 'default' }} />
 
-        {(pickOn || pencilOn || textOn) && (
+        <LayoutControls draft={layoutDraft} operation={layoutOperation} onSave={saveLayout} onCancel={cancelLayout} disabled={isBusy || walking} />
+        {!layoutDraft && !layoutOperation && (pickOn || pencilOn || textOn) && (
           <p className="pointer-events-none absolute inset-x-0 bottom-7 z-[9] mx-auto w-fit rounded-full bg-ink/85 px-3.5 py-1.5 text-[11px] font-medium text-ink shadow-lg">
             {pencilOn ? 'Draw around what you mean — it attaches to the chat'
               : textOn ? 'Click any words on the prototype, then type the new ones'
-              : 'Click anything on the prototype — it attaches to the chat'}
+              : 'Click a box to show its resize handles. Drag the box to move it.'}
           </p>
         )}
-        <AppTextEdit frameRef={frameRef} active={textOn} loaded={loadedTick} project={project} kind="prototype"
+        <AppTextEdit frameRef={frameRef} active={textOn && !layoutOperation} loaded={loadedTick} project={project} kind="prototype"
           onSaved={() => checkReady()} onAskAi={askToChange} />
 
         <div className="relative flex min-h-0 h-full w-full items-start justify-center overflow-hidden bg-[#F2F0EF]">

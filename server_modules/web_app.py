@@ -1,7 +1,7 @@
-"""The React apps the wireframe and the prototype are made of.
+"""Preview tooling for authored HTML prototypes and saved React previews.
 
-Both start from a small Vite, React and Tailwind app. The project's agent writes its own UI with the file tools. The Studio
-creates the framework files and bundles the finished app into one HTML file.
+The Studio publishes the prototype as one HTML file. Saved React projects
+still use the Vite kit. Static wireframes are served from their own folder.
 
     <workspace>/.agentforge/wireframe/app/      the wireframe: source, and `bundle.html`, the page the studio shows
     <workspace>/.agentforge/prototype/app/      the prototype: a new app, written after reading the wireframes
@@ -21,11 +21,13 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from . import bus, config, prompts
+from . import bus, config, html_prototype, prompts
 
 SKILL = "custom-ui"
 SKILL_SOURCE = config.PROMPTS / "skills" / SKILL
 KIT_SOURCE = Path(__file__).resolve().parent / "web_kit"
+RUNTIME = KIT_SOURCE / "runtime"
+VITE_CONFIG = "agentforge.vite.config.mjs"
 KINDS = ("wireframe", "prototype")
 BUNDLE = "bundle.html"
 BUILT = ".built"
@@ -35,7 +37,7 @@ PREVIEW_POLICY = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'un
                   "img-src * data: blob:; font-src * data:; media-src * data: blob:; connect-src 'none'; frame-src 'none'; "
                   "base-uri 'none'; form-action 'none'")
 # A plain HTML wireframe has its own stylesheet and script beside its pages: they may be read from the same address, and nothing else.
-HTML_POLICY = ("default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src * data: blob:; "
+HTML_POLICY = ("default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' * data: blob:; "
                "font-src data:; connect-src 'none'; frame-src 'self'; base-uri 'none'; form-action 'none'")
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _REPARSE_POINT = 0x400
@@ -101,13 +103,17 @@ def _run(args: list[str], cwd: Path, timeout: int, env: dict[str, str] | None = 
 def prepare_kit(legacy: bool = False) -> tuple[bool, str]:
     """Install the packages every app is built with, once. Safe to call every time: it does nothing when they are there."""
     with _kit_lock:
+        folder = kit_dir(legacy)
+        folder.mkdir(parents=True, exist_ok=True)
+        config_file = folder / VITE_CONFIG
+        vite_config = (RUNTIME / "vite.config.mjs").read_bytes()
+        if not config_file.is_file() or config_file.read_bytes() != vite_config:
+            config_file.write_bytes(vite_config)
         if kit_ready(legacy):
             return True, ""
         npm = _npm()
         if not npm or not node_exe():
             return False, "Node.js (node and npm) was not found, and the wireframe and the prototype are built with it"
-        folder = kit_dir(legacy)
-        folder.mkdir(parents=True, exist_ok=True)
         for name in ("package.json", "package-lock.json"):
             source = _kit_source(legacy) / name
             if source.is_file():
@@ -144,10 +150,10 @@ def app_dir(workspace: Path, kind: str) -> Path:
     return workspace / config.RECORD_DIR / kind / "app"
 
 
-def page_files(routes: list[str]) -> dict[str, str]:
+def page_files(routes: list[str], *, reserved: tuple[str, ...] = ()) -> dict[str, str]:
     """The page file (under `src/pages`, without its extension) of every route: `/` is `home`, `/orders/[id]` is `orders-id`."""
     out: dict[str, str] = {}
-    used: set[str] = set()
+    used = set(reserved)
     for route in routes:
         parts = [re.sub(r"^\[(.+)\]$|^:", lambda m: m.group(1) or "", part) for part in str(route).strip("/").split("/") if part]
         stem = re.sub(r"[^a-z0-9]+", "-", "-".join(parts).lower()).strip("-") or "home"
@@ -165,7 +171,7 @@ def _ts(value: Any) -> str:
 
 def route_rows(pages: list[dict[str, Any]], extension: str = "") -> list[dict[str, Any]]:
     """Every screen of the specification and the file it is drawn in (`extension`: ".html" for a plain HTML page)."""
-    files = page_files([str(p["route"]) for p in pages])
+    files = page_files([str(p["route"]) for p in pages], reserved=("index",) if extension == ".html" else ())
     return [{"route": str(p["route"]), "name": str(p.get("page_name") or p.get("name") or p["route"]),
              "file": files[str(p["route"])] + extension,
              "roles": [str(r) for r in (p.get("allowed_roles") or p.get("roles") or [])],
@@ -198,69 +204,12 @@ def write_demo(app: Path, accounts: list[dict[str, Any]] | None = None, sign_in:
                     f"export const signUp: {{ route: string; roleKey: string }} | null = {json.dumps(up)};\n", encoding="utf-8")
 
 
-# A wireframe is black, white and grey. The Studio writes this palette into a wireframe's Tailwind config, so that no page can bring colour
-# in whatever it says: every colour name Tailwind has (`red-500`, `green-600`, ...) is the same grey scale, and the `destructive`
-# colour is a dark grey.
-GREY_SCALE = {"50": "#fafafa", "100": "#f4f4f5", "200": "#e4e4e7", "300": "#d4d4d8", "400": "#a1a1aa", "500": "#71717a",
-              "600": "#52525b", "700": "#3f3f46", "800": "#27272a", "900": "#18181b", "950": "#09090b"}
-COLOUR_NAMES = ("slate", "gray", "zinc", "neutral", "stone", "red", "orange", "amber", "yellow", "lime", "green", "emerald", "teal",
-                "cyan", "sky", "blue", "indigo", "violet", "purple", "fuchsia", "pink", "rose")
-DESTRUCTIVE_GREY = "0 0% 25%"
-
-
-def wireframe_tailwind(base: str) -> str:
-    """The kit's Tailwind config with the greys-only palette on the end."""
-    config = base.replace("module.exports = {", "const config = {", 1)
-    return (config.rstrip() + "\n\n// Written by the Studio: a wireframe is black, white and grey, so every colour name is the same grey scale here and the\n"
-            "// `destructive` is a dark grey. Do not edit.\n"
-            f"const grey = {json.dumps(GREY_SCALE)};\n"
-            "config.theme.colors = { transparent: \"transparent\", current: \"currentColor\", inherit: \"inherit\", "
-            "white: \"#ffffff\", black: \"#000000\" };\n"
-            f"for (const name of {json.dumps(list(COLOUR_NAMES))}) config.theme.colors[name] = grey;\n"
-            "config.theme.extend.colors.destructive = { DEFAULT: \"#3f3f46\", foreground: \"#fafafa\" };\n"
-            "module.exports = config;\n")
-
-
-def lock_palette(app: Path) -> None:
-    """Make a wireframe app grey: its Tailwind config is the kit's with the palette above, and its `--destructive` is a grey."""
-    if app.parent.name != "wireframe":
-        return
-    source = (KIT_SOURCE / ("legacy" if legacy_kit(app) else "app")) / "tailwind.config.cjs"
-    config = app / "tailwind.config.cjs"
-    if source.is_file():
-        wanted = wireframe_tailwind(source.read_text(encoding="utf-8"))
-        if not config.is_file() or config.read_text(encoding="utf-8") != wanted:
-            config.write_text(wanted, encoding="utf-8")
-    css = app / "src" / "index.css"
-    if css.is_file():
-        text = css.read_text(encoding="utf-8")
-        grey = re.sub(r"(--destructive:\s*)[^;]+;", lambda m: m.group(1) + DESTRUCTIVE_GREY + ";", text)
-        if grey != text:
-            css.write_text(grey, encoding="utf-8")
-
-
-def create_app(app: Path, title: str, pages: list[dict[str, Any]], *, accounts: list[dict] | None = None,
+def create_app(app: Path, pages: list[dict[str, Any]], *, accounts: list[dict] | None = None,
                sign_in: str = "", sign_up: dict | None = None) -> list[dict[str, Any]]:
-    """Create the React, TypeScript, Vite and Tailwind scaffold the agent will write screens for.
-
-    Files that are already there are left alone (an app a stopped run left behind keeps what the agent wrote); the route table and
-    the demo accounts are always written again from the specification."""
-    app.mkdir(parents=True, exist_ok=True)
-    for source in sorted(p for p in (KIT_SOURCE / "app").rglob("*") if p.is_file()):
-        target = app / source.relative_to(KIT_SOURCE / "app")
-        if target.exists():
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        text = source.read_text(encoding="utf-8")
-        target.write_text(text.replace("{{title}}", re.sub(r"[<>&\"]", "", title) or "App"), encoding="utf-8")
-    lock_palette(app)
-    package = app / "package.json"
-    if not package.exists():
-        slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "app"
-        package.write_text(json.dumps({"name": slug, "private": True, "version": "0.0.0", "type": "module"}, indent=2) + "\n",
-                           encoding="utf-8")
+    """Provide preview runtime and project data while leaving the application source to the agent."""
     rows = write_routes(app, pages)
     write_demo(app, accounts, sign_in, sign_up)
+    sync_kit_files(app)
     link_node_modules(app)
     return rows
 
@@ -310,9 +259,17 @@ def remove_app(app: Path) -> None:
 # --- bundling ----------------------------------------------------------------------------------------------------------------
 
 def _source_files(app: Path):
-    for name in ("index.html", "package.json", "tailwind.config.cjs", "vite.config.ts"):
-        if (app / name).is_file():
-            yield app / name
+    if app.name == "wireframe-html":
+        yield from sorted(app.glob("*.html"))
+        yield from sorted(file for file in (app / "assets").rglob("*") if file.is_file())
+        return
+    if (app / html_prototype.MANIFEST).is_file():
+        yield from (file for file in html_prototype.sources(app) if file.is_file())
+        return
+    for item in sorted(app.iterdir()) if app.is_dir() else ():
+        if item.is_file() and (item.name in {"index.html", "package.json", "tsconfig.json"}
+                               or item.name.startswith(("tailwind.config.", "vite.config.", "postcss.config."))):
+            yield item
     yield from sorted(p for p in (app / "src").rglob("*") if p.is_file()) if (app / "src").is_dir() else ()
 
 
@@ -322,6 +279,23 @@ def fingerprint(app: Path) -> str:
     for path in _source_files(app):
         digest.update(path.relative_to(app).as_posix().encode() + b"\0" + path.read_bytes() + b"\0")
     return digest.hexdigest()
+
+
+def edit_layout(session, app: Path, route: str, source: str, layout: tuple[str, str],
+                *, bundle_preview: bool = True) -> None:
+    """Run a focused layout edit and require an authored source change before publishing."""
+    operation, details = layout
+    before = fingerprint(app)
+    session.run_direct(prompts.load(f"shared/{operation}-element", app=app.relative_to(session.workspace).as_posix(),
+                                    route=route, source=source, details=details), thinking_level="low")
+    if fingerprint(app) == before:
+        failure = {"move": "move the selected element", "resize": "resize the selected element",
+                   "layout": "apply the position and size changes", "insert": "add the new element"}[operation]
+        raise ValueError(f"the model could not {failure}")
+    if bundle_preview:
+        made, error = bundle(app)
+        if not made:
+            raise BuildFailed(error)
 
 
 def built(app: Path) -> bool:
@@ -339,9 +313,8 @@ KIT_OWNED = ("src/lib/router.tsx", "src/lib/session.tsx")
 
 
 def sync_kit_files(app: Path) -> None:
-    lock_palette(app)                       # a wireframe made before the palette was grey becomes grey when it is bundled again
     for name in KIT_OWNED:
-        source, target = KIT_SOURCE / "app" / name, app / name
+        source, target = RUNTIME / Path(name).name, app / name
         if source.is_file() and (not target.is_file() or target.read_bytes() != source.read_bytes()):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target)
@@ -349,6 +322,20 @@ def sync_kit_files(app: Path) -> None:
 
 def bundle(app: Path) -> tuple[bool, str]:
     """Bundle the app into one HTML file. Returns (ok, what the bundler said)."""
+    if (app / html_prototype.MANIFEST).is_file():
+        with _build_locks.setdefault(str(app), threading.Lock()):
+            preview = app / BUNDLE
+            pending = preview.with_suffix(".tmp")
+            try:
+                html = html_prototype.compose(app)
+                pending.write_text(html, encoding="utf-8")
+                pending.replace(preview)
+                (app / BUILT).write_text(fingerprint(app), encoding="utf-8")
+            except (OSError, ValueError, KeyError) as exc:
+                return False, str(exc)
+            finally:
+                pending.unlink(missing_ok=True)
+        return True, "HTML preview published."
     legacy = legacy_kit(app)
     ok, text = prepare_kit(legacy)
     if not ok:
@@ -356,8 +343,11 @@ def bundle(app: Path) -> tuple[bool, str]:
     link_node_modules(app)
     sync_kit_files(app)
     with _build_locks.setdefault(str(app), threading.Lock()):
-        ok, text = _run([node_exe() or "node", str(kit_dir(legacy) / "node_modules" / "vite" / "bin" / "vite.js"), "build"],
-                        app, timeout=600, env={"NODE_ENV": "production", "FORCE_COLOR": "0"})
+        folder = kit_dir(legacy)
+        command = [node_exe() or "node", str(folder / "node_modules" / "vite" / "bin" / "vite.js"), "build"]
+        if not any((app / f"vite.config.{ext}").is_file() for ext in ("js", "mjs", "ts", "cjs", "mts", "cts")):
+            command.extend(("--config", str(folder / VITE_CONFIG)))
+        ok, text = _run(command, app, timeout=600, env={"NODE_ENV": "production", "FORCE_COLOR": "0"})
         page = app / "dist" / "index.html"
         if not ok or not page.is_file():
             return False, text[-3000:] or "the bundler produced no page"
@@ -420,13 +410,19 @@ def edit_text(app: Path, old: str, new: str) -> dict[str, Any]:
         + r")(?P<space2>[ \t\r\n]*)(?P<post>$|[<\"'`{])", re.MULTILINE)
     found = []
     source = app / "src"
-    for path in sorted(p for p in source.rglob("*") if p.is_file() and p.suffix in (".tsx", ".ts", ".jsx", ".js")):
-        relative = path.relative_to(source).as_posix()
-        if any(part in relative for part in _NOT_WORDS):
+    candidates = [path for path in source.rglob("*") if path.is_file() and path.suffix in (".tsx", ".ts", ".jsx", ".js")]
+    if (app / html_prototype.MANIFEST).is_file():
+        candidates.extend([app / "index.html", *(app / "pages").glob("*.html")])
+    elif app.name == "wireframe-html":
+        candidates.extend(path for path in app.glob("*.html") if path.name != "index.html")
+    for path in sorted(candidates):
+        if not path.is_file() or any(part in path.relative_to(app).as_posix() for part in _NOT_WORDS):
             continue
         raw = path.read_bytes().decode("utf-8", errors="replace")
         for match in pattern.finditer(raw):
             pre, post = match.group("pre"), match.group("post")
+            if path.suffix == ".html" and (pre != ">" or post != "<"):
+                continue
             if pre in "\"'`" and pre:
                 if post != pre:
                     continue                        # a quote that closes something else: these words are only part of a string
@@ -448,6 +444,8 @@ def edit_text(app: Path, old: str, new: str) -> dict[str, Any]:
 
 
 _SELFTEST = re.compile(r'<pre id="af-selftest"[^>]*>(.*?)</pre>', re.DOTALL)
+_EMPTY_ROOT = re.compile(r'<div id="root"[^>]*>\s*</div>')
+_EMPTY_HTML_MOUNT = re.compile(r'<main\b[^>]*\bid="af-page"[^>]*>\s*</main>')
 
 
 def check_pages(app: Path) -> list[tuple[str, str]] | None:
@@ -472,6 +470,10 @@ def check_pages(app: Path) -> list[tuple[str, str]] | None:
         return None
     found = _SELFTEST.search(dom or "")
     if not found:
+        if (app / html_prototype.MANIFEST).is_file() and _EMPTY_HTML_MOUNT.search(dom or ""):
+            return [("/", "The HTML preview opened an empty screen. Check index.html, the route fragment and assets/prototype.js.")]
+        if _EMPTY_ROOT.search(dom or ""):
+            return [("/", "The React entry did not mount the app. Check src/main.tsx and the Router pages prop.")]
         return None
     try:
         return [(str(row["route"]), str(row["error"])[:300]) for row in json.loads(htmllib.unescape(found.group(1)))]
@@ -480,8 +482,8 @@ def check_pages(app: Path) -> list[tuple[str, str]] | None:
 
 
 def _crashing(rows: list[tuple[str, str]]) -> str:
-    return ("These pages bundle, but crash as soon as they are opened. Fix each one in its page file (`src/pages/<file>.tsx`), "
-            "and in what it imports:\n\n" + "\n".join(f"- `{route}`: {error}" for route, error in rows[:20]))
+    return ("These pages bundle, but crash when opened. Fix the affected source pages and their shared code:\n\n"
+            + "\n".join(f"- `{route}`: {error}" for route, error in rows[:20]))
 
 
 def ensure_built(app: Path, repair: Callable[[str], None] | None = None, rounds: int = 2) -> None:

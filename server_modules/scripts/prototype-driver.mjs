@@ -14,7 +14,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import readline from 'node:readline'
 import { createRequire } from 'node:module'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const require = createRequire(path.join(process.env.STUDIO_ROOT || process.cwd(), 'package.json'))
 const loaded = require('puppeteer-core')
@@ -217,6 +217,80 @@ const handlers = {
     return { state: await state() }
   },
   async state() { return { state: await state() } },
+  async wireframe({ file, shots, routes = [], route = '', suffix = '' }) {
+    const root = fs.realpathSync(path.dirname(file))
+    const allow = request => {
+      try {
+        const url = new URL(request.url())
+        if (['data:', 'blob:'].includes(url.protocol)) return request.continue()
+        if (route && url.protocol === 'https:' && (request.resourceType() === 'image' ||
+          url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com')) return request.continue()
+        const relative = path.relative(root, fs.realpathSync(fileURLToPath(url)))
+        if (relative && !relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative)) {
+          return request.continue()
+        }
+      } catch { /* remote or missing local resource */ }
+      return request.abort('blockedbyclient')
+    }
+    await page.setRequestInterception(true)
+    page.on('request', allow)
+    errors = []
+    try {
+      await page.goto(pathToFileURL(file).href + suffix, { waitUntil: 'load', timeout: 15000 })
+      if (route) {
+        await page.evaluate(() => {
+          const transitions = document.getAnimations().filter(animation =>
+            animation.playState === 'running' && Number.isFinite(animation.effect?.getComputedTiming().endTime))
+          return Promise.race([Promise.allSettled(transitions.map(animation => animation.finished)),
+            new Promise(resolve => setTimeout(resolve, 600))])
+        })
+      }
+      const defects = await page.evaluate((known, expected) => {
+        const findings = []
+        if (!document.title.trim()) findings.push('The document has no title.')
+        if (expected) {
+          const mount = document.getElementById('af-page')
+          if (mount?.dataset.afRoute !== expected) findings.push(`The router did not render ${expected}.`)
+          if (!mount?.innerText.trim() && !mount?.querySelector('img, svg, canvas, video')) findings.push('The screen is blank.')
+          const images = Array.from(document.images).filter(image => image.complete && !image.naturalWidth && image.currentSrc)
+          if (images.length) findings.push(`${images.length} image(s) did not load.`)
+          return findings
+        }
+        if (!document.body.innerText.trim()) findings.push('The page is blank.')
+        if (!document.querySelector('meta[name="viewport"]')) findings.push('The page is missing a mobile viewport meta tag.')
+        if (!Array.from(document.querySelectorAll('link[rel="stylesheet"]')).some(link => link.sheet)) {
+          findings.push('No stylesheet loaded.')
+        }
+        const links = new Set()
+        const source = new URL(location.href)
+        for (const link of document.querySelectorAll('a[href]')) {
+          const target = new URL(link.href)
+          if (target.protocol === 'file:' && target.pathname !== source.pathname) {
+            const name = decodeURIComponent(target.pathname.slice(target.pathname.lastIndexOf('/') + 1))
+            if (!known.includes(name) || new URL('.', target).href !== new URL('.', source).href) links.add(link.getAttribute('href'))
+          }
+        }
+        if (links.size) findings.push('Links lead outside the planned wireframes: ' + Array.from(links).slice(0, 8).join(', '))
+        return findings
+      }, routes, route)
+      for (const shot of shots) {
+        await page.setViewport({ width: shot.width, height: shot.height })
+        const layout = await page.evaluate(() => ({
+          overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          height: document.documentElement.scrollHeight,
+        }))
+        if (layout.overflow > 8) defects.push(`The ${shot.viewport} page overflows horizontally by ${layout.overflow}px.`)
+        fs.mkdirSync(path.dirname(shot.path), { recursive: true })
+        await page.screenshot({ path: shot.path, type: 'png', captureBeyondViewport: true,
+          clip: { x: 0, y: 0, width: shot.width, height: Math.min(layout.height, shot.maxHeight || shot.height * 2) } })
+      }
+      return { defects: [...defects, ...[...new Set(errors)].slice(0, 4).map(error => `Browser error: ${error}`)] }
+    } finally {
+      page.off('request', allow)
+      await page.setRequestInterception(false)
+      await page.setViewport({ width: settings.width, height: settings.height })
+    }
+  },
   async elements() { return { elements: await page.evaluate(COLLECT), state: await state() } },
   /** The start of what the screen says, so that a model can use words that are really on it. */
   async text() {

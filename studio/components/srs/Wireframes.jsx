@@ -1,16 +1,21 @@
 'use client'
 
-/** The wireframes: a low-fidelity React app the agent built, shown as it is, with its pages listed and a box to ask for a change. */
+/** The wireframes, with their pages listed and a box to ask for a change. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, Loader2, RotateCw, Send } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, ImagePlus, Loader2, RotateCw, Send } from 'lucide-react'
 
 import { api, isJobCancelled } from '@/lib/api'
+import { useElementLayout } from '@/lib/use-element-layout'
 import { useFrameTools } from '@/lib/use-frame-tools'
 import { useStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
 import AppTextEdit from '../AppTextEdit'
-import { Chips, DrawLayer, ToolButtons, ToolHint } from '../FrameTools'
+import { Chips, DrawLayer, LayoutControls, ToolButtons, ToolHint } from '../FrameTools'
 import { Button, Empty } from '../ui'
+import WireframePictures from './WireframePictures'
+
+const checkLabels = { checking: 'Checking screenshots…', fixing: 'Fixing…', checked: 'Checked',
+  issues: 'Issues remain', unavailable: 'Browser check unavailable' }
 
 /** The `prj_…` id the drawings live under, whichever way the owner is named. */
 function useSrsId(owner) {
@@ -71,7 +76,7 @@ function Thumbnail({ src, page, waiting }) {
 export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generating = false, approving = false }) {
   const owner = srs?.project || srs?.srs_id || srs?.id || ''
   const srsId = useSrsId(owner)
-  const srsStamp = useStore(state => state.srsStamp[owner] || 0)
+  const srsStamp = useStore(state => Math.max(state.srsStamp[owner] || 0, state.srsStamp[srsId] || 0))
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [drawing, setDrawing] = useState(false)
@@ -81,11 +86,9 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
   const [prompt, setPrompt] = useState('')
   const [designApproved, setDesignApproved] = useState(false)
   const [loadedCount, setLoadedCount] = useState(0)
+  const [picturesOpen, setPicturesOpen] = useState(false)
   const frame = useRef(null)
-  // The select, pencil and text tools over the page on show: they work on the page's own frame, and what they pick goes with the
-  // next request typed under it.
-  const tools = useFrameTools(frame, { loaded: loadedCount })
-  const { setMode, clearItems } = tools
+  const { stageLayout, saveLayout, cancelLayout, layoutDraft, layoutOperation, layoutError } = useElementLayout()
 
   useEffect(() => {
     if (!srsId) return
@@ -98,7 +101,7 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
 
   const load = useCallback(() => {
     if (!owner) return
-    api.wireframes(owner)
+    return api.wireframes(owner)
       .then(result => { setData(result); setError('') })
       .catch(failure => setError(failure?.message || 'The wireframes could not be read.'))
   }, [owner])
@@ -108,7 +111,8 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
   useEffect(() => { load() }, [load, srsStamp])
 
   /** Poll while the agent is drawing, so the pages light up as their files are written. */
-  const waiting = generating || Boolean(data?.drawing)
+  const waiting = drawing || generating || Boolean(data?.drawing)
+  const busy = waiting || asking || Boolean(layoutOperation)
   useEffect(() => {
     if (!waiting) return
     load()
@@ -127,10 +131,39 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
   const pages = data?.pages || []
   const built = Boolean(data?.built)
   const drawn = pages.filter(p => p.has_html).length
+  const pageUrl = useCallback((page) => {
+    if (!srsId || !page?.has_html) return ''
+    return page.html_file
+      ? api.webUrl(srsId, `wireframe-html/${encodeURIComponent(page.html_file)}`, '', page.version)
+      : api.webUrl(srsId, 'wireframe', page.route, data?.version)
+  }, [srsId, data?.version])
+
+  const tools = useFrameTools(frame, {
+    loaded: loadedCount,
+    canEdit: open && Boolean(srsId) && !busy && !picturesOpen,
+    onLayout(draft) {
+      if (!draft) { stageLayout(null); return }
+      const location = frame.current?.contentWindow?.location
+      if (!location) return
+      const file = decodeURIComponent(location.pathname.split('/').at(-1) || '')
+      const here = location.hash.slice(1).split('?')[0] || '/'
+      const page = location.pathname.includes('/wireframe-html/')
+        ? pages.find(p => p.html_file === file)
+        : pages.find(p => p.route === here) || pages.find(p => same(p.route, here))
+      if (draft.operation === 'picture' && page?.html_file) {
+        draft = { ...draft, apply: async picture => {
+          const { pictures, revision } = await api.wireframePictures(srsId, page.html_file)
+          return api.wireframePictures(srsId, page.html_file, { revision, pictures: [...pictures, picture] })
+        } }
+      }
+      if (page) stageLayout(draft, srsId, 'wireframe', page.route, load)
+    },
+  })
+  const { setMode, clearItems } = tools
 
   // Back at the list of pages, or on another page: no tool in hand, and nothing is left pointed at.
   useEffect(() => { if (!open) setMode(null) }, [open, setMode])
-  useEffect(() => { clearItems() }, [route, clearItems])
+  useEffect(() => { clearItems(); cancelLayout() }, [route, clearItems, cancelLayout])
 
   // The page on show: the first drawn one until a page is picked.
   useEffect(() => {
@@ -143,26 +176,26 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
     if (!built || !open) return
     const id = setInterval(() => {
       try {
-        const hash = frame.current?.contentWindow?.location?.hash?.slice(1)
-        if (!hash) return
-        const found = pages.find(p => p.route === hash) || pages.find(p => same(p.route, hash))
+        const location = frame.current?.contentWindow?.location
+        const hash = location?.hash?.slice(1)
+        const file = decodeURIComponent(location?.pathname.split('/').at(-1) || '')
+        const found = location?.pathname.includes('/wireframe-html/')
+          ? pages.find(p => p.html_file === file)
+          : hash && (pages.find(p => p.route === hash) || pages.find(p => same(p.route, hash)))
         if (found && found.route !== route) setRoute(found.route)
       } catch { /* the frame is not on our own address yet */ }
     }, 500)
     return () => clearInterval(id)
   }, [built, open, pages, route])
 
-  const src = useMemo(
-    () => (srsId && built ? api.webUrl(srsId, 'wireframe', route, data?.version) : ''),
-    [srsId, built, route, data?.version],
-  )
+  const src = pageUrl(pages.find(page => page.route === route))
 
   /** Draw every page again, from the start. */
-  async function drawAll() {
+  async function drawAll(resume = false) {
     if (!srsId) return
     setDrawing(true); setError('')
     try {
-      await api.buildWireframes(srsId)
+      await api.buildWireframes(srsId, '', resume)
       load()
     } catch (failure) {
       if (!isJobCancelled(failure)) setError(failure?.message || 'The wireframes could not be drawn.')
@@ -173,7 +206,7 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
 
   /** One change, asked for in words, about this page and about what was pointed at. */
   async function send(request, elements = []) {
-    if (!srsId || !request || asking) return false
+    if (!srsId || !request || busy) return false
     setAsking(true); setError('')
     try {
       await api.editWireframe(srsId, request, route, elements)
@@ -208,25 +241,25 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
     ? 'Reading the approved plan and preparing the wireframes…'
     : 'No pages in the specification yet, so there is nothing to draw.'}</Empty>
 
-  const busy = drawing || waiting || asking
   const current = pages.find(p => p.route === route)
   const index = pages.findIndex(p => p.route === route)
+  const checking = pages.find(page => page.check === 'checking' || page.check === 'fixing')
 
   return (
     <div className={cn("flex flex-col gap-3", open && "min-h-[520px] flex-1")}>
-      {error && <p role="alert" className="text-xs text-rose-400">{error}</p>}
+      {(error || open && layoutError) && <p role="alert" className="text-xs text-rose-400">{error || layoutError}</p>}
       {waiting && (
         <p className="flex items-center gap-2.5 rounded-none border border-accent/30 bg-accent px-3.5 py-2.5 text-[11.5px] leading-relaxed text-ink">
           <Loader2 className="size-3.5 shrink-0 animate-spin text-accent" />
           <span>
-            The agent is drawing the wireframes: one React page for each screen, then the app is bundled. {drawn} of {pages.length} pages
-            written so far. You can carry on; this keeps going without you.
+            {checking ? `${checking.page_name} · ${checkLabels[checking.check]}` : 'Preparing wireframes…'}
+            {' '}{drawn} of {pages.length} pages available.
           </span>
         </p>
       )}
       {!open && <div className="flex flex-wrap items-baseline justify-between gap-3">
         <p className="text-[11.5px] text-muted">
-          {pages.length} page{pages.length === 1 ? '' : 's'} as a low-fidelity React app with sample data.
+          {pages.length} low-fidelity page{pages.length === 1 ? '' : 's'} with sample data.
           {' Open a page to click through it, or to ask for a change.'}
           {drawn === pages.length ? ' All drawn.' : ` ${drawn} of ${pages.length} drawn so far.`}
         </p>
@@ -243,7 +276,12 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
               Approve wireframes → Design
             </Button>
           ))}
-          <Button variant="outline" disabled={busy || !srsId} onClick={drawAll}>
+          {drawn > 0 && pages.some(p => p.html_file) && (
+            <Button variant="outline" disabled={busy || !srsId} onClick={() => drawAll(true)}>
+              {drawn < pages.length ? 'Continue drawing' : 'Check wireframes'}
+            </Button>
+          )}
+          <Button variant="outline" disabled={busy || !srsId} onClick={() => drawAll()}>
             {drawing || waiting
               ? <><Loader2 className="mr-1 size-3 animate-spin" /> Drawing…</>
               : drawn ? 'Draw them again' : 'Draw the wireframes'}
@@ -258,12 +296,13 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
               onClick={() => { setRoute(page.route); setOpen(true) }}
               className="w-full cursor-pointer overflow-hidden rounded-none border border-line text-left transition hover:border-accent">
               <span className="block aspect-[16/11] overflow-hidden border-b border-line bg-white">
-                <Thumbnail src={srsId && built ? api.webUrl(srsId, 'wireframe', page.route, data?.version) : ''} page={page} waiting={waiting} />
+                <Thumbnail src={pageUrl(page)} page={page} waiting={waiting} />
               </span>
               <span className="block space-y-1 p-3">
                 <span className="block truncate text-[12px] font-medium text-ink">{page.page_name}</span>
                 <span className="block truncate font-mono text-[10px] text-muted2">{page.route}</span>
                 <span className="block truncate text-[10px] text-muted2">{page.roles?.length ? page.roles.join(', ') : 'public'}</span>
+                {checkLabels[page.check] && <span className="block text-[10px] text-muted2">{checkLabels[page.check]}</span>}
               </span>
             </button>
           ))}
@@ -274,14 +313,14 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
         <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
           <div className="flex items-center justify-between gap-2">
             <span className="flex min-w-0 items-center gap-2">
-              <button type="button" onClick={() => setOpen(false)} title="Back to all the pages"
+              <button type="button" onClick={() => setOpen(false)} disabled={picturesOpen} title="Back to all the pages"
                 className="inline-flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] font-medium text-ink hover:bg-ink/[.06]">
                 <ArrowLeft className="size-3" /> All pages
               </button>
               <span className="flex shrink-0 gap-1">
-                <button type="button" title="The page before" disabled={index <= 0} onClick={() => setRoute(pages[index - 1].route)}
+                <button type="button" title="The page before" disabled={picturesOpen || index <= 0} onClick={() => setRoute(pages[index - 1].route)}
                   className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06] disabled:opacity-40"><ChevronLeft className="size-3.5" /></button>
-                <button type="button" title="The next page" disabled={index < 0 || index >= pages.length - 1} onClick={() => setRoute(pages[index + 1].route)}
+                <button type="button" title="The next page" disabled={picturesOpen || index < 0 || index >= pages.length - 1} onClick={() => setRoute(pages[index + 1].route)}
                   className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06] disabled:opacity-40"><ChevronRight className="size-3.5" /></button>
               </span>
               <span className="truncate text-[12px] font-medium text-ink">{current?.page_name || route}</span>
@@ -289,26 +328,38 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
             </span>
             {src && (
               <span className="flex shrink-0 items-center gap-1.5">
-                <ToolButtons small mode={tools.mode} onTool={tools.chooseTool} inked={tools.inked} onErase={tools.clearInk} />
-                <button type="button" title="Reload" onClick={() => frame.current?.contentWindow?.location.reload()}
+                {!picturesOpen && <ToolButtons small shapes picture={Boolean(current?.html_file)} mode={tools.mode} onTool={tools.chooseTool} inked={tools.inked} onErase={tools.clearInk} />}
+                {current?.html_file && <button type="button" title="Edit wireframe pictures" aria-pressed={picturesOpen}
+                  disabled={picturesOpen || Boolean(layoutDraft) || busy} onClick={() => { setMode(null); setPicturesOpen(true) }}
+                  className="flex h-7 items-center gap-1.5 rounded-md border border-line px-2 text-[11px] text-ink hover:bg-ink/[.06] disabled:opacity-55">
+                  <ImagePlus className="size-3.5" /> Pictures
+                </button>}
+                <button type="button" title="Reload" disabled={picturesOpen} onClick={() => frame.current?.contentWindow?.location.reload()}
                   className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06]"><RotateCw className="size-3.5" /></button>
                 <a href={src} target="_blank" rel="noreferrer" title="Open in its own window"
                   className="grid size-7 place-items-center rounded-md border border-line text-ink hover:bg-ink/[.06]"><ExternalLink className="size-3.5" /></a>
               </span>
             )}
           </div>
-          <div className="relative min-h-0 flex-1 overflow-hidden rounded-none border border-line bg-white">
+          <div className="flex min-h-0 flex-1 overflow-hidden border border-line">
+            <div className="relative min-w-0 flex-1 overflow-hidden bg-white">
             {src ? (
               <>
-                <iframe ref={frame} key={data?.version} title="wireframes" src={src} onLoad={() => setLoadedCount(n => n + 1)}
+                <iframe ref={frame} title="wireframes" src={src} onLoad={() => setLoadedCount(n => n + 1)}
                   className="absolute inset-0 h-full w-full border-0" />
                 <DrawLayer canvasRef={tools.canvasRef} active={tools.mode === 'pencil'} />
-                <ToolHint mode={tools.mode} />
+                <LayoutControls draft={layoutDraft} operation={layoutOperation} onSave={saveLayout} onCancel={cancelLayout} disabled={busy} />
+                {!layoutDraft && !layoutOperation && <ToolHint mode={tools.mode} />}
               </>
             ) : (
               <div className="absolute inset-0 grid place-items-center bg-panel p-6 text-center text-[12px] text-muted">
                 {waiting ? 'Drawing…' : data?.pages?.[0]?.error || 'The wireframes are not drawn yet.'}
               </div>
+            )}
+            </div>
+            {picturesOpen && current?.html_file && (
+              <WireframePictures key={srsId + ':' + current.html_file} project={srsId} page={current.html_file}
+                frame={frame} loaded={loadedCount} disabled={busy} onClose={() => setPicturesOpen(false)} onSaved={load} />
             )}
           </div>
           {/* The same bar the Studio's own prompt is: centred, not as wide as the page, rounded, with the send button inside it. */}
@@ -316,18 +367,18 @@ export function Wireframes({ srs, onApprove, onRetryPrototype, onFocus, generati
             <Chips items={tools.items} onRemove={tools.removeItem} className="justify-center" />
             <form onSubmit={ask}
               className="flex items-center gap-2 rounded-[22px] border border-line bg-panel py-1.5 pl-4 pr-1.5 shadow-lg transition-all focus-within:border-accent/60">
-              <input value={prompt} onChange={event => setPrompt(event.target.value)} disabled={busy || !built}
+              <input value={prompt} onChange={event => setPrompt(event.target.value)} disabled={picturesOpen || busy || !built}
                 aria-label="Ask for a change"
                 placeholder={current ? `Ask for a change${current.page_name ? ` to ${current.page_name}` : ''}…` : 'Ask for a change…'}
                 className="min-w-0 flex-1 bg-transparent py-1.5 text-[13px] text-ink outline-none placeholder:text-muted2 disabled:opacity-50" />
-              <button type="submit" disabled={busy || !built || !prompt.trim()} aria-label="Send the change" title="Send"
+              <button type="submit" disabled={picturesOpen || busy || !built || !prompt.trim()} aria-label="Send the change" title="Send"
                 className="grid size-8 shrink-0 place-items-center rounded-full bg-accent text-ink shadow-sm transition-all hover:bg-press active:scale-95 disabled:pointer-events-none disabled:opacity-40">
                 {asking ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
               </button>
             </form>
           </div>
         </div>
-        <AppTextEdit frameRef={frame} active={tools.mode === 'text'} loaded={loadedCount} project={srsId} kind="wireframe"
+        <AppTextEdit frameRef={frame} active={tools.mode === 'text' && !layoutOperation} loaded={loadedCount} project={srsId} kind="wireframe"
           onSaved={load} onAskAi={askToChange} />
       </div>}
     </div>

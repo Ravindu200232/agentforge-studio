@@ -81,12 +81,16 @@ def _fingerprint(root: Path, rows: list[dict[str, Any]]) -> dict[str, str]:
     pages = {str(r["file"]) for r in rows}
     state = {}
     shared = hashlib.sha256()
-    source = root / "app" / "src"
-    for path in sorted(source.rglob("*")) if source.is_dir() else []:
-        if not path.is_file() or path.suffix.lower() not in {".tsx", ".ts", ".jsx", ".js", ".css", ".json"}:
+    app = root / "app"
+    from server_modules import html_prototype
+
+    files = (html_prototype.sources(app) if (app / html_prototype.MANIFEST).is_file()
+             else sorted((app / "src").rglob("*")))
+    for path in files:
+        if not path.is_file():
             continue
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        relative = "app/src/" + path.relative_to(source).as_posix()
+        relative = path.relative_to(root).as_posix()
         if relative in pages:
             state[relative] = digest
         else:

@@ -151,8 +151,8 @@ class AskingUntilItIsReadyTests(unittest.TestCase):
 class TheBuildChecksFirstTests(StraightThroughCase):
     def setUp(self):
         super().setUp()
-        self.install = mock.Mock(return_value={"scaffolded": True, "files": ["package.json"]})
-        self.enterContext(mock.patch("builder_agent.scaffold.install", self.install))
+        self.install = mock.Mock(return_value={"mode": "from_scratch", "existing": []})
+        self.enterContext(mock.patch("builder_agent.scaffold.describe_workspace", self.install))
 
     def test_a_no_stops_the_build_before_anything_is_asked_provisioned_or_planned(self):
         self.enterContext(mock.patch.object(build.preflight, "missing",

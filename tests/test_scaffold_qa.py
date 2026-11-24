@@ -1,4 +1,4 @@
-"""The builder copies a selected scaffold without replacing existing work."""
+"""Builder stack prompts and the Studio QA runtime."""
 from __future__ import annotations
 
 import base64
@@ -15,136 +15,28 @@ for folder in (".", "builder-agent", "qa-agent"):
     sys.path.insert(0, str(ROOT / folder))
 
 from builder_agent import scaffold  # noqa: E402
+from qa_agent import e2e_run
 from qa_agent.evidence import archive_results, collect  # noqa: E402
 
-SUPABASE_STACKS = {"nextjs-supabase", "vite-supabase", "remix-supabase"}
-# The sets below name template folders: a Mongo-only stack installs its Supabase-bucket twin's folder.
-MONGO_STACKS = {"nextjs-mongo", "vite-mongo", "remix-mongo", "mern-microservices"}
-NEXTJS_STACKS = {"nextjs-supabase", "nextjs-mongo"}
-# These two have their own long-running server on a fixed local port (not a single Studio-assigned
-# one) and their own aggressive, port-freeing port-guard. The single-app stacks need none: the Studio
-# starts each one on a port of its own.
-WORKSPACE_STACKS = {"vite-mongo", "mern-microservices"}
-AGGRESSIVE_PORT_GUARD_STACKS = WORKSPACE_STACKS
-MICROSERVICES_STACKS = {"mern-microservices"}
-SPA_STACKS = {"vite-supabase"}  # no server, no secret store - the Supabase-only SPA pattern
-
-
-def template(stack):
-    """The template folder a stack installs."""
-    return scaffold.template_dir(stack).name
-
-
-class ScaffoldTests(unittest.TestCase):
-    def test_uploaded_media_is_preserved_when_the_app_is_scaffolded(self):
+class BuildWorkspaceTests(unittest.TestCase):
+    def test_new_workspaces_get_only_qa_tooling_and_keep_uploaded_media(self):
         for stack in scaffold.STACK_GUIDES:
             with self.subTest(stack=stack), tempfile.TemporaryDirectory() as temp:
                 workspace = Path(temp)
-                media = workspace / "media" / "customer-photo.png"
-                media.parent.mkdir()
-                media.write_bytes(b"uploaded-image")
-                result = scaffold.install(workspace, stack)
-                self.assertTrue(result["scaffolded"])
-                self.assertEqual(media.read_bytes(), b"uploaded-image")
-                self.assertTrue((workspace / "package.json").is_file())
-
-    def test_each_stack_installs_real_runner_and_keeps_skeleton_inert(self):
-        for stack in scaffold.STACK_GUIDES:
-            with self.subTest(stack=stack), tempfile.TemporaryDirectory() as temp:
-                workspace = Path(temp)
-                result = scaffold.install(workspace, stack)
-                self.assertTrue(result["scaffolded"])
-                self.assertTrue((workspace / "package.json").is_file())
-                self.assertTrue((workspace / "playwright.config.js").is_file())
-                self.assertTrue((workspace / "e2e/a11y.spec.js").is_file())
-                self.assertTrue((workspace / ".agentforge/build/scaffold.json").is_file())
-                if template(stack) in AGGRESSIVE_PORT_GUARD_STACKS:
-                    self.assertTrue((workspace / "scripts/port-guard.mjs").is_file())
-                manifest = json.loads((workspace / "package.json").read_text(encoding="utf-8"))
-                for script in ("build", "test", "test:e2e", "test:visual", "test:a11y", "test:perf"):
-                    self.assertIn(script, manifest["scripts"])
-                self.assertIn("@axe-core/playwright", manifest["devDependencies"])
-                self.assertIn("@lhci/cli", manifest["devDependencies"])
-                if template(stack) in NEXTJS_STACKS:
-                    self.assertNotIn("3001", manifest["scripts"]["dev"])
-                    self.assertNotIn("3001", manifest["scripts"]["start"])
-                # Preview ownership belongs to Studio, which assigns a single-app stack an isolated
-                # port of its own. The fixed-local-port workspace stacks (vite-mongo,
-                # mern-microservices) are a different, deliberate convention and are exempt.
-                if template(stack) not in WORKSPACE_STACKS:
-                    for script in ("dev", "start"):
-                        self.assertNotIn("3001", manifest["scripts"][script])
-                        self.assertNotIn("5173", manifest["scripts"][script])
-                self.assertNotIn(".slice(0, 8)", (workspace / "lighthouserc.cjs").read_text())
-                # One command per layer that needs a running app, and the runners behind them.
-                for script in ("qa:e2e", "qa:visual", "qa:a11y", "qa:perf", "qa:security"):
-                    self.assertIn(script, manifest["scripts"])
-                for runner in ("with-server.mjs", "run-perf.mjs", "zap-scan.mjs"):
-                    self.assertTrue((workspace / "scripts" / runner).is_file(), runner)
-                # A fresh machine gets a real ZAP scan by default, not just when
-                # someone remembers the separate --install-zap flag - and a machine
-                # that already failed once is not retried on every single run.
-                zap_scan = (workspace / "scripts/zap-scan.mjs").read_text(encoding="utf-8")
-                self.assertIn("autoInstallFailedAt", zap_scan)
-                self.assertIn("await installZap()", zap_scan)
-                slug = scaffold.project_slug(workspace.name)
-                texts = {t: (workspace / t).read_text(encoding="utf-8", errors="ignore") for t in result["files"]}
-                self.assertEqual([t for t, body in texts.items() if scaffold.DB_PLACEHOLDER in body], [])
-                self.assertEqual(list(scaffold.guide_files(stack))[0], "pitfalls.md")
-
-                if template(stack) in SUPABASE_STACKS:
-                    # Every generated app has a Supabase project of its own; nothing here still
-                    # names the shared placeholder once install() has substituted the real slug.
-                    self.assertIn(f'project_id = "{slug}"', texts["supabase/config.toml"])
-                    helper = texts["test/helpers/db.js"]
-                    self.assertIn("must be local", helper)
-                    self.assertNotIn("SUPABASE_SERVICE_ROLE_KEY", helper)  # talks to local Postgres directly, no key at all
-                else:
-                    self.assertFalse((workspace / "supabase").exists())
-                    # Every generated Mongo app gets its own `_test`-suffixed database name; tests
-                    # can never touch anything else.
-                    helper_path = "packages/testing/index.js" if template(stack) == "mern-microservices" else "test/helpers/db.js"
-                    helper = texts[helper_path]
-                    self.assertIn(f"{slug}_test", helper)
-                    self.assertIn("must end in", helper)
-
-                if template(stack) in MICROSERVICES_STACKS:
-                    self.assertTrue((workspace / "scaffold/service/package.json.tpl").is_file())
-                    self.assertFalse((workspace / "scaffold/service/package.json").exists())
-                    # The one Dockerfile every package (gateway or a service) is built from, in the
-                    # cloud - built with a different --build-arg SERVICE per package, never per-stack.
-                    self.assertIn("ARG SERVICE=packages/gateway", texts["Dockerfile"])
-
-                if template(stack) in SPA_STACKS:
-                    # This app has no server and no secret store: the service-role key must never
-                    # be *read* anywhere a browser bundle could include it (mentioning it in a
-                    # comment, to explain why not, is fine).
-                    for path in result["files"]:
-                        if path.startswith("src/"):
-                            self.assertNotIn("env.SUPABASE_SERVICE_ROLE_KEY", texts[path], path)
-                self.assertIn(scaffold.STACK_GUIDES[stack], scaffold.guide_files(stack))
-
-    def test_workspace_stacks_port_guard_frees_only_its_own_fixed_port(self):
-        # Unlike the single-app stacks, these run a fixed local port every project
-        # shares, so a stale listener on it is freed rather than left to block the next run.
-        for stack in AGGRESSIVE_PORT_GUARD_STACKS:
-            guard = (scaffold.ROOT / stack / "scripts" / "port-guard.mjs").read_text(encoding="utf-8")
-            self.assertIn("pathToFileURL(process.argv[1]).href", guard)
-            self.assertIn("Free only the process which is listening on this exact application port", guard)
-
-    def test_nextjs_mongo_tests_get_their_own_database_and_connection_reuse(self):
-        with tempfile.TemporaryDirectory() as temp:
-            workspace = Path(temp)
-            scaffold.install(workspace, "nextjs-mongo")
-            slug = scaffold.project_slug(workspace.name)
-            env = (workspace / "vitest.env.js").read_text(encoding="utf-8")
-            self.assertIn(f"{slug}_test", env)
-            self.assertIn("process.env.MONGODB_URI = process.env.TEST_MONGODB_URI", env)
-            self.assertIn("vitest.env.js", (workspace / "vitest.config.js").read_text(encoding="utf-8"))
-            self.assertIn("readyState === 1", (workspace / "lib/db.js").read_text(encoding="utf-8"))
+                media = workspace / "media"
+                media.mkdir()
+                image = media / "logo.png"
+                image.write_bytes(b"project upload")
+                self.assertEqual(scaffold.describe_workspace(workspace, stack)["mode"], "from_scratch")
+                e2e_run.stage_tooling(workspace)
+                self.assertEqual(image.read_bytes(), b"project upload")
+                self.assertFalse((workspace / "package.json").exists())
+                self.assertFalse((workspace / "app").exists())
+                self.assertTrue((workspace / "e2e/pages.spec.js").is_file())
+                self.assertTrue((workspace / e2e_run.RUNNER).is_file())
 
     def test_qa_server_wrapper_never_touches_the_projects_real_database(self):
-        runner = (scaffold.ROOT / "_testing/scripts/with-server.mjs").read_text(encoding="utf-8")
+        runner = (e2e_run.TOOLING / "scripts/with-server.mjs").read_text(encoding="utf-8")
         self.assertIn("never read or write the project's real data", runner)
         self.assertNotIn("truncate table", runner)
         # A Mongo stack's own isolated, uniquely-named QA database is reset and (if the app defines
@@ -155,29 +47,13 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn("_e2e", runner)
 
     def test_smoke_a11y_and_visual_only_cover_public_pages(self):
-        routes = (scaffold.ROOT / "_testing" / "e2e" / "routes.js").read_text(encoding="utf-8")
+        routes = (e2e_run.TOOLING / "e2e" / "routes.js").read_text(encoding="utf-8")
         self.assertIn("publicRoutes", routes)
         for spec in ("a11y", "visual"):
-            body = (scaffold.ROOT / "_testing" / "e2e" / f"{spec}.spec.js").read_text(encoding="utf-8")
+            body = (e2e_run.TOOLING / "e2e" / f"{spec}.spec.js").read_text(encoding="utf-8")
             self.assertIn("publicRoutes()", body)
         self.assertIn("refuses a signed-out visitor",
-                      (scaffold.ROOT / "_testing" / "e2e" / "smoke.spec.js").read_text(encoding="utf-8"))
-
-    def test_every_stack_can_list_and_measure_what_its_unit_tests_cover(self):
-        for stack in scaffold.STACK_GUIDES:
-            with self.subTest(stack=stack), tempfile.TemporaryDirectory() as temp:
-                workspace = Path(temp)
-                scaffold.install(workspace, stack)
-                manifest = json.loads((workspace / "package.json").read_text(encoding="utf-8"))
-                self.assertEqual(manifest["scripts"]["qa:inventory"], "node scripts/test-inventory.mjs")
-                self.assertIn("vitest run --coverage", manifest["scripts"]["test:coverage"])
-                self.assertIn("@vitest/coverage-v8", manifest["devDependencies"])
-                self.assertTrue((workspace / "scripts/test-inventory.mjs").is_file())
-                config = "vitest.config.js"
-                self.assertIn(".agentforge/qa/coverage", (workspace / config).read_text(encoding="utf-8"))
-        # Test helpers that keep every page/route test to its assertions.
-        self.assertIn("renderPage", (scaffold.ROOT / "nextjs-supabase/test/helpers/next.js").read_text(encoding="utf-8"))
-        self.assertIn("renderRoute", (scaffold.ROOT / "remix-supabase/test/helpers/remix.js").read_text(encoding="utf-8"))
+                      (e2e_run.TOOLING / "e2e" / "smoke.spec.js").read_text(encoding="utf-8"))
 
     def test_builder_is_told_to_unit_test_every_page_route_and_component(self):
         self.assertIn("unit-tests.md", scaffold.COMMON_GUIDES)
@@ -190,7 +66,7 @@ class ScaffoldTests(unittest.TestCase):
 
     def test_shared_guidance_and_templates_name_no_particular_app(self):
         # The skill, the templates and the prompts are for every product, not the one they were learned on.
-        roots = [scaffold.ROOT / "_guides", scaffold.ROOT / "_testing", ROOT / "prompts" / "builder", ROOT / "prompts" / "testing"]
+        roots = [scaffold.GUIDES, e2e_run.TOOLING, ROOT / "prompts" / "builder", ROOT / "prompts" / "testing"]
         for folder in roots:
             for file in folder.rglob("*"):
                 if file.suffix not in {".md", ".js", ".mjs", ".cjs", ".tpl"} or "node_modules" in file.parts:
@@ -201,7 +77,7 @@ class ScaffoldTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("node"), "node is needed to run the inventory script")
     def test_inventory_names_each_untested_page_route_and_component(self):
-        script = scaffold.ROOT / "_testing" / "scripts" / "test-inventory.mjs"
+        script = e2e_run.TOOLING / "scripts" / "test-inventory.mjs"
         files = {
             "package.json": '{"dependencies":{"next":"15"}}',
             "app/page.jsx": "export default function Home() { return null }",
@@ -249,7 +125,7 @@ class ScaffoldTests(unittest.TestCase):
         # general-purpose Express support, exercised against a synthetic fixture so it keeps
         # working for a hand-written Express service (which is exactly what vite-mongo's server
         # and every mern-microservices package are).
-        script = scaffold.ROOT / "_testing" / "scripts" / "test-inventory.mjs"
+        script = e2e_run.TOOLING / "scripts" / "test-inventory.mjs"
         files = {
             "package.json": '{"name":"m"}',
             "packages/orders/package.json": "{}",
@@ -273,9 +149,9 @@ class ScaffoldTests(unittest.TestCase):
             self.assertEqual(route["missing"], ["DELETE /:id"])
 
     def test_the_live_view_only_watches_a_run_and_never_decides_its_outcome(self):
-        fixtures = (scaffold.ROOT / "_testing/e2e/fixtures.js").read_text(encoding="utf-8")
-        live_view = (scaffold.ROOT / "_testing/e2e/live-view.js").read_text(encoding="utf-8")
-        reporter = (scaffold.ROOT / "_testing/e2e/live-reporter.js").read_text(encoding="utf-8")
+        fixtures = (e2e_run.TOOLING / "e2e/fixtures.js").read_text(encoding="utf-8")
+        live_view = (e2e_run.TOOLING / "e2e/live-view.js").read_text(encoding="utf-8")
+        reporter = (e2e_run.TOOLING / "e2e/live-reporter.js").read_text(encoding="utf-8")
         # Streaming is best-effort: its start and stop are guarded, and a test's own failure still surfaces.
         self.assertIn("startLiveView(page, testInfo).catch(", fixtures)
         self.assertIn("finally", fixtures)
@@ -289,7 +165,7 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn("if (!isLive) return emit(row)", reporter)
         for stack in scaffold.STACK_GUIDES:
             with tempfile.TemporaryDirectory() as temp:
-                scaffold.install(Path(temp), stack)
+                e2e_run.stage_tooling(Path(temp))
                 for name in ("live-view.js", "live-reporter.js", "fixtures.js"):
                     self.assertTrue((Path(temp) / "e2e" / name).is_file(), f"{stack}: e2e/{name}")
 
@@ -297,15 +173,15 @@ class ScaffoldTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             workspace = Path(temp)
             (workspace / "package.json").write_text('{"name":"mine"}', encoding="utf-8")
-            result = scaffold.install(workspace, "nextjs-supabase")
-            self.assertFalse(result["scaffolded"])
+            result = scaffold.describe_workspace(workspace, "nextjs-supabase")
+            self.assertEqual(result["mode"], "continue")
             self.assertEqual((workspace / "package.json").read_text(), '{"name":"mine"}')
             self.assertFalse((workspace / "playwright.config.js").exists())
 
     def test_unknown_stack_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaises(ValueError):
-                scaffold.install(Path(temp), "something-else")
+                scaffold.describe_workspace(Path(temp), "something-else")
 
     def test_visual_regression_has_a_guide_and_a_shared_baseline_helper(self):
         # Found live: a generated app's visual.spec.js and playwright.config.js had
@@ -319,33 +195,20 @@ class ScaffoldTests(unittest.TestCase):
             self.assertIn("visual.md", scaffold.guide_files(stack))
             with tempfile.TemporaryDirectory() as temp:
                 workspace = Path(temp)
-                scaffold.install(workspace, stack)
+                e2e_run.stage_tooling(workspace)
                 fixtures = (workspace / "e2e/fixtures.js").read_text(encoding="utf-8")
                 self.assertIn("export async function expectMatchesBaseline(", fixtures)
                 visual = (workspace / "e2e/visual.spec.js").read_text(encoding="utf-8")
                 self.assertIn("expectMatchesBaseline(page, testInfo, slug(route))", visual)
                 # The self-recording branch lives in fixtures.js now, not duplicated here.
                 self.assertNotIn("testInfo.snapshotPath(", visual)
-        guide = (scaffold.ROOT / "_guides" / "visual.md").read_text(encoding="utf-8")
+        guide = (scaffold.GUIDES / "visual.md").read_text(encoding="utf-8")
         self.assertIn("expectMatchesBaseline", guide)
         self.assertIn("snapshotPathTemplate", guide)
         prompt = (ROOT / "prompts/testing/run.md").read_text(encoding="utf-8")
         self.assertIn("qa:visual", prompt)
         self.assertIn("visual.md", prompt)
         self.assertIn("expectMatchesBaseline", prompt)
-
-    def test_supabase_stacks_get_a_local_only_test_database_and_the_right_clients(self):
-        for stack in ("nextjs-supabase", "remix-supabase"):
-            with self.subTest(stack=stack), tempfile.TemporaryDirectory() as temp:
-                workspace = Path(temp)
-                scaffold.install(workspace, stack)
-                # A test never sees the real project's URL/keys, even though every other command does.
-                env = (workspace / "vitest.env.js").read_text(encoding="utf-8")
-                self.assertIn("127.0.0.1:54321", env)
-                client = (workspace / "lib/supabase.js").read_text(encoding="utf-8")
-                self.assertIn("createServerClient", client)
-                self.assertIn("createClient", client)  # the admin (service-role) client
-
 
 class EvidenceTests(unittest.TestCase):
     def test_reads_runner_results_and_real_screenshots(self):
@@ -575,11 +438,11 @@ class ReportShapeEvidenceTests(unittest.TestCase):
         self.assertEqual(rows["/api/untouched"], [])
 
     def test_the_e2e_fixture_attaches_the_api_calls_each_test_made(self):
-        fixtures = (scaffold.ROOT / "_testing/e2e/fixtures.js").read_text(encoding="utf-8")
+        fixtures = (e2e_run.TOOLING / "e2e/fixtures.js").read_text(encoding="utf-8")
         self.assertIn("testInfo.attach('api-calls'", fixtures)
 
     def test_the_server_wrapper_keeps_each_runs_results(self):
-        runner = (scaffold.ROOT / "_testing/scripts/with-server.mjs").read_text(encoding="utf-8")
+        runner = (e2e_run.TOOLING / "scripts/with-server.mjs").read_text(encoding="utf-8")
         self.assertIn("keepRunResults(command, startedAt)", runner)
         self.assertIn("path.join('.agentforge', 'qa', 'runs')", runner)
 

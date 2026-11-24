@@ -1844,22 +1844,34 @@ def screens(project: str) -> list[dict]:
 def wireframes(project: str) -> dict[str, Any]:
     """The wireframe pages and the journeys, in the shape the studio's screens read.
 
-    `pages` has one row for every screen: `has_html` says its page is written in the wireframe app and the app is bundled, so the
-    studio can show it. `journeys` feeds the User Journey view.
+    HTML screens become available as soon as their own files exist. Legacy React screens still use their compiled bundle.
     """
+    from . import wireframe
+
     session = session_for(project)
     doc = document(project).get("srs_document", {})
-    app = web_app.app_dir(session.workspace, "wireframe")
     rows = screens(project)
+    folder = session.record / wireframe.HTML_DIR
+    html_files = {row["route"]: row["file"] for row in web_app.route_rows(rows, ".html")}
+    revisions = {route: wireframe.file_stamp(folder / file) for route, file in html_files.items()}
+    html_mode = folder.is_dir()
+    app = web_app.app_dir(session.workspace, "wireframe")
     files = web_app.page_files([str(p["route"]) for p in rows])
-    bundled = web_app.built(app)
+    shared = max(wireframe.file_stamp(folder / "assets" / name) for name in ("wireframe.css", "wireframe.js"))
+    version = max(revisions.values(), default=0) if html_mode else wireframe.file_stamp(app / web_app.BUNDLE)
+    checks = (session.read_record("wireframe", "checks.json", fallback={}) or {}) if html_mode else {}
     state = session.read_record("wireframe", "state.json", fallback=None) or {}
     drawing = session.stage in ("srs", "wireframes")
 
     pages = []
     for page in rows:
         route = str(page["route"])
-        written = any((app / "src" / "pages" / f"{files[route]}{ext}").is_file() for ext in (".tsx", ".jsx"))
+        check = checks.get(route, "")
+        if check in ("checking", "fixing") and not drawing:
+            check = ""
+        written = (bool(revisions[route]) if html_mode else
+                   any((app / "src" / "pages" / f"{files[route]}{ext}").is_file() for ext in (".tsx", ".jsx")))
+        ready = written if html_mode else bool(written and version)
         pages.append({
             "route": route,
             "page_name": page.get("page_name") or route,
@@ -1868,13 +1880,15 @@ def wireframes(project: str) -> dict[str, Any]:
             "roles": page.get("allowed_roles") or [],
             "functions": page.get("functions") or [],
             "slug": files[route],
-            "has_html": bool(written and bundled),
-            "have": bool(written and bundled),
+            **({"html_file": html_files[route], "version": max(revisions[route], shared),
+                "check": check} if html_mode else {}),
+            "has_html": ready,
+            "have": ready,
             "drawing": bool(drawing and not written),
             "error": str(state.get("error") or ""),
         })
-    return {"pages": pages, "wireframes": pages, "screens": pages, "drawing": drawing, "built": bundled,
-            "version": int((app / web_app.BUNDLE).stat().st_mtime) if bundled else 0,
+    return {"pages": pages, "wireframes": pages, "screens": pages, "drawing": drawing, "built": bool(version),
+            "version": version,
             "journeys": journeys.user_journeys_for(doc),
             "srs_version": doc.get("version", ""), "generated_from": "srs"}
 

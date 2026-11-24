@@ -1,23 +1,27 @@
 # One sequential plan — build, focused unit tests, then final checks
 
-Read the selected scaffold, its README and folder structure; `.agentforge/srs/handoff.json` (the routes, collections, roles, workflows and acceptance criteria this build must match); the approved prototype and design (`.agentforge/design/design-spec.json`, and `.agentforge/design/theme.md` when a theme was selected); the stack's build guides staged at `.agentforge/build/guides/`; and any `media/IMAGES.md` or `.agentforge/PLUGIN.md` that exists.
+Read `.agentforge/srs/handoff.json`, the approved prototype and design, the selected stack guide staged at `.agentforge/build/guides/`, and any `media/IMAGES.md` or `.agentforge/PLUGIN.md` that exists. Inspect existing application files before planning.
 
-The staged guides are hand-written for this exact scaffold and are the standard for it; they do not cover everything a framework, library or provider might do. When the guides are silent on a real question — a current API signature, a config option, an error message neither you nor the guides explain — use `web_search` and `web_fetch` against the framework's or provider's own official site before guessing or falling back on possibly-stale memory. Never edit a guide file with what you find; it is a reference for the scaffold, not a place for this run's notes.
+Start a new application from the approved product requirements and the stack guide. Write the package manifest, framework configuration, application entry, domain modules, shared layout, database integration, and project documentation. Resume existing applications by inspecting and extending their files. Do not run a scaffolding generator or copy a starter application. Never edit a guide file. Consult official framework or provider documentation when a real implementation detail is unresolved.
 
 ## Mandatory prototype-to-app parity workflow
 
-The approved prototype is the frontend source of truth. It is a React app with Vite and Tailwind CSS in `.agentforge/prototype/app`: every screen is `src/pages/<page>.tsx`, and the shared layout, navigation and components are under `src/`. The real application must reproduce it at 100% visual, content, image, interaction and navigation parity while connecting the real data and business logic. Write shared UI for the product with native HTML controls and the target stack's styling. Do not install or copy shadcn/ui, Radix UI, or any ready-made component kit, including from an older prototype.
+When the numbered plan includes a first journey, implement that journey's production routes and isolated browser spec after the foundation. The Studio runs it and checks its result before the remaining pages. This is the early test checkpoint for a phased build. The full checks described below still run at the end.
+
+The approved prototype in `.agentforge/prototype/app` is the frontend source of truth. Its route map identifies the authoring file of every screen. Reproduce the layout, content, images, interactions and navigation in the selected application stack and connect real business logic and data. Write shared UI for the product in the selected stack. Do not install or copy shadcn/ui, Radix UI or ready-made component kits.
 
 Before writing the implementation plan:
 
 1. Open `.agentforge/prototype/routes.json`.
-2. Read every page file `routes.json` names (under `.agentforge/prototype/app/src/pages/`) and every component those pages import, in full. Do not infer one page from another and do not rely on memory or a summary.
-3. Read `.agentforge/prototype/app/src/index.css`, `tailwind.config.cjs` and `src/lib/router.tsx` (how the screens link to each other), plus every local or remote image reference used by the pages.
+2. Read each file named in `routes.json` relative to `.agentforge/prototype/`, and read the shared UI or behavior it uses. HTML prototype screens live under `app/pages/`. Saved React projects can still point to `app/src/pages/`.
+3. Read the prototype's source shell, shared CSS and navigation code, and trace its image references. For HTML, read `app/index.html`, `app/assets/prototype.css` and `app/assets/prototype.js`.
 4. Put a **Prototype parity map** in the generated plan. For every approved route, list the exact source page file, the destination application page/component files, and the prototype image or asset sources that must be reused.
 
 While implementing, work route by route. Immediately before creating or editing a real application page, reopen its mapped prototype page and the components it imports. Reproduce the same page structure, visible copy, typography, colors, spacing, sizing, images, image crops, ordering, shells, responsive states, controls, hover/focus states, buttons, links, destinations and navigation flow. Reuse the exact same prototype images and URLs; do not replace them with placeholders, stock substitutes, generated images or different crops. Copy a local prototype asset into the application's public assets when the framework needs a served file, and keep its appearance unchanged.
 
 Port the prototype's spacing scale and common styles into the application's styling system once. Reuse project-authored buttons, inputs, cards, table rows, and empty states across pages. Keep equal controls consistent in size and spacing unless the design spec defines a variant.
+
+{{design_motion}}
 
 The SRS defines data, permissions and business behaviour. The mapped prototype page defines the frontend presentation and interaction. Connect real data without redesigning, simplifying, restyling or inventing a different screen. If a detail is forgotten, reopen the mapped HTML instead of guessing. Never expose credentials from `demo-accounts.json` in the visible interface.
 
@@ -88,7 +92,7 @@ let an external test wrapper hide the finding from the build report.
 
 Create exactly one short execution plan, including the complete Prototype parity map. That one plan must contain the three sequential phases below. Do not create a separate plan for unit tests or final checks, do not run phases in parallel, and do not restart the plan from the beginning after a failure.
 
-Implement every approved page, route, role, business rule, data record and main workflow. Match the prototype at 100% parity, use real validation, persistence, authorization, responsive states and useful errors. Keep the existing scaffold and existing application work.
+Implement every approved page, route, role, business rule, data record and main workflow. Match the prototype at 100% parity, use real validation, persistence, authorization, responsive states and useful errors. Keep existing application work and arrange screens, business logic, data access and shared UI so another developer can extend them independently.
 
 ## How the work is given to you
 

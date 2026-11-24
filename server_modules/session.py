@@ -1382,7 +1382,7 @@ class ProjectSession:
             if problems and apart:
                 self.shed_history(keep_tokens=0)
             for attempt in range(1, PHASE_REPAIRS + 1):
-                if not problems:
+                if not problems or phase.get("repairable") is False:
                     break
                 if self.cancelled:
                     raise RunCancelled(self.project)
@@ -1403,6 +1403,8 @@ class ProjectSession:
             phases.save(plan_file)
             bus.phase(self.project, key, title, status="complete" if not problems else "failed",
                       detail="; ".join(problems[:3]), number=number, agent=self.role)
+            if problems and phase.get("required"):
+                return {"status": "blocked", "text": " ".join(problems), "rounds": rounds, "phases": items}
             delivered = phases.summary(phase) if not problems else ""
             if delivered:
                 bus.agent_msg(self.project, delivered, title=f"Phase {number} of {total} done", kind="narration", agent=self.role)
@@ -1475,7 +1477,7 @@ class ProjectSession:
             raise RunCancelled(self.project)
         return {"status": result.status, "text": result.text, "rounds": result.rounds}
 
-    def run_direct(self, request: str, model: str = "") -> dict[str, Any]:
+    def run_direct(self, request: str, model: str = "", *, thinking_level: str = "") -> dict[str, Any]:
         """Carry out a small approved update without creating a separate plan.
 
         Prototype and wireframe edits are already scoped by the page or artifact
@@ -1483,13 +1485,14 @@ class ProjectSession:
         noisy stream without changing the decision, so these edits go straight
         to execution.
         """
+        effort = {"thinking_level": thinking_level} if thinking_level else {}
         result = self.run_unplanned(
             "Apply this approved update directly in the workspace. Use the file tools, "
             "keep the scope exact, do not create or run tests, and do not perform a "
-            "separate verification pass.\n\n" + request, model)
+            "separate verification pass.\n\n" + request, model, **effort)
         return {**result, "text": result["text"] or "Update applied."}
 
-    def run_unplanned(self, request: str, model: str = "") -> dict[str, Any]:
+    def run_unplanned(self, request: str, model: str = "", *, thinking_level: str = "") -> dict[str, Any]:
         """One turn with every tool and no plan: the request already says exactly what to do."""
         agent = self.agent(model)
         if self.cancelled:
@@ -1498,7 +1501,13 @@ class ProjectSession:
         try:
             with self.lock:
                 agent.set_mode("act")
-                text = agent.ask(request)
+                if thinking_level:
+                    self._apply_effort(agent, thinking_level)
+                try:
+                    text = agent.ask(request)
+                finally:
+                    if thinking_level:
+                        self._apply_effort(agent, self._thinking_level)
         finally:
             bus.agent_state(self.project, "", agent=self.role)
             self.report_memory()

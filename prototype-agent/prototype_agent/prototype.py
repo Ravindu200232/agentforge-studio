@@ -1,16 +1,15 @@
-"""The prototype: a new high-fidelity React app, made by reading the approved wireframes.
+"""The prototype: a high-fidelity HTML app based on the approved wireframes.
 
 The wireframes stay exactly as they were approved, so the customer can still look at them. When this stage starts it sets up a new app in
-`.agentforge/prototype/app`, and the project's agent reads the custom UI guide, the wireframes,
+`.agentforge/prototype/app`, and the project's agent reads the design guidance, the wireframes,
 `app.md` and the approved design, plans the prototype, and writes it with its own file tools. Code here only sets the app up, says which
 screens and which design there are, bundles the finished app into the one page the studio shows, and leaves what the build reads:
 `routes.json` and, when the product has sign-in, `demo-accounts.json`. How the pages look and behave is the agent's.
 
-When the app is bundled it is looked at: every screen is photographed and a model that can look at pictures says what is visibly wrong
-(`visual_review.py`), and every journey of the specification is clicked through in a real browser, shown live (`journey_walk.py`).
-What they find is given back to the agent to fix, and the app is bundled and looked at again.
+The Studio previews and checks each screen as soon as it is authored. Once the complete app is published, the browser
+walkthrough uses the same journey contract that guided the screens.
 
-    <workspace>/.agentforge/prototype/app/              the prototype: `src/pages/<page>.tsx` for every screen, and `bundle.html`
+    <workspace>/.agentforge/prototype/app/              the prototype: `pages/<page>.html` for every screen, and `bundle.html`
     <workspace>/.agentforge/prototype/routes.json       every screen and the page file it is drawn in
     <workspace>/.agentforge/prototype/demo-accounts.json  the fictitious sign-in accounts, which the build seeds
 """
@@ -22,11 +21,12 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from server_modules import bus, config, pointed, prompts, store, web_app
+from server_modules import bus, config, html_prototype, pointed, prompts, store, web_app
 from server_modules.session import ProjectSession, RunCancelled, session_for, start_fresh
 
-from . import demo, journey_walk, visual_review
+from . import demo, journey_guide, journey_walk, visual_review
 from . import design as design_stage
+from .page_review import PageReview
 
 PROTOTYPE_DIR = "prototype"
 ROUTES = (PROTOTYPE_DIR, "routes.json")
@@ -50,7 +50,7 @@ def _read_record(session: Any, *parts: str, fallback=None):
 
 
 def _uploaded_site_images(session: ProjectSession, app: Path) -> list[dict[str, str]]:
-    """Put the customer's images inside the app (`src/assets/uploads`), where the bundle can inline them; the originals stay in `media/`."""
+    """Stage the customer's images in `assets/uploads` so the preview can inline them."""
     uploaded = []
     if not hasattr(session, "workspace"):
         return uploaded
@@ -62,11 +62,11 @@ def _uploaded_site_images(session: ProjectSession, app: Path) -> list[dict[str, 
         source = (session.workspace / relative).resolve()
         if not relative.startswith("media/") or not source.is_relative_to(media) or not source.is_file():
             continue
-        target = app / "src" / "assets" / "uploads" / source.name
+        target = app / "assets" / "uploads" / source.name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
         uploaded.append({"name": source.name, "usage": image.get("purpose") or "", "source": relative,
-                         "file": f"src/assets/uploads/{source.name}"})
+                         "file": f"assets/uploads/{source.name}"})
     return uploaded
 
 
@@ -89,28 +89,37 @@ def app_path(project: str) -> Path:
     return web_app.app_dir(session_for(project).workspace, KIND)
 
 
-def _sign_in_text(accounts: list[dict], sign_in: str, rows: list[dict]) -> str:
+def _sign_in_text(accounts: list[dict], sign_in: str, rows: list[dict], sign_up: dict | None = None) -> str:
     """What the agent is told about signing in: the accounts are in the app already, and so is the session that uses them."""
     if not sign_in or not accounts:
         return ""
     page = next((r for r in rows if r["route"] == sign_in), {"name": sign_in})
-    lines = [f"The product has sign-in, and the app already has it working underneath: `src/demo.ts` holds one fictitious account for each "
-             "role (the finished application is seeded with the same ones) and `useSession()` from `@/lib/session` signs them in. "
+    lines = [f"The Studio supplies fictitious accounts and the HTML preview session in `window.AgentForgePreview`. "
              f"Make the sign-in page, **{page['name']}** (`{sign_in}`), a real one:", "",
-             "- a form that calls `signIn(email, password)`, with its error shown under it when it returns null;",
+             "- a form that prevents its default submit and calls `window.AgentForgePreview.signIn(email, password)`, "
+             "with an error next to the form when it returns null;",
              "- no page shows the demo accounts: no demo panel or demo buttons, no emails, passwords or hints about them, on the "
              "sign-in page or anywhere else (the Studio gives them to the person in the chat when the prototype is done);",
-             "- after signing in, people land on their own first page (the session opens it); `signOut()` is the Sign out;",
-             "- the signed-in navigation and account menu show `user.name` and show only what `user.canOpen` allows; "
+             "- after signing in, the session opens the user's first page; use `window.AgentForgePreview.signOut()` to sign out;",
+             "- the signed-in navigation and account menu show `user.name` and show only what `user.can_open` allows; "
              "the signed-out navigation shows Sign in."]
+    if sign_up and sign_up.get("route"):
+        lines.append(f"- on `{sign_up['route']}`, validate the registration form, prevent its default submit and call "
+                     "`window.AgentForgePreview.signUp(name, email)` to start its demo session.")
     return "\n".join(lines)
 
 
 def _clean_login(session: Any, app: Path, sign_in: str) -> None:
     from server_modules import login_ui
 
-    files = web_app.page_files([sign_in]) if sign_in else {}
-    login_pages = [app / "src" / "pages" / f"{files[sign_in]}.tsx"] if sign_in else []
+    login_pages = []
+    if sign_in:
+        manifest = app / html_prototype.MANIFEST
+        if manifest.is_file():
+            rows = json.loads(manifest.read_text(encoding="utf-8"))["routes"]
+            login_pages = [app / row["file"].removeprefix("app/") for row in rows if row["route"] == sign_in]
+        else:
+            login_pages = [app / "src" / "pages" / f"{web_app.page_files([sign_in])[sign_in]}.tsx"]
     for _ in range(2):
         flagged = login_ui.issues(login_pages)
         if not flagged:
@@ -136,7 +145,7 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str) -> list
     if not pages:
         raise ValueError("the specification names no screens to prototype")
 
-    wire = wireframe_stage.app_path(project)
+    wire = wireframe_stage.source_path(project)
     app = app_path(project)
     app_rel = app.relative_to(session.workspace).as_posix()
     wire_rel = wire.relative_to(session.workspace).as_posix()
@@ -144,19 +153,25 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str) -> list
     root.mkdir(parents=True, exist_ok=True)
     record = f"{config.RECORD_DIR}/{PROTOTYPE_DIR}"
 
-    files = web_app.page_files([str(p["route"]) for p in pages])
-    routes_out = [{"route": p["route"], "file": f"app/src/pages/{files[str(p['route'])]}.tsx",
+    rows = web_app.route_rows(pages, ".html")
+    routes_out = [{"route": p["route"], "file": f"app/pages/{row['file']}",
                    "name": p.get("page_name") or p["route"], "roles": p.get("allowed_roles") or [],
-                   "signed_in": demo.signed_in_page(p)} for p in pages]
+                   "signed_in": demo.signed_in_page(p)} for p, row in zip(pages, rows)]
     sign_in = demo.sign_in_route(doc)
     accounts = demo.draw_accounts(doc)
     sign_up = demo.sign_up_of(doc, routes_out, accounts)
+    planned = journey_guide.from_spec(session, doc)
 
     def write(name: str, body: str, note: str = "written") -> None:
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body, encoding="utf-8")
         bus.file_written(project, f"{record}/{name}", body, note=note, agent=bus.DESIGNER)
+
+    write(journey_guide.GUIDE, journey_guide.markdown(planned, routes_out))
+    session.write_record(PROTOTYPE_DIR, journey_guide.SNAPSHOT, data=planned)
+    skill_file = "input/skills/journey-driven/SKILL.md"
+    write(skill_file, prompts.skill("prototype", "journey-driven"))
 
     # What the agent is told to read: the approved application and the approved design, where earlier stages wrote them.
     app_md = session.record / srs_document.SRS_DIR / "handoff" / "app.md"
@@ -170,8 +185,9 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str) -> list
         write("input/design-spec.json", json.dumps(spec, ensure_ascii=False, indent=2))
     customization = dict(design_stage.approved_customization(project) or {})
     inputs = [f"- `{app_md_path}` — app.md: what the customer asked for, in their own words, and the site map",
-              f"- `{spec_path}` — the approved design: colours, type, space, shape and motion (put them in `src/index.css` and "
-              "the Tailwind theme, and use them everywhere)"]
+              f"- `{record}/{journey_guide.GUIDE}` — the journey roles, actions, routes and expected UI outcomes",
+              f"- `{record}/{skill_file}` — how to design and verify a screen against its journeys",
+              f"- `{spec_path}` — the approved design: put colours, typography, spacing and motion in `assets/prototype.css`"]
     if (session.record / srs_document.SRS_DIR / "user-journeys.json").is_file():
         inputs.insert(1, f"- `{config.RECORD_DIR}/{srs_document.SRS_DIR}/user-journeys.json` — the journeys: who does what, step by step, "
                          "on which screen; every one has to be possible to click through")
@@ -192,51 +208,81 @@ def _draw_with_agent(project: str, spec: dict[str, Any], direction: str) -> list
                         + str(customization["customizer_prompt"]).strip()) if customization.get("customizer_prompt") else ""
 
     fingerprint = hashlib.sha256(json.dumps(
-        {"routes": routes_out, "design": spec, "customization": customization, "wireframe": web_app.fingerprint(wire),
+        {"routes": routes_out, "journeys": planned, "design": spec, "customization": customization, "wireframe": web_app.fingerprint(wire),
          "app_md": (session.workspace / app_md_path).read_text(encoding="utf-8"), "direction": effective_direction},
         ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-    resuming = (checkpoint.get("fingerprint") == fingerprint and not checkpoint.get("complete")
-                and (app / "index.html").is_file())
+    resuming = (checkpoint.get("fingerprint") == fingerprint and not checkpoint.get("complete") and app.is_dir())
     if not resuming:
         # A changed design, route map or wireframe owns a new app. A matching interrupted run keeps the pages it wrote.
         web_app.remove_app(app)
         (root / "routes.json").unlink(missing_ok=True)
-    web_app.create_app(app, str((doc.get("app_summary") or {}).get("app_name") or project), pages,
-                       accounts=accounts, sign_in=sign_in, sign_up=sign_up)
+    app.mkdir(parents=True, exist_ok=True)
+    session.write_record(PROTOTYPE_DIR, "app", html_prototype.MANIFEST,
+                         data={"routes": routes_out, "accounts": accounts, "signInRoute": sign_in, "signUp": sign_up})
     state = {"fingerprint": fingerprint, "complete": False, "direction": effective_direction}
     checkpoint_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
     uploaded = _uploaded_site_images(session, app)
-    skill = web_app.stage_skill(session.workspace)
+    first = routes_out[0]
+    briefs = {row["route"]: journey_guide.for_page(planned, row, routes_out) for row in routes_out}
     resume = ("## Resuming an interrupted run\n\nThe app already has the pages an earlier run wrote: read them, keep what is "
               "finished, and write only the pages that are still missing." if resuming else "")
     request = prompts.load(
-        "prototype/generate", request=headline, skill=skill, app=app_rel, wireframe=wire_rel, inputs="\n".join(inputs),
-        design_direction=design_direction,
-        routes=wireframe_stage.routes_text([{"route": r["route"], "name": r["name"], "file": files[str(r["route"])],
-                                             "roles": r["roles"], "signedIn": r["signed_in"]} for r in routes_out]),
-        sign_in=_sign_in_text(accounts, sign_in, routes_out),
+        "prototype/html", request=headline, app=app_rel, wireframe=wire_rel, inputs="\n".join(inputs),
+        design_direction=design_direction, design_motion=prompts.load("shared/design-motion").strip(),
+        routes=wireframe_stage.html_routes([{**row, "file": "pages/" + row["file"]} for row in rows]),
+        sign_in=_sign_in_text(accounts, sign_in, routes_out, sign_up),
         uploads=(json.dumps(uploaded, ensure_ascii=False, indent=2) if uploaded
                  else "None — find fitting real pictures on the web and use them by their address."),
-        resume=resume)
+        resume=resume, first_file=f"{record}/{first['file']}", first_steps=briefs[first["route"]])
 
     start_fresh(session)
-    result = session.run_task(request, audit=False, parallel_write_limit=4)
+    if not resuming or html_prototype.missing(app, []):
+        result = session.run_task(request, audit=False, parallel_write_limit=4)
+        if result.get("plan"):
+            (root / "plan.md").write_text(result["plan"], encoding="utf-8")
+        if result.get("status") != "complete" and result.get("text"):
+            bus.log(project, "WARN", f"The agent stopped early: {str(result['text'])[:300]}", agent=bus.DESIGNER)
     if session.cancelled:
         raise RunCancelled(project)
-    if result.get("plan"):
-        (root / "plan.md").write_text(result["plan"], encoding="utf-8")
-    if result.get("status") != "complete" and result.get("text"):
-        bus.log(project, "WARN", f"The agent stopped early: {str(result['text'])[:300]}", agent=bus.DESIGNER)
+    if html_prototype.missing(app, []):
+        raise PrototypeIncomplete(html_prototype.missing(app, routes_out))
+
+    def publish():
+        preview = html_prototype.publish_partial(app)
+        bus.prototype_changed(project)
+        return preview
+
+    with PageReview(project, session, accounts, sign_in) as reviewer:
+        for index, row in enumerate(routes_out, 1):
+            if session.cancelled:
+                raise RunCancelled(project)
+            page = root / row["file"]
+            brief = briefs[row["route"]]
+            bus.phase(project, "prototype:draw", row["name"], detail=f"Screen {index} of {len(routes_out)}", agent=bus.DESIGNER)
+            if not page.is_file():
+                start_fresh(session, "Continue the saved prototype plan. The approved journey brief and generated source are on disk.")
+                session.run_unplanned(prompts.load("prototype/html-page", app=app_rel, wireframe=wire_rel,
+                                                    file=f"{record}/{row['file']}", page=row["name"], route=row["route"],
+                                                    steps=brief, direction=effective_direction.removeprefix(APPROVAL_PROMPT).strip()))
+            if not page.is_file():
+                continue
+            if row["route"] == sign_in:
+                _clean_login(session, app, sign_in)
+            try:
+                preview = publish()
+            except ValueError as exc:
+                session.run_direct(f"Repair the HTML shell or shared asset causing this preview error in `{app_rel}`: {exc}")
+                preview = publish()
+            reviewer.page(row, preview, brief, publish)
 
     # A screen with no page is not a prototype of it: stay resumable, with the pages that were written, rather than hand it over.
-    written = app / "src" / "pages"
-    missing = [str(r["route"]) for r in routes_out
-               if not any((written / f"{files[str(r['route'])]}{ext}").is_file() for ext in (".tsx", ".jsx"))]
+    missing = html_prototype.missing(app, routes_out)
     if missing:
         raise PrototypeIncomplete(missing)
     _clean_login(session, app, sign_in)
     web_app.build_for(session, project, KIND, agent=bus.DESIGNER)
+    (app / html_prototype.PARTIAL).unlink(missing_ok=True)
 
     write("routes.json", json.dumps({"routes": routes_out}, ensure_ascii=False, indent=2))
     write("demo-accounts.json", json.dumps({"sign_in": sign_in, "accounts": accounts}, ensure_ascii=False, indent=2))
@@ -326,8 +372,8 @@ def _generate(project: str, direction: str, *, from_wireframes: bool = False) ->
         if accounts_text:
             bus.agent_msg(project, accounts_text, title="Demo accounts", agent=bus.DESIGNER)
         session.note(
-            f"The prototype is built: a React app with {len(drawn)} screens under .agentforge/prototype/app, made from the approved "
-            f"wireframes (which are unchanged in .agentforge/wireframe/app) and linked so the journeys can be clicked through. This is "
+            f"The prototype is built with HTML, CSS and JavaScript: {len(drawn)} screens under .agentforge/prototype/app, made from "
+            f"the approved wireframes and linked so the journeys can be clicked through. This is "
             f"what the customer approved the product on, and the build must match it. Routes: "
             + ", ".join(str(r.get("route")) for r in drawn)
             + (f"\n\n{accounts_text}\n\nThe build seeds these same fictitious accounts." if accounts_text else ""))
@@ -367,11 +413,11 @@ def _rebundler(project: str, session: Any):
 
 
 def _look_at(project: str, session: Any, drawn: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Look at the finished prototype: its screens by their pictures, then its journeys clicked through live. Both skip themselves,
-    saying why, when the model cannot see pictures or there is no browser; neither ever fails the prototype."""
+    """Walk the finished journeys. Already-authored HTML screens were checked during generation."""
     accounts = (_read_record(session, PROTOTYPE_DIR, "demo-accounts.json", fallback=None) or {}).get("accounts") or []
     rebuild = _rebundler(project, session)
-    visual_review.run(project, session, drawn, accounts, rebuild=rebuild)
+    if not drawn or not all(str(row.get("file") or "").endswith(".html") for row in drawn):
+        visual_review.run(project, session, drawn, accounts, rebuild=rebuild)
     if session.cancelled:
         raise RunCancelled(project)
     journey_walk.run(project, session, routes(project) or drawn,
@@ -413,7 +459,8 @@ def journeys(project: str, fix: bool = True, model: str = "") -> dict[str, Any]:
     return result
 
 
-def revise(project: str, request: str, elements: Any = None) -> dict[str, Any]:
+def revise(project: str, request: str, elements: Any = None, *, route: str = "",
+           layout: tuple[str, str] | None = None) -> dict[str, Any]:
     """Change the prototype from a message typed into the chat stream (with the things on the page they pointed at, when they did)."""
     if not exists(project):
         raise ValueError("there is no prototype to change yet")
@@ -422,10 +469,24 @@ def revise(project: str, request: str, elements: Any = None) -> dict[str, Any]:
     session.begin("prototype-edit", role=bus.DESIGNER)
     try:
         bus.user_msg(project, request, agent=bus.DESIGNER)
-        session.run_direct(prompts.load("prototype/revise", request=request + pointed.describe(elements),
-                                        skill=web_app.stage_skill(session.workspace),
-                                        app=app_path(project).relative_to(session.workspace).as_posix()))
-        web_app.build_for(session, project, KIND, agent=bus.DESIGNER)
+        app = app_path(project)
+        rel = app.relative_to(session.workspace).as_posix()
+        if layout:
+            row = next((page for page in routes(project) if page["route"] == route), None)
+            source = "Find the component that renders this route in the existing prototype."
+            if row and row.get("file"):
+                source = f"The prototype source for this route is `{row['file'].removeprefix('app/')}`."
+            web_app.edit_layout(session, app, route, source, layout)
+        else:
+            if (app / html_prototype.MANIFEST).is_file():
+                text = prompts.load("prototype/edit-html", request=request + pointed.describe(elements), app=rel,
+                                    design_motion=prompts.load("shared/design-motion").strip())
+            else:
+                text = prompts.load("prototype/revise", request=request + pointed.describe(elements),
+                                    skill=web_app.stage_skill(session.workspace), app=rel)
+                text += "\n\n" + prompts.load("shared/design-motion").strip()
+            session.run_direct(text)
+            web_app.build_for(session, project, KIND, agent=bus.DESIGNER)
         bus.prototype_changed(project)
         session.finish("Prototype updated.")
         return {"routes": routes(project)}

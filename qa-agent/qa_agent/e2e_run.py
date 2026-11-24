@@ -16,7 +16,7 @@ every page opens) instead of the journeys, and the journeys' run stays the app's
 
 The run is `node scripts/with-server.mjs -- npx playwright test`, so it gets its own server, port and isolated database
 exactly as the agent's runs did, with the same environment the agent's commands get (`session.command_environment`).
-The runner script is the Studio's: the template's copy is put in the project before the run, so a fix to it (Atlas's
+The runner script is the Studio's: its copy is put in the project before the run, so a fix to it (Atlas's
 database-name limit, a user that may not drop a database) reaches projects built before it.
 """
 from __future__ import annotations
@@ -32,18 +32,19 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
-from server_modules import bus, config, live
+from server_modules import bus, config, live, secrets_guard
 from server_modules.session import RunCancelled, command_environment
 
 from . import build_evidence
 
 RECORD = ".agentforge/qa/e2e-run.json"
 RUNNER = "scripts/with-server.mjs"
-TEMPLATES = config.ROOT / "builder-agent" / "builder_agent" / "assets" / "templates" / "_testing"
-TEMPLATE_RUNNER = TEMPLATES / "scripts" / "with-server.mjs"
+TOOLING = Path(__file__).resolve().parent / "tooling"
+TEMPLATE_RUNNER = TOOLING / "scripts" / "with-server.mjs"
 PAGES_SPEC = "e2e/pages.spec.js"
-TEMPLATE_PAGES = TEMPLATES / "e2e" / "pages.spec.js"
+TEMPLATE_PAGES = TOOLING / "e2e" / "pages.spec.js"
 RUNTIME_SPEC = "e2e/smoke.spec.js"
 RUN_SECONDS = 45 * 60             # the whole suite, desktop and mobile; the agent's own commands stop at ten minutes
 PAGES_SECONDS = 20 * 60
@@ -107,6 +108,21 @@ def runnable(workspace: Path) -> bool:
         return False
     deps = {**(manifest.get("dependencies") or {}), **(manifest.get("devDependencies") or {})}
     return "@playwright/test" in deps and (workspace / "e2e").is_dir() and any((workspace / "e2e").rglob("*.spec.*"))
+
+
+def stage_tooling(workspace: Path) -> None:
+    """Stage Studio QA runners and generic fixtures without supplying application files."""
+    root = workspace.resolve()
+    for source in TOOLING.rglob("*"):
+        if not source.is_file():
+            continue
+        relative = source.relative_to(TOOLING)
+        target = root / relative
+        if not target.resolve().is_relative_to(root):
+            raise ValueError(f"QA tooling path leaves the project: {relative}")
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
 
 
 def ensure_runner(project: str, workspace: Path) -> None:
@@ -258,6 +274,81 @@ def _build_if_needed(project: str, session: Any, env: dict[str, str], now: str) 
         saved["built_fingerprint"] = now
         _save(workspace, saved)
     return result
+
+
+def _first_journey_env(env: dict[str, str], mongo: bool, supabase: bool) -> dict[str, str]:
+    isolated = dict(env)
+    if mongo and not env.get('MONGODB_URI'):
+        raise ValueError('Connect MongoDB to run the first journey on an isolated test database.')
+    if supabase:
+        names = ('E2E_SUPABASE_URL', 'E2E_SUPABASE_ANON_KEY', 'E2E_SUPABASE_SERVICE_ROLE_KEY', 'E2E_SUPABASE_DB_URL')
+        if any(not env.get(name) for name in names):
+            raise ValueError('Connect a separate Supabase test project using ' + ', '.join(names) + ' in build environment settings.')
+        url, anon, service, database = (env[name] for name in names)
+        try:
+            target, db = urlsplit(url), urlsplit(database)
+            app_urls = [urlsplit(env.get(name, '')) for name in
+                        ('SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL', 'VITE_SUPABASE_URL') if env.get(name)]
+            loopback = {'localhost', '127.0.0.1', '::1'}
+            test_host = target.hostname or ''
+            ref = test_host.removesuffix('.supabase.co')
+            cloud = target.scheme == 'https' and test_host.endswith('.supabase.co') and bool(re.fullmatch(r'[a-z0-9]+', ref))
+            local = target.scheme in {'http', 'https'} and test_host in loopback and db.hostname in loopback
+            owns_database = db.hostname == f'db.{ref}.supabase.co' or (
+                (db.hostname or '').endswith('.pooler.supabase.com') and db.username == f'postgres.{ref}')
+            if target.path not in ('', '/') or not db.scheme.startswith('postgres') or not (local or (cloud and owns_database)):
+                raise ValueError
+            if any((host.hostname, host.port) == (target.hostname, target.port) or
+                   (host.hostname in loopback and test_host in loopback and host.port == target.port) for host in app_urls):
+                raise ValueError
+            active_db = urlsplit(env.get('SUPABASE_DB_URL') or env.get('DATABASE_URL') or '')
+            if active_db.hostname and (active_db.hostname, active_db.port, active_db.username, active_db.path) == (
+                    db.hostname, db.port, db.username, db.path):
+                raise ValueError
+        except ValueError as exc:
+            raise ValueError('The first journey needs a separate Supabase URL and a matching Postgres URL for that test project.') from exc
+        isolated.update(SUPABASE_URL=url, SUPABASE_ANON_KEY=anon, SUPABASE_SERVICE_ROLE_KEY=service,
+                        SUPABASE_DB_URL=database, NEXT_PUBLIC_SUPABASE_URL=url, NEXT_PUBLIC_SUPABASE_ANON_KEY=anon,
+                        VITE_SUPABASE_URL=url, VITE_SUPABASE_ANON_KEY=anon)
+        if 'DATABASE_URL' in isolated and not mongo:
+            isolated['DATABASE_URL'] = database
+    return isolated
+
+
+def first_journey(project: str, session: Any, journey_id: str, *, mongo: bool, supabase: bool) -> dict[str, Any]:
+    """Build and prove one named spec entirely within the isolated QA environment."""
+    workspace = session.workspace
+    spec = f'e2e/journeys/{journey_id}.spec.js'
+    try:
+        env = _first_journey_env(command_environment(project, 'build'), mongo, supabase)
+    except ValueError as exc:
+        return {'status': 'unavailable', 'reason': str(exc)}
+    if not runnable(workspace):
+        return {'status': 'failed', 'reason': 'Install the app and Playwright dependencies so Studio can run the first journey.'}
+    ensure_runner(project, workspace)
+    saved = record(workspace)
+    full = saved.get('full')
+    if saved.pop('built_fingerprint', None) or isinstance(full, dict):
+        if isinstance(full, dict):
+            full.pop('fingerprint', None)
+        _save(workspace, saved)
+    command = [_node(), RUNNER, '--first-journey', *(['--mongo'] if mongo else []), *(['--supabase'] if supabase else []),
+               '--', 'npx', 'playwright', 'test', spec, '--project=desktop', '--workers=1', '--retries=0',
+               '--grep', grep_for([journey_id])]
+    bus.phase(project, 'qa:first-journey', 'Testing the first journey', detail=journey_id, agent=bus.DEVELOPER)
+    started = time.time()
+    try:
+        result = _execute(project, session, command, env, BUILD_SECONDS + RUNTIME_SECONDS, 'The first journey')
+    except OSError as exc:
+        return {'status': 'failed', 'reason': secrets_guard.mask(str(exc))}
+    finally:
+        live.finish(project)
+    result['output'] = secrets_guard.mask(result.get('output', ''))
+    counts = _counts(workspace, started + 2)
+    passed = (result['exit_code'] == 0 and counts['passed'] > 0 and counts['total'] == counts['passed'])
+    bus.phase(project, 'qa:first-journey', 'Testing the first journey', status='complete' if passed else 'failed',
+              detail=f"{journey_id}: {counts['passed']} passed, {counts['failed']} failed", agent=bus.DEVELOPER)
+    return {'status': 'passed' if passed else 'failed', **counts, **result}
 
 
 def run(project: str, session: Any, grep: list[str] | None = None, reason: str = "build", force: bool = False,

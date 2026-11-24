@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 for folder in (".", "src", "srs-agent", "prototype-agent", "builder-agent", "qa-agent", "deploy-agent"):
     sys.path.insert(0, str(ROOT / folder))
 
-from builder_agent import build, phases  # noqa: E402
+from builder_agent import build, journey_contract, phases  # noqa: E402
 from server_modules import bus  # noqa: E402
 from server_modules.session import PHASE_PLANNING_STEPS, PHASE_REPAIRS, Phases, ProjectSession, RunCancelled  # noqa: E402
 
@@ -70,6 +70,29 @@ class RoutesTests(Workspace):
 
 
 class PlanTests(unittest.TestCase):
+    def test_first_journey_is_after_foundation_and_owns_its_routes_once(self):
+        rows = routes(6)
+        first = {"id": "UJ-001", "name": "Place an order", "routes": ["/page-1", "/page-4"]}
+        items = phases.plan(rows, first)
+        self.assertEqual([item["kind"] for item in items[:3]], ["foundation", "first-journey", "pages"])
+        self.assertEqual(items[2]["routes"], ["/page-2", "/page-3", "/page-5", "/page-6"])
+        self.assertTrue(items[1]["required"])
+        self.assertIn("e2e/journeys/UJ-001.spec.js", phases.request_for(items[1], 2, len(items), rows))
+
+    def test_contract_preserves_approved_route_actor_outcome_and_sample_data(self):
+        source = {"journeys": [{"id": "UJ-001", "workflow_name": "Order review", "who": "Customer", "steps": [
+            {"id": "UJ-001-S01", "step": "Place an order", "route": "/page-1", "expected_outcome": "Order is saved"},
+            {"id": "UJ-001-S02", "step": "The Admin approves it", "route": "/page-2", "test_data": {"status": "pending"}},
+        ]}]}
+        session = mock.Mock()
+        session.read_record.return_value = source
+        _, first = journey_contract.stage(session, {"roles": [{"role_name": "Admin"}]}, routes(3))
+        self.assertEqual([step["actor"] for step in first["steps"]], ["Customer", "Admin"])
+        self.assertEqual(first["steps"][0]["expected_outcome"], "Order is saved")
+        self.assertEqual(first["steps"][1]["test_data"], {"status": "pending"})
+        self.assertEqual(first["steps"][1]["prototype_file"], "page-2.html")
+        session.write_record.assert_called_once()
+
     def test_a_big_application_is_split_into_the_foundation_pages_a_few_at_a_time_and_what_comes_after(self):
         items = phases.plan(routes(22))
         self.assertEqual([i["kind"] for i in items], ["foundation"] + ["pages"] * 6 + ["wiring", "tests", "checks"])
@@ -337,6 +360,18 @@ class ExecutionTests(unittest.TestCase):
 
     def run_all(self, phased, plan="THE PLAN", plan_file="plan/developmentplan1.md"):
         return self.session._run_phases(self.session.agent(), plan, plan_file, phased)
+
+    def test_remaining_pages_wait_if_the_required_first_journey_still_fails(self):
+        phased = self.phased(2, verify=lambda item: ["Order did not persist"] if item["id"] == "first-journey" else [])
+        phased.items = phases.plan(routes(2), {"id": "UJ-001", "name": "Place order", "routes": ["/page-1"]})
+        result = self.run_all(phased)
+        self.assertEqual(result["status"], "blocked")
+        self.assertTrue(all("ASK 3" not in call[0] for call in self.asked))
+        self.assertEqual(phased.items[2]["status"], "pending")
+        phased.verify = lambda _item: []
+        self.asked.clear()
+        self.assertEqual(self.run_all(phased)["status"], "complete")
+        self.assertFalse(any(call[0].startswith("ASK 1") for call in self.asked))
 
     def test_every_phase_is_given_in_order_numbered_and_each_with_its_own_request(self):
         phased = self.phased(6)

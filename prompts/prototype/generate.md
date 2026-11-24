@@ -6,6 +6,8 @@ First read what the product is and how people use it, then the wireframes: every
 
 Write the prototype with the file tools in `{{app}}`. Make it a high-fidelity, animated and interactive prototype. Use the wireframe layouts as reference and write the prototype's own components. The Studio handles bundling. Do not install packages or run build scripts.
 
+{{setup}}
+
 A prototype is a working frontend, not the wireframes in colour. Every button, link, form, tab, filter, menu and row action does what its label says: it opens the screen that comes next, changes what is shown, or answers with a message or a dialog. What a person does on one page shows on the others: keep the sample data in one shared place (a store in `src/lib`) that the pages read and change, so a saved form adds its row to the list, an approval changes a status, and a total follows its lines. Forms check what was typed, then go on to the next screen of their journey. Lists search, filter and sort, and a row opens its own detail page (one given an id it does not know shows the first item, so every link to it works). Draw the empty and the error state too. Before you finish, walk every journey below in your head, from its first screen to its last, and make sure it can be clicked through: the Studio then looks at every screen and clicks through every journey in a real browser, and gives you what is wrong to fix.
 
 Read what the product is, and how it should look:

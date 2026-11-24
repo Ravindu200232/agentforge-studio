@@ -34,9 +34,9 @@ The installed project uses:
 Write project-specific components using React, semantic HTML and Tailwind. Do not use shadcn/ui, Radix UI or ready-made component kits.
 Do not install, update, or remove packages.
 Do not run skill scripts, build commands, tests, development servers, or preview servers.
-The application setup is already complete. Your responsibility is exclusively to implement the React application under:
-`{{app}}/src`
-The Studio handles bundling afterward.
+Write the application entry, styles and screens inside `{{app}}`. Keep its layout grayscale with neutral tokens.
+
+{{setup}}
 2. PRIMARY PRODUCT SOURCE
 The customer's authoritative product description and site map are located at:
 `.agentforge/srs/handoff/app.md`
@@ -356,7 +356,7 @@ Where useful, create these too, each in its own file under `src/components/`:
 
 Use semantic HTML and Tailwind CSS utilities for layout. Write and reuse only the product-specific components the screens need.
 Do not add unnecessary abstraction or large component frameworks.
-Do not modify anything outside `{{app}}/src`.
+Keep application changes inside `{{app}}`.
 Imports and compatibility
 Use:
 
@@ -609,7 +609,7 @@ Do not claim tests or builds passed if they were not executed.
 The final deliverable MUST:
 
 * Be a React + TypeScript wireframe application.
-* Preserve the existing Vite and Tailwind setup.
+* Author any missing entry and styling files for the Studio's Vite preview.
 * Use project-authored components and native controls.
 * Use Lucide icons where appropriate.
 * Remain fully grayscale (black, white and neutral greys only: no red, no colour of any hue) and low fidelity, in the international low-fidelity style described above.
@@ -623,7 +623,7 @@ The final deliverable MUST:
 * Use `@/lib/router` for internal links and parameters.
 * Include responsive layouts.
 * Avoid unsupported imports and packages.
-* Write application changes only under `{{app}}/src`.
+* Write application changes only under `{{app}}`.
 * Never install packages, launch servers, or run scripts.
 * Remain compatible with the Studio's subsequent bundling process.
 
