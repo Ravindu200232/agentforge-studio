@@ -1,6 +1,7 @@
 """A command run in a pseudo-terminal, for sign-ins that refuse to start without one (the Atlas CLI's menu)."""
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -82,6 +83,27 @@ class RealTerminalTests(unittest.TestCase):
         while process.poll() is None and time.time() < deadline:
             time.sleep(0.1)
         self.assertIsNotNone(process.poll())
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX process-group behaviour")
+    def test_ending_a_terminal_also_ends_a_spawned_helper(self):
+        command = ("import subprocess, sys, time; "
+                   "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+                   "print(child.pid, flush=True); time.sleep(60)")
+        process = pty_process.spawn([sys.executable, "-c", command])
+        helper_pid = int(next(process.stdout))
+        process.kill()
+        deadline = time.time() + 10
+        while process.poll() is None and time.time() < deadline:
+            time.sleep(0.1)
+        self.assertIsNotNone(process.poll())
+        while time.time() < deadline:
+            try:
+                os.kill(helper_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            self.fail("the terminal's helper process was left running")
 
 
 if __name__ == "__main__":

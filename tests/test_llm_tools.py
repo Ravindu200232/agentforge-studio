@@ -402,7 +402,7 @@ class WebToolsTests(unittest.TestCase):
                  mock.patch("ollama_terminal.tools.inspect_local_page", return_value={"title": "Preview"}) as inspect:
                 result = tools.call("browser_inspect", {"viewport": "mobile"})
         self.assertIn("Preview", result)
-        inspect.assert_called_once_with(Path(folder), "http://127.0.0.1:3001/", "mobile")
+        inspect.assert_called_once_with(Path(folder).resolve(), "http://127.0.0.1:3001/", "mobile")
 
 
 class EffortLevelTests(unittest.TestCase):

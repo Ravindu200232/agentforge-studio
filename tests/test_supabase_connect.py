@@ -42,7 +42,7 @@ class SupabaseSettingsCase(unittest.TestCase):
 class AccountConnectionTests(SupabaseSettingsCase):
     def test_nothing_is_connected_until_an_app_is_registered(self):
         self.assertEqual(sc.token_status(), {"app_registered": False, "connected": False, "org": "", "broker": False,
-                                              "accounts": [], "active": ""})
+                                              "accounts": [], "active": "", "via": ""})
         self.assertFalse(sc.credentials_saved())
 
     def test_registering_the_app_does_not_by_itself_sign_anyone_in(self):
@@ -57,6 +57,22 @@ class AccountConnectionTests(SupabaseSettingsCase):
         sc.forget_account()
         status = sc.token_status()
         self.assertEqual((status["app_registered"], status["connected"], status["org"]), (True, False, ""))
+
+    def test_an_adopted_cli_account_is_connected_without_copying_its_token(self):
+        config.save_settings({"supabase_oauth_via": "cli", "supabase_org": "Acme",
+                              "supabase_account_id": "org-1"})
+        status = sc.token_status()
+        self.assertEqual((status["connected"], status["via"], status["org"], status["active"]),
+                         (True, "cli", "Acme", "org-1"))
+        self.assertEqual(status["accounts"], [{"id": "org-1", "label": "Acme", "active": True}])
+
+    def test_cli_mode_uses_native_credentials_even_if_a_stale_token_was_inherited(self):
+        config.save_settings({"supabase_oauth_via": "cli", "supabase_org": "Acme",
+                              "supabase_account_id": "org-1"})
+        with mock.patch.dict("os.environ", {"SUPABASE_ACCESS_TOKEN": "stale"}):
+            env = sc._env_with_token()
+        self.assertNotIn("SUPABASE_ACCESS_TOKEN", env)
+        self.assertEqual(env["NO_COLOR"], "1")
 
 
 class StartTests(SupabaseSettingsCase):

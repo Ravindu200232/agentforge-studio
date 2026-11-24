@@ -105,7 +105,9 @@ DEFAULTS: dict[str, Any] = {
     "privacy_entities": [],            # which kinds of personal data are hidden; empty is privacy.DEFAULT_ENTITIES
     "privacy_keep": [],                # words never hidden: business, brand and product names that look like a person's
     "diagram_visual_review": True,     # the specification's diagrams are photographed and looked at by a vision model, two rounds at most
-    "supabase_oauth_via": "",       # "broker" (the engine's OAuth app) or "own" (one this person registered)
+    # "broker" (the engine OAuth app), "own" (one this person registered), or "cli" (Supabase's
+    # official browser login, whose credential remains in the native CLI credential store).
+    "supabase_oauth_via": "",
     "supabase_account_id": "",      # the active account's organisation id
     "supabase_account_credentials": {},   # the other accounts signed in, kept aside: id -> tokens (never sent to the UI)
     "supabase_org": "",
@@ -153,7 +155,20 @@ def _read(path: Path, fallback: Any) -> Any:
 
 def _write(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    # A reader must see either the previous complete JSON document or the new one.
+    # Account credit refreshes and model choices can arrive from different threads.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix=path.name + ".",
+                                         suffix=".tmp", dir=path.parent, delete=False) as handle:
+            temporary = Path(handle.name)
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 ENGINE_FILE = ROOT / "server_modules" / "engine.json"

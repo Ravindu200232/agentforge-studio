@@ -37,6 +37,8 @@ class Backend extends EventEmitter {
     this.readyPromise = new Promise(resolve => { resolveReady = resolve })
     const child = spawn(this.python, ['-u', path.join(this.root, 'server.py'), '--stdio'], {
       cwd: this.root, env: this.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+      // A POSIX process group lets quit stop previews and commands started by the backend, not only Python itself.
+      detached: process.platform !== 'win32',
     })
     this.child = child
     child.stdout.setEncoding('utf8')
@@ -60,7 +62,7 @@ class Backend extends EventEmitter {
       const now = Date.now()
       this.restarts = this.restarts.filter(at => now - at < 60_000).concat(now)
       if (this.restarts.length > MAX_QUICK_RESTARTS) {
-        this.status('stopped: the engine keeps failing to start — see the log in %APPDATA%\\AgentForge\\logs')
+        this.status('stopped: the engine keeps failing to start — see AgentForge/backend.log in your app data logs')
         return
       }
       this.log(`[backend] exited with code ${code}; starting again`)

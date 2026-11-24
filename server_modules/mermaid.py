@@ -153,6 +153,9 @@ def _installed_browser() -> str | None:
         Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
         / "Microsoft/Edge/Application/msedge.exe",
         *_playwright_browsers(),
+        Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+        Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
     ]
     for candidate in candidates:
         if str(candidate) and candidate.is_file():

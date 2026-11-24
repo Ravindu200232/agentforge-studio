@@ -31,9 +31,15 @@ class FindBrowserTests(unittest.TestCase):
 
     def find(self, cache: Path, **env: str) -> list[tuple[str, str]]:
         clean = {k: v for k, v in os.environ.items() if k not in {"AGENTFORGE_BROWSER", "PLAYWRIGHT_BROWSERS_PATH", "LOCALAPPDATA"}}
+        real_is_file = Path.is_file
+        def test_files(path: Path) -> bool:
+            # These tests construct the complete browser inventory under `cache`; an actual Chrome installed on the
+            # Mac running the suite must not leak into that isolated inventory.
+            return False if str(path).startswith("/Applications/") else real_is_file(path)
         with mock.patch.dict(os.environ, {**clean, "PLAYWRIGHT_BROWSERS_PATH": str(cache), **env}, clear=True), \
                 mock.patch.object(screenshot.shutil, "which", return_value=None), \
-                mock.patch.object(screenshot.Path, "home", return_value=cache / "home"):
+                mock.patch.object(screenshot.Path, "home", return_value=cache / "home"), \
+                mock.patch.object(screenshot.Path, "is_file", test_files):
             return screenshot.find_browsers()
 
     def test_playwrights_headless_shell_comes_first_and_the_full_chromium_last(self):
